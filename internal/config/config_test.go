@@ -97,6 +97,7 @@ func TestValidateShouldRejectUnsafeOrMeaninglessValues(t *testing.T) {
 		"empty model":          func(c *Config) { c.Omp.Model = " " },
 		"unknown forge":        func(c *Config) { c.Forge.Kind = "bitbucket" },
 		"empty label":          func(c *Config) { c.Forge.Labels.InProgress = "" },
+		"unknown red proof":    func(c *Config) { c.Gates.RedProof = "sometimes" },
 		"label with comma":     func(c *Config) { c.Forge.Labels.Ready = "a,b" }, // glab splits on commas
 	}
 	for name, mutate := range cases {

@@ -33,6 +33,14 @@ func TestBranchNameShouldUseFixForBugsAndFeatOtherwise(t *testing.T) {
 	}
 }
 
+func TestBranchNameShouldKeepDistinctTaskRefsDistinct(t *testing.T) {
+	a := BranchName("bug", "task:fix-add", "Corrigir soma")
+	b := BranchName("bug", "task:fix-add-v2", "Corrigir soma")
+	if a == b {
+		t.Fatalf("different tasks must not share a branch: %q", a)
+	}
+}
+
 func TestGuardWorkBranchShouldRefuseProtectedAndBaseBranches(t *testing.T) {
 	for _, b := range []string{"main", "master", "develop", "", "HEAD"} {
 		if err := GuardWorkBranch(b, "origin/develop"); err == nil {
@@ -168,5 +176,47 @@ func TestAgentEnvShouldBlockEveryPushButKeepFetch(t *testing.T) {
 	fetch.Env = append(os.Environ(), AgentEnv()...)
 	if out, err := fetch.CombinedOutput(); err != nil {
 		t.Fatalf("agents still need fetch: %v %s", err, out)
+	}
+}
+
+func TestRedProofWorktreeShouldCarryOnlyTheBranchTestsOntoBase(t *testing.T) {
+	g, ctx := New(), context.Background()
+	r := repo(t)
+	run := func(args ...string) {
+		t.Helper()
+		if out, err := exec.Command("git", append([]string{"-C", r, "-c", "user.name=t", "-c", "user.email=t@t"}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("%v %s", err, out)
+		}
+	}
+	run("switch", "-q", "-c", "fix/x")
+	for name, body := range map[string]string{"calc.go": "fixed", "calc_test.go": "test"} {
+		if err := os.WriteFile(filepath.Join(r, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run("add", "calc.go", "calc_test.go")
+	run("commit", "-q", "-m", "fix: x")
+
+	dir := filepath.Join(t.TempDir(), "redproof")
+	if err := g.AddDetachedWorktree(ctx, r, dir, "main"); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.CheckoutFiles(ctx, dir, "fix/x", []string{"calc_test.go"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "calc.go")); !os.IsNotExist(err) {
+		t.Fatal("the fix must not reach the base worktree")
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, "calc_test.go")); string(b) != "test" {
+		t.Fatalf("the branch test must be applied, got %q", b)
+	}
+	if err := g.RemoveWorktree(ctx, r, dir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatal("temporary worktree must be gone")
+	}
+	if b, _ := g.CurrentBranch(ctx, r); b != "fix/x" {
+		t.Fatalf("the work branch is untouched, got %q", b)
 	}
 }

@@ -29,6 +29,7 @@ type Config struct {
 	Pipeline Pipeline `yaml:"pipeline"`
 	Budget   Budget   `yaml:"budget"`
 	Forge    Forge    `yaml:"forge"`
+	Gates    Gates    `yaml:"gates"`
 	Paths    Paths    `yaml:"paths"`
 }
 
@@ -85,6 +86,14 @@ type Labels struct {
 	NeedsInfo  string `yaml:"needs_info"`
 }
 
+// Gates are the orchestrator's own checks; a repository's .delamain.yaml may override them.
+type Gates struct {
+	// RedProof says when new tests must fail on the base branch: bug | always | never.
+	RedProof string `yaml:"red_proof"`
+	// RequireTests rejects diffs that change production code without touching a test.
+	RequireTests bool `yaml:"require_tests"`
+}
+
 type Paths struct {
 	StateDir     string `yaml:"state_dir"`
 	WorktreesDir string `yaml:"worktrees_dir"`
@@ -112,6 +121,7 @@ func Default() Config {
 			Ready: "delamain:ready", InProgress: "delamain:in-progress", MROpened: "delamain:mr-opened",
 			NeedsHuman: "delamain:needs-human", NeedsInfo: "delamain:needs-info",
 		}},
+		Gates: Gates{RedProof: "bug", RequireTests: true},
 		Paths: Paths{
 			StateDir:     "~/.local/state/delamain",
 			WorktreesDir: "~/projects/.worktrees",
@@ -223,6 +233,11 @@ func (c Config) Validate() error {
 		if strings.TrimSpace(v) == "" || strings.Contains(v, ",") {
 			errs = append(errs, fmt.Errorf("forge.labels: %q must be non-empty and contain no comma", v))
 		}
+	}
+	switch c.Gates.RedProof {
+	case "bug", "always", "never":
+	default:
+		errs = append(errs, fmt.Errorf("gates.red_proof %q is not one of bug|always|never", c.Gates.RedProof))
 	}
 	if strings.TrimSpace(c.Omp.Model) == "" {
 		errs = append(errs, errors.New("omp.model is required"))

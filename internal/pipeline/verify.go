@@ -4,10 +4,13 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/paraizo/delamain/internal/gates"
 )
 
 // CheckResult is one deterministic gate run by the orchestrator, never by an agent.
@@ -17,6 +20,8 @@ type CheckResult struct {
 	ExitCode int
 	LogPath  string
 	Tail     string
+	// Skipped marks a gate that could not run (missing tool); it does not block but is reported.
+	Skipped bool
 }
 
 func (c CheckResult) Passed() bool { return c.ExitCode == 0 }
@@ -53,7 +58,20 @@ func (r *Runner) verify(ctx context.Context, ru *run, iterDir string) ([]CheckRe
 	}
 	results = append(results, gitCheck("tem-commits", len(commits) > 0, "nenhum commit em "+ru.repo.Base+"..HEAD"))
 
-	c := ru.plan.Commands
+	changed, err := r.Git.ChangedFiles(ctx, wt, ru.repo.Base)
+	if err != nil {
+		return nil, err
+	}
+	if r.requireTests(ru) {
+		ok, detail := gates.TestsTouched(changed)
+		results = append(results, gitCheck("testes-tocados", ok, detail))
+	}
+	problems := gates.Matrix(wt, ru.plan, changed)
+	matrix := gitCheck("matriz-criterios", len(problems) == 0, strings.Join(problems, "\n"))
+	matrix.Command = "plan.json"
+	results = append(results, matrix)
+
+	c := ru.cmds
 	for _, cmd := range []struct{ name, line string }{
 		{"format", c.FormatCheck}, {"lint", c.Lint}, {"typecheck", c.Typecheck}, {"test", c.Test},
 	} {
@@ -66,7 +84,110 @@ func (r *Runner) verify(ctx context.Context, ru *run, iterDir string) ([]CheckRe
 		}
 		results = append(results, res)
 	}
-	return results, nil
+	// Proving red only makes sense once the branch itself is green.
+	if allPassed(results) && r.wantsRedProof(ru) {
+		res, err := r.redProof(ctx, ru, iterDir, changed)
+		if err != nil {
+			return results, err
+		}
+		results = append(results, res)
+	}
+	sec, err := r.secrets(ctx, ru, iterDir)
+	if err != nil {
+		return results, err
+	}
+	return append(results, sec), nil
+}
+
+// loadGates reads .delamain.yaml and detects the stack from the fresh worktree, which still
+// equals the base branch: nothing an agent writes later can change the gates.
+func (r *Runner) loadGates(ru *run) error {
+	rc, err := gates.LoadRepoConfig(ru.repo.Worktree)
+	if err != nil {
+		return halt{err.Error()}
+	}
+	ru.repoCfg, ru.stack = rc, gates.Detect(ru.repo.Worktree)
+	return nil
+}
+
+func (r *Runner) requireTests(ru *run) bool {
+	if p := ru.repoCfg.Gates.RequireTests; p != nil {
+		return *p
+	}
+	return r.Cfg.Gates.RequireTests
+}
+
+// wantsRedProof applies the policy to the issue kind as either side saw it, so an agent cannot
+// skip the proof by reclassifying a bug as a feature.
+func (r *Runner) wantsRedProof(ru *run) bool {
+	policy := r.Cfg.Gates.RedProof
+	if ru.repoCfg.Gates.RedProof != "" {
+		policy = ru.repoCfg.Gates.RedProof
+	}
+	switch policy {
+	case gates.RedProofAlways:
+		return true
+	case gates.RedProofBug:
+		return ru.task.Kind == "bug" || ru.plan.Kind == "bug"
+	}
+	return false
+}
+
+// redProof checks the base branch out in a temporary worktree, applies only the branch's test
+// files and runs the suite: it must fail, otherwise the tests do not catch what was fixed.
+func (r *Runner) redProof(ctx context.Context, ru *run, iterDir string, changed []string) (CheckResult, error) {
+	const name = "prova-vermelho"
+	var tests []string
+	for _, f := range changed {
+		if gates.IsTest(f) {
+			tests = append(tests, f)
+		}
+	}
+	if len(tests) == 0 {
+		return CheckResult{Name: name, Command: "git", ExitCode: 1, Tail: "nenhum arquivo de teste novo ou alterado para provar o vermelho no base"}, nil
+	}
+	dir := filepath.Join(r.Cfg.Paths.WorktreesDir, ".redproof", fmt.Sprintf("run%d-%s", ru.rec.ID, filepath.Base(iterDir)))
+	if err := r.Git.AddDetachedWorktree(ctx, ru.repo.Worktree, dir, ru.repo.Base); err != nil {
+		return CheckResult{}, err
+	}
+	defer func() {
+		if err := r.Git.RemoveWorktree(context.WithoutCancel(ctx), ru.repo.Worktree, dir); err != nil {
+			r.Log.Warn("could not remove red-proof worktree", "path", dir, "err", err)
+		}
+	}()
+	if err := r.Git.CheckoutFiles(ctx, dir, ru.repo.Branch, tests); err != nil {
+		return CheckResult{}, err
+	}
+	res, err := r.runCheckIn(ctx, ru, iterDir, "redproof", ru.cmds.Test, dir)
+	if err != nil {
+		return res, err
+	}
+	res.Name = name
+	res.Command = fmt.Sprintf("%s (base %s + %d teste(s) da branch)", ru.cmds.Test, ru.repo.Base, len(tests))
+	if res.ExitCode == 0 {
+		res.ExitCode = 1
+		res.Tail = fmt.Sprintf("os testes novos/alterados (%s) passam no base %s sem a correção: não provam o comportamento pedido. Escreva testes que falhem sem a mudança de produção.\n%s",
+			strings.Join(tests, ", "), ru.repo.Base, res.Tail)
+	} else {
+		res.ExitCode = 0 // red on base is the expected evidence; the log keeps the failure output
+	}
+	return res, nil
+}
+
+// secrets scans the branch commits with gitleaks; without it the gate is reported as skipped.
+func (r *Runner) secrets(ctx context.Context, ru *run, iterDir string) (CheckResult, error) {
+	look := r.LookPath
+	if look == nil {
+		look = exec.LookPath
+	}
+	const name = "segredos"
+	if _, err := look("gitleaks"); err != nil {
+		return CheckResult{Name: name, Command: "gitleaks", Skipped: true, Tail: "gitleaks não instalado: varredura de segredos não executada"}, nil
+	}
+	line := fmt.Sprintf("gitleaks git --no-banner --redact --log-opts=%s..HEAD .", ru.repo.Base)
+	res, err := r.runCheck(ctx, ru, iterDir, "secrets", line)
+	res.Name = name
+	return res, err
 }
 
 func gitCheck(name string, ok bool, detail string) CheckResult {
@@ -79,11 +200,15 @@ func gitCheck(name string, ok bool, detail string) CheckResult {
 // runCheck executes a command in the visible checks pane through a script file:
 // no shell quoting of the command, any interactive shell works, and output lands in a log.
 func (r *Runner) runCheck(ctx context.Context, ru *run, iterDir, name, line string) (CheckResult, error) {
+	return r.runCheckIn(ctx, ru, iterDir, name, line, ru.repo.Worktree)
+}
+
+func (r *Runner) runCheckIn(ctx context.Context, ru *run, iterDir, name, line, dir string) (CheckResult, error) {
 	nonce := r.Nonce()
 	logPath := filepath.Join(iterDir, "verify-"+name+".log")
 	script := filepath.Join(iterDir, "verify-"+name+".sh")
 	body := fmt.Sprintf("cd %s || exit 97\n( %s ) > %s 2>&1\nrc=$?\ntail -n 30 %s\necho \"__DLM_%s_EXIT=$rc\"\n",
-		shellQuote(ru.repo.Worktree), line, shellQuote(logPath), shellQuote(logPath), nonce)
+		shellQuote(dir), line, shellQuote(logPath), shellQuote(logPath), nonce)
 	if err := os.WriteFile(script, []byte(body), 0o600); err != nil {
 		return CheckResult{}, err
 	}

@@ -32,6 +32,6 @@ Ao terminar, escreva `{{.ArtifactPath}}`, JSON válido neste formato:
 }
 ```
 
-O orquestrador vai conferir tudo isso por conta própria. Relate o que de fato aconteceu, inclusive falhas.
+O orquestrador vai conferir tudo isso por conta própria. Relate o que de fato aconteceu, inclusive falhas. Ele também roda os gates `testes-tocados`, `matriz-criterios`, `prova-vermelho` (em bug, os seus testes aplicados sobre o base precisam falhar) e `segredos`: um teste que passa sem a correção reprova a iteração.
 
 Responda apenas: `DONE {{.ArtifactPath}}`

@@ -38,6 +38,15 @@ func renderReport(res Result, task prompts.Issue) string {
 	if res.Delivery != "" {
 		fmt.Fprintf(&b, "| Entrega | %s |\n", res.Delivery)
 	}
+	if len(res.CommandSources) > 0 {
+		var parts []string
+		for _, k := range []string{"format_check", "lint", "typecheck", "test"} {
+			if src, ok := res.CommandSources[k]; ok {
+				parts = append(parts, k+": "+src)
+			}
+		}
+		fmt.Fprintf(&b, "| Origem dos comandos | %s |\n", strings.Join(parts, " · "))
+	}
 	b.WriteString("\n")
 	for _, w := range res.Warnings {
 		fmt.Fprintf(&b, "> ⚠️ %s\n", w)
@@ -58,7 +67,9 @@ func renderReport(res Result, task prompts.Issue) string {
 		b.WriteString("| Gate | Comando | Resultado |\n|---|---|---|\n")
 		for _, c := range it.Checks {
 			state := "✅"
-			if !c.Passed() {
+			if c.Skipped {
+				state = "⏭️ não executado"
+			} else if !c.Passed() {
 				state = fmt.Sprintf("❌ (%d)", c.ExitCode)
 			}
 			fmt.Fprintf(&b, "| %s | `%s` | %s |\n", c.Name, c.Command, state)
@@ -112,7 +123,9 @@ func prBody(ru *run, draft bool) string {
 		fmt.Fprintf(&b, "## Gates (iteração %d de %d)\n\n| Gate | Comando | Resultado |\n|---|---|---|\n", last.N, ru.maxIter)
 		for _, c := range last.Checks {
 			state := "✅"
-			if !c.Passed() {
+			if c.Skipped {
+				state = "⏭️ não executado"
+			} else if !c.Passed() {
 				state = fmt.Sprintf("❌ (%d)", c.ExitCode)
 			}
 			fmt.Fprintf(&b, "| %s | `%s` | %s |\n", c.Name, c.Command, state)

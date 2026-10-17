@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -49,12 +50,13 @@ type fakeHerdr struct {
 	closed      []string
 	lastCheck   string
 	exports     map[string]string // pane -> export command typed before the agent started
+	onWorktree  func(path string) // seeds the base checkout (e.g. go.mod, .delamain.yaml)
 }
 
 func newFakeHerdr(dir string, g *fakeGit, b behavior) *fakeHerdr {
 	return &fakeHerdr{
 		dir: dir, git: g, behave: b,
-		checks:    func(string, int) int { return 0 },
+		checks:    defaultChecks,
 		checkHang: map[string]bool{},
 		started:   map[string][]string{}, prompts: map[string][]string{},
 		keys: map[string][]string{}, checkRuns: map[string]int{}, exports: map[string]string{},
@@ -62,12 +64,23 @@ func newFakeHerdr(dir string, g *fakeGit, b behavior) *fakeHerdr {
 	}
 }
 
+// defaultChecks passes every gate; the red proof "fails on base", as a real regression test does.
+func defaultChecks(name string, _ int) int {
+	if name == "redproof" {
+		return 1
+	}
+	return 0
+}
+
 func (f *fakeHerdr) WorktreeCreate(_ context.Context, o herdr.WorktreeOptions) (herdr.Worktree, error) {
 	f.worktreeOps++
 	if err := os.MkdirAll(o.Path, 0o700); err != nil {
 		return herdr.Worktree{}, err
 	}
-	f.git.branch = o.Branch
+	f.git.branch, f.git.wt = o.Branch, o.Path
+	if f.onWorktree != nil {
+		f.onWorktree(o.Path)
+	}
 	return herdr.Worktree{WorkspaceID: "w9", TabID: "w9:t1", RootPaneID: "w9:p1", Path: o.Path, Branch: o.Branch}, nil
 }
 
@@ -188,6 +201,9 @@ type fakeGit struct {
 	remote   map[string]bool // branches on origin
 	pushed   []string
 	pushErr  error
+	wt       string   // worktree path, set by the fake herdr
+	changed  []string // files changed since base
+	redproof []string // log of red-proof git operations
 }
 
 func newFakeGit() *fakeGit {
@@ -198,6 +214,33 @@ func (g *fakeGit) commit(msg string) {
 	g.head = fmt.Sprintf("%08x", len(g.commits)+1)
 	g.commits = append(g.commits, g.head+" "+msg)
 	g.status = ""
+}
+
+// commitFiles writes files into the worktree and commits them.
+func (g *fakeGit) commitFiles(msg string, files map[string]string) {
+	for name, body := range files {
+		_ = os.WriteFile(filepath.Join(g.wt, name), []byte(body), 0o600)
+		if !slices.Contains(g.changed, name) {
+			g.changed = append(g.changed, name)
+		}
+	}
+	g.commit(msg)
+}
+
+func (g *fakeGit) ChangedFiles(context.Context, string, string) ([]string, error) {
+	return g.changed, nil
+}
+func (g *fakeGit) AddDetachedWorktree(_ context.Context, _, path, ref string) error {
+	g.redproof = append(g.redproof, "add "+ref)
+	return os.MkdirAll(path, 0o700)
+}
+func (g *fakeGit) CheckoutFiles(_ context.Context, _, ref string, files []string) error {
+	g.redproof = append(g.redproof, "checkout "+ref+" "+strings.Join(files, ","))
+	return nil
+}
+func (g *fakeGit) RemoveWorktree(_ context.Context, _, path string) error {
+	g.redproof = append(g.redproof, "remove")
+	return os.RemoveAll(path)
 }
 
 func (g *fakeGit) Toplevel(_ context.Context, dir string) (string, error) {
@@ -237,13 +280,17 @@ type fakeForge struct {
 	createErr error
 	comments  []string
 	relabels  [][2][]string // {add, remove}
+	issues    map[int]forge.Issue
 }
 
 func (f *fakeForge) Repo() forge.Repo {
 	return forge.Repo{Kind: forge.GitHub, Host: "github.com", Path: "acme/api"}
 }
-func (f *fakeForge) Issue(context.Context, int) (forge.Issue, error) {
-	return forge.Issue{}, errors.New("not used by the pipeline")
+func (f *fakeForge) Issue(_ context.Context, n int) (forge.Issue, error) {
+	if is, ok := f.issues[n]; ok {
+		return is, nil
+	}
+	return forge.Issue{}, fmt.Errorf("issue #%d: HTTP 404", n)
 }
 func (f *fakeForge) OpenPR(context.Context, string) (*forge.PR, error) { return f.open, nil }
 func (f *fakeForge) CreatePR(_ context.Context, o forge.PROptions) (forge.PR, error) {

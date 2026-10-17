@@ -19,6 +19,7 @@ import (
 	"github.com/paraizo/delamain/internal/artifacts"
 	"github.com/paraizo/delamain/internal/config"
 	"github.com/paraizo/delamain/internal/forge"
+	"github.com/paraizo/delamain/internal/gates"
 	"github.com/paraizo/delamain/internal/gitx"
 	"github.com/paraizo/delamain/internal/herdr"
 	"github.com/paraizo/delamain/internal/omp"
@@ -49,6 +50,10 @@ type Git interface {
 	CurrentBranch(ctx context.Context, dir string) (string, error)
 	Status(ctx context.Context, dir string) (string, error)
 	CommitsSince(ctx context.Context, dir, base string) ([]string, error)
+	ChangedFiles(ctx context.Context, dir, base string) ([]string, error)
+	AddDetachedWorktree(ctx context.Context, repo, path, ref string) error
+	CheckoutFiles(ctx context.Context, dir, ref string, files []string) error
+	RemoveWorktree(ctx context.Context, repo, path string) error
 	Push(ctx context.Context, dir, branch, base string) error
 	RemoteBranchExists(ctx context.Context, repo, branch string) (bool, error)
 }
@@ -80,6 +85,8 @@ type Result struct {
 	// Delivery explains a skipped delivery; Warnings collect non-fatal forge failures.
 	Delivery string
 	Warnings []string
+	// CommandSources says where each gate command came from: repo, detectado or planner.
+	CommandSources map[string]string
 }
 
 // Iteration records what happened in one implement → verify → review round.
@@ -108,6 +115,8 @@ type Runner struct {
 	Log   *slog.Logger
 	// Nonce makes check sentinels unguessable; overridable in tests.
 	Nonce func() string
+	// LookPath finds optional tools such as gitleaks (default exec.LookPath).
+	LookPath func(string) (string, error)
 	// RetryInterval paces retries while a fresh pane's shell is still starting (default 1s).
 	RetryInterval time.Duration
 }
@@ -135,13 +144,21 @@ type run struct {
 	res       *Result
 	issue     int // forge issue number; 0 for local tasks
 	maxIter   int
+	// Read from the base checkout before any agent runs, so agents cannot weaken them.
+	repoCfg gates.RepoConfig
+	stack   gates.Stack
+	cmds    artifacts.Commands
 }
 
 // Run executes the task end to end. A non-nil error means the run could not even be recorded;
 // guardrail stops are reported through Result.Outcome == OutcomeHalted.
 func (r *Runner) Run(ctx context.Context, t Task) (Result, error) {
 	res := Result{}
-	if problems := t.Preflight(); len(problems) > 0 {
+	problems := t.Preflight()
+	if len(problems) == 0 {
+		problems = r.blockers(ctx, t)
+	}
+	if len(problems) > 0 {
 		res.Outcome, res.Reason = OutcomeNeedsInfo, strings.Join(problems, "; ")
 		r.needsInfo(ctx, t, problems, &res)
 		return res, nil
@@ -209,6 +226,9 @@ func (r *Runner) execute(ctx context.Context, ru *run, repo string, t Task) erro
 	if err := r.setup(ctx, ru, repo, t); err != nil {
 		return err
 	}
+	if err := r.loadGates(ru); err != nil {
+		return err
+	}
 
 	if err := r.setState(ctx, ru, store.StatePlan); err != nil {
 		return err
@@ -218,6 +238,8 @@ func (r *Runner) execute(ctx context.Context, ru *run, repo string, t Task) erro
 		return err
 	}
 	ru.plan = plan
+	ru.cmds, ru.res.CommandSources = gates.Effective(ru.repoCfg.Commands, ru.stack.Commands, plan.Commands)
+	r.Log.Info("gate commands", "run", ru.rec.ID, "stack", ru.stack.Name, "sources", ru.res.CommandSources)
 
 	feedback := ""
 	maxIter := r.Cfg.Pipeline.MaxIterations

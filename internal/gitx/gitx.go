@@ -93,13 +93,31 @@ func (g Git) CommitsSince(ctx context.Context, dir, base string) ([]string, erro
 	return strings.Split(out, "\n"), nil
 }
 
-// ChangedFiles lists files changed in base...HEAD.
+// ChangedFiles lists files added or modified in base...HEAD (deletions excluded).
 func (g Git) ChangedFiles(ctx context.Context, dir, base string) ([]string, error) {
-	out, err := g.run(ctx, dir, "diff", "--name-only", base+"...HEAD")
+	out, err := g.run(ctx, dir, "diff", "--name-only", "--diff-filter=d", base+"...HEAD")
 	if err != nil || out == "" {
 		return nil, err
 	}
 	return strings.Split(out, "\n"), nil
+}
+
+// AddDetachedWorktree checks ref out at path without creating a branch (used for the red proof).
+func (g Git) AddDetachedWorktree(ctx context.Context, repo, path, ref string) error {
+	_, err := g.run(ctx, repo, "worktree", "add", "--quiet", "--detach", path, ref)
+	return err
+}
+
+// RemoveWorktree drops a temporary worktree created by AddDetachedWorktree.
+func (g Git) RemoveWorktree(ctx context.Context, repo, path string) error {
+	_, err := g.run(ctx, repo, "worktree", "remove", "--force", path)
+	return err
+}
+
+// CheckoutFiles overwrites files in dir with their version at ref.
+func (g Git) CheckoutFiles(ctx context.Context, dir, ref string, files []string) error {
+	_, err := g.run(ctx, dir, append([]string{"checkout", ref, "--"}, files...)...)
+	return err
 }
 
 // BranchExists reports whether a local branch exists.
@@ -188,6 +206,6 @@ func BranchName(kind, ref, title string) string {
 	if kind == "bug" {
 		prefix = "fix"
 	}
-	id := Slug(ref, 12)
+	id := Slug(ref, 30) // task refs are up to "task-" + 24 chars; cutting them makes tasks collide
 	return prefix + "/" + id + "-" + Slug(title, 40)
 }

@@ -7,7 +7,28 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/paraizo/delamain/internal/gates"
 )
+
+// blockers resolves the issues a task declares as dependencies ("blocked by #N", "depende de #N").
+// It fails closed: an unverifiable blocker counts as open.
+func (r *Runner) blockers(ctx context.Context, t Task) []string {
+	if r.Forge == nil {
+		return nil
+	}
+	var problems []string
+	for _, n := range gates.Dependencies(t.Body) {
+		is, err := r.Forge.Issue(ctx, n)
+		switch {
+		case err != nil:
+			problems = append(problems, fmt.Sprintf("não foi possível verificar a dependência #%d: %v", n, err))
+		case is.Open:
+			problems = append(problems, fmt.Sprintf("depende da issue #%d, que ainda está aberta", n))
+		}
+	}
+	return problems
+}
 
 // checkForge stops before any worktree exists when the branch was already published or has an
 // open PR/MR: delamain never piles a second PR on top of earlier work.

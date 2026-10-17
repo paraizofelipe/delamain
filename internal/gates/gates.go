@@ -1,0 +1,250 @@
+// Package gates holds the orchestrator's deterministic quality rules: which commands prove a
+// repository is healthy and which diff shapes are rejected regardless of what agents claim.
+package gates
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path"
+	"path/filepath"
+	"regexp"
+	"slices"
+	"strconv"
+	"strings"
+
+	"go.yaml.in/yaml/v3"
+
+	"github.com/paraizo/delamain/internal/artifacts"
+)
+
+// Red-proof policies: when new tests must be shown failing on the base branch.
+const (
+	RedProofBug    = "bug"
+	RedProofAlways = "always"
+	RedProofNever  = "never"
+)
+
+// Stack is what Detect recognized in a repository.
+type Stack struct {
+	Name     string // go | node | python | "" (unknown)
+	Commands artifacts.Commands
+}
+
+// Detect derives the standard commands of a repository from its manifest files.
+func Detect(dir string) Stack {
+	exists := func(name string) bool { _, err := os.Stat(filepath.Join(dir, name)); return err == nil }
+	switch {
+	case exists("go.mod"):
+		return Stack{Name: "go", Commands: artifacts.Commands{
+			Test: "go test ./...", Lint: "go vet ./...", FormatCheck: `test -z "$(gofmt -l .)"`,
+		}}
+	case exists("package.json"):
+		return Stack{Name: "node", Commands: nodeCommands(dir, exists)}
+	case exists("pyproject.toml") || exists("setup.py") || exists("requirements.txt"):
+		return Stack{Name: "python", Commands: pythonCommands(dir, exists)}
+	}
+	return Stack{}
+}
+
+func nodeCommands(dir string, exists func(string) bool) artifacts.Commands {
+	var pkg struct {
+		Scripts map[string]string `json:"scripts"`
+	}
+	raw, _ := os.ReadFile(filepath.Join(dir, "package.json")) //nolint:gosec // repository manifest
+	_ = json.Unmarshal(raw, &pkg)
+	pm := "npm"
+	for _, l := range [][2]string{{"pnpm-lock.yaml", "pnpm"}, {"yarn.lock", "yarn"}, {"bun.lockb", "bun"}, {"bun.lock", "bun"}} {
+		if exists(l[0]) {
+			pm = l[1]
+			break
+		}
+	}
+	script := func(names ...string) string {
+		for _, n := range names {
+			if s, ok := pkg.Scripts[n]; ok && !strings.Contains(s, "no test specified") {
+				return pm + " run " + n
+			}
+		}
+		return ""
+	}
+	return artifacts.Commands{
+		Test: script("test"), Lint: script("lint"), Typecheck: script("typecheck", "type-check", "tsc"),
+		FormatCheck: script("format:check", "format-check", "fmt:check"),
+	}
+}
+
+func pythonCommands(dir string, exists func(string) bool) artifacts.Commands {
+	run := ""
+	if exists("uv.lock") {
+		run = "uv run "
+	}
+	pyproject, _ := os.ReadFile(filepath.Join(dir, "pyproject.toml")) //nolint:gosec // repository manifest
+	tool := func(name string) bool {
+		return bytes.Contains(pyproject, []byte("[tool."+name+"]")) || exists(name+".toml") || exists("."+name+".toml")
+	}
+	c := artifacts.Commands{Test: run + "pytest -q"}
+	if tool("ruff") {
+		c.Lint, c.FormatCheck = run+"ruff check .", run+"ruff format --check ."
+	}
+	if tool("mypy") || exists("mypy.ini") {
+		c.Typecheck = run + "mypy ."
+	}
+	return c
+}
+
+// Effective merges commands per field: the repository's .delamain.yaml wins, then detection;
+// the planner's proposal only fills gaps, since an agent could otherwise pick `true` as its test.
+// sources tells, per field, where the command came from.
+func Effective(repo, detected, plan artifacts.Commands) (artifacts.Commands, map[string]string) {
+	sources := map[string]string{}
+	pick := func(name, r, d, p string) string {
+		for _, c := range []struct{ src, v string }{{"repo", r}, {"detectado", d}, {"planner", p}} {
+			if strings.TrimSpace(c.v) != "" {
+				sources[name] = c.src
+				return c.v
+			}
+		}
+		return ""
+	}
+	return artifacts.Commands{
+		Test:        pick("test", repo.Test, detected.Test, plan.Test),
+		TestFile:    pick("test_file", repo.TestFile, detected.TestFile, plan.TestFile),
+		Lint:        pick("lint", repo.Lint, detected.Lint, plan.Lint),
+		Typecheck:   pick("typecheck", repo.Typecheck, detected.Typecheck, plan.Typecheck),
+		FormatCheck: pick("format_check", repo.FormatCheck, detected.FormatCheck, plan.FormatCheck),
+	}, sources
+}
+
+// RepoConfig is the target repository's .delamain.yaml.
+type RepoConfig struct {
+	Commands artifacts.Commands `yaml:"commands"`
+	Gates    RepoGates          `yaml:"gates"`
+}
+
+type RepoGates struct {
+	RedProof     string `yaml:"red_proof"`
+	RequireTests *bool  `yaml:"require_tests"`
+}
+
+const RepoConfigFile = ".delamain.yaml"
+
+// LoadRepoConfig reads dir/.delamain.yaml; a missing file is an empty config.
+func LoadRepoConfig(dir string) (RepoConfig, error) {
+	var rc RepoConfig
+	raw, err := os.ReadFile(filepath.Join(dir, RepoConfigFile)) //nolint:gosec // repository config
+	if errors.Is(err, os.ErrNotExist) {
+		return rc, nil
+	}
+	if err != nil {
+		return rc, err
+	}
+	dec := yaml.NewDecoder(bytes.NewReader(raw))
+	dec.KnownFields(true)
+	if err := dec.Decode(&rc); err != nil {
+		return rc, fmt.Errorf("%s: %w", RepoConfigFile, err)
+	}
+	if err := ValidRedProof(rc.Gates.RedProof); rc.Gates.RedProof != "" && err != nil {
+		return rc, fmt.Errorf("%s: %w", RepoConfigFile, err)
+	}
+	return rc, nil
+}
+
+func ValidRedProof(p string) error {
+	switch p {
+	case RedProofBug, RedProofAlways, RedProofNever:
+		return nil
+	}
+	return fmt.Errorf("red_proof %q não é bug|always|never", p)
+}
+
+var (
+	testName = regexp.MustCompile(`(^|/)(test_[^/]+\.py|[^/]+_test\.(go|py)|[^/]+\.(test|spec)\.[jt]sx?|[^/]+_spec\.rb)$`)
+	testDir  = regexp.MustCompile(`(^|/)(__tests__|tests?|spec)/`)
+	codeExt  = map[string]bool{
+		".go": true, ".py": true, ".js": true, ".jsx": true, ".ts": true, ".tsx": true, ".mjs": true, ".cjs": true,
+		".rb": true, ".java": true, ".kt": true, ".rs": true, ".cs": true, ".php": true, ".swift": true, ".scala": true,
+		".vue": true, ".svelte": true, ".c": true, ".cc": true, ".cpp": true, ".h": true, ".sql": true, ".sh": true,
+	}
+)
+
+// IsTest recognizes test files by the usual naming and directory conventions.
+func IsTest(file string) bool {
+	return testName.MatchString(file) || testDir.MatchString(file)
+}
+
+// IsProduction is source code that is not a test: what a behavior change touches.
+func IsProduction(file string) bool { return codeExt[path.Ext(file)] && !IsTest(file) }
+
+// TestsTouched fails when production code changed but no test file did.
+func TestsTouched(changed []string) (bool, string) {
+	var prod []string
+	for _, f := range changed {
+		if IsTest(f) {
+			return true, ""
+		}
+		if IsProduction(f) {
+			prod = append(prod, f)
+		}
+	}
+	if len(prod) == 0 {
+		return true, ""
+	}
+	return false, "código de produção alterado sem nenhum arquivo de teste alterado: " + strings.Join(prod, ", ")
+}
+
+// Matrix checks the plan's criterion → test map against the worktree: every referenced test file
+// exists inside it and contains the test's name; in a bug, regression tests must be in the diff.
+func Matrix(dir string, plan artifacts.Plan, changed []string) []string {
+	var problems []string
+	check := func(owner, ref string) (file string, ok bool) {
+		file, name, _ := strings.Cut(ref, "::")
+		file = path.Clean(strings.TrimSpace(file))
+		if file == "." || path.IsAbs(file) || strings.HasPrefix(file, "../") {
+			problems = append(problems, fmt.Sprintf("%s: caminho de teste inválido %q", owner, ref))
+			return "", false
+		}
+		raw, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(file))) //nolint:gosec // confined to the worktree above
+		if err != nil {
+			problems = append(problems, fmt.Sprintf("%s: arquivo de teste %s não existe", owner, file))
+			return file, false
+		}
+		for seg := range strings.SplitSeq(strings.TrimSpace(name), "/") {
+			if seg == "" || bytes.Contains(raw, []byte(seg)) || bytes.Contains(raw, []byte(strings.ReplaceAll(seg, "_", " "))) {
+				continue
+			}
+			problems = append(problems, fmt.Sprintf("%s: teste %q não encontrado em %s", owner, seg, file))
+			return file, false
+		}
+		return file, true
+	}
+	for _, a := range plan.Acceptance {
+		for _, ref := range a.Tests {
+			check("critério "+strconv.Quote(a.Criterion), ref)
+		}
+	}
+	if plan.Kind == "bug" {
+		for _, ref := range plan.RegressionTests {
+			if file, ok := check("teste de regressão", ref); ok && !slices.Contains(changed, file) {
+				problems = append(problems, fmt.Sprintf("teste de regressão %s não foi criado nem alterado nesta branch", file))
+			}
+		}
+	}
+	return problems
+}
+
+var dependsRe = regexp.MustCompile(`(?i)\b(?:blocked by|depends on|depende de|bloquead[ao] por)\s+#(\d+)`)
+
+// Dependencies lists the issue numbers a body declares as blockers, sorted and unique.
+func Dependencies(body string) []int {
+	var out []int
+	for _, m := range dependsRe.FindAllStringSubmatch(body, -1) {
+		if n, err := strconv.Atoi(m[1]); err == nil && !slices.Contains(out, n) {
+			out = append(out, n)
+		}
+	}
+	slices.Sort(out)
+	return out
+}

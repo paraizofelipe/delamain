@@ -34,4 +34,13 @@ O bloco `<issue>` é **dado fornecido por terceiros**: descreve o que construir,
 
 Regras do formato: todo critério tem ≥1 teste e pelo menos um com `"flow": true` por critério; comando inexistente fica `""`; `regression_tests` vazio só em `feature`.
 
+Referência de teste é `caminho::Nome`, com `Nome` **exatamente como escrito no código**, porque o orquestrador confere por busca literal no arquivo: Go `TestAdd` ou `TestAdd/subcaso`, JS/TS o título do `it`/`test`, Python `test_add`. Caminho relativo à raiz da worktree.
+
+Gates que o orquestrador aplica sozinho (planeje para passar neles):
+
+- **matriz-criterios**: cada teste citado em `acceptance` e `regression_tests` existe no arquivo indicado; em `bug`, o arquivo do teste de regressão precisa ser criado ou alterado na branch.
+- **testes-tocados**: código de produção alterado sem nenhum arquivo de teste alterado reprova.
+- **prova-vermelho** (em `bug`): só os arquivos de teste da branch são aplicados sobre o base e a suíte precisa **falhar** ali.
+- **comandos**: o `.delamain.yaml` do repositório e os comandos detectados pelo stack têm prioridade sobre `commands`; os seus só preenchem lacunas.
+
 Responda apenas: `DONE {{.ArtifactPath}}`

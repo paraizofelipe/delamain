@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"os"
@@ -43,10 +44,18 @@ func happy(role string, _ int, _ string) reply {
 	case "planner":
 		return reply{write: planJSON}
 	case "implementer":
-		return reply{write: implJSON, mutate: func(g *fakeGit) { g.commit("fix: correct add operation") }}
+		return reply{write: implJSON, mutate: fixAdd}
 	default:
 		return reply{write: reviewJSON("")}
 	}
+}
+
+// fixAdd is a well-behaved TDD commit: the fix plus the regression test the plan names.
+func fixAdd(g *fakeGit) {
+	g.commitFiles("fix: correct add operation", map[string]string{
+		"calc.go":      "func Add(a, b int) int { return a + b }",
+		"calc_test.go": "func TestAdd(t *testing.T) {}",
+	})
 }
 
 type harness struct {
@@ -84,6 +93,7 @@ func newHarness(t *testing.T, b behavior) *harness {
 			Log:           slog.New(slog.NewTextHandler(io.Discard, nil)),
 			Nonce:         func() string { return "n0nce" },
 			RetryInterval: time.Millisecond,
+			LookPath:      func(string) (string, error) { return "", errors.New("not installed") },
 		},
 		h: h, g: g, st: st,
 		task: Task{Ref: "#7", Title: "Fix add", Body: "Add subtrai.\n\n## Critérios de aceite\n- [ ] Add(2,3)=5", Kind: "bug", Repo: filepath.Join(root, "repo")},
@@ -156,7 +166,7 @@ func TestRunShouldFeedFailingCheckOutputIntoNextIteration(t *testing.T) {
 		if name == "test" && n == 1 {
 			return 1
 		}
-		return 0
+		return defaultChecks(name, n)
 	}
 	res := hs.run(t)
 	if res.Outcome != OutcomeApproved || res.Iterations != 2 {
