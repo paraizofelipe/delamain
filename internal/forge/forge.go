@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type Kind string
@@ -149,9 +150,35 @@ func redact(raw string) string {
 type ExecRunner struct {
 	Binary string
 	Dir    string
+	// Backoff is the wait before the first retry of a transient failure; it doubles after.
+	Backoff time.Duration
 }
 
+const attempts = 3
+
+// transient matches network blips and gateway errors worth retrying; API rejections are not.
+var transient = regexp.MustCompile(`(?i)timeout|timed out|connection (reset|refused)|unexpected EOF|no such host|temporary failure|HTTP 50[234]`)
+
 func (e ExecRunner) Run(ctx context.Context, stdin string, args ...string) (string, error) {
+	wait := e.Backoff
+	if wait <= 0 {
+		wait = 2 * time.Second
+	}
+	for i := 1; ; i++ {
+		out, err := e.run(ctx, stdin, args)
+		if err == nil || i == attempts || ctx.Err() != nil || !transient.MatchString(err.Error()) {
+			return out, err
+		}
+		select {
+		case <-ctx.Done():
+			return "", err
+		case <-time.After(wait):
+		}
+		wait *= 2
+	}
+}
+
+func (e ExecRunner) run(ctx context.Context, stdin string, args []string) (string, error) {
 	var out, errb bytes.Buffer
 	cmd := exec.CommandContext(ctx, e.Binary, args...)
 	cmd.Dir = e.Dir

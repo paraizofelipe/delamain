@@ -3,9 +3,13 @@ package forge
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // call is one recorded CLI invocation.
@@ -297,6 +301,54 @@ func TestExecRunnerErrorShouldNotEchoStdin(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "SECRET-BODY") || !strings.Contains(err.Error(), "boom") {
 		t.Fatalf("error must carry stderr but never the body: %v", err)
+	}
+}
+
+// flaky is a sh script that fails with stderr msg on its first `fails` calls, then prints
+// what it read from stdin. It returns the runner, its args and a func reporting the number of calls.
+func flaky(t *testing.T, fails int, msg string) (ExecRunner, []string, func() int) {
+	t.Helper()
+	n := filepath.Join(t.TempDir(), "calls")
+	script := `in=$(cat); c=$(($(cat "$1" 2>/dev/null || echo 0)+1)); echo $c >"$1"; ` +
+		`if [ $c -le ` + strconv.Itoa(fails) + ` ]; then echo "$2" >&2; exit 1; fi; printf %s "$in"`
+	calls := func() int {
+		b, _ := os.ReadFile(n)
+		c, _ := strconv.Atoi(strings.TrimSpace(string(b)))
+		return c
+	}
+	return ExecRunner{Binary: "sh", Backoff: time.Millisecond}, []string{"-c", script, "sh", n, msg}, calls
+}
+
+func TestExecRunnerShouldRetryTransientNetworkErrorsWithTheSameStdin(t *testing.T) {
+	r, args, calls := flaky(t, 2, `Post "https://api.github.com/repos/a/b/labels": net/http: TLS handshake timeout`)
+	out, err := r.Run(context.Background(), "BODY", args...)
+	if err != nil || out != "BODY" || calls() != 3 {
+		t.Fatalf("a network blip must not leave the issue mislabeled: out=%q err=%v calls=%d", out, err, calls())
+	}
+}
+
+func TestExecRunnerShouldNotRetryAPIRejections(t *testing.T) {
+	r, args, calls := flaky(t, 5, "HTTP 422: Validation Failed")
+	if _, err := r.Run(context.Background(), "", args...); err == nil || calls() != 1 {
+		t.Fatalf("a rejected request fails at once: err=%v calls=%d", err, calls())
+	}
+}
+
+func TestExecRunnerShouldGiveUpAfterThreeAttempts(t *testing.T) {
+	r, args, calls := flaky(t, 5, "HTTP 502: Bad Gateway")
+	_, err := r.Run(context.Background(), "", args...)
+	if err == nil || !strings.Contains(err.Error(), "502") || calls() != 3 {
+		t.Fatalf("persistent outage fails with its cause after 3 attempts: err=%v calls=%d", err, calls())
+	}
+}
+
+func TestExecRunnerShouldStopRetryingWhenTheContextEnds(t *testing.T) {
+	r, args, calls := flaky(t, 5, "connection reset by peer")
+	r.Backoff = time.Hour
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if _, err := r.Run(ctx, "", args...); err == nil || calls() != 1 {
+		t.Fatalf("shutdown must not wait out the backoff: err=%v calls=%d", err, calls())
 	}
 }
 
