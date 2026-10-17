@@ -1,0 +1,297 @@
+// Package store persists runs and the token ledger in SQLite (pure Go driver, no CGO).
+package store
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"time"
+
+	_ "modernc.org/sqlite"
+)
+
+// RunState is the pipeline state persisted for resume.
+type RunState string
+
+const (
+	StateClaimed      RunState = "claimed"
+	StatePreflight    RunState = "preflight"
+	StateNeedsInfo    RunState = "needs_info"
+	StateSetup        RunState = "setup"
+	StatePlan         RunState = "plan"
+	StateImplement    RunState = "implement"
+	StateVerify       RunState = "verify"
+	StateReview       RunState = "review"
+	StateDeliver      RunState = "deliver"
+	StateDeliverDraft RunState = "deliver_draft"
+	StateHalted       RunState = "halted"
+	StateRecorded     RunState = "recorded"
+)
+
+// Terminal reports whether no further pipeline work happens in this state.
+func (s RunState) Terminal() bool {
+	return s == StateRecorded || s == StateNeedsInfo
+}
+
+type Run struct {
+	ID        int64
+	Repo      string
+	IssueRef  string
+	Title     string
+	Branch    string
+	Worktree  string
+	State     RunState
+	Iteration int
+	MRURL     string
+	Reason    string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+// Usage is a cumulative token/cost snapshot of one omp session file.
+type Usage struct {
+	Input, Output, CacheRead, CacheWrite int64
+	CostUSD                              float64
+}
+
+func (u Usage) sub(o Usage) Usage {
+	return Usage{u.Input - o.Input, u.Output - o.Output, u.CacheRead - o.CacheRead, u.CacheWrite - o.CacheWrite, u.CostUSD - o.CostUSD}
+}
+
+func (u Usage) negative() bool {
+	return u.Input < 0 || u.Output < 0 || u.CacheRead < 0 || u.CacheWrite < 0 || u.CostUSD < 0
+}
+
+func (u Usage) zero() bool { return u == Usage{} }
+
+// BudgetTokens is the budgeted token count: cacheRead is excluded, matching omp's /goal budget.
+func (u Usage) BudgetTokens() int64 { return u.Input + u.Output + u.CacheWrite }
+
+var ErrNotFound = errors.New("not found")
+
+type Store struct {
+	db  *sql.DB
+	now func() time.Time
+}
+
+// Open creates the parent directory and applies migrations.
+func Open(ctx context.Context, path string) (*Store, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, err
+	}
+	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)")
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(1) // serialize writers; delta computation relies on it
+	s := &Store{db: db, now: func() time.Time { return time.Now().UTC() }}
+	if err := s.migrate(ctx); err != nil {
+		db.Close()
+		return nil, err
+	}
+	return s, nil
+}
+
+func (s *Store) Close() error { return s.db.Close() }
+
+var migrations = []string{
+	`CREATE TABLE runs (
+		id         INTEGER PRIMARY KEY AUTOINCREMENT,
+		repo       TEXT NOT NULL,
+		issue_ref  TEXT NOT NULL,
+		title      TEXT NOT NULL DEFAULT '',
+		branch     TEXT NOT NULL DEFAULT '',
+		worktree   TEXT NOT NULL DEFAULT '',
+		state      TEXT NOT NULL,
+		iteration  INTEGER NOT NULL DEFAULT 0,
+		mr_url     TEXT NOT NULL DEFAULT '',
+		reason     TEXT NOT NULL DEFAULT '',
+		created_at TIMESTAMP NOT NULL,
+		updated_at TIMESTAMP NOT NULL
+	);
+	CREATE INDEX runs_issue ON runs(repo, issue_ref);
+	CREATE TABLE token_snapshots (
+		session_file TEXT PRIMARY KEY,
+		run_id       INTEGER NOT NULL REFERENCES runs(id),
+		role         TEXT NOT NULL,
+		input        INTEGER NOT NULL,
+		output       INTEGER NOT NULL,
+		cache_read   INTEGER NOT NULL,
+		cache_write  INTEGER NOT NULL,
+		cost_usd     REAL NOT NULL
+	);
+	CREATE TABLE token_ledger (
+		id          INTEGER PRIMARY KEY AUTOINCREMENT,
+		run_id      INTEGER NOT NULL REFERENCES runs(id),
+		role        TEXT NOT NULL,
+		at          TIMESTAMP NOT NULL,
+		input       INTEGER NOT NULL,
+		output      INTEGER NOT NULL,
+		cache_read  INTEGER NOT NULL,
+		cache_write INTEGER NOT NULL,
+		cost_usd    REAL NOT NULL
+	);
+	CREATE INDEX token_ledger_at ON token_ledger(at);
+	CREATE INDEX token_ledger_run ON token_ledger(run_id);`,
+}
+
+func (s *Store) migrate(ctx context.Context) error {
+	var version int
+	if err := s.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
+		return err
+	}
+	if version > len(migrations) {
+		return fmt.Errorf("database schema v%d is newer than this binary (v%d)", version, len(migrations))
+	}
+	for i := version; i < len(migrations); i++ {
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, migrations[i]); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("migration %d: %w", i+1, err)
+		}
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", i+1)); err != nil {
+			tx.Rollback()
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// CreateRun inserts a claimed run, refusing a second active run for the same issue.
+func (s *Store) CreateRun(ctx context.Context, repo, issueRef, title string) (Run, error) {
+	if r, err := s.ActiveRun(ctx, repo, issueRef); err == nil {
+		return Run{}, fmt.Errorf("issue %s already has active run %d in state %s", issueRef, r.ID, r.State)
+	} else if !errors.Is(err, ErrNotFound) {
+		return Run{}, err
+	}
+	now := s.now()
+	res, err := s.db.ExecContext(ctx,
+		`INSERT INTO runs (repo, issue_ref, title, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
+		repo, issueRef, title, StateClaimed, now, now)
+	if err != nil {
+		return Run{}, err
+	}
+	id, _ := res.LastInsertId()
+	return s.GetRun(ctx, id)
+}
+
+const runCols = `id, repo, issue_ref, title, branch, worktree, state, iteration, mr_url, reason, created_at, updated_at`
+
+func scanRun(row interface{ Scan(...any) error }) (Run, error) {
+	var r Run
+	err := row.Scan(&r.ID, &r.Repo, &r.IssueRef, &r.Title, &r.Branch, &r.Worktree, &r.State, &r.Iteration, &r.MRURL, &r.Reason, &r.CreatedAt, &r.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Run{}, ErrNotFound
+	}
+	return r, err
+}
+
+func (s *Store) GetRun(ctx context.Context, id int64) (Run, error) {
+	return scanRun(s.db.QueryRowContext(ctx, `SELECT `+runCols+` FROM runs WHERE id = ?`, id))
+}
+
+// ActiveRun returns the non-terminal run for an issue, or ErrNotFound.
+func (s *Store) ActiveRun(ctx context.Context, repo, issueRef string) (Run, error) {
+	return scanRun(s.db.QueryRowContext(ctx,
+		`SELECT `+runCols+` FROM runs WHERE repo = ? AND issue_ref = ? AND state NOT IN (?, ?) ORDER BY id DESC LIMIT 1`,
+		repo, issueRef, StateRecorded, StateNeedsInfo))
+}
+
+// UnfinishedRuns lists non-terminal runs, oldest first, for resume after a crash.
+func (s *Store) UnfinishedRuns(ctx context.Context) ([]Run, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+runCols+` FROM runs WHERE state NOT IN (?, ?) ORDER BY id`, StateRecorded, StateNeedsInfo)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Run
+	for rows.Next() {
+		r, err := scanRun(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// UpdateRun persists mutable fields of r.
+func (s *Store) UpdateRun(ctx context.Context, r Run) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE runs SET branch=?, worktree=?, state=?, iteration=?, mr_url=?, reason=?, updated_at=? WHERE id=?`,
+		r.Branch, r.Worktree, r.State, r.Iteration, r.MRURL, r.Reason, s.now(), r.ID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// RecordUsage stores the cumulative snapshot of a session file and appends the delta to the ledger.
+// It returns the delta. A shrinking snapshot (rewritten file) resets the baseline without negative entries.
+func (s *Store) RecordUsage(ctx context.Context, runID int64, role, sessionFile string, cur Usage) (Usage, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Usage{}, err
+	}
+	defer tx.Rollback()
+
+	var prev Usage
+	err = tx.QueryRowContext(ctx,
+		`SELECT input, output, cache_read, cache_write, cost_usd FROM token_snapshots WHERE session_file = ?`, sessionFile).
+		Scan(&prev.Input, &prev.Output, &prev.CacheRead, &prev.CacheWrite, &prev.CostUSD)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return Usage{}, err
+	}
+	delta := cur.sub(prev)
+	if delta.negative() {
+		delta = Usage{}
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO token_snapshots (session_file, run_id, role, input, output, cache_read, cache_write, cost_usd)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(session_file) DO UPDATE SET input=excluded.input, output=excluded.output,
+		   cache_read=excluded.cache_read, cache_write=excluded.cache_write, cost_usd=excluded.cost_usd`,
+		sessionFile, runID, role, cur.Input, cur.Output, cur.CacheRead, cur.CacheWrite, cur.CostUSD); err != nil {
+		return Usage{}, err
+	}
+	if !delta.zero() {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO token_ledger (run_id, role, at, input, output, cache_read, cache_write, cost_usd) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			runID, role, s.now(), delta.Input, delta.Output, delta.CacheRead, delta.CacheWrite, delta.CostUSD); err != nil {
+			return Usage{}, err
+		}
+	}
+	return delta, tx.Commit()
+}
+
+func (s *Store) sumLedger(ctx context.Context, where string, args ...any) (Usage, error) {
+	var u Usage
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COALESCE(SUM(input),0), COALESCE(SUM(output),0), COALESCE(SUM(cache_read),0), COALESCE(SUM(cache_write),0), COALESCE(SUM(cost_usd),0)
+		 FROM token_ledger WHERE `+where, args...).
+		Scan(&u.Input, &u.Output, &u.CacheRead, &u.CacheWrite, &u.CostUSD)
+	return u, err
+}
+
+// RunUsage is the total consumed by one run.
+func (s *Store) RunUsage(ctx context.Context, runID int64) (Usage, error) {
+	return s.sumLedger(ctx, "run_id = ?", runID)
+}
+
+// UsageSince is the total consumed by all runs since t (e.g. start of the UTC day).
+func (s *Store) UsageSince(ctx context.Context, t time.Time) (Usage, error) {
+	return s.sumLedger(ctx, "at >= ?", t.UTC())
+}

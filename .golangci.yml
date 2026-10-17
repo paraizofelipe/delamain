@@ -1,0 +1,34 @@
+version: "2"
+linters:
+  default: standard
+  enable:
+    - gosec
+    - errorlint
+    - bodyclose
+    - misspell
+    - unparam
+  settings:
+    errcheck:
+      # Best-effort cleanup: the primary error is already returned to the caller.
+      exclude-functions:
+        - (*database/sql.Tx).Rollback
+        - (*database/sql.Rows).Close
+        - (*database/sql.DB).Close
+        - (net.Conn).Close
+        - (net.Listener).Close
+        - (*os.File).Close
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+    gosec:
+      excludes:
+        - G104 # duplicate of errcheck, which carries the cleanup exclusions above
+        - G204 # subprocess with variable args: invoking herdr/omp/git is the product's purpose
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters: [errcheck, gosec]
+formatters:
+  enable:
+    - gofmt
+    - goimports

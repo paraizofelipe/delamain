@@ -1,0 +1,198 @@
+// Package config loads delamain settings from a YAML file with environment overrides.
+package config
+
+import (
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
+
+	"go.yaml.in/yaml/v3"
+)
+
+// BudgetMode selects what the budget limits measure.
+type BudgetMode string
+
+const (
+	// BudgetTokens counts input+output+cacheWrite tokens (cacheRead excluded, same as omp /goal).
+	BudgetTokens BudgetMode = "tokens"
+	// BudgetUSD counts provider-reported cost in US dollars.
+	BudgetUSD BudgetMode = "usd"
+)
+
+type Config struct {
+	Herdr    Herdr    `yaml:"herdr"`
+	Omp      Omp      `yaml:"omp"`
+	Pipeline Pipeline `yaml:"pipeline"`
+	Budget   Budget   `yaml:"budget"`
+	Paths    Paths    `yaml:"paths"`
+}
+
+type Herdr struct {
+	Binary string `yaml:"binary"`
+	// Session targets a named herdr session; empty means the default session.
+	Session string `yaml:"session"`
+}
+
+type Omp struct {
+	Binary       string `yaml:"binary"`
+	Model        string `yaml:"model"`
+	Thinking     string `yaml:"thinking"`
+	ApprovalMode string `yaml:"approval_mode"`
+}
+
+type Pipeline struct {
+	MaxIterations int           `yaml:"max_iterations"`
+	MaxParallel   int           `yaml:"max_parallel"`
+	PromptTimeout time.Duration `yaml:"prompt_timeout"`
+}
+
+type Budget struct {
+	Mode BudgetMode `yaml:"mode"`
+	// PerIssue and Daily are token counts or USD depending on Mode. Zero disables the limit.
+	PerIssue  float64 `yaml:"per_issue"`
+	Daily     float64 `yaml:"daily"`
+	SoftRatio float64 `yaml:"soft_ratio"`
+}
+
+type Paths struct {
+	StateDir     string `yaml:"state_dir"`
+	WorktreesDir string `yaml:"worktrees_dir"`
+	// PromptsDir overrides the embedded prompts when set.
+	PromptsDir string `yaml:"prompts_dir"`
+}
+
+// Default returns the configuration used when no file or env override is present.
+func Default() Config {
+	return Config{
+		Herdr: Herdr{Binary: "herdr"},
+		Omp: Omp{
+			Binary:       "omp",
+			Model:        "openai-codex/gpt-5.6-terra",
+			Thinking:     "medium",
+			ApprovalMode: "yolo",
+		},
+		Pipeline: Pipeline{MaxIterations: 3, MaxParallel: 1, PromptTimeout: 30 * time.Minute},
+		Budget:   Budget{Mode: BudgetTokens, PerIssue: 2_000_000, Daily: 10_000_000, SoftRatio: 0.8},
+		Paths: Paths{
+			StateDir:     "~/.local/state/delamain",
+			WorktreesDir: "~/projects/.worktrees",
+		},
+	}
+}
+
+// DefaultPath is ~/.config/delamain/config.yaml, honoring XDG_CONFIG_HOME.
+func DefaultPath() string {
+	base := os.Getenv("XDG_CONFIG_HOME")
+	if base == "" {
+		base = filepath.Join(homeDir(), ".config")
+	}
+	return filepath.Join(base, "delamain", "config.yaml")
+}
+
+// Load reads path (a missing file is not an error), applies env overrides, expands ~ and validates.
+func Load(path string, getenv func(string) string) (Config, error) {
+	cfg := Default()
+	data, err := os.ReadFile(path) //nolint:gosec // reading the user-chosen config path is the intent
+	switch {
+	case err == nil:
+		if err := yaml.Unmarshal(data, &cfg); err != nil {
+			return Config{}, fmt.Errorf("parse %s: %w", path, err)
+		}
+	case !errors.Is(err, os.ErrNotExist):
+		return Config{}, fmt.Errorf("read %s: %w", path, err)
+	}
+	if err := applyEnv(&cfg, getenv); err != nil {
+		return Config{}, err
+	}
+	cfg.Paths.StateDir = expandHome(cfg.Paths.StateDir)
+	cfg.Paths.WorktreesDir = expandHome(cfg.Paths.WorktreesDir)
+	cfg.Paths.PromptsDir = expandHome(cfg.Paths.PromptsDir)
+	if err := cfg.Validate(); err != nil {
+		return Config{}, err
+	}
+	return cfg, nil
+}
+
+func applyEnv(cfg *Config, getenv func(string) string) error {
+	strs := map[string]*string{
+		"DELAMAIN_HERDR_SESSION": &cfg.Herdr.Session,
+		"DELAMAIN_OMP_MODEL":     &cfg.Omp.Model,
+		"DELAMAIN_STATE_DIR":     &cfg.Paths.StateDir,
+		"DELAMAIN_PROMPTS_DIR":   &cfg.Paths.PromptsDir,
+	}
+	for key, dst := range strs {
+		if v := getenv(key); v != "" {
+			*dst = v
+		}
+	}
+	ints := map[string]*int{
+		"DELAMAIN_MAX_ITERATIONS": &cfg.Pipeline.MaxIterations,
+		"DELAMAIN_MAX_PARALLEL":   &cfg.Pipeline.MaxParallel,
+	}
+	for key, dst := range ints {
+		v := getenv(key)
+		if v == "" {
+			continue
+		}
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return fmt.Errorf("%s: %q is not an integer", key, v)
+		}
+		*dst = n
+	}
+	return nil
+}
+
+// Validate rejects settings that would make the pipeline unsafe or meaningless.
+func (c Config) Validate() error {
+	var errs []error
+	if c.Pipeline.MaxIterations < 1 {
+		errs = append(errs, errors.New("pipeline.max_iterations must be >= 1"))
+	}
+	if c.Pipeline.MaxParallel < 1 {
+		errs = append(errs, errors.New("pipeline.max_parallel must be >= 1"))
+	}
+	if c.Pipeline.PromptTimeout <= 0 {
+		errs = append(errs, errors.New("pipeline.prompt_timeout must be > 0"))
+	}
+	if c.Budget.Mode != BudgetTokens && c.Budget.Mode != BudgetUSD {
+		errs = append(errs, fmt.Errorf("budget.mode must be %q or %q, got %q", BudgetTokens, BudgetUSD, c.Budget.Mode))
+	}
+	if c.Budget.PerIssue < 0 || c.Budget.Daily < 0 {
+		errs = append(errs, errors.New("budget limits must be >= 0"))
+	}
+	if c.Budget.SoftRatio <= 0 || c.Budget.SoftRatio > 1 {
+		errs = append(errs, errors.New("budget.soft_ratio must be in (0, 1]"))
+	}
+	switch c.Omp.ApprovalMode {
+	case "always-ask", "write", "yolo":
+	default:
+		errs = append(errs, fmt.Errorf("omp.approval_mode %q is not one of always-ask|write|yolo", c.Omp.ApprovalMode))
+	}
+	if strings.TrimSpace(c.Omp.Model) == "" {
+		errs = append(errs, errors.New("omp.model is required"))
+	}
+	return errors.Join(errs...)
+}
+
+func homeDir() string {
+	h, err := os.UserHomeDir()
+	if err != nil {
+		return "."
+	}
+	return h
+}
+
+func expandHome(p string) string {
+	if p == "~" {
+		return homeDir()
+	}
+	if strings.HasPrefix(p, "~/") {
+		return filepath.Join(homeDir(), p[2:])
+	}
+	return p
+}
