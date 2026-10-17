@@ -4,7 +4,10 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
+
+	"github.com/paraizo/delamain/internal/forge"
 )
 
 // Task is one unit of work: a forge issue or a local markdown task.
@@ -16,6 +19,23 @@ type Task struct {
 	URL   string
 	Kind  string // "feature" | "bug"
 	Repo  string // path to the target repository
+}
+
+// TaskFromIssue turns a forge issue into a task for the repository at repo.
+func TaskFromIssue(is forge.Issue, repo string) Task {
+	return Task{
+		Ref: fmt.Sprintf("#%d", is.Number), Issue: is.Number, Title: is.Title, Body: is.Body, URL: is.URL,
+		Kind: InferKind(is.Title, is.Labels), Repo: repo,
+	}
+}
+
+// issueNumber parses "#12" back into 12; local task refs have no issue.
+func issueNumber(ref string) int {
+	n, err := strconv.Atoi(strings.TrimPrefix(ref, "#"))
+	if err != nil || !strings.HasPrefix(ref, "#") {
+		return 0
+	}
+	return n
 }
 
 // ParseTaskFile reads a markdown task: the first "# " heading is the title, the rest is the body.

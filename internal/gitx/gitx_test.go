@@ -220,3 +220,54 @@ func TestRedProofWorktreeShouldCarryOnlyTheBranchTestsOntoBase(t *testing.T) {
 		t.Fatalf("the work branch is untouched, got %q", b)
 	}
 }
+
+func TestDiscardEmptyWorkShouldRemoveWorktreeAndBranchWithoutCommits(t *testing.T) {
+	g, ctx := New(), context.Background()
+	r := repo(t)
+	wt := filepath.Join(t.TempDir(), "wt")
+	if out, err := exec.Command("git", "-C", r, "worktree", "add", "-q", "-b", "fix/empty", wt, "main").CombinedOutput(); err != nil {
+		t.Fatalf("%v %s", err, out)
+	}
+	if err := g.DiscardEmptyWork(ctx, r, wt, "fix/empty", "main"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(wt); !os.IsNotExist(err) || g.BranchExists(ctx, r, "fix/empty") {
+		t.Fatal("an empty halted run must leave nothing behind")
+	}
+}
+
+func TestDiscardEmptyWorkShouldRefuseBranchesWithCommits(t *testing.T) {
+	g, ctx := New(), context.Background()
+	r := repo(t)
+	wt := filepath.Join(t.TempDir(), "wt")
+	for _, args := range [][]string{
+		{"-C", r, "worktree", "add", "-q", "-b", "fix/work", wt, "main"},
+		{"-C", wt, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "fix: work"},
+	} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("%v %s", err, out)
+		}
+	}
+	if err := g.DiscardEmptyWork(ctx, r, wt, "fix/work", "main"); err == nil {
+		t.Fatal("committed work must never be discarded")
+	}
+	if _, err := os.Stat(wt); err != nil || !g.BranchExists(ctx, r, "fix/work") {
+		t.Fatal("worktree and branch must survive")
+	}
+}
+
+func TestDiscardEmptyWorkShouldKeepUncommittedChanges(t *testing.T) {
+	g, ctx := New(), context.Background()
+	r := repo(t)
+	wt := filepath.Join(t.TempDir(), "wt")
+	if out, err := exec.Command("git", "-C", r, "worktree", "add", "-q", "-b", "fix/dirty", wt, "main").CombinedOutput(); err != nil {
+		t.Fatalf("%v %s", err, out)
+	}
+	_ = os.WriteFile(filepath.Join(wt, "wip.go"), []byte("package x"), 0o600)
+	if err := g.DiscardEmptyWork(ctx, r, wt, "fix/dirty", "main"); err == nil {
+		t.Fatal("uncommitted agent work must not be thrown away")
+	}
+	if _, err := os.Stat(filepath.Join(wt, "wip.go")); err != nil || !g.BranchExists(ctx, r, "fix/dirty") {
+		t.Fatal("dirty worktree and its branch must survive")
+	}
+}

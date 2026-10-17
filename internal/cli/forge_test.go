@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"os/exec"
+	"strings"
 	"testing"
 
 	"github.com/paraizo/delamain/internal/config"
@@ -69,5 +70,44 @@ func TestRunShouldRequireExactlyOneOfTaskOrIssue(t *testing.T) {
 		if _, err := execute(t, args...); err == nil {
 			t.Errorf("%v must be rejected", args)
 		}
+	}
+}
+
+func TestLockDaemonShouldAllowOnlyOneInstancePerStateDir(t *testing.T) {
+	dir := t.TempDir()
+	unlock, err := lockDaemon(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := lockDaemon(dir); err == nil {
+		t.Fatal("a second daemon must be refused")
+	}
+	unlock()
+	again, err := lockDaemon(dir)
+	if err != nil {
+		t.Fatalf("lock must be released on exit: %v", err)
+	}
+	again()
+}
+
+func TestDaemonShouldRequireRepositories(t *testing.T) {
+	t.Setenv("DELAMAIN_STATE_DIR", t.TempDir())
+	if _, err := execute(t, "daemon", "--config", "/nonexistent.yaml"); err == nil {
+		t.Fatal("a daemon without repositories must refuse to start")
+	}
+}
+
+func TestDaemonShouldRefuseRepositoriesWithoutForge(t *testing.T) {
+	t.Setenv("DELAMAIN_STATE_DIR", t.TempDir())
+	if _, err := execute(t, "daemon", "--config", "/nonexistent.yaml", "--repo", gitRepo(t, "")); err == nil {
+		t.Fatal("polling needs a forge")
+	}
+}
+
+func TestRecoverShouldReportWhenNothingIsOrphaned(t *testing.T) {
+	t.Setenv("DELAMAIN_STATE_DIR", t.TempDir())
+	out, err := execute(t, "recover", "--config", "/nonexistent.yaml")
+	if err != nil || !strings.Contains(out, "nenhuma run órfã") {
+		t.Fatalf("out=%q err=%v", out, err)
 	}
 }

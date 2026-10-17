@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -57,6 +58,8 @@ type PROptions struct {
 type Forge interface {
 	Repo() Repo
 	Issue(ctx context.Context, number int) (Issue, error)
+	// ListReady returns open issues carrying label, oldest (lowest number) first.
+	ListReady(ctx context.Context, label string) ([]Issue, error)
 	// OpenPR returns the open PR/MR whose source is head, or nil.
 	OpenPR(ctx context.Context, head string) (*PR, error)
 	CreatePR(ctx context.Context, o PROptions) (PR, error)
@@ -177,4 +180,9 @@ func prFromOutput(out string, re *regexp.Regexp, draft bool) (PR, error) {
 	}
 	n, _ := strconv.Atoi(m[2])
 	return PR{Number: n, URL: m[1], Draft: draft}, nil
+}
+
+func oldestFirst(is []Issue) []Issue {
+	slices.SortFunc(is, func(a, b Issue) int { return a.Number - b.Number })
+	return is
 }

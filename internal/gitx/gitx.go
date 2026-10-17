@@ -120,6 +120,26 @@ func (g Git) CheckoutFiles(ctx context.Context, dir, ref string, files []string)
 	return err
 }
 
+// DiscardEmptyWork removes the worktree and branch of a run that produced nothing: no commits
+// beyond base and no uncommitted changes. Anything else is refused and left in place.
+func (g Git) DiscardEmptyWork(ctx context.Context, repo, worktree, branch, base string) error {
+	if err := GuardWorkBranch(branch, base); err != nil {
+		return err
+	}
+	ahead, err := g.run(ctx, repo, "rev-list", "--count", base+".."+branch)
+	if err != nil {
+		return err
+	}
+	if ahead != "0" {
+		return fmt.Errorf("branch %s has %s commit(s) beyond %s", branch, ahead, base)
+	}
+	if _, err := g.run(ctx, repo, "worktree", "remove", worktree); err != nil { // no --force: refuses dirty trees
+		return err
+	}
+	_, err = g.run(ctx, repo, "branch", "-D", branch) // safe: verified to hold no commits of its own
+	return err
+}
+
 // BranchExists reports whether a local branch exists.
 func (g Git) BranchExists(ctx context.Context, repo, branch string) bool {
 	_, err := g.run(ctx, repo, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch)

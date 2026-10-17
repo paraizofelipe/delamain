@@ -20,23 +20,46 @@ func (g gitlab) Repo() Repo { return g.repo }
 // rflag is a full URL so self-hosted instances resolve without glab's host config.
 func (g gitlab) rflag() string { return "https://" + g.repo.String() }
 
+type glIssue struct {
+	IID         int      `json:"iid"`
+	Title       string   `json:"title"`
+	Description string   `json:"description"`
+	WebURL      string   `json:"web_url"`
+	State       string   `json:"state"`
+	Labels      []string `json:"labels"`
+}
+
+func (v glIssue) issue() Issue {
+	return Issue{Number: v.IID, Title: v.Title, Body: v.Description, URL: v.WebURL, Labels: v.Labels, Open: v.State == "opened"}
+}
+
 func (g gitlab) Issue(ctx context.Context, n int) (Issue, error) {
 	out, err := g.run.Run(ctx, "", "issue", "view", strconv.Itoa(n), "-R", g.rflag(), "--output", "json")
 	if err != nil {
 		return Issue{}, err
 	}
-	var v struct {
-		IID         int      `json:"iid"`
-		Title       string   `json:"title"`
-		Description string   `json:"description"`
-		WebURL      string   `json:"web_url"`
-		State       string   `json:"state"`
-		Labels      []string `json:"labels"`
-	}
+	var v glIssue
 	if err := json.Unmarshal([]byte(out), &v); err != nil {
 		return Issue{}, err
 	}
-	return Issue{Number: v.IID, Title: v.Title, Body: v.Description, URL: v.WebURL, Labels: v.Labels, Open: v.State == "opened"}, nil
+	return v.issue(), nil
+}
+
+// ListReady relies on glab listing only open issues by default.
+func (g gitlab) ListReady(ctx context.Context, label string) ([]Issue, error) {
+	out, err := g.run.Run(ctx, "", "issue", "list", "-R", g.rflag(), "--label", label, "--per-page", "100", "--output", "json")
+	if err != nil {
+		return nil, err
+	}
+	var vs []glIssue
+	if err := json.Unmarshal([]byte(out), &vs); err != nil {
+		return nil, err
+	}
+	is := make([]Issue, 0, len(vs))
+	for _, v := range vs {
+		is = append(is, v.issue())
+	}
+	return oldestFirst(is), nil
 }
 
 func (g gitlab) OpenPR(ctx context.Context, head string) (*PR, error) {

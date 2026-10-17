@@ -111,23 +111,30 @@ func issueTask(ctx context.Context, fg forge.Forge, n int, repo string) (pipelin
 	if !is.Open {
 		return pipeline.Task{}, fmt.Errorf("a issue #%d está fechada", n)
 	}
-	return pipeline.Task{
-		Ref: fmt.Sprintf("#%d", is.Number), Issue: is.Number, Title: is.Title, Body: is.Body, URL: is.URL,
-		Kind: pipeline.InferKind(is.Title, is.Labels), Repo: repo,
-	}, nil
+	return pipeline.TaskFromIssue(is, repo), nil
 }
 
 func runTask(ctx context.Context, cfg config.Config, task pipeline.Task, fg forge.Forge) (pipeline.Result, error) {
-	st, err := store.Open(ctx, filepath.Join(cfg.Paths.StateDir, "delamain.db"))
+	st, err := openStore(ctx, cfg)
 	if err != nil {
 		return pipeline.Result{}, err
 	}
 	defer func() { _ = st.Close() }()
-	set, err := loadPrompts(cfg)
+	r, err := newRunner(cfg, st)
 	if err != nil {
 		return pipeline.Result{}, err
 	}
-	r := &pipeline.Runner{
+	r.Forge = fg
+	return r.Run(ctx, task)
+}
+
+// newRunner wires the real herdr, git and prompts; the caller sets Forge per repository.
+func newRunner(cfg config.Config, st *store.Store) (*pipeline.Runner, error) {
+	set, err := loadPrompts(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return &pipeline.Runner{
 		Cfg:           cfg,
 		Herdr:         herdr.New(herdr.ExecRunner{Binary: cfg.Herdr.Binary, Session: cfg.Herdr.Session}),
 		Git:           gitx.New(),
@@ -136,9 +143,11 @@ func runTask(ctx context.Context, cfg config.Config, task pipeline.Task, fg forg
 		PromptsTarget: promptsTarget(cfg),
 		Log:           slog.New(slog.NewTextHandler(os.Stderr, nil)),
 		Nonce:         pipeline.RandomNonce,
-		Forge:         fg,
-	}
-	return r.Run(ctx, task)
+	}, nil
+}
+
+func openStore(ctx context.Context, cfg config.Config) (*store.Store, error) {
+	return store.Open(ctx, filepath.Join(cfg.Paths.StateDir, "delamain.db"))
 }
 
 func printResult(c *cobra.Command, res pipeline.Result) {

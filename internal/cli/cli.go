@@ -84,6 +84,8 @@ func NewRoot() *cobra.Command {
 		},
 		newPromptsCmd(load),
 		newRunCmd(load),
+		newDaemonCmd(load),
+		newRecoverCmd(load),
 	)
 	return root
 }

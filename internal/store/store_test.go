@@ -2,7 +2,9 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -185,5 +187,74 @@ func TestOpenShouldRefuseDatabaseFromNewerBinary(t *testing.T) {
 	s.Close()
 	if _, err := Open(ctx, path); err == nil {
 		t.Fatal("silently using a newer schema could corrupt state")
+	}
+}
+
+func TestCreateRunShouldRecordTheOwningProcess(t *testing.T) {
+	s := openTest(t)
+	r, err := s.CreateRun(context.Background(), "repo", "#1", "x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.OwnerPID != os.Getpid() {
+		t.Fatalf("owner pid = %d, want %d: crash recovery needs to know who runs it", r.OwnerPID, os.Getpid())
+	}
+}
+
+func TestUpdateRunShouldPersistBaseAndWorkspace(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	r, _ := s.CreateRun(ctx, "repo", "#1", "x")
+	r.Base, r.Workspace = "origin/main", "w9"
+	if err := s.UpdateRun(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.GetRun(ctx, r.ID)
+	if got.Base != "origin/main" || got.Workspace != "w9" {
+		t.Fatalf("got %+v", got)
+	}
+}
+
+func TestOpenShouldUpgradeV1DatabaseKeepingRuns(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "d.db")
+	ctx := context.Background()
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{migrations[0], "PRAGMA user_version = 1",
+		`INSERT INTO runs (repo, issue_ref, state, created_at, updated_at) VALUES ('repo', '#3', 'implement', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`} {
+		if _, err := db.ExecContext(ctx, q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db.Close()
+
+	s, err := Open(ctx, path)
+	if err != nil {
+		t.Fatalf("v1 → v2 must migrate: %v", err)
+	}
+	defer s.Close()
+	runs, err := s.UnfinishedRuns(ctx)
+	if err != nil || len(runs) != 1 || runs[0].OwnerPID != 0 || runs[0].IssueRef != "#3" {
+		t.Fatalf("pre-v2 runs have no known owner: %+v %v", runs, err)
+	}
+}
+
+func TestClaimRunShouldTransferOwnershipOnlyFromTheExpectedOwner(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	r, _ := s.CreateRun(ctx, "repo", "#1", "x")
+	if ok, err := s.ClaimRun(ctx, r.ID, 4242, 7); err != nil || ok {
+		t.Fatalf("wrong expected owner must not claim: %v %v", ok, err)
+	}
+	if ok, err := s.ClaimRun(ctx, r.ID, os.Getpid(), 4242); err != nil || !ok {
+		t.Fatalf("claim = %v %v", ok, err)
+	}
+	if ok, _ := s.ClaimRun(ctx, r.ID, os.Getpid(), 7); ok {
+		t.Fatal("a second recoverer must lose the race")
+	}
+	if got, _ := s.GetRun(ctx, r.ID); got.OwnerPID != 4242 {
+		t.Fatalf("owner = %d", got.OwnerPID)
 	}
 }

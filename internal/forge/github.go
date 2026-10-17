@@ -25,29 +25,53 @@ func (g github) rflag() string {
 	return g.repo.String()
 }
 
-func (g github) Issue(ctx context.Context, n int) (Issue, error) {
-	out, err := g.run.Run(ctx, "", "issue", "view", strconv.Itoa(n), "-R", g.rflag(), "--json", "number,title,body,url,state,labels")
-	if err != nil {
-		return Issue{}, err
-	}
-	var v struct {
-		Number int    `json:"number"`
-		Title  string `json:"title"`
-		Body   string `json:"body"`
-		URL    string `json:"url"`
-		State  string `json:"state"`
-		Labels []struct {
-			Name string `json:"name"`
-		} `json:"labels"`
-	}
-	if err := json.Unmarshal([]byte(out), &v); err != nil {
-		return Issue{}, err
-	}
+type ghIssue struct {
+	Number int    `json:"number"`
+	Title  string `json:"title"`
+	Body   string `json:"body"`
+	URL    string `json:"url"`
+	State  string `json:"state"`
+	Labels []struct {
+		Name string `json:"name"`
+	} `json:"labels"`
+}
+
+func (v ghIssue) issue() Issue {
 	is := Issue{Number: v.Number, Title: v.Title, Body: v.Body, URL: v.URL, Open: v.State == "OPEN"}
 	for _, l := range v.Labels {
 		is.Labels = append(is.Labels, l.Name)
 	}
-	return is, nil
+	return is
+}
+
+const ghIssueFields = "number,title,body,url,state,labels"
+
+func (g github) Issue(ctx context.Context, n int) (Issue, error) {
+	out, err := g.run.Run(ctx, "", "issue", "view", strconv.Itoa(n), "-R", g.rflag(), "--json", ghIssueFields)
+	if err != nil {
+		return Issue{}, err
+	}
+	var v ghIssue
+	if err := json.Unmarshal([]byte(out), &v); err != nil {
+		return Issue{}, err
+	}
+	return v.issue(), nil
+}
+
+func (g github) ListReady(ctx context.Context, label string) ([]Issue, error) {
+	out, err := g.run.Run(ctx, "", "issue", "list", "-R", g.rflag(), "--label", label, "--state", "open", "--limit", "100", "--json", ghIssueFields)
+	if err != nil {
+		return nil, err
+	}
+	var vs []ghIssue
+	if err := json.Unmarshal([]byte(out), &vs); err != nil {
+		return nil, err
+	}
+	is := make([]Issue, 0, len(vs))
+	for _, v := range vs {
+		is = append(is, v.issue())
+	}
+	return oldestFirst(is), nil
 }
 
 func (g github) OpenPR(ctx context.Context, head string) (*PR, error) {

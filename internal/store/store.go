@@ -47,6 +47,10 @@ type Run struct {
 	Iteration int
 	MRURL     string
 	Reason    string
+	// OwnerPID is the delamain process driving the run; recovery only touches runs whose owner died.
+	OwnerPID  int
+	Base      string
+	Workspace string
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
@@ -136,6 +140,9 @@ var migrations = []string{
 	);
 	CREATE INDEX token_ledger_at ON token_ledger(at);
 	CREATE INDEX token_ledger_run ON token_ledger(run_id);`,
+	`ALTER TABLE runs ADD COLUMN owner_pid INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE runs ADD COLUMN base TEXT NOT NULL DEFAULT '';
+	ALTER TABLE runs ADD COLUMN workspace TEXT NOT NULL DEFAULT '';`,
 }
 
 func (s *Store) migrate(ctx context.Context) error {
@@ -175,8 +182,8 @@ func (s *Store) CreateRun(ctx context.Context, repo, issueRef, title string) (Ru
 	}
 	now := s.now()
 	res, err := s.db.ExecContext(ctx,
-		`INSERT INTO runs (repo, issue_ref, title, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
-		repo, issueRef, title, StateClaimed, now, now)
+		`INSERT INTO runs (repo, issue_ref, title, state, owner_pid, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		repo, issueRef, title, StateClaimed, os.Getpid(), now, now)
 	if err != nil {
 		return Run{}, err
 	}
@@ -184,11 +191,11 @@ func (s *Store) CreateRun(ctx context.Context, repo, issueRef, title string) (Ru
 	return s.GetRun(ctx, id)
 }
 
-const runCols = `id, repo, issue_ref, title, branch, worktree, state, iteration, mr_url, reason, created_at, updated_at`
+const runCols = `id, repo, issue_ref, title, branch, worktree, state, iteration, mr_url, reason, owner_pid, base, workspace, created_at, updated_at`
 
 func scanRun(row interface{ Scan(...any) error }) (Run, error) {
 	var r Run
-	err := row.Scan(&r.ID, &r.Repo, &r.IssueRef, &r.Title, &r.Branch, &r.Worktree, &r.State, &r.Iteration, &r.MRURL, &r.Reason, &r.CreatedAt, &r.UpdatedAt)
+	err := row.Scan(&r.ID, &r.Repo, &r.IssueRef, &r.Title, &r.Branch, &r.Worktree, &r.State, &r.Iteration, &r.MRURL, &r.Reason, &r.OwnerPID, &r.Base, &r.Workspace, &r.CreatedAt, &r.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Run{}, ErrNotFound
 	}
@@ -225,11 +232,22 @@ func (s *Store) UnfinishedRuns(ctx context.Context) ([]Run, error) {
 	return out, rows.Err()
 }
 
+// ClaimRun moves ownership of a run from one process to another atomically; false means someone
+// else got there first (two recoverers never finalize the same run).
+func (s *Store) ClaimRun(ctx context.Context, id int64, from, to int) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `UPDATE runs SET owner_pid=?, updated_at=? WHERE id=? AND owner_pid=?`, to, s.now(), id, from)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
+}
+
 // UpdateRun persists mutable fields of r.
 func (s *Store) UpdateRun(ctx context.Context, r Run) error {
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE runs SET branch=?, worktree=?, state=?, iteration=?, mr_url=?, reason=?, updated_at=? WHERE id=?`,
-		r.Branch, r.Worktree, r.State, r.Iteration, r.MRURL, r.Reason, s.now(), r.ID)
+		`UPDATE runs SET branch=?, worktree=?, state=?, iteration=?, mr_url=?, reason=?, base=?, workspace=?, updated_at=? WHERE id=?`,
+		r.Branch, r.Worktree, r.State, r.Iteration, r.MRURL, r.Reason, r.Base, r.Workspace, s.now(), r.ID)
 	if err != nil {
 		return err
 	}

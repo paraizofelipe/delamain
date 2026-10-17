@@ -30,6 +30,7 @@ type Config struct {
 	Budget   Budget   `yaml:"budget"`
 	Forge    Forge    `yaml:"forge"`
 	Gates    Gates    `yaml:"gates"`
+	Daemon   Daemon   `yaml:"daemon"`
 	Paths    Paths    `yaml:"paths"`
 }
 
@@ -94,6 +95,12 @@ type Gates struct {
 	RequireTests bool `yaml:"require_tests"`
 }
 
+// Daemon configures `delamain daemon`: which repositories to poll for ready issues, and how often.
+type Daemon struct {
+	Repos        []string      `yaml:"repos"`
+	PollInterval time.Duration `yaml:"poll_interval"`
+}
+
 type Paths struct {
 	StateDir     string `yaml:"state_dir"`
 	WorktreesDir string `yaml:"worktrees_dir"`
@@ -121,7 +128,8 @@ func Default() Config {
 			Ready: "delamain:ready", InProgress: "delamain:in-progress", MROpened: "delamain:mr-opened",
 			NeedsHuman: "delamain:needs-human", NeedsInfo: "delamain:needs-info",
 		}},
-		Gates: Gates{RedProof: "bug", RequireTests: true},
+		Gates:  Gates{RedProof: "bug", RequireTests: true},
+		Daemon: Daemon{PollInterval: 5 * time.Minute},
 		Paths: Paths{
 			StateDir:     "~/.local/state/delamain",
 			WorktreesDir: "~/projects/.worktrees",
@@ -157,6 +165,9 @@ func Load(path string, getenv func(string) string) (Config, error) {
 	cfg.Paths.WorktreesDir = expandHome(cfg.Paths.WorktreesDir)
 	cfg.Paths.PromptsDir = expandHome(cfg.Paths.PromptsDir)
 	cfg.Omp.AgentDir = expandHome(cfg.Omp.AgentDir)
+	for i, r := range cfg.Daemon.Repos {
+		cfg.Daemon.Repos[i] = expandHome(r)
+	}
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
 	}
@@ -233,6 +244,9 @@ func (c Config) Validate() error {
 		if strings.TrimSpace(v) == "" || strings.Contains(v, ",") {
 			errs = append(errs, fmt.Errorf("forge.labels: %q must be non-empty and contain no comma", v))
 		}
+	}
+	if c.Daemon.PollInterval < 30*time.Second {
+		errs = append(errs, errors.New("daemon.poll_interval must be >= 30s (forge API rate limits)"))
 	}
 	switch c.Gates.RedProof {
 	case "bug", "always", "never":

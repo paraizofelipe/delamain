@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/paraizo/delamain/internal/artifacts"
@@ -55,6 +56,7 @@ type Git interface {
 	ChangedFiles(ctx context.Context, dir, base string) ([]string, error)
 	AddDetachedWorktree(ctx context.Context, repo, path, ref string) error
 	CheckoutFiles(ctx context.Context, dir, ref string, files []string) error
+	DiscardEmptyWork(ctx context.Context, repo, worktree, branch, base string) error
 	RemoveWorktree(ctx context.Context, repo, path string) error
 	Push(ctx context.Context, dir, branch, base string) error
 	RemoteBranchExists(ctx context.Context, repo, branch string) (bool, error)
@@ -121,6 +123,8 @@ type Runner struct {
 	Nonce func() string
 	// LookPath finds optional tools such as gitleaks (default exec.LookPath).
 	LookPath func(string) (string, error)
+	// Alive reports whether a run's owner process still exists (default: signal 0).
+	Alive func(pid int) bool
 	// BudgetInterval paces the budget watcher during agent turns (default 10s).
 	BudgetInterval time.Duration
 	// RetryInterval paces retries while a fresh pane's shell is still starting (default 1s).
@@ -156,6 +160,8 @@ type run struct {
 	cmds    artifacts.Commands
 	budget  budget.Status
 	metaSeq int64
+	// recovered marks a run finalized by Recover after its process died.
+	recovered bool
 }
 
 // Run executes the task end to end. A non-nil error means the run could not even be recorded;
@@ -175,8 +181,7 @@ func (r *Runner) Run(ctx context.Context, t Task) (Result, error) {
 	if err != nil {
 		return res, fmt.Errorf("repository: %w", err)
 	}
-	// Prompts are delamain's own namespaced files; keeping them current needs no human step.
-	if _, err := r.Prompts.Install(r.PromptsTarget); err != nil {
+	if err := r.ensurePrompts(); err != nil {
 		return res, err
 	}
 
@@ -197,7 +202,7 @@ func (r *Runner) Run(ctx context.Context, t Task) (Result, error) {
 	ru := &run{
 		rec:     rec,
 		task:    prompts.Issue{Ref: t.Ref, Title: t.Title, Body: t.Body, URL: t.URL, Kind: t.Kind},
-		dir:     filepath.Join(r.Cfg.Paths.StateDir, "runs", filepath.Base(repo), fmt.Sprintf("%d", rec.ID)),
+		dir:     r.runDir(repo, rec.ID),
 		agents:  map[string]string{},
 		panes:   map[string]string{},
 		res:     &res,
@@ -209,7 +214,7 @@ func (r *Runner) Run(ctx context.Context, t Task) (Result, error) {
 	res.RunDir = ru.dir
 	r.issueUpdate(ctx, t, &res, []string{r.Cfg.Forge.Labels.InProgress}, []string{r.Cfg.Forge.Labels.Ready}, "")
 
-	defer r.cleanup(context.WithoutCancel(ctx), ru)
+	defer r.cleanup(context.WithoutCancel(ctx), ru) // safety net; finish normally stops agents first
 	err = r.execute(ctx, ru, repo, t)
 
 	var h halt
@@ -220,15 +225,59 @@ func (r *Runner) Run(ctx context.Context, t Task) (Result, error) {
 	default:
 		res.Outcome, res.Reason = OutcomeHalted, err.Error()
 	}
-	if ru.rec.ID != 0 {
-		_ = r.checkBudget(context.WithoutCancel(ctx), ru) // final tally; the level no longer matters
-	}
+	return res, r.finish(ctx, ru, t)
+}
+
+// finish is steps 10–12 for any run that got a record, including recovered ones: final budget
+// tally, agents stopped, delivery, removal of empty work, issue update and the report.
+func (r *Runner) finish(ctx context.Context, ru *run, t Task) error {
+	ctx = context.WithoutCancel(ctx)
+	_ = r.checkBudget(ctx, ru) // final tally; the level no longer matters
+	r.cleanup(ctx, ru)         // agents stop before anything touches their worktree
 	if ru.repo.Worktree != "" {
-		res.Commits, _ = r.Git.CommitsSince(context.WithoutCancel(ctx), ru.repo.Worktree, ru.repo.Base)
+		ru.res.Commits, _ = r.Git.CommitsSince(ctx, ru.repo.Worktree, ru.repo.Base)
 	}
-	r.deliver(context.WithoutCancel(ctx), ru)
-	r.announce(context.WithoutCancel(ctx), ru, t)
-	return res, r.record(context.WithoutCancel(ctx), ru)
+	r.deliver(ctx, ru)
+	r.discardEmpty(ctx, ru)
+	r.announce(ctx, ru, t)
+	return r.record(ctx, ru)
+}
+
+func (r *Runner) runDir(repo string, id int64) string {
+	return filepath.Join(r.Cfg.Paths.StateDir, "runs", filepath.Base(repo), fmt.Sprintf("%d", id))
+}
+
+// installMu serializes prompt installs between concurrent runs of one daemon.
+var installMu sync.Mutex
+
+// ensurePrompts installs delamain's namespaced prompts only when they drifted: an install
+// rewrites skill directories that agents of other running issues may be reading.
+func (r *Runner) ensurePrompts() error {
+	installMu.Lock()
+	defer installMu.Unlock()
+	missing, outdated, err := r.Prompts.Drift(r.PromptsTarget)
+	if err != nil {
+		return err
+	}
+	if len(missing)+len(outdated) == 0 {
+		return nil
+	}
+	_, err = r.Prompts.Install(r.PromptsTarget)
+	return err
+}
+
+// discardEmpty removes the worktree and branch of a run that ended without commits, so a halted
+// run never blocks the next attempt. Uncommitted changes are kept and reported.
+func (r *Runner) discardEmpty(ctx context.Context, ru *run) {
+	res := ru.res
+	if ru.repo.Worktree == "" || len(res.Commits) > 0 || res.PRURL != "" {
+		return
+	}
+	if err := r.Git.DiscardEmptyWork(ctx, ru.rec.Repo, ru.repo.Worktree, ru.repo.Branch, ru.repo.Base); err != nil {
+		res.Warnings = append(res.Warnings, fmt.Sprintf("worktree %s preservada: %v", ru.repo.Worktree, err))
+		return
+	}
+	res.Delivery += "; worktree e branch vazias removidas"
 }
 
 func (r *Runner) setState(ctx context.Context, ru *run, s store.RunState) error {
@@ -356,7 +405,7 @@ func (r *Runner) setup(ctx context.Context, ru *run, repo string, t Task) error 
 	}
 	ru.workspace = wt.WorkspaceID
 	ru.repo = prompts.Repo{Worktree: wt.Path, Branch: branch, Base: base}
-	ru.rec.Branch, ru.rec.Worktree = branch, wt.Path
+	ru.rec.Branch, ru.rec.Worktree, ru.rec.Base, ru.rec.Workspace = branch, wt.Path, base, wt.WorkspaceID
 	ru.res.Branch, ru.res.Base, ru.res.Worktree, ru.res.WorkspaceID = branch, base, wt.Path, wt.WorkspaceID
 	if err := r.Store.UpdateRun(ctx, ru.rec); err != nil {
 		return err
@@ -540,19 +589,21 @@ func (r *Runner) review(ctx context.Context, ru *run, iter int, artifact string,
 }
 
 // cleanup stops the run's agents and closes its workspace (step 12). The git worktree stays:
-// it holds the branch that will become the MR.
+// it holds the branch that will become the MR. Idempotent.
 func (r *Runner) cleanup(ctx context.Context, ru *run) {
 	for _, name := range ru.agents {
 		if err := r.Herdr.AgentSendKeys(ctx, name, "ctrl+d"); err != nil {
 			r.Log.Warn("could not stop agent", "agent", name, "err", err)
 		}
 	}
+	ru.agents = map[string]string{}
 	if ru.workspace == "" {
 		return
 	}
 	if err := r.Herdr.WorkspaceClose(ctx, ru.workspace); err != nil {
 		r.Log.Warn("could not close workspace", "workspace", ru.workspace, "err", err)
 	}
+	ru.workspace = ""
 }
 
 func (r *Runner) record(ctx context.Context, ru *run) error {

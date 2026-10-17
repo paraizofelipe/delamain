@@ -256,17 +256,19 @@ func (f *fakeHerdr) PaneWaitOutput(_ context.Context, _, regex string, _ time.Du
 
 // fakeGit models just enough repository state for the guardrails.
 type fakeGit struct {
-	branch   string
-	head     string
-	status   string
-	commits  []string
-	existing map[string]bool
-	remote   map[string]bool // branches on origin
-	pushed   []string
-	pushErr  error
-	wt       string   // worktree path, set by the fake herdr
-	changed  []string // files changed since base
-	redproof []string // log of red-proof git operations
+	branch     string
+	head       string
+	status     string
+	commits    []string
+	existing   map[string]bool
+	remote     map[string]bool // branches on origin
+	pushed     []string
+	pushErr    error
+	wt         string   // worktree path, set by the fake herdr
+	changed    []string // files changed since base
+	redproof   []string // log of red-proof git operations
+	discarded  []string
+	discardErr error
 }
 
 func newFakeGit() *fakeGit {
@@ -304,6 +306,14 @@ func (g *fakeGit) CheckoutFiles(_ context.Context, _, ref string, files []string
 func (g *fakeGit) RemoveWorktree(_ context.Context, _, path string) error {
 	g.redproof = append(g.redproof, "remove")
 	return os.RemoveAll(path)
+}
+
+func (g *fakeGit) DiscardEmptyWork(_ context.Context, _, worktree, branch, _ string) error {
+	if g.discardErr != nil {
+		return g.discardErr
+	}
+	g.discarded = append(g.discarded, branch)
+	return os.RemoveAll(worktree)
 }
 
 func (g *fakeGit) Toplevel(_ context.Context, dir string) (string, error) {
@@ -355,7 +365,8 @@ func (f *fakeForge) Issue(_ context.Context, n int) (forge.Issue, error) {
 	}
 	return forge.Issue{}, fmt.Errorf("issue #%d: HTTP 404", n)
 }
-func (f *fakeForge) OpenPR(context.Context, string) (*forge.PR, error) { return f.open, nil }
+func (f *fakeForge) ListReady(context.Context, string) ([]forge.Issue, error) { return nil, nil }
+func (f *fakeForge) OpenPR(context.Context, string) (*forge.PR, error)        { return f.open, nil }
 func (f *fakeForge) CreatePR(_ context.Context, o forge.PROptions) (forge.PR, error) {
 	if f.createErr != nil {
 		return forge.PR{}, f.createErr

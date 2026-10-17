@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/paraizo/delamain/internal/gates"
+	"github.com/paraizo/delamain/internal/store"
 )
 
 // blockers resolves the issues a task declares as dependencies ("blocked by #N", "depende de #N").
@@ -60,6 +61,8 @@ func (r *Runner) deliver(ctx context.Context, ru *run) {
 	switch {
 	case ru.repo.Worktree == "":
 		return // setup never produced a branch
+	case res.PRURL != "":
+		return // delivered before the process died
 	case len(res.Commits) == 0:
 		res.Delivery = "nenhum commit na branch: nada a entregar"
 		return
@@ -83,13 +86,27 @@ func (r *Runner) deliver(ctx context.Context, ru *run) {
 		fail(err)
 		return
 	}
-	if onOrigin {
+	pushedBeforeCrash := onOrigin && ru.recovered && (ru.rec.State == store.StateDeliver || ru.rec.State == store.StateDeliverDraft)
+	switch {
+	case pushedBeforeCrash:
+		// The dead process pushed but may not have opened the PR/MR: reuse an open one.
+		pr, err := r.Forge.OpenPR(ctx, ru.repo.Branch)
+		if err != nil {
+			fail(err)
+			return
+		}
+		if pr != nil {
+			res.PRURL, res.Draft, ru.rec.MRURL = pr.URL, pr.Draft, pr.URL
+			return
+		}
+	case onOrigin:
 		fail(fmt.Errorf("a branch %s apareceu no origin durante a run: um agente fez push por fora do delamain", ru.repo.Branch))
 		return
-	}
-	if err := r.Git.Push(ctx, ru.repo.Worktree, ru.repo.Branch, ru.repo.Base); err != nil {
-		fail(err)
-		return
+	default:
+		if err := r.Git.Push(ctx, ru.repo.Worktree, ru.repo.Branch, ru.repo.Base); err != nil {
+			fail(err)
+			return
+		}
 	}
 	pr, err := r.Forge.CreatePR(ctx, forgePROptions(ru, draft))
 	if err != nil {

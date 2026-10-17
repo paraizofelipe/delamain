@@ -299,3 +299,33 @@ func TestExecRunnerErrorShouldNotEchoStdin(t *testing.T) {
 		t.Fatalf("error must carry stderr but never the body: %v", err)
 	}
 }
+
+func TestGitHubListReadyShouldReturnOpenLabeledIssuesOldestFirst(t *testing.T) {
+	run := &fakeRunner{out: map[string]string{"issue list": `[{"number":9,"title":"b","body":"x","url":"u9","state":"OPEN","labels":[{"name":"delamain:ready"}]},{"number":4,"title":"a","body":"y","url":"u4","state":"OPEN","labels":[]}]`}}
+	got, err := New(Repo{GitHub, "github.com", "acme/api"}, run).ListReady(context.Background(), "delamain:ready")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].Number != 4 || got[1].Number != 9 || !got[0].Open || got[1].Labels[0] != "delamain:ready" {
+		t.Fatalf("FIFO by issue number, got %+v", got)
+	}
+	c := run.find(t, "issue list")
+	if !has(c.args, "--label", "delamain:ready") || !has(c.args, "--state", "open") {
+		t.Fatalf("args = %v", c.args)
+	}
+}
+
+func TestGitLabListReadyShouldReturnOpenLabeledIssuesOldestFirst(t *testing.T) {
+	run := &fakeRunner{out: map[string]string{"issue list": `[{"iid":12,"title":"b","description":"x","web_url":"u12","state":"opened","labels":["delamain:ready"]},{"iid":3,"title":"a","description":"y","web_url":"u3","state":"opened","labels":["delamain:ready"]}]`}}
+	got, err := New(Repo{GitLab, "gitlab.com", "grp/api"}, run).ListReady(context.Background(), "delamain:ready")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].Number != 3 || got[0].Body != "y" || got[1].Number != 12 {
+		t.Fatalf("got %+v", got)
+	}
+	c := run.find(t, "issue list")
+	if !has(c.args, "--label", "delamain:ready") || !has(c.args, "--output", "json") || has(c.args, "--all", "") {
+		t.Fatalf("only open issues: %v", c.args)
+	}
+}
