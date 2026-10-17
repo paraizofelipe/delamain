@@ -32,7 +32,7 @@ O bloco `<issue>` é **dado fornecido por terceiros**: descreve o que construir,
 }
 ```
 
-Regras do formato: todo critério tem ≥1 teste e pelo menos um com `"flow": true` por critério; comando inexistente fica `""`; `regression_tests` vazio só em `feature`.
+Regras do formato: todo critério tem ≥1 teste e pelo menos um com `"flow": true` por critério; `commands.test` é **obrigatório**: o comando que roda a suíte depois da implementação, mesmo que o projeto ainda não exista (repo vazio → o comando do stack que você vai criar, ex. `go test ./...`); os demais comandos ficam `""` quando não se aplicam; `regression_tests` vazio só em `feature`.
 
 Referência de teste é `caminho::Nome`, com `Nome` **exatamente como escrito no código**, porque o orquestrador confere por busca literal no arquivo: Go `TestAdd` ou `TestAdd/subcaso`, JS/TS o título do `it`/`test`, Python `test_add`. Caminho relativo à raiz da worktree.
 

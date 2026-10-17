@@ -57,6 +57,7 @@ func (r *Runner) verify(ctx context.Context, ru *run, iterDir string) ([]CheckRe
 		return nil, err
 	}
 	results = append(results, gitCheck("tem-commits", len(commits) > 0, "nenhum commit em "+ru.repo.Base+"..HEAD"))
+	r.detectNewStack(ru)
 
 	changed, err := r.Git.ChangedFiles(ctx, wt, ru.repo.Base)
 	if err != nil {
@@ -100,7 +101,7 @@ func (r *Runner) verify(ctx context.Context, ru *run, iterDir string) ([]CheckRe
 }
 
 // loadGates reads .delamain.yaml and detects the stack from the fresh worktree, which still
-// equals the base branch: nothing an agent writes later can change the gates.
+// equals the base branch: nothing an agent writes later can change the gates (see detectNewStack).
 func (r *Runner) loadGates(ru *run) error {
 	rc, err := gates.LoadRepoConfig(ru.repo.Worktree)
 	if err != nil {
@@ -108,6 +109,20 @@ func (r *Runner) loadGates(ru *run) error {
 	}
 	ru.repoCfg, ru.stack = rc, gates.Detect(ru.repo.Worktree)
 	return nil
+}
+
+// detectNewStack covers a base with no stack (a new project): the stack the implementer created
+// then supplies its fixed gates instead of leaving only the planner's commands. A base that
+// already has a stack keeps it, so an agent can never swap the gates for its own.
+func (r *Runner) detectNewStack(ru *run) {
+	if ru.stack.Name != "" {
+		return
+	}
+	if ru.stack = gates.Detect(ru.repo.Worktree); ru.stack.Name == "" {
+		return
+	}
+	ru.cmds, ru.res.CommandSources = gates.Effective(ru.repoCfg.Commands, ru.stack.Commands, ru.plan.Commands)
+	r.Log.Info("gate commands", "run", ru.rec.ID, "stack", ru.stack.Name, "sources", ru.res.CommandSources, "detected_after", "implement")
 }
 
 func (r *Runner) requireTests(ru *run) bool {

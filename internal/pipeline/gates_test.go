@@ -137,6 +137,50 @@ func TestDetectedStackShouldBeatPlannerCommands(t *testing.T) {
 	}
 }
 
+// withImplementerFiles wraps happy so the implementer also commits files (e.g. a new go.mod).
+func withImplementerFiles(files map[string]string, extra func(g *fakeGit)) behavior {
+	return func(role string, n int, text string) reply {
+		rep := happy(role, n, text)
+		if role == "implementer" {
+			orig := rep.mutate
+			rep.mutate = func(g *fakeGit) {
+				if orig != nil {
+					orig(g)
+				}
+				if extra != nil {
+					extra(g)
+				}
+				g.commitFiles("chore: add files", files)
+			}
+		}
+		return rep
+	}
+}
+
+func TestStackCreatedByTheImplementerShouldAddItsGatesWhenTheBaseHadNone(t *testing.T) {
+	hs := newHarness(t, withImplementerFiles(map[string]string{"go.mod": "module x\n"}, nil))
+	res := hs.run(t)
+	lint, ok := checkNamed(res.History[0], "lint")
+	if !ok || lint.Command != "go vet ./..." || res.CommandSources["lint"] != "detectado" {
+		t.Fatalf("a brand-new Go module must still get vet/gofmt, not only the planner's test: %+v %v", res.History[0].Checks, res.CommandSources)
+	}
+	if _, ok := checkNamed(res.History[0], "format"); !ok {
+		t.Fatalf("format gate missing: %+v", res.History[0].Checks)
+	}
+}
+
+func TestStackShouldNotBeRedetectedWhenTheBaseHadOne(t *testing.T) {
+	hs := newHarness(t, withImplementerFiles(
+		map[string]string{"package.json": `{"scripts":{"test":"true"}}`},
+		func(g *fakeGit) { _ = os.Remove(filepath.Join(g.wt, "go.mod")) },
+	))
+	hs.h.onWorktree = func(path string) { _ = os.WriteFile(filepath.Join(path, "go.mod"), []byte("module x\n"), 0o600) }
+	res := hs.run(t)
+	if test, _ := checkNamed(res.History[0], "test"); test.Command != "go test ./..." {
+		t.Fatalf("an agent must not swap the base stack's gates for its own: %+v", test)
+	}
+}
+
 func TestInvalidRepoConfigShouldHaltBeforeAgentsWork(t *testing.T) {
 	hs := newHarness(t, happy)
 	hs.h.onWorktree = func(path string) {
