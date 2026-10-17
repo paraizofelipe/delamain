@@ -50,6 +50,8 @@ type Pipeline struct {
 	MaxIterations int           `yaml:"max_iterations"`
 	MaxParallel   int           `yaml:"max_parallel"`
 	PromptTimeout time.Duration `yaml:"prompt_timeout"`
+	// CheckTimeout bounds each deterministic gate (lint, typecheck, test) run by the orchestrator.
+	CheckTimeout time.Duration `yaml:"check_timeout"`
 }
 
 type Budget struct {
@@ -81,7 +83,7 @@ func Default() Config {
 			Thinking:     "medium",
 			ApprovalMode: "yolo",
 		},
-		Pipeline: Pipeline{MaxIterations: 3, MaxParallel: 1, PromptTimeout: 30 * time.Minute},
+		Pipeline: Pipeline{MaxIterations: 3, MaxParallel: 1, PromptTimeout: 30 * time.Minute, CheckTimeout: 20 * time.Minute},
 		Budget:   Budget{Mode: BudgetTokens, PerIssue: 2_000_000, Daily: 10_000_000, SoftRatio: 0.8},
 		Paths: Paths{
 			StateDir:     "~/.local/state/delamain",
@@ -166,6 +168,9 @@ func (c Config) Validate() error {
 	}
 	if c.Pipeline.PromptTimeout <= 0 {
 		errs = append(errs, errors.New("pipeline.prompt_timeout must be > 0"))
+	}
+	if c.Pipeline.CheckTimeout <= 0 {
+		errs = append(errs, errors.New("pipeline.check_timeout must be > 0"))
 	}
 	if c.Budget.Mode != BudgetTokens && c.Budget.Mode != BudgetUSD {
 		errs = append(errs, fmt.Errorf("budget.mode must be %q or %q, got %q", BudgetTokens, BudgetUSD, c.Budget.Mode))

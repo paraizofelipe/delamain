@@ -83,6 +83,7 @@ func NewRoot() *cobra.Command {
 			},
 		},
 		newPromptsCmd(load),
+		newRunCmd(load),
 	)
 	return root
 }

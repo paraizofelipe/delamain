@@ -184,3 +184,30 @@ func TestClientShouldMapExitCodeTwoToUsageError(t *testing.T) {
 		t.Fatalf("exit 2 is a CLI syntax error, got %+v", err)
 	}
 }
+
+func TestErrorShouldNotEmbedPromptTextInMessage(t *testing.T) {
+	prompt := strings.Repeat("instrução longa\n", 50)
+	f := &fakeRunner{responses: map[string]fakeResp{"agent prompt": {stderr: `{"error":{"code":"server_unavailable","message":"server is shutting down"}}`, err: errors.New("exit 1")}}}
+	_, err := New(f).AgentPrompt(context.Background(), "implementer-r1", prompt, time.Second)
+	msg := err.Error()
+	if strings.Contains(msg, "instrução longa") || len(msg) > 200 {
+		t.Fatalf("error must stay short and payload-free: %q", msg)
+	}
+	if !strings.Contains(msg, "agent prompt implementer-r1") || !strings.Contains(msg, "server is shutting down") {
+		t.Fatalf("error must keep command, target and cause: %q", msg)
+	}
+}
+
+func TestMutatingCommandsShouldAcceptEmptySuccessOutput(t *testing.T) {
+	f := &fakeRunner{responses: map[string]fakeResp{"pane run": {stdout: ""}, "agent send-keys": {stdout: "\n"}, "agent get": {stdout: ""}}}
+	c := New(f)
+	if err := c.PaneRun(context.Background(), "w1:p1", "go test ./..."); err != nil {
+		t.Fatalf("herdr prints nothing on a successful pane run: %v", err)
+	}
+	if err := c.AgentSendKeys(context.Background(), "a", "ctrl+d"); err != nil {
+		t.Fatalf("send-keys: %v", err)
+	}
+	if _, err := c.AgentGet(context.Background(), "a"); err == nil {
+		t.Fatal("a query that must return data cannot succeed on empty output")
+	}
+}

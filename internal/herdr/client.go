@@ -49,7 +49,23 @@ type Error struct {
 }
 
 func (e *Error) Error() string {
-	return fmt.Sprintf("herdr %s: %s: %s", strings.Join(e.Args, " "), e.Code, e.Message)
+	return fmt.Sprintf("herdr %s: %s: %s", commandLabel(e.Args), e.Code, e.Message)
+}
+
+// commandLabel keeps the subcommand and target but drops payloads such as prompt text,
+// which would otherwise flood logs and reports.
+func commandLabel(args []string) string {
+	var parts []string
+	for _, a := range args {
+		if strings.HasPrefix(a, "-") || len(parts) == 3 {
+			break
+		}
+		if len(a) > 64 || strings.ContainsAny(a, "\n") {
+			a = "<" + strconv.Itoa(len(a)) + " bytes>"
+		}
+		parts = append(parts, a)
+	}
+	return strings.Join(parts, " ")
 }
 
 // Known error codes the pipeline reacts to.
@@ -57,6 +73,7 @@ const (
 	CodeAgentNameTaken     = "agent_name_taken"
 	CodeAgentNotFound      = "agent_not_found"
 	CodeAgentNotReady      = "agent_not_ready"
+	CodeAgentPaneBusy      = "agent_pane_busy"
 	CodeAgentBlocked       = "agent_blocked"
 	CodeAgentPromptStalled = "agent_prompt_stalled"
 	CodeTimeout            = "timeout"
@@ -163,6 +180,11 @@ func (c *Client) runJSON(ctx context.Context, dst any, args ...string) error {
 	out, err := c.run(ctx, args...)
 	if err != nil {
 		return err
+	}
+	// `pane run` and `send-keys` print nothing on success (verified in E2E); only a command
+	// that must return data treats empty output as an error.
+	if dst == nil && len(bytes.TrimSpace(out)) == 0 {
+		return nil
 	}
 	var env struct {
 		Result json.RawMessage `json:"result"`
@@ -333,4 +355,18 @@ func (c *Client) IntegrationStatus(ctx context.Context, name string) (string, er
 		return v, nil
 	}
 	return "", fmt.Errorf("herdr integration status: %q not listed", name)
+}
+
+// AgentWait waits for the first settled state (idle, done or blocked) of an agent.
+func (c *Client) AgentWait(ctx context.Context, target string, timeout time.Duration) (Agent, error) {
+	var res struct {
+		Agent Agent `json:"agent"`
+	}
+	err := c.runJSON(ctx, &res, "agent", "wait", target, "--timeout", ms(timeout))
+	return res.Agent, err
+}
+
+// WorkspaceClose closes a workspace created by delamain. It never passes --group.
+func (c *Client) WorkspaceClose(ctx context.Context, workspaceID string) error {
+	return c.runJSON(ctx, nil, "workspace", "close", workspaceID)
 }

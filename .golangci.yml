@@ -20,6 +20,9 @@ linters:
         - fmt.Fprint
         - fmt.Fprintf
         - fmt.Fprintln
+    misspell:
+      # User-facing text is pt-BR; these are correct Portuguese words.
+      ignore-rules: [comando, comandos]
     gosec:
       excludes:
         - G104 # duplicate of errcheck, which carries the cleanup exclusions above
