@@ -160,6 +160,9 @@ func printResult(c *cobra.Command, res pipeline.Result) {
 	if res.Delivery != "" {
 		fmt.Fprintf(w, "   entrega:   %s\n", res.Delivery)
 	}
+	if res.Budget != "" {
+		fmt.Fprintf(w, "   consumo:   %s\n", res.Budget)
+	}
 	for _, warn := range res.Warnings {
 		fmt.Fprintf(w, "   ⚠️  %s\n", warn)
 	}

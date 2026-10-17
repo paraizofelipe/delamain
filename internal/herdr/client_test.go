@@ -211,3 +211,15 @@ func TestMutatingCommandsShouldAcceptEmptySuccessOutput(t *testing.T) {
 		t.Fatal("a query that must return data cannot succeed on empty output")
 	}
 }
+
+func TestWorkspaceReportMetadataShouldSendSortedTokensWithSeq(t *testing.T) {
+	f := &fakeRunner{responses: map[string]fakeResp{"workspace report-metadata": {}}} // herdr prints nothing on success
+	err := New(f).WorkspaceReportMetadata(context.Background(), "w2", "delamain", 42, map[string]string{"tokens": "167K/2M", "iter": "1/3"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Join(f.calls[0], " ")
+	if got != "workspace report-metadata w2 --source delamain --seq 42 --token iter=1/3 --token tokens=167K/2M" {
+		t.Fatalf("args = %s", got)
+	}
+}

@@ -12,7 +12,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os/exec"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -369,4 +371,14 @@ func (c *Client) AgentWait(ctx context.Context, target string, timeout time.Dura
 // WorkspaceClose closes a workspace created by delamain. It never passes --group.
 func (c *Client) WorkspaceClose(ctx context.Context, workspaceID string) error {
 	return c.runJSON(ctx, nil, "workspace", "close", workspaceID)
+}
+
+// WorkspaceReportMetadata shows display-only tokens in herdr's sidebar. herdr ignores an update
+// whose seq is not greater than the last one it saw from the same source.
+func (c *Client) WorkspaceReportMetadata(ctx context.Context, workspaceID, source string, seq int64, tokens map[string]string) error {
+	args := []string{"workspace", "report-metadata", workspaceID, "--source", source, "--seq", strconv.FormatInt(seq, 10)}
+	for _, k := range slices.Sorted(maps.Keys(tokens)) {
+		args = append(args, "--token", k+"="+tokens[k])
+	}
+	return c.runJSON(ctx, nil, args...)
 }

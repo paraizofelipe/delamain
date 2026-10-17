@@ -23,6 +23,8 @@ type reply struct {
 	err      error  // returned by AgentPrompt
 	provider string // non-empty makes the omp session end with this provider error
 	mutate   func(g *fakeGit)
+	usage    int64 // input tokens the turn consumes
+	hang     bool  // the turn only ends when the agent is interrupted (esc/ctrl+c)
 }
 
 // behavior decides the reply for a role's n-th non-handshake prompt (1-based).
@@ -51,6 +53,13 @@ type fakeHerdr struct {
 	lastCheck   string
 	exports     map[string]string // pane -> export command typed before the agent started
 	onWorktree  func(path string) // seeds the base checkout (e.g. go.mod, .delamain.yaml)
+	interrupt   chan string       // keys that end a hanging turn
+	metadata    []metaCall
+}
+
+type metaCall struct {
+	seq    int64
+	tokens map[string]string
 }
 
 func newFakeHerdr(dir string, g *fakeGit, b behavior) *fakeHerdr {
@@ -61,6 +70,7 @@ func newFakeHerdr(dir string, g *fakeGit, b behavior) *fakeHerdr {
 		started:   map[string][]string{}, prompts: map[string][]string{},
 		keys: map[string][]string{}, checkRuns: map[string]int{}, exports: map[string]string{},
 		handshake: func(string) bool { return true },
+		interrupt: make(chan string, 4),
 	}
 }
 
@@ -108,25 +118,41 @@ var (
 
 func roleOf(name string) string { return name[:strings.LastIndex(name, "-r")] }
 
-func (f *fakeHerdr) AgentPrompt(_ context.Context, name, text string, _ time.Duration) (herdr.Agent, error) {
+func (f *fakeHerdr) AgentPrompt(ctx context.Context, name, text string, timeout time.Duration) (herdr.Agent, error) {
+	agent, rep, err := f.turn(name, text)
+	if err != nil || !rep.hang {
+		return agent, err
+	}
+	select {
+	case <-f.interrupt:
+		agent.Status = herdr.StatusIdle
+		return agent, rep.err
+	case <-time.After(timeout):
+		return agent, &herdr.Error{Code: herdr.CodeTimeout, Message: "timeout"}
+	case <-ctx.Done():
+		return agent, ctx.Err()
+	}
+}
+
+func (f *fakeHerdr) turn(name, text string) (herdr.Agent, reply, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.promptCalls++
 	role := roleOf(name)
-	sess := filepath.Join(f.dir, name+".jsonl")
+	sess := f.sessionPath(name)
 	agent := herdr.Agent{Name: name, Status: herdr.StatusDone, Session: herdr.AgentSession{Kind: "path", Value: sess}}
 
 	if m := handshakeRe.FindStringSubmatch(text); m != nil {
 		if f.handshake(role) {
 			_ = os.WriteFile(m[1], []byte("ok"), 0o600)
 		}
-		return agent, writeSession(sess, "")
+		return agent, reply{}, writeSession(sess, "", 0)
 	}
 	f.prompts[role] = append(f.prompts[role], text)
 	rep := f.behave(role, len(f.prompts[role]), text)
 	if m := artifactRe.FindStringSubmatch(text); m != nil && rep.write != "" {
 		if err := os.WriteFile(m[1], []byte(rep.write), 0o600); err != nil {
-			return agent, err
+			return agent, rep, err
 		}
 	}
 	if rep.mutate != nil {
@@ -135,23 +161,45 @@ func (f *fakeHerdr) AgentPrompt(_ context.Context, name, text string, _ time.Dur
 	if rep.status != "" {
 		agent.Status = rep.status
 	}
-	if err := writeSession(sess, rep.provider); err != nil {
-		return agent, err
+	if err := writeSession(sess, rep.provider, rep.usage); err != nil {
+		return agent, rep, err
 	}
-	return agent, rep.err
+	if rep.hang {
+		return agent, rep, nil
+	}
+	return agent, rep, rep.err
 }
 
-func writeSession(path, providerErr string) error {
-	line := `{"type":"message","message":{"role":"assistant","stopReason":"stop","model":"fake"}}`
-	if providerErr != "" {
-		line = fmt.Sprintf(`{"type":"message","message":{"role":"assistant","stopReason":"error","errorMessage":%q,"model":"fake"}}`, providerErr)
+// writeSession appends one assistant turn, as omp does, so usage accumulates across prompts.
+// sessionPath honors --session-dir like omp does, so the budget meter finds the usage.
+func (f *fakeHerdr) sessionPath(name string) string {
+	dir := f.dir
+	if args := f.started[name]; len(args) > 0 {
+		if i := slices.Index(args, "--session-dir"); i >= 0 && i+1 < len(args) {
+			dir = args[i+1]
+		}
 	}
-	return os.WriteFile(path, []byte(line+"\n"), 0o600)
+	return filepath.Join(dir, name+".jsonl")
+}
+
+func writeSession(path, providerErr string, input int64) error {
+	usage := fmt.Sprintf(`"usage":{"input":%d,"output":0,"cacheRead":0,"cacheWrite":0,"cost":{"total":0}}`, input)
+	line := `{"type":"message","message":{"role":"assistant","stopReason":"stop","model":"fake",` + usage + `}}`
+	if providerErr != "" {
+		line = fmt.Sprintf(`{"type":"message","message":{"role":"assistant","stopReason":"error","errorMessage":%q,"model":"fake",%s}}`, providerErr, usage)
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600) //nolint:gosec // test temp dir
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = f.WriteString(line + "\n")
+	return err
 }
 
 func (f *fakeHerdr) AgentWait(_ context.Context, name string, _ time.Duration) (herdr.Agent, error) {
 	f.waits++
-	return herdr.Agent{Name: name, Status: herdr.StatusDone, Session: herdr.AgentSession{Value: filepath.Join(f.dir, name+".jsonl")}}, nil
+	return herdr.Agent{Name: name, Status: herdr.StatusDone, Session: herdr.AgentSession{Value: f.sessionPath(name)}}, nil
 }
 
 func (f *fakeHerdr) AgentList(context.Context) ([]herdr.Agent, error) { return f.liveAgents, nil }
@@ -162,7 +210,22 @@ func (f *fakeHerdr) WorkspaceClose(_ context.Context, id string) error {
 }
 
 func (f *fakeHerdr) AgentSendKeys(_ context.Context, name string, keys ...string) error {
+	f.mu.Lock()
 	f.keys[name] = append(f.keys[name], keys...)
+	f.mu.Unlock()
+	for _, k := range keys {
+		if k == "esc" || k == "ctrl+c" {
+			select {
+			case f.interrupt <- k:
+			default:
+			}
+		}
+	}
+	return nil
+}
+
+func (f *fakeHerdr) WorkspaceReportMetadata(_ context.Context, _, _ string, seq int64, tokens map[string]string) error {
+	f.metadata = append(f.metadata, metaCall{seq: seq, tokens: tokens})
 	return nil
 }
 

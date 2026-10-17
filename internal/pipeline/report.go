@@ -38,6 +38,9 @@ func renderReport(res Result, task prompts.Issue) string {
 	if res.Delivery != "" {
 		fmt.Fprintf(&b, "| Entrega | %s |\n", res.Delivery)
 	}
+	if res.Budget != "" {
+		fmt.Fprintf(&b, "| Budget | %s |\n", res.Budget)
+	}
 	if len(res.CommandSources) > 0 {
 		var parts []string
 		for _, k := range []string{"format_check", "lint", "typecheck", "test"} {
@@ -145,6 +148,9 @@ func prBody(ru *run, draft bool) string {
 		}
 		b.WriteString("\n")
 	}
+	if res.Budget != "" {
+		fmt.Fprintf(&b, "Consumo: %s\n\n", res.Budget)
+	}
 	fmt.Fprintf(&b, "---\n🤖 Aberto pelo delamain (run %d, %d iteração(ões)). O delamain nunca faz merge: a decisão é de quem revisa.\n", res.RunID, res.Iterations)
 	return b.String()
 }
@@ -156,6 +162,9 @@ func issueComment(res Result) string {
 		fmt.Fprintf(&b, "- PR/MR: %s%s\n", res.PRURL, map[bool]string{true: " (draft, precisa de revisão humana)"}[res.Draft])
 	}
 	fmt.Fprintf(&b, "- Iterações: %d · commits: %d\n", res.Iterations, len(res.Commits))
+	if res.Budget != "" {
+		fmt.Fprintf(&b, "- Consumo: %s\n", res.Budget)
+	}
 	if res.Reason != "" {
 		fmt.Fprintf(&b, "- Motivo: %s\n", res.Reason)
 	}

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/paraizo/delamain/internal/artifacts"
+	"github.com/paraizo/delamain/internal/budget"
 	"github.com/paraizo/delamain/internal/config"
 	"github.com/paraizo/delamain/internal/forge"
 	"github.com/paraizo/delamain/internal/gates"
@@ -37,6 +38,7 @@ type Herdr interface {
 	AgentSendKeys(ctx context.Context, target string, keys ...string) error
 	AgentList(ctx context.Context) ([]herdr.Agent, error)
 	WorkspaceClose(ctx context.Context, workspaceID string) error
+	WorkspaceReportMetadata(ctx context.Context, workspaceID, source string, seq int64, tokens map[string]string) error
 	PaneRun(ctx context.Context, pane, command string) error
 	PaneWaitOutput(ctx context.Context, pane, regex string, timeout time.Duration) (string, error)
 }
@@ -85,6 +87,8 @@ type Result struct {
 	// Delivery explains a skipped delivery; Warnings collect non-fatal forge failures.
 	Delivery string
 	Warnings []string
+	// Budget is the run's spend, e.g. "167K de 2M tokens · US$ 0.67".
+	Budget string
 	// CommandSources says where each gate command came from: repo, detectado or planner.
 	CommandSources map[string]string
 }
@@ -117,6 +121,8 @@ type Runner struct {
 	Nonce func() string
 	// LookPath finds optional tools such as gitleaks (default exec.LookPath).
 	LookPath func(string) (string, error)
+	// BudgetInterval paces the budget watcher during agent turns (default 10s).
+	BudgetInterval time.Duration
 	// RetryInterval paces retries while a fresh pane's shell is still starting (default 1s).
 	RetryInterval time.Duration
 }
@@ -148,6 +154,8 @@ type run struct {
 	repoCfg gates.RepoConfig
 	stack   gates.Stack
 	cmds    artifacts.Commands
+	budget  budget.Status
+	metaSeq int64
 }
 
 // Run executes the task end to end. A non-nil error means the run could not even be recorded;
@@ -172,6 +180,15 @@ func (r *Runner) Run(ctx context.Context, t Task) (Result, error) {
 		return res, err
 	}
 
+	day, err := r.meter().Today(ctx)
+	if err != nil {
+		return res, err
+	}
+	if day.Level == budget.Hard {
+		res.Outcome, res.Reason = OutcomeHalted, day.Reason+"; nenhuma run iniciada"
+		return res, nil
+	}
+
 	rec, err := r.Store.CreateRun(ctx, repo, t.Ref, t.Title)
 	if err != nil {
 		return res, err
@@ -186,6 +203,7 @@ func (r *Runner) Run(ctx context.Context, t Task) (Result, error) {
 		res:     &res,
 		issue:   t.Issue,
 		maxIter: r.Cfg.Pipeline.MaxIterations,
+		budget:  day,
 	}
 	ru.planPath, ru.planJSON = filepath.Join(ru.dir, "plan.md"), filepath.Join(ru.dir, "plan.json")
 	res.RunDir = ru.dir
@@ -202,6 +220,9 @@ func (r *Runner) Run(ctx context.Context, t Task) (Result, error) {
 	default:
 		res.Outcome, res.Reason = OutcomeHalted, err.Error()
 	}
+	if ru.rec.ID != 0 {
+		_ = r.checkBudget(context.WithoutCancel(ctx), ru) // final tally; the level no longer matters
+	}
 	if ru.repo.Worktree != "" {
 		res.Commits, _ = r.Git.CommitsSince(context.WithoutCancel(ctx), ru.repo.Worktree, ru.repo.Base)
 	}
@@ -213,6 +234,7 @@ func (r *Runner) Run(ctx context.Context, t Task) (Result, error) {
 func (r *Runner) setState(ctx context.Context, ru *run, s store.RunState) error {
 	ru.rec.State = s
 	r.Log.Info("state", "run", ru.rec.ID, "state", s, "iteration", ru.rec.Iteration)
+	r.reportMeta(ctx, ru)
 	return r.Store.UpdateRun(ctx, ru.rec)
 }
 
@@ -425,11 +447,16 @@ func (r *Runner) prompt(ctx context.Context, ru *run, role, stage string, data p
 func (r *Runner) send(ctx context.Context, ru *run, role, text string) error {
 	name := ru.agents[role]
 	timeout := r.Cfg.Pipeline.PromptTimeout
+	stop := r.watchBudget(ctx, ru, name)
 	agent, err := r.Herdr.AgentPrompt(ctx, name, text, timeout)
 	if herdr.IsCode(err, herdr.CodeAgentPromptStalled) || herdr.IsCode(err, herdr.CodeTimeout) {
 		// The prompt may have been delivered: never resubmit blindly, wait once more instead.
 		r.Log.Warn("prompt not settled, waiting", "agent", name, "err", err)
 		agent, err = r.Herdr.AgentWait(ctx, name, timeout)
+	}
+	if w := stop(); w.tripped {
+		ru.budget, ru.res.Budget = w.status, w.status.Summary()
+		return haltf("%s (agente %s interrompido no meio do turno)", w.status.Reason, name)
 	}
 	if err != nil {
 		return haltf("agente %s: %v", name, err)
@@ -453,7 +480,7 @@ func (r *Runner) send(ctx context.Context, ru *run, role, text string) error {
 	if last.Failed() {
 		return haltf("erro do provider no %s (%s): %s", role, last.Model, truncate(last.ErrorMessage, 300))
 	}
-	return nil
+	return r.checkBudget(ctx, ru)
 }
 
 type validated interface{ Validate() error }
@@ -484,7 +511,7 @@ func (r *Runner) stageData(ru *run, iter int, artifact, feedback string) prompts
 	return prompts.StageData{
 		Issue: ru.task, Repo: ru.repo, Iteration: iter, MaxIterations: r.Cfg.Pipeline.MaxIterations,
 		ArtifactPath: artifact, PlanPath: ru.planPath, PlanJSONPath: ru.planJSON,
-		Feedback: feedback, BudgetLeft: "não monitorado nesta versão",
+		Feedback: feedback, BudgetLeft: ru.budget.Left(),
 	}
 }
 
