@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/paraizo/delamain/internal/config"
+	"github.com/paraizo/delamain/internal/forge"
 	"github.com/paraizo/delamain/internal/gitx"
 	"github.com/paraizo/delamain/internal/herdr"
 	"github.com/paraizo/delamain/internal/pipeline"
@@ -33,11 +34,14 @@ var outcomeExit = map[pipeline.Outcome]int{
 
 func newRunCmd(load func() (config.Config, error)) *cobra.Command {
 	var taskFile, repo, kind string
+	var issue int
 	cmd := &cobra.Command{
-		Use:   "run --task <arquivo.md> [--repo <caminho>]",
-		Short: "Executa uma task: plano, implementação TDD, verificação e revisão em loop",
-		Long: `Executa uma task markdown ("# Título" + descrição com critérios de aceite) num repositório git.
-Cria uma worktree isolada e um workspace herdr com planner, implementer, reviewer e checks.
+		Use:   "run (--task <arquivo.md> | --issue <n>) [--repo <caminho>]",
+		Short: "Executa uma task ou issue: plano, implementação TDD, verificação, revisão e PR/MR",
+		Long: `Executa uma task markdown ("# Título" + descrição com critérios de aceite) ou uma issue do
+GitHub/GitLab num repositório git. Cria uma worktree isolada e um workspace herdr com planner,
+implementer, reviewer e checks. No fim faz push da branch e abre o PR/MR (draft quando não
+aprovado). Nunca faz merge.
 
 Códigos de saída: 0 aprovado · 1 interrompido · 3 iterações esgotadas · 4 task sem informação suficiente.`,
 		RunE: func(c *cobra.Command, _ []string) error {
@@ -45,22 +49,31 @@ Códigos de saída: 0 aprovado · 1 interrompido · 3 iterações esgotadas · 4
 			if err != nil {
 				return err
 			}
+			if (taskFile == "") == (issue == 0) {
+				return errors.New("informe exatamente um de --task ou --issue")
+			}
 			if repo == "" {
 				if repo, err = os.Getwd(); err != nil {
 					return err
 				}
 			}
-			title, body, err := pipeline.ParseTaskFile(taskFile)
+			fg, err := forgeFor(c.Context(), cfg, repo)
 			if err != nil {
 				return err
 			}
-			if kind == "" {
-				kind = pipeline.InferKind(title, nil)
+			var task pipeline.Task
+			if issue > 0 {
+				if task, err = issueTask(c.Context(), fg, issue, repo); err != nil {
+					return err
+				}
+			} else if task, err = fileTask(taskFile, repo); err != nil {
+				return err
 			}
-			stem := strings.TrimSuffix(filepath.Base(taskFile), filepath.Ext(taskFile))
-			task := pipeline.Task{Ref: "task:" + gitx.Slug(stem, 24), Title: title, Body: body, Kind: kind, Repo: repo}
+			if kind != "" {
+				task.Kind = kind
+			}
 
-			res, err := runTask(c.Context(), cfg, task)
+			res, err := runTask(c.Context(), cfg, task, fg)
 			if err != nil {
 				return err
 			}
@@ -71,14 +84,40 @@ Códigos de saída: 0 aprovado · 1 interrompido · 3 iterações esgotadas · 4
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&taskFile, "task", "", "arquivo markdown da task (obrigatório)")
+	cmd.Flags().StringVar(&taskFile, "task", "", "arquivo markdown da task")
+	cmd.Flags().IntVar(&issue, "issue", 0, "número da issue no forge do origin")
 	cmd.Flags().StringVar(&repo, "repo", "", "repositório alvo (padrão: diretório atual)")
 	cmd.Flags().StringVar(&kind, "kind", "", "feature|bug (padrão: inferido do título)")
-	_ = cmd.MarkFlagRequired("task")
 	return cmd
 }
 
-func runTask(ctx context.Context, cfg config.Config, task pipeline.Task) (pipeline.Result, error) {
+func fileTask(path, repo string) (pipeline.Task, error) {
+	title, body, err := pipeline.ParseTaskFile(path)
+	if err != nil {
+		return pipeline.Task{}, err
+	}
+	stem := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+	return pipeline.Task{Ref: "task:" + gitx.Slug(stem, 24), Title: title, Body: body, Kind: pipeline.InferKind(title, nil), Repo: repo}, nil
+}
+
+func issueTask(ctx context.Context, fg forge.Forge, n int, repo string) (pipeline.Task, error) {
+	if fg == nil {
+		return pipeline.Task{}, errors.New("--issue exige um repositório com origin no GitHub ou GitLab")
+	}
+	is, err := fg.Issue(ctx, n)
+	if err != nil {
+		return pipeline.Task{}, err
+	}
+	if !is.Open {
+		return pipeline.Task{}, fmt.Errorf("a issue #%d está fechada", n)
+	}
+	return pipeline.Task{
+		Ref: fmt.Sprintf("#%d", is.Number), Issue: is.Number, Title: is.Title, Body: is.Body, URL: is.URL,
+		Kind: pipeline.InferKind(is.Title, is.Labels), Repo: repo,
+	}, nil
+}
+
+func runTask(ctx context.Context, cfg config.Config, task pipeline.Task, fg forge.Forge) (pipeline.Result, error) {
 	st, err := store.Open(ctx, filepath.Join(cfg.Paths.StateDir, "delamain.db"))
 	if err != nil {
 		return pipeline.Result{}, err
@@ -97,6 +136,7 @@ func runTask(ctx context.Context, cfg config.Config, task pipeline.Task) (pipeli
 		PromptsTarget: promptsTarget(cfg),
 		Log:           slog.New(slog.NewTextHandler(os.Stderr, nil)),
 		Nonce:         pipeline.RandomNonce,
+		Forge:         fg,
 	}
 	return r.Run(ctx, task)
 }
@@ -113,6 +153,15 @@ func printResult(c *cobra.Command, res pipeline.Result) {
 	fmt.Fprintln(w)
 	if res.Branch != "" {
 		fmt.Fprintf(w, "   branch:    %s (base %s)\n   worktree:  %s\n   iterações: %d · commits: %d\n", res.Branch, res.Base, res.Worktree, res.Iterations, len(res.Commits))
+	}
+	if res.PRURL != "" {
+		fmt.Fprintf(w, "   PR/MR:     %s%s\n", res.PRURL, map[bool]string{true: " (draft)"}[res.Draft])
+	}
+	if res.Delivery != "" {
+		fmt.Fprintf(w, "   entrega:   %s\n", res.Delivery)
+	}
+	for _, warn := range res.Warnings {
+		fmt.Fprintf(w, "   ⚠️  %s\n", warn)
 	}
 	if res.ReportPath != "" {
 		fmt.Fprintf(w, "   relatório: %s\n", res.ReportPath)

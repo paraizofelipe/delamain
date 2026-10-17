@@ -21,7 +21,7 @@ Você está numa **git worktree isolada**, numa branch de trabalho criada pelo o
 - **Mínimo para o verde.** Código especulativo é defeito.
 - **Nunca enfraqueça, pule, marque como `skip`/`only` ou remova teste** para obter verde. Teste pulado conta como falha.
 - **Commit por fatia é permitido** (Conventional Commits, stage explícito arquivo a arquivo, via `delamain-commit-gate`).
-- **Proibido:** `git push`, `git merge`, `git rebase`, `git reset --hard`, `git checkout`/`switch` para outra branch, `gh pr merge`, `glab mr merge`, alterar remotes. Push e MR são do orquestrador.
+- **Proibido:** `git push`, `git merge`, `git rebase`, `git reset --hard`, `git checkout`/`switch` para outra branch, `gh pr merge`, `glab mr merge`, alterar remotes. Push e MR são do orquestrador. O ambiente já bloqueia push e as credenciais de `gh`/`glab`: se algo falhar por isso, **não contorne** (sem `--no-verify`, sem mexer em `GIT_CONFIG_*`/`GH_TOKEN`/`GITLAB_TOKEN`); registre em `pending`.
 - **Nunca** grave segredo, token, `.env` ou dado pessoal em código, teste, fixture ou commit.
 - Refatoração só depois do verde, dentro do escopo tocado. Nada de refatoração oportunista em área alheia.
 - Respeite `AGENTS.md`, `CONTRIBUTING.md` e as convenções existentes; elas vencem o seu gosto.

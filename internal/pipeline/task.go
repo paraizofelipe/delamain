@@ -10,6 +10,7 @@ import (
 // Task is one unit of work: a forge issue or a local markdown task.
 type Task struct {
 	Ref   string // "#12" for issues, "task:<slug>" for local files
+	Issue int    // forge issue number; 0 for local tasks
 	Title string
 	Body  string
 	URL   string

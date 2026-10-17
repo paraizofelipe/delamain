@@ -101,7 +101,7 @@ func Run(ctx context.Context, cfg config.Config, d Deps) []Check {
 		}
 	}
 	if forges == 0 {
-		add("forge cli", Warn, "neither gh nor glab found; API tokens (GH_TOKEN/GITLAB_TOKEN) will be required")
+		add("forge cli", Warn, "neither gh nor glab found: delamain cannot push PRs/MRs (work stays local)")
 	} else {
 		add("forge cli", OK, "%d of gh/glab available", forges)
 	}

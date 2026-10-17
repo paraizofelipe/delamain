@@ -95,6 +95,9 @@ func TestValidateShouldRejectUnsafeOrMeaninglessValues(t *testing.T) {
 		"soft ratio zero":      func(c *Config) { c.Budget.SoftRatio = 0 },
 		"unknown approval":     func(c *Config) { c.Omp.ApprovalMode = "auto" },
 		"empty model":          func(c *Config) { c.Omp.Model = " " },
+		"unknown forge":        func(c *Config) { c.Forge.Kind = "bitbucket" },
+		"empty label":          func(c *Config) { c.Forge.Labels.InProgress = "" },
+		"label with comma":     func(c *Config) { c.Forge.Labels.Ready = "a,b" }, // glab splits on commas
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {

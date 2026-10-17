@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/paraizo/delamain/internal/artifacts"
+	"github.com/paraizo/delamain/internal/forge"
 	"github.com/paraizo/delamain/internal/prompts"
 )
 
@@ -30,7 +31,17 @@ func renderReport(res Result, task prompts.Issue) string {
 	if res.Reason != "" {
 		fmt.Fprintf(&b, "| Motivo | %s |\n", strings.ReplaceAll(res.Reason, "|", `\|`))
 	}
-	fmt.Fprintf(&b, "| Branch | `%s` (base `%s`) |\n| Worktree | `%s` |\n| Iterações | %d |\n\n", res.Branch, res.Base, res.Worktree, res.Iterations)
+	fmt.Fprintf(&b, "| Branch | `%s` (base `%s`) |\n| Worktree | `%s` |\n| Iterações | %d |\n", res.Branch, res.Base, res.Worktree, res.Iterations)
+	if res.PRURL != "" {
+		fmt.Fprintf(&b, "| PR/MR | %s%s |\n", res.PRURL, map[bool]string{true: " (draft)"}[res.Draft])
+	}
+	if res.Delivery != "" {
+		fmt.Fprintf(&b, "| Entrega | %s |\n", res.Delivery)
+	}
+	b.WriteString("\n")
+	for _, w := range res.Warnings {
+		fmt.Fprintf(&b, "> ⚠️ %s\n", w)
+	}
 
 	if len(res.Commits) > 0 {
 		b.WriteString("## Commits\n\n")
@@ -59,6 +70,84 @@ func renderReport(res Result, task prompts.Issue) string {
 			}
 		}
 		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+func forgePROptions(ru *run, draft bool) forge.PROptions {
+	return forge.PROptions{
+		Head: ru.repo.Branch, Base: strings.TrimPrefix(ru.repo.Base, "origin/"),
+		Title: prTitle(ru.task.Kind, ru.task.Title), Body: prBody(ru, draft), Draft: draft,
+	}
+}
+
+// prBody is what the human reviewer reads: why the change exists, how it was proven, and,
+// for drafts, what is still missing.
+func prBody(ru *run, draft bool) string {
+	res, plan := ru.res, ru.plan
+	var b strings.Builder
+	b.WriteString("## Resumo\n\n")
+	if plan.Summary != "" {
+		b.WriteString(plan.Summary + "\n\n")
+	}
+	if ru.issue > 0 {
+		fmt.Fprintf(&b, "Closes #%d\n\n", ru.issue)
+	}
+	if draft {
+		fmt.Fprintf(&b, "> ⚠️ **Draft: precisa de revisão humana.** Resultado `%s`", res.Outcome)
+		if res.Reason != "" {
+			fmt.Fprintf(&b, ": %s", res.Reason)
+		}
+		b.WriteString("\n\n")
+	}
+	if len(plan.Acceptance) > 0 {
+		b.WriteString("## Critérios de aceite → testes\n\n")
+		for _, a := range plan.Acceptance {
+			fmt.Fprintf(&b, "- %s — `%s`\n", a.Criterion, strings.Join(a.Tests, "`, `"))
+		}
+		b.WriteString("\n")
+	}
+	if n := len(res.History); n > 0 {
+		last := res.History[n-1]
+		fmt.Fprintf(&b, "## Gates (iteração %d de %d)\n\n| Gate | Comando | Resultado |\n|---|---|---|\n", last.N, ru.maxIter)
+		for _, c := range last.Checks {
+			state := "✅"
+			if !c.Passed() {
+				state = fmt.Sprintf("❌ (%d)", c.ExitCode)
+			}
+			fmt.Fprintf(&b, "| %s | `%s` | %s |\n", c.Name, c.Command, state)
+		}
+		b.WriteString("\n")
+		if last.Review != nil {
+			fmt.Fprintf(&b, "Revisão automática (spec, standards, security): **%s**\n\n", last.Review.EffectiveVerdict())
+			if fb := reviewFeedback(*last.Review); fb != "" {
+				b.WriteString("### Achados bloqueantes\n\n" + fb + "\n\n")
+			}
+		}
+	}
+	if len(res.Commits) > 0 {
+		b.WriteString("## Commits\n\n")
+		for _, c := range res.Commits {
+			fmt.Fprintf(&b, "- `%s`\n", c)
+		}
+		b.WriteString("\n")
+	}
+	fmt.Fprintf(&b, "---\n🤖 Aberto pelo delamain (run %d, %d iteração(ões)). O delamain nunca faz merge: a decisão é de quem revisa.\n", res.RunID, res.Iterations)
+	return b.String()
+}
+
+func issueComment(res Result) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "🤖 **delamain** terminou esta issue: **%s**\n\n", res.Outcome)
+	if res.PRURL != "" {
+		fmt.Fprintf(&b, "- PR/MR: %s%s\n", res.PRURL, map[bool]string{true: " (draft, precisa de revisão humana)"}[res.Draft])
+	}
+	fmt.Fprintf(&b, "- Iterações: %d · commits: %d\n", res.Iterations, len(res.Commits))
+	if res.Reason != "" {
+		fmt.Fprintf(&b, "- Motivo: %s\n", res.Reason)
+	}
+	if res.Delivery != "" {
+		fmt.Fprintf(&b, "- Entrega: %s\n", res.Delivery)
 	}
 	return b.String()
 }

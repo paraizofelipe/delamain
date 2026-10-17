@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/paraizo/delamain/internal/forge"
 	"github.com/paraizo/delamain/internal/herdr"
 )
 
@@ -47,6 +48,7 @@ type fakeHerdr struct {
 	liveAgents  []herdr.Agent
 	closed      []string
 	lastCheck   string
+	exports     map[string]string // pane -> export command typed before the agent started
 }
 
 func newFakeHerdr(dir string, g *fakeGit, b behavior) *fakeHerdr {
@@ -55,7 +57,7 @@ func newFakeHerdr(dir string, g *fakeGit, b behavior) *fakeHerdr {
 		checks:    func(string, int) int { return 0 },
 		checkHang: map[string]bool{},
 		started:   map[string][]string{}, prompts: map[string][]string{},
-		keys: map[string][]string{}, checkRuns: map[string]int{},
+		keys: map[string][]string{}, checkRuns: map[string]int{}, exports: map[string]string{},
 		handshake: func(string) bool { return true },
 	}
 }
@@ -153,7 +155,11 @@ func (f *fakeHerdr) AgentSendKeys(_ context.Context, name string, keys ...string
 
 var scriptRe = regexp.MustCompile(`verify-([a-z]+)\.sh`)
 
-func (f *fakeHerdr) PaneRun(_ context.Context, _, command string) error {
+func (f *fakeHerdr) PaneRun(_ context.Context, pane, command string) error {
+	if strings.HasPrefix(command, "export ") {
+		f.exports[pane] = command
+		return nil
+	}
 	m := scriptRe.FindStringSubmatch(command)
 	if m == nil {
 		return fmt.Errorf("unexpected pane command %q", command)
@@ -179,9 +185,14 @@ type fakeGit struct {
 	status   string
 	commits  []string
 	existing map[string]bool
+	remote   map[string]bool // branches on origin
+	pushed   []string
+	pushErr  error
 }
 
-func newFakeGit() *fakeGit { return &fakeGit{head: "aaaaaaaa", existing: map[string]bool{}} }
+func newFakeGit() *fakeGit {
+	return &fakeGit{head: "aaaaaaaa", existing: map[string]bool{}, remote: map[string]bool{}}
+}
 
 func (g *fakeGit) commit(msg string) {
 	g.head = fmt.Sprintf("%08x", len(g.commits)+1)
@@ -204,4 +215,49 @@ func (g *fakeGit) CurrentBranch(context.Context, string) (string, error) {
 func (g *fakeGit) Status(context.Context, string) (string, error) { return g.status, nil }
 func (g *fakeGit) CommitsSince(context.Context, string, string) ([]string, error) {
 	return g.commits, nil
+}
+
+func (g *fakeGit) Push(_ context.Context, _, branch, _ string) error {
+	if g.pushErr != nil {
+		return g.pushErr
+	}
+	g.pushed = append(g.pushed, branch)
+	g.remote[branch] = true
+	return nil
+}
+
+func (g *fakeGit) RemoteBranchExists(_ context.Context, _, branch string) (bool, error) {
+	return g.remote[branch], nil
+}
+
+// fakeForge records deliveries and issue updates.
+type fakeForge struct {
+	open      *forge.PR
+	created   []forge.PROptions
+	createErr error
+	comments  []string
+	relabels  [][2][]string // {add, remove}
+}
+
+func (f *fakeForge) Repo() forge.Repo {
+	return forge.Repo{Kind: forge.GitHub, Host: "github.com", Path: "acme/api"}
+}
+func (f *fakeForge) Issue(context.Context, int) (forge.Issue, error) {
+	return forge.Issue{}, errors.New("not used by the pipeline")
+}
+func (f *fakeForge) OpenPR(context.Context, string) (*forge.PR, error) { return f.open, nil }
+func (f *fakeForge) CreatePR(_ context.Context, o forge.PROptions) (forge.PR, error) {
+	if f.createErr != nil {
+		return forge.PR{}, f.createErr
+	}
+	f.created = append(f.created, o)
+	return forge.PR{Number: 42, URL: "https://github.com/acme/api/pull/42", Draft: o.Draft}, nil
+}
+func (f *fakeForge) Comment(_ context.Context, _ int, body string) error {
+	f.comments = append(f.comments, body)
+	return nil
+}
+func (f *fakeForge) Relabel(_ context.Context, _ int, add, remove []string) error {
+	f.relabels = append(f.relabels, [2][]string{add, remove})
+	return nil
 }

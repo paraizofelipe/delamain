@@ -28,6 +28,7 @@ type Config struct {
 	Omp      Omp      `yaml:"omp"`
 	Pipeline Pipeline `yaml:"pipeline"`
 	Budget   Budget   `yaml:"budget"`
+	Forge    Forge    `yaml:"forge"`
 	Paths    Paths    `yaml:"paths"`
 }
 
@@ -62,6 +63,28 @@ type Budget struct {
 	SoftRatio float64 `yaml:"soft_ratio"`
 }
 
+// Forge kinds. ForgeAuto detects GitHub/GitLab from the origin URL; ForgeNone delivers locally only.
+const (
+	ForgeAuto   = "auto"
+	ForgeGitHub = "github"
+	ForgeGitLab = "gitlab"
+	ForgeNone   = "none"
+)
+
+type Forge struct {
+	Kind   string `yaml:"kind"`
+	Labels Labels `yaml:"labels"`
+}
+
+// Labels drive the issue lifecycle: ready → in_progress → mr_opened | needs_human | needs_info.
+type Labels struct {
+	Ready      string `yaml:"ready"`
+	InProgress string `yaml:"in_progress"`
+	MROpened   string `yaml:"mr_opened"`
+	NeedsHuman string `yaml:"needs_human"`
+	NeedsInfo  string `yaml:"needs_info"`
+}
+
 type Paths struct {
 	StateDir     string `yaml:"state_dir"`
 	WorktreesDir string `yaml:"worktrees_dir"`
@@ -85,6 +108,10 @@ func Default() Config {
 		},
 		Pipeline: Pipeline{MaxIterations: 3, MaxParallel: 1, PromptTimeout: 30 * time.Minute, CheckTimeout: 20 * time.Minute},
 		Budget:   Budget{Mode: BudgetTokens, PerIssue: 2_000_000, Daily: 10_000_000, SoftRatio: 0.8},
+		Forge: Forge{Kind: ForgeAuto, Labels: Labels{
+			Ready: "delamain:ready", InProgress: "delamain:in-progress", MROpened: "delamain:mr-opened",
+			NeedsHuman: "delamain:needs-human", NeedsInfo: "delamain:needs-info",
+		}},
 		Paths: Paths{
 			StateDir:     "~/.local/state/delamain",
 			WorktreesDir: "~/projects/.worktrees",
@@ -185,6 +212,17 @@ func (c Config) Validate() error {
 	case "always-ask", "write", "yolo":
 	default:
 		errs = append(errs, fmt.Errorf("omp.approval_mode %q is not one of always-ask|write|yolo", c.Omp.ApprovalMode))
+	}
+	switch c.Forge.Kind {
+	case ForgeAuto, ForgeGitHub, ForgeGitLab, ForgeNone:
+	default:
+		errs = append(errs, fmt.Errorf("forge.kind %q is not one of auto|github|gitlab|none", c.Forge.Kind))
+	}
+	l := c.Forge.Labels
+	for _, v := range []string{l.Ready, l.InProgress, l.MROpened, l.NeedsHuman, l.NeedsInfo} {
+		if strings.TrimSpace(v) == "" || strings.Contains(v, ",") {
+			errs = append(errs, fmt.Errorf("forge.labels: %q must be non-empty and contain no comma", v))
+		}
 	}
 	if strings.TrimSpace(c.Omp.Model) == "" {
 		errs = append(errs, errors.New("omp.model is required"))

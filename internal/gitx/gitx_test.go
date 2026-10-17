@@ -105,3 +105,68 @@ func TestCommitsAndChangedFilesShouldReflectWorkSinceBase(t *testing.T) {
 		t.Fatal("BranchExists wrong")
 	}
 }
+
+// withOrigin gives repo r a bare origin and a pushed-nothing state.
+func withOrigin(t *testing.T, r string) string {
+	t.Helper()
+	bare := filepath.Join(t.TempDir(), "origin.git")
+	for _, args := range [][]string{{"init", "-q", "--bare", bare}, {"-C", r, "remote", "add", "origin", bare}} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	return bare
+}
+
+func TestPushShouldPublishWorkBranchWithoutForce(t *testing.T) {
+	g, ctx := New(), context.Background()
+	r := repo(t)
+	withOrigin(t, r)
+	if out, err := exec.Command("git", "-C", r, "switch", "-q", "-c", "feat/x").CombinedOutput(); err != nil {
+		t.Fatalf("%v %s", err, out)
+	}
+	if ok, err := g.RemoteBranchExists(ctx, r, "feat/x"); err != nil || ok {
+		t.Fatalf("not pushed yet: %v %v", ok, err)
+	}
+	if err := g.Push(ctx, r, "feat/x", "origin/main"); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := g.RemoteBranchExists(ctx, r, "feat/x"); err != nil || !ok {
+		t.Fatalf("branch must be on origin: %v %v", ok, err)
+	}
+}
+
+func TestPushShouldRefuseProtectedBranchesBeforeTouchingTheRemote(t *testing.T) {
+	g, ctx := New(), context.Background()
+	r := repo(t)
+	withOrigin(t, r)
+	for _, b := range []string{"main", "master", "develop"} {
+		if err := g.Push(ctx, r, b, "origin/develop"); err == nil {
+			t.Errorf("push of %q must be refused", b)
+		}
+	}
+	if ok, _ := g.RemoteBranchExists(ctx, r, "main"); ok {
+		t.Fatal("main must not reach origin")
+	}
+}
+
+func TestAgentEnvShouldBlockEveryPushButKeepFetch(t *testing.T) {
+	ctx := context.Background()
+	r := repo(t)
+	bare := withOrigin(t, r)
+	for _, remote := range []string{"origin", "https://github.com/acme/none.git", "git@github.com:acme/none.git", "ssh://git@gitlab.com/acme/none.git"} {
+		cmd := exec.CommandContext(ctx, "git", "-C", r, "push", remote, "main")
+		cmd.Env = append(os.Environ(), append(AgentEnv(), "GIT_TERMINAL_PROMPT=0")...)
+		if out, err := cmd.CombinedOutput(); err == nil {
+			t.Errorf("agent push to %s must fail: %s", remote, out)
+		}
+	}
+	if out, err := exec.Command("git", "--git-dir", bare, "for-each-ref").Output(); err != nil || len(out) != 0 {
+		t.Fatalf("origin must stay empty, refs: %s %v", out, err)
+	}
+	fetch := exec.CommandContext(ctx, "git", "-C", r, "fetch", "-q", "origin")
+	fetch.Env = append(os.Environ(), AgentEnv()...)
+	if out, err := fetch.CombinedOutput(); err != nil {
+		t.Fatalf("agents still need fetch: %v %s", err, out)
+	}
+}

@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -26,6 +27,7 @@ func (g Git) run(ctx context.Context, dir string, args ...string) (string, error
 	var out, errb bytes.Buffer
 	cmd := exec.CommandContext(ctx, g.Binary, append([]string{"-C", dir}, args...)...)
 	cmd.Stdout, cmd.Stderr = &out, &errb
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0") // fail instead of waiting for credentials
 	if err := cmd.Run(); err != nil {
 		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(errb.String()))
 	}
@@ -104,6 +106,38 @@ func (g Git) ChangedFiles(ctx context.Context, dir, base string) ([]string, erro
 func (g Git) BranchExists(ctx context.Context, repo, branch string) bool {
 	_, err := g.run(ctx, repo, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch)
 	return err == nil
+}
+
+// Push publishes the work branch to origin under the same name. It never forces and re-checks
+// the branch guard itself, so no caller can push a protected branch through it.
+func (g Git) Push(ctx context.Context, dir, branch, base string) error {
+	if err := GuardWorkBranch(branch, base); err != nil {
+		return err
+	}
+	ref := "refs/heads/" + branch
+	_, err := g.run(ctx, dir, "push", "--quiet", "origin", ref+":"+ref)
+	return err
+}
+
+// RemoteBranchExists asks origin itself, not the possibly stale remote-tracking refs.
+func (g Git) RemoteBranchExists(ctx context.Context, repo, branch string) (bool, error) {
+	out, err := g.run(ctx, repo, "ls-remote", "--heads", "origin", "refs/heads/"+branch)
+	return out != "", err
+}
+
+// pushBlocked is a URL scheme with no git remote helper: rewriting push URLs to it makes every
+// push fail while fetch keeps the real URL.
+const pushBlocked = "delamain-push-blocked://"
+
+// AgentEnv is the environment agents run with: git push to any remote fails and the forge CLIs
+// lose their credentials, so only the orchestrator can publish work (after its own guards).
+func AgentEnv() []string {
+	prefixes := []string{"/", "https://", "http://", "ssh://", "git@", "git://", "file://"}
+	env := []string{fmt.Sprintf("GIT_CONFIG_COUNT=%d", len(prefixes))}
+	for i, p := range prefixes {
+		env = append(env, fmt.Sprintf("GIT_CONFIG_KEY_%d=url.%s.pushInsteadOf", i, pushBlocked), fmt.Sprintf("GIT_CONFIG_VALUE_%d=%s", i, p))
+	}
+	return append(env, "GH_TOKEN="+pushBlocked, "GITLAB_TOKEN="+pushBlocked)
 }
 
 // GuardWorkBranch refuses protected or base branches as the place agents write to.

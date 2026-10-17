@@ -18,6 +18,7 @@ import (
 
 	"github.com/paraizo/delamain/internal/artifacts"
 	"github.com/paraizo/delamain/internal/config"
+	"github.com/paraizo/delamain/internal/forge"
 	"github.com/paraizo/delamain/internal/gitx"
 	"github.com/paraizo/delamain/internal/herdr"
 	"github.com/paraizo/delamain/internal/omp"
@@ -48,6 +49,8 @@ type Git interface {
 	CurrentBranch(ctx context.Context, dir string) (string, error)
 	Status(ctx context.Context, dir string) (string, error)
 	CommitsSince(ctx context.Context, dir, base string) ([]string, error)
+	Push(ctx context.Context, dir, branch, base string) error
+	RemoteBranchExists(ctx context.Context, repo, branch string) (bool, error)
 }
 
 type Outcome string
@@ -72,6 +75,11 @@ type Result struct {
 	RunDir      string
 	ReportPath  string
 	History     []Iteration
+	PRURL       string
+	Draft       bool
+	// Delivery explains a skipped delivery; Warnings collect non-fatal forge failures.
+	Delivery string
+	Warnings []string
 }
 
 // Iteration records what happened in one implement → verify → review round.
@@ -95,7 +103,9 @@ type Runner struct {
 	Store         *store.Store
 	Prompts       *prompts.Set
 	PromptsTarget prompts.Target
-	Log           *slog.Logger
+	// Forge opens the PR/MR and updates the issue; nil keeps the work local (repo without origin).
+	Forge forge.Forge
+	Log   *slog.Logger
 	// Nonce makes check sentinels unguessable; overridable in tests.
 	Nonce func() string
 	// RetryInterval paces retries while a fresh pane's shell is still starting (default 1s).
@@ -123,6 +133,8 @@ type run struct {
 	planJSON  string
 	plan      artifacts.Plan
 	res       *Result
+	issue     int // forge issue number; 0 for local tasks
+	maxIter   int
 }
 
 // Run executes the task end to end. A non-nil error means the run could not even be recorded;
@@ -131,6 +143,7 @@ func (r *Runner) Run(ctx context.Context, t Task) (Result, error) {
 	res := Result{}
 	if problems := t.Preflight(); len(problems) > 0 {
 		res.Outcome, res.Reason = OutcomeNeedsInfo, strings.Join(problems, "; ")
+		r.needsInfo(ctx, t, problems, &res)
 		return res, nil
 	}
 	repo, err := r.Git.Toplevel(ctx, t.Repo)
@@ -148,15 +161,18 @@ func (r *Runner) Run(ctx context.Context, t Task) (Result, error) {
 	}
 	res.RunID = rec.ID
 	ru := &run{
-		rec:    rec,
-		task:   prompts.Issue{Ref: t.Ref, Title: t.Title, Body: t.Body, URL: t.URL, Kind: t.Kind},
-		dir:    filepath.Join(r.Cfg.Paths.StateDir, "runs", filepath.Base(repo), fmt.Sprintf("%d", rec.ID)),
-		agents: map[string]string{},
-		panes:  map[string]string{},
-		res:    &res,
+		rec:     rec,
+		task:    prompts.Issue{Ref: t.Ref, Title: t.Title, Body: t.Body, URL: t.URL, Kind: t.Kind},
+		dir:     filepath.Join(r.Cfg.Paths.StateDir, "runs", filepath.Base(repo), fmt.Sprintf("%d", rec.ID)),
+		agents:  map[string]string{},
+		panes:   map[string]string{},
+		res:     &res,
+		issue:   t.Issue,
+		maxIter: r.Cfg.Pipeline.MaxIterations,
 	}
 	ru.planPath, ru.planJSON = filepath.Join(ru.dir, "plan.md"), filepath.Join(ru.dir, "plan.json")
 	res.RunDir = ru.dir
+	r.issueUpdate(ctx, t, &res, []string{r.Cfg.Forge.Labels.InProgress}, []string{r.Cfg.Forge.Labels.Ready}, "")
 
 	defer r.cleanup(context.WithoutCancel(ctx), ru)
 	err = r.execute(ctx, ru, repo, t)
@@ -172,6 +188,8 @@ func (r *Runner) Run(ctx context.Context, t Task) (Result, error) {
 	if ru.repo.Worktree != "" {
 		res.Commits, _ = r.Git.CommitsSince(context.WithoutCancel(ctx), ru.repo.Worktree, ru.repo.Base)
 	}
+	r.deliver(context.WithoutCancel(ctx), ru)
+	r.announce(context.WithoutCancel(ctx), ru, t)
 	return res, r.record(context.WithoutCancel(ctx), ru)
 }
 
@@ -264,6 +282,9 @@ func (r *Runner) setup(ctx context.Context, ru *run, repo string, t Task) error 
 	if r.Git.BranchExists(ctx, repo, branch) {
 		return haltf("a branch %s já existe; remova-a ou finalize o trabalho anterior", branch)
 	}
+	if err := r.checkForge(ctx, repo, branch); err != nil {
+		return err
+	}
 	wtPath := filepath.Join(r.Cfg.Paths.WorktreesDir, filepath.Base(repo), branch)
 	if _, err := os.Stat(wtPath); err == nil {
 		return haltf("o caminho da worktree %s já existe", wtPath)
@@ -322,6 +343,10 @@ func (r *Runner) startAgent(ctx context.Context, ru *run, role string) error {
 	sessDir := filepath.Join(ru.dir, "sessions", role)
 	if err := os.MkdirAll(sessDir, 0o700); err != nil {
 		return err
+	}
+	// Only the orchestrator publishes work: the agent's shell gets an env where push fails.
+	if err := r.Herdr.PaneRun(ctx, ru.panes[role], "export "+strings.Join(gitx.AgentEnv(), " ")); err != nil {
+		return fmt.Errorf("agent env %s: %w", role, err)
 	}
 	o := r.Cfg.Omp
 	args := []string{
