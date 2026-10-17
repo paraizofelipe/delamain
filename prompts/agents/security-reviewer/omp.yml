@@ -1,0 +1,4 @@
+name: delamain-security-reviewer
+description: Revisa uma diff no eixo Segurança — OWASP Top 10, segredos, dados sensíveis, tratamento de erro e riscos operacionais. Somente leitura.
+tools: [read, grep, glob, lsp, bash]
+thinking-level: high

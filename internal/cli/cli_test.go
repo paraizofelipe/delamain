@@ -52,3 +52,38 @@ func TestVersionShouldPrintBuildVersion(t *testing.T) {
 		t.Fatalf("got %q %v", out, err)
 	}
 }
+
+func TestPromptsLintShouldPassForShippedPrompts(t *testing.T) {
+	out, err := execute(t, "--config", filepath.Join(t.TempDir(), "none.yaml"), "prompts", "lint")
+	if err != nil || !strings.Contains(out, "prompts válidos") {
+		t.Fatalf("got %q %v", out, err)
+	}
+}
+
+func TestPromptsRenderShouldUseOverrideDirWithoutRebuild(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "stages"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "stages", "handshake.md"), []byte("MEU HANDSHAKE {{.ArtifactPath}}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DELAMAIN_PROMPTS_DIR", dir)
+	out, err := execute(t, "--config", filepath.Join(t.TempDir(), "none.yaml"), "prompts", "render", "handshake")
+	if err != nil || !strings.HasPrefix(out, "MEU HANDSHAKE /tmp/run/") {
+		t.Fatalf("edited .md must take effect: %q %v", out, err)
+	}
+}
+
+func TestPromptsRenderShouldFailForUnknownStage(t *testing.T) {
+	if _, err := execute(t, "--config", filepath.Join(t.TempDir(), "none.yaml"), "prompts", "render", "deploy"); err == nil {
+		t.Fatal("unknown stage must fail")
+	}
+}
+
+func TestPromptsShouldFailWhenOverrideDirIsMissing(t *testing.T) {
+	t.Setenv("DELAMAIN_PROMPTS_DIR", filepath.Join(t.TempDir(), "absent"))
+	if _, err := execute(t, "--config", filepath.Join(t.TempDir(), "none.yaml"), "prompts", "lint"); err == nil {
+		t.Fatal("a typo in prompts_dir must not silently fall back to defaults")
+	}
+}

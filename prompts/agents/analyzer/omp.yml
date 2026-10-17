@@ -1,0 +1,4 @@
+name: delamain-analyzer
+description: Mapeia estrutura, convenções, comandos reais (teste, lint, typecheck), organização de testes e áreas impactadas de um repositório antes do planejamento. Somente leitura.
+tools: [read, grep, glob, lsp, bash]
+thinking-level: medium

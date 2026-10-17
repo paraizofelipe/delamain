@@ -38,7 +38,9 @@ type Herdr struct {
 }
 
 type Omp struct {
-	Binary       string `yaml:"binary"`
+	Binary string `yaml:"binary"`
+	// AgentDir is omp's agent directory, where delamain installs its agents and skills.
+	AgentDir     string `yaml:"agent_dir"`
 	Model        string `yaml:"model"`
 	Thinking     string `yaml:"thinking"`
 	ApprovalMode string `yaml:"approval_mode"`
@@ -65,12 +67,16 @@ type Paths struct {
 	PromptsDir string `yaml:"prompts_dir"`
 }
 
+// RolesDir holds installed role bodies passed to omp via --append-system-prompt.
+func (p Paths) RolesDir() string { return filepath.Join(p.StateDir, "prompts", "roles") }
+
 // Default returns the configuration used when no file or env override is present.
 func Default() Config {
 	return Config{
 		Herdr: Herdr{Binary: "herdr"},
 		Omp: Omp{
 			Binary:       "omp",
+			AgentDir:     "~/.omp/agent",
 			Model:        "openai-codex/gpt-5.6-terra",
 			Thinking:     "medium",
 			ApprovalMode: "yolo",
@@ -111,6 +117,7 @@ func Load(path string, getenv func(string) string) (Config, error) {
 	cfg.Paths.StateDir = expandHome(cfg.Paths.StateDir)
 	cfg.Paths.WorktreesDir = expandHome(cfg.Paths.WorktreesDir)
 	cfg.Paths.PromptsDir = expandHome(cfg.Paths.PromptsDir)
+	cfg.Omp.AgentDir = expandHome(cfg.Omp.AgentDir)
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
 	}
@@ -121,6 +128,7 @@ func applyEnv(cfg *Config, getenv func(string) string) error {
 	strs := map[string]*string{
 		"DELAMAIN_HERDR_SESSION": &cfg.Herdr.Session,
 		"DELAMAIN_OMP_MODEL":     &cfg.Omp.Model,
+		"DELAMAIN_OMP_AGENT_DIR": &cfg.Omp.AgentDir,
 		"DELAMAIN_STATE_DIR":     &cfg.Paths.StateDir,
 		"DELAMAIN_PROMPTS_DIR":   &cfg.Paths.PromptsDir,
 	}

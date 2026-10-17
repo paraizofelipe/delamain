@@ -6,9 +6,11 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"testing/fstest"
 
 	"github.com/paraizo/delamain/internal/config"
 	"github.com/paraizo/delamain/internal/herdr"
+	"github.com/paraizo/delamain/internal/prompts"
 )
 
 type fakeHerdr struct {
@@ -115,5 +117,51 @@ func TestFailedShouldIgnoreWarnings(t *testing.T) {
 	}
 	if !Failed([]Check{{Status: OK}, {Status: Fail}}) {
 		t.Fatal("any failure fails doctor")
+	}
+}
+
+func validPrompts(t *testing.T) *prompts.Set {
+	t.Helper()
+	s, err := prompts.Load(fstest.MapFS{
+		"manifest.yaml":           {Data: []byte("roles: [planner]\nagents: [analyzer]\nskills: [tdd]\nstages: [plan]\n")},
+		"roles/planner/body.md":   {Data: []byte("planner\n")},
+		"agents/analyzer/omp.yml": {Data: []byte("name: delamain-analyzer\ndescription: d\n")},
+		"agents/analyzer/body.md": {Data: []byte("analyzer\n")},
+		"skills/tdd/SKILL.md":     {Data: []byte("---\nname: delamain-tdd\ndescription: d\n---\nbody\n")},
+		"stages/plan.md":          {Data: []byte("{{.ArtifactPath}}")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+func TestRunShouldFailUntilPromptsAreInstalledAndPassAfter(t *testing.T) {
+	cfg, d := healthy(t)
+	d.Prompts = validPrompts(t)
+	d.PromptsTarget = prompts.Target{OmpAgentDir: t.TempDir(), RolesDir: t.TempDir()}
+	if c := byName(Run(context.Background(), cfg, d))["prompts"]; c.Status != Fail {
+		t.Fatalf("uninstalled prompts would leave omp without delamain agents: %+v", c)
+	}
+	if _, err := d.Prompts.Install(d.PromptsTarget); err != nil {
+		t.Fatal(err)
+	}
+	if c := byName(Run(context.Background(), cfg, d))["prompts"]; c.Status != OK {
+		t.Fatalf("installed prompts must pass: %+v", c)
+	}
+}
+
+func TestRunShouldWarnWhenInstalledPromptsAreOutdated(t *testing.T) {
+	cfg, d := healthy(t)
+	d.Prompts = validPrompts(t)
+	d.PromptsTarget = prompts.Target{OmpAgentDir: t.TempDir(), RolesDir: t.TempDir()}
+	if _, err := d.Prompts.Install(d.PromptsTarget); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(d.PromptsTarget.RolePath("planner"), []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if c := byName(Run(context.Background(), cfg, d))["prompts"]; c.Status != Warn {
+		t.Fatalf("outdated install is a warning: %+v", c)
 	}
 }

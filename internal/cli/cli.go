@@ -65,7 +65,14 @@ func NewRoot() *cobra.Command {
 				ctx, cancel := context.WithTimeout(cmd.Context(), 30*time.Second)
 				defer cancel()
 				h := herdr.New(herdr.ExecRunner{Binary: cfg.Herdr.Binary, Session: cfg.Herdr.Session})
-				checks := doctor.Run(ctx, cfg, doctor.Deps{LookPath: exec.LookPath, Version: binVersion, Herdr: h})
+				set, err := loadPrompts(cfg)
+				if err != nil {
+					return err
+				}
+				checks := doctor.Run(ctx, cfg, doctor.Deps{
+					LookPath: exec.LookPath, Version: binVersion, Herdr: h,
+					Prompts: set, PromptsTarget: promptsTarget(cfg),
+				})
 				if err := printChecks(cmd.OutOrStdout(), checks); err != nil {
 					return err
 				}
@@ -75,6 +82,7 @@ func NewRoot() *cobra.Command {
 				return nil
 			},
 		},
+		newPromptsCmd(load),
 	)
 	return root
 }
