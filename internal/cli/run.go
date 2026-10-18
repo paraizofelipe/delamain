@@ -36,16 +36,16 @@ func newRunCmd(load func() (config.Config, error)) *cobra.Command {
 	var taskFile, repo, kind string
 	var issue int
 	cmd := &cobra.Command{
-		Use:   "run (--task <arquivo.md> | --issue <n>) [--repo <caminho>]",
-		Short: "Executa uma task ou issue: plano, implementação TDD, verificação, revisão e PR/MR",
-		Long: `Executa uma task markdown ("# Título" + descrição com critérios de aceite) ou uma issue do
-GitHub/GitLab num repositório git. Cria uma worktree isolada em paths.worktrees_dir. Cada agente
-(planner, implementer, reviewer) roda como omp em modo RPC e só sobe na sua etapa; os gates rodam
-no próprio delamain. Acompanhe com "delamain logs <run> -f" e "delamain status <run>". Com --herdr
-(ou herdr.enabled), a run também ganha um workspace herdr com uma tab "checks" e uma tab por agente.
-No fim faz push da branch e abre o PR/MR (draft quando não aprovado). Nunca faz merge.
+		Use:   "run (--task <file.md> | --issue <n>) [--repo <path>]",
+		Short: "Run a task or issue: plan, TDD implementation, verification, review and PR/MR",
+		Long: `Runs a Markdown task ("# Title" + acceptance-criteria description) or a GitHub/GitLab issue
+in a git repository. Creates an isolated worktree at paths.worktrees_dir. Each agent
+(planner, implementer, reviewer) runs omp in RPC mode and starts only at its own stage; gates run
+in delamain itself. Follow it with "delamain logs <run> -f" and "delamain status <run>". With --herdr
+(or herdr.enabled), the run also receives a herdr workspace with a "checks" tab and one tab per agent.
+At the end it pushes the branch and opens the PR/MR (draft when not approved). It never merges.
 
-Códigos de saída: 0 aprovado · 1 interrompido · 3 iterações esgotadas · 4 task sem informação suficiente.`,
+Exit codes: 0 approved · 1 halted · 3 iterations exhausted · 4 task needs more information.`,
 		RunE: func(c *cobra.Command, _ []string) error {
 			cfg, err := load()
 			if err != nil {
@@ -87,17 +87,17 @@ Códigos de saída: 0 aprovado · 1 interrompido · 3 iterações esgotadas · 4
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&taskFile, "task", "", "arquivo markdown da task")
-	cmd.Flags().IntVar(&issue, "issue", 0, "número da issue no forge do origin")
-	cmd.Flags().StringVar(&repo, "repo", "", "repositório alvo (padrão: diretório atual)")
-	cmd.Flags().StringVar(&kind, "kind", "", "feature|bug (padrão: inferido do título)")
+	cmd.Flags().StringVar(&taskFile, "task", "", "task Markdown file")
+	cmd.Flags().IntVar(&issue, "issue", 0, "issue number in the origin forge")
+	cmd.Flags().StringVar(&repo, "repo", "", "target repository (default: current directory)")
+	cmd.Flags().StringVar(&kind, "kind", "", "feature|bug (default: inferred from the title)")
 	addHerdrFlag(cmd)
 	return cmd
 }
 
 // addHerdrFlag lets one execution show its runs in herdr, overriding herdr.enabled.
 func addHerdrFlag(cmd *cobra.Command) {
-	cmd.Flags().Bool("herdr", false, "mostra as runs em workspaces do herdr (padrão: herdr.enabled)")
+	cmd.Flags().Bool("herdr", false, "show runs in herdr workspaces (default: herdr.enabled)")
 }
 
 func applyHerdrFlag(c *cobra.Command, cfg *config.Config) {
