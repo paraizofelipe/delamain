@@ -1,0 +1,312 @@
+package rpc
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"os/signal"
+	"path/filepath"
+	"strings"
+	"sync"
+	"syscall"
+	"testing"
+	"time"
+)
+
+// The test binary doubles as a fake omp: with OMP_FAKE set it speaks the RPC protocol and
+// plays the scenario named by the variable. OMP_FAKE_TRACE receives every stdin line.
+func TestMain(m *testing.M) {
+	if s := os.Getenv("OMP_FAKE"); s != "" {
+		fakeOmp(s)
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
+}
+
+func emit(v any) {
+	b, _ := json.Marshal(v)
+	fmt.Println(string(b))
+}
+
+func assistant(stop, errMsg string, input int64) map[string]any {
+	return map[string]any{
+		"role": "assistant", "model": "gpt-test", "stopReason": stop, "errorMessage": errMsg,
+		"content": []any{map[string]any{"type": "text", "text": "DONE /tmp/x"}},
+		"usage":   map[string]any{"input": input, "output": 5, "cacheRead": 100, "cacheWrite": 7},
+	}
+}
+
+func fakeOmp(scenario string) {
+	trace, _ := os.OpenFile(os.Getenv("OMP_FAKE_TRACE"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	fmt.Fprintf(trace, "env GH_TOKEN=%s\n", os.Getenv("GH_TOKEN"))
+	if scenario == "noready" {
+		time.Sleep(time.Hour)
+	}
+	if scenario == "stubborn" {
+		// Ignores stdin EOF and leaves a child behind: only a group kill stops both.
+		_ = exec.Command("sleep", "3600").Start()
+		signal.Ignore(syscall.SIGTERM)
+	}
+	if scenario == "leaky" {
+		// Exits cleanly on EOF but leaves a tool process behind in its group.
+		_ = exec.Command("sleep", "3600").Start()
+	}
+	emit(map[string]any{"type": "ready", "protocolVersion": 1})
+	emit(map[string]any{"type": "extension_ui_request", "id": "w1", "method": "setWidget", "widgetKey": "x"})
+	in := bufio.NewScanner(os.Stdin)
+	for in.Scan() {
+		line := in.Text()
+		fmt.Fprintln(trace, line)
+		var cmd struct{ ID, Type string }
+		_ = json.Unmarshal([]byte(line), &cmd)
+		switch cmd.Type {
+		case "abort":
+			emit(map[string]any{"id": cmd.ID, "type": "response", "command": "abort", "success": true})
+			emit(map[string]any{"type": "message_end", "message": assistant("aborted", "Interrupted by user", 0)})
+			emit(map[string]any{"type": "agent_end", "messages": []any{}})
+		case "prompt":
+			playPrompt(scenario, cmd.ID)
+		}
+	}
+	if scenario == "stubborn" {
+		time.Sleep(time.Hour)
+	}
+}
+
+func playPrompt(scenario, id string) {
+	ack := map[string]any{"id": id, "type": "response", "command": "prompt", "success": true}
+	switch scenario {
+	case "ok", "stubborn":
+		emit(map[string]any{"type": "agent_start"})
+		emit(ack)
+		emit(map[string]any{"type": "tool_execution_start", "toolName": "bash", "intent": "rodar testes", "args": map[string]any{"command": "go test"}})
+		emit(map[string]any{"type": "message_end", "message": map[string]any{"role": "user", "content": "x"}})
+		emit(map[string]any{"type": "message_end", "message": assistant("toolUse", "", 900)})
+		emit(map[string]any{"type": "agent_end", "isTerminal": false}) // async continuation: not the end
+		emit(map[string]any{"type": "message_end", "message": assistant("stop", "", 1200)})
+		emit(map[string]any{"type": "agent_end", "messages": []any{}})
+	case "error401":
+		emit(ack)
+		emit(map[string]any{"type": "message_end", "message": assistant("error", "401 Invalid API Key", 0)})
+		emit(map[string]any{"type": "agent_end"})
+	case "nocreds":
+		emit(ack)
+		emit(map[string]any{"id": id, "type": "response", "command": "prompt", "success": false, "error": "No API key found for groq."})
+	case "local":
+		emit(map[string]any{"id": id, "type": "response", "command": "prompt", "success": true, "data": map[string]any{"agentInvoked": false}})
+	case "garbage":
+		fmt.Println("this is not json")
+		emit(map[string]any{"type": "brand_new_event", "x": 1})
+		emit(map[string]any{"type": "notice", "level": "warning", "message": "context almost full"})
+		emit(ack)
+		emit(map[string]any{"type": "extension_ui_request", "id": "ui-7", "method": "confirm", "title": "ok?", "message": "?"})
+		emit(map[string]any{"type": "message_end", "message": assistant("stop", "", 10)})
+		emit(map[string]any{"type": "agent_end"})
+	case "hang":
+		emit(ack) // never ends on its own: only abort finishes the turn
+	case "die":
+		emit(ack)
+		os.Exit(3)
+	}
+}
+
+type harness struct {
+	trace string
+	log   *syncBuffer
+}
+
+type syncBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
+}
+
+func start(t *testing.T, scenario string, mod ...func(*Options)) (*Client, *harness) {
+	t.Helper()
+	h := &harness{trace: filepath.Join(t.TempDir(), "trace"), log: &syncBuffer{}}
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := Options{
+		Binary: self, Dir: t.TempDir(), Args: []string{"--mode", "rpc"},
+		Env: []string{"OMP_FAKE=" + scenario, "OMP_FAKE_TRACE=" + h.trace, "GORACE=atexit_sleep_ms=0"},
+		Log: h.log, ReadyTimeout: 5 * time.Second, CloseTimeout: 2 * time.Second,
+	}
+	for _, m := range mod {
+		m(&o)
+	}
+	c, err := Start(context.Background(), o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+	return c, h
+}
+
+func (h *harness) lines(t *testing.T) []string {
+	t.Helper()
+	b, _ := os.ReadFile(h.trace)
+	return strings.Split(strings.TrimSpace(string(b)), "\n")
+}
+
+func TestPromptShouldReturnTheFinalAssistantMessageOfTheTurn(t *testing.T) {
+	c, h := start(t, "ok")
+	turn, err := c.Prompt(context.Background(), "implemente", 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if turn.StopReason != "stop" || turn.Failed() || turn.Model != "gpt-test" || turn.Usage.Input != 1200 {
+		t.Fatalf("a non-terminal agent_end must not end the turn early: %+v", turn)
+	}
+	log := h.log.String()
+	for _, want := range []string{"bash", "rodar testes", "DONE /tmp/x", "fim do turno"} {
+		if !strings.Contains(log, want) {
+			t.Errorf("the human log must show %q:\n%s", want, log)
+		}
+	}
+}
+
+func TestPromptShouldSurfaceProviderErrorsFromTheTurn(t *testing.T) {
+	c, _ := start(t, "error401")
+	turn, err := c.Prompt(context.Background(), "x", 5*time.Second)
+	if err != nil || !turn.Failed() || !strings.Contains(turn.ErrorMessage, "401") {
+		t.Fatalf("a provider error is a failed turn, not a success: %+v err=%v", turn, err)
+	}
+}
+
+func TestPromptShouldEndWhenTheScheduledPromptFailsWithoutAgentEnd(t *testing.T) {
+	c, _ := start(t, "nocreds")
+	began := time.Now()
+	_, err := c.Prompt(context.Background(), "x", 5*time.Second)
+	if err == nil || !strings.Contains(err.Error(), "No API key") {
+		t.Fatalf("missing credentials must fail the prompt, got %v", err)
+	}
+	if time.Since(began) > 2*time.Second {
+		t.Fatal("the same-id failure response ends the turn; it must not wait for the timeout")
+	}
+}
+
+func TestPromptShouldEndWhenTheAgentIsNotInvoked(t *testing.T) {
+	c, _ := start(t, "local")
+	if _, err := c.Prompt(context.Background(), "/compact", 5*time.Second); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPromptShouldIgnoreUnknownFramesAndCancelInteractiveUIRequests(t *testing.T) {
+	c, h := start(t, "garbage")
+	if turn, err := c.Prompt(context.Background(), "x", 5*time.Second); err != nil || turn.StopReason != "stop" {
+		t.Fatalf("got %+v %v", turn, err)
+	}
+	if !strings.Contains(h.log.String(), "context almost full") {
+		t.Errorf("notices must reach the human log:\n%s", h.log.String())
+	}
+	var reply string
+	for _, l := range h.lines(t) {
+		if strings.Contains(l, "extension_ui_response") {
+			reply = l
+		}
+	}
+	if !strings.Contains(reply, `"id":"ui-7"`) || !strings.Contains(reply, `"cancelled":true`) {
+		t.Fatalf("an unanswered dialog deadlocks omp; it must be cancelled, trace=%v", h.lines(t))
+	}
+	if strings.Contains(strings.Join(h.lines(t), "\n"), `"id":"w1"`) {
+		t.Fatal("fire-and-forget UI requests take no reply")
+	}
+}
+
+func TestPromptShouldAbortTheTurnWhenItTimesOut(t *testing.T) {
+	c, h := start(t, "hang")
+	_, err := c.Prompt(context.Background(), "x", 300*time.Millisecond)
+	if !errors.Is(err, ErrTimeout) {
+		t.Fatalf("err = %v, want ErrTimeout", err)
+	}
+	if !strings.Contains(strings.Join(h.lines(t), "\n"), `"type":"abort"`) {
+		t.Fatal("a timed-out turn must be aborted so it stops spending")
+	}
+}
+
+func TestAbortShouldEndTheRunningTurnAsAborted(t *testing.T) {
+	c, _ := start(t, "hang")
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		_ = c.Abort()
+	}()
+	turn, err := c.Prompt(context.Background(), "x", 10*time.Second)
+	if err != nil || turn.StopReason != "aborted" {
+		t.Fatalf("got %+v %v", turn, err)
+	}
+}
+
+func TestPromptShouldFailWhenOmpExitsMidTurn(t *testing.T) {
+	c, _ := start(t, "die")
+	if _, err := c.Prompt(context.Background(), "x", 5*time.Second); err == nil || !strings.Contains(err.Error(), "omp") {
+		t.Fatalf("a dead agent must fail the turn instead of hanging, got %v", err)
+	}
+}
+
+func TestStartShouldFailWhenOmpNeverBecomesReady(t *testing.T) {
+	_, err := func() (*Client, error) {
+		self, _ := os.Executable()
+		return Start(context.Background(), Options{
+			Binary: self, Dir: t.TempDir(), Env: []string{"OMP_FAKE=noready"},
+			Log: &syncBuffer{}, ReadyTimeout: 300 * time.Millisecond, CloseTimeout: time.Second,
+		})
+	}()
+	if err == nil {
+		t.Fatal("an agent that never signals ready must not be used")
+	}
+}
+
+func TestStartShouldLetOptionsEnvOverrideTheInheritedOne(t *testing.T) {
+	t.Setenv("GH_TOKEN", "real-token")
+	_, h := start(t, "ok", func(o *Options) { o.Env = append(o.Env, "GH_TOKEN=blocked://") })
+	if got := h.lines(t)[0]; got != "env GH_TOKEN=blocked://" {
+		t.Fatalf("the push-blocking env must win over the user's token, got %q", got)
+	}
+}
+
+func TestCloseShouldKillTheWholeProcessGroupWhenOmpIgnoresEOF(t *testing.T) {
+	c, _ := start(t, "stubborn")
+	pgid := c.PID()
+	began := time.Now()
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if time.Since(began) > 5*time.Second {
+		t.Fatal("close must not wait forever for a stubborn agent")
+	}
+	time.Sleep(100 * time.Millisecond)
+	if err := syscall.Kill(-pgid, 0); !errors.Is(err, syscall.ESRCH) {
+		t.Fatalf("the agent's children must die with it, kill -0 = %v", err)
+	}
+}
+
+func TestCloseShouldKillToolsLeftBehindByACleanExit(t *testing.T) {
+	c, _ := start(t, "leaky")
+	pgid := c.PID()
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if err := syscall.Kill(-pgid, 0); !errors.Is(err, syscall.ESRCH) {
+		t.Fatalf("a tool omp left running must not outlive the session, kill -0 = %v", err)
+	}
+}
