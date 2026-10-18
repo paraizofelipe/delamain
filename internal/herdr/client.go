@@ -70,17 +70,11 @@ func commandLabel(args []string) string {
 	return strings.Join(parts, " ")
 }
 
-// Known error codes the pipeline reacts to.
+// Error codes: CodeTimeout comes from herdr (e.g. wait-output); the others are set by Client.
 const (
-	CodeAgentNameTaken     = "agent_name_taken"
-	CodeAgentNotFound      = "agent_not_found"
-	CodeAgentNotReady      = "agent_not_ready"
-	CodeAgentPaneBusy      = "agent_pane_busy"
-	CodeAgentBlocked       = "agent_blocked"
-	CodeAgentPromptStalled = "agent_prompt_stalled"
-	CodeTimeout            = "timeout"
-	codeUsage              = "usage"
-	codeExec               = "exec"
+	CodeTimeout = "timeout"
+	codeUsage   = "usage"
+	codeExec    = "exec"
 )
 
 // IsCode reports whether err is a herdr Error with the given code.
@@ -89,32 +83,14 @@ func IsCode(err error, code string) bool {
 	return errors.As(err, &he) && he.Code == code
 }
 
-// Agent status values reported by herdr.
-const (
-	StatusIdle    = "idle"
-	StatusWorking = "working"
-	StatusBlocked = "blocked"
-	StatusDone    = "done"
-	StatusUnknown = "unknown"
-)
-
 type Agent struct {
-	Name             string       `json:"name"`
-	Kind             string       `json:"agent"`
-	Status           string       `json:"agent_status"`
-	PaneID           string       `json:"pane_id"`
-	TabID            string       `json:"tab_id"`
-	WorkspaceID      string       `json:"workspace_id"`
-	Cwd              string       `json:"cwd"`
-	InteractiveReady bool         `json:"interactive_ready"`
-	Session          AgentSession `json:"agent_session"`
-}
-
-// AgentSession is the native session reference reported by the herdr integration.
-// For omp it is the session JSONL path (kind "path").
-type AgentSession struct {
-	Kind  string `json:"kind"`
-	Value string `json:"value"`
+	Name        string `json:"name"`
+	Kind        string `json:"agent"`
+	Status      string `json:"agent_status"`
+	PaneID      string `json:"pane_id"`
+	TabID       string `json:"tab_id"`
+	WorkspaceID string `json:"workspace_id"`
+	Cwd         string `json:"cwd"`
 }
 
 type Worktree struct {
@@ -287,48 +263,12 @@ func (c *Client) TabRename(ctx context.Context, tab, label string) error {
 	return c.runJSON(ctx, nil, "tab", "rename", tab, label)
 }
 
-// AgentStart launches an agent of kind in an idle shell pane. agentArgs go after "--".
-func (c *Client) AgentStart(ctx context.Context, name, kind, pane string, timeout time.Duration, agentArgs ...string) (Agent, error) {
-	args := []string{"agent", "start", name, "--kind", kind, "--pane", pane, "--timeout", ms(timeout)}
-	if len(agentArgs) > 0 {
-		args = append(append(args, "--"), agentArgs...)
-	}
-	var res struct {
-		Agent Agent `json:"agent"`
-	}
-	err := c.runJSON(ctx, &res, args...)
-	return res.Agent, err
-}
-
-// AgentPrompt submits text and waits for the first settled state (idle, done or blocked).
-// A timeout or stall does not prove the prompt was not delivered: never resubmit blindly.
-func (c *Client) AgentPrompt(ctx context.Context, target, text string, timeout time.Duration) (Agent, error) {
-	var res struct {
-		Agent Agent `json:"agent"`
-	}
-	err := c.runJSON(ctx, &res, "agent", "prompt", target, text, "--wait", "--timeout", ms(timeout))
-	return res.Agent, err
-}
-
-func (c *Client) AgentGet(ctx context.Context, target string) (Agent, error) {
-	var res struct {
-		Agent Agent `json:"agent"`
-	}
-	err := c.runJSON(ctx, &res, "agent", "get", target)
-	return res.Agent, err
-}
-
 func (c *Client) AgentList(ctx context.Context) ([]Agent, error) {
 	var res struct {
 		Agents []Agent `json:"agents"`
 	}
 	err := c.runJSON(ctx, &res, "agent", "list")
 	return res.Agents, err
-}
-
-// AgentSendKeys sends logical keys such as "esc", "ctrl+c" or "ctrl+d".
-func (c *Client) AgentSendKeys(ctx context.Context, target string, keys ...string) error {
-	return c.runJSON(ctx, nil, append([]string{"agent", "send-keys", target}, keys...)...)
 }
 
 // PaneRun sends a command line followed by Enter.
@@ -343,12 +283,6 @@ func (c *Client) PaneWaitOutput(ctx context.Context, pane, regex string, timeout
 	}
 	err := c.runJSON(ctx, &res, "pane", "wait-output", pane, "--regex", regex, "--source", "recent-unwrapped", "--timeout", ms(timeout))
 	return res.MatchedLine, err
-}
-
-// PaneRead returns the last lines of recent unwrapped text.
-func (c *Client) PaneRead(ctx context.Context, pane string, lines int) (string, error) {
-	out, err := c.run(ctx, "pane", "read", pane, "--source", "recent-unwrapped", "--lines", strconv.Itoa(lines))
-	return string(out), err
 }
 
 // IntegrationStatus returns the installation state of a built-in integration (e.g. "current", "not installed").
@@ -369,15 +303,6 @@ func (c *Client) IntegrationStatus(ctx context.Context, name string) (string, er
 		return v, nil
 	}
 	return "", fmt.Errorf("herdr integration status: %q not listed", name)
-}
-
-// AgentWait waits for the first settled state (idle, done or blocked) of an agent.
-func (c *Client) AgentWait(ctx context.Context, target string, timeout time.Duration) (Agent, error) {
-	var res struct {
-		Agent Agent `json:"agent"`
-	}
-	err := c.runJSON(ctx, &res, "agent", "wait", target, "--timeout", ms(timeout))
-	return res.Agent, err
 }
 
 // WorkspaceClose closes a workspace created by delamain. It never passes --group.

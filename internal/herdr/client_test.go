@@ -5,11 +5,9 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"reflect"
 	"slices"
 	"strings"
 	"testing"
-	"time"
 )
 
 // fakeRunner returns canned output per command prefix and records calls.
@@ -37,8 +35,8 @@ func (f *fakeRunner) Run(_ context.Context, args ...string) ([]byte, []byte, err
 // Fixtures captured from herdr 0.9.3 during the M0 spike.
 const (
 	worktreeCreateJSON = `{"id":"cli:worktree:create","result":{"root_pane":{"pane_id":"w2:p1"},"tab":{"tab_id":"w2:t1"},"workspace":{"workspace_id":"w2"},"worktree":{"branch":"fix/1-add","is_linked_worktree":true,"path":"/tmp/wt-fix-1-add"}}}`
-	agentPromptJSON    = `{"id":"cli:agent:prompt","result":{"agent":{"agent":"omp","agent_session":{"agent":"omp","kind":"path","source":"herdr:omp","value":"/tmp/sessions/implementer/s.jsonl"},"agent_status":"done","cwd":"/tmp/wt","interactive_ready":true,"name":"implementer","pane_id":"w2:p1","tab_id":"w2:t1","workspace_id":"w2"}}}`
-	agentNotFoundJSON  = `{"error":{"code":"agent_not_found","message":"agent target nonexistent not found"},"id":"cli:agent:get"}`
+	agentListJSON      = `{"id":"cli:agent:list","result":{"agents":[{"agent":"omp","agent_status":"done","cwd":"/tmp/wt","name":"implementer","pane_id":"w2:p1","tab_id":"w2:t1","workspace_id":"w2"}]}}`
+	serverDownJSON     = `{"error":{"code":"server_unavailable","message":"server is shutting down"},"id":"cli:agent:list"}`
 	integrationStatus  = "pi: not installed (/home/u/.pi/agent/extensions/herdr-agent-state.ts)\nomp: current (v10) (/home/u/.omp/agent/extensions/herdr-omp-agent-state.ts)\n"
 	tabCreateJSON      = `{"id":"cli:tab:create","result":{"root_pane":{"agent_status":"unknown","pane_id":"w2D:p2","tab_id":"w2D:t2","workspace_id":"w2D"},"tab":{"agent_status":"unknown","focused":false,"label":"planner","number":2,"tab_id":"w2D:t2"},"type":"tab_created"}}` // herdr 0.9.3, tab spike
 	sessionListJSON    = `{"sessions":[{"default":true,"name":"default","running":true,"socket_path":"/d.sock"},{"default":false,"name":"delamain-spike","running":true,"socket_path":"/s.sock"},{"default":false,"name":"old","running":false,"socket_path":"/o.sock"}]}`
@@ -98,52 +96,37 @@ func TestTabRenameShouldSendTheLabelAsOneArgument(t *testing.T) {
 	}
 }
 
-func TestAgentPromptShouldExposeSessionPathForTokenAccounting(t *testing.T) {
-	f := &fakeRunner{responses: map[string]fakeResp{"agent prompt": {stdout: agentPromptJSON}}}
-	a, err := New(f).AgentPrompt(context.Background(), "implementer", "do it", 90*time.Second)
+func TestAgentListShouldParseTheWorkspaceOfEachAgent(t *testing.T) {
+	f := &fakeRunner{responses: map[string]fakeResp{"agent list": {stdout: agentListJSON}}}
+	as, err := New(f).AgentList(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if a.Status != StatusDone || a.Session.Value != "/tmp/sessions/implementer/s.jsonl" || a.Kind != "omp" {
-		t.Fatalf("unexpected agent: %+v", a)
-	}
-	want := []string{"agent", "prompt", "implementer", "do it", "--wait", "--timeout", "90000"}
-	if !reflect.DeepEqual(f.calls[0], want) {
-		t.Fatalf("args %v want %v", f.calls[0], want)
-	}
-}
-
-func TestAgentStartShouldPassAgentArgsAfterDoubleDash(t *testing.T) {
-	f := &fakeRunner{responses: map[string]fakeResp{"agent start": {stdout: `{"result":{"agent":{"name":"planner","agent_status":"idle"}}}`}}}
-	_, err := New(f).AgentStart(context.Background(), "planner", "omp", "w2:p1", time.Minute, "--model", "m", "--approval-mode", "yolo")
-	if err != nil {
-		t.Fatal(err)
-	}
-	got := strings.Join(f.calls[0], " ")
-	if !strings.HasSuffix(got, "--timeout 60000 -- --model m --approval-mode yolo") {
-		t.Fatalf("native agent args must follow --: %s", got)
+	// The restored-workspace guard matches agents by workspace.
+	if len(as) != 1 || as[0].Name != "implementer" || as[0].WorkspaceID != "w2" || as[0].Status != "done" {
+		t.Fatalf("unexpected agents: %+v", as)
 	}
 }
 
 func TestRunShouldDecodeStructuredErrorFromStderr(t *testing.T) {
-	f := &fakeRunner{responses: map[string]fakeResp{"agent get": {stderr: agentNotFoundJSON, err: errors.New("exit status 1")}}}
-	_, err := New(f).AgentGet(context.Background(), "nonexistent")
-	if !IsCode(err, CodeAgentNotFound) {
-		t.Fatalf("want agent_not_found, got %v", err)
+	f := &fakeRunner{responses: map[string]fakeResp{"agent list": {stderr: serverDownJSON, err: errors.New("exit status 1")}}}
+	_, err := New(f).AgentList(context.Background())
+	if !IsCode(err, "server_unavailable") {
+		t.Fatalf("want server_unavailable, got %v", err)
 	}
 }
 
 func TestRunShouldDecodeStructuredErrorPrintedOnStdout(t *testing.T) {
-	f := &fakeRunner{responses: map[string]fakeResp{"agent get": {stdout: agentNotFoundJSON, err: errors.New("exit status 1")}}}
-	_, err := New(f).AgentGet(context.Background(), "x")
-	if !IsCode(err, CodeAgentNotFound) {
-		t.Fatalf("want agent_not_found from stdout fallback, got %v", err)
+	f := &fakeRunner{responses: map[string]fakeResp{"agent list": {stdout: serverDownJSON, err: errors.New("exit status 1")}}}
+	_, err := New(f).AgentList(context.Background())
+	if !IsCode(err, "server_unavailable") {
+		t.Fatalf("want server_unavailable from stdout fallback, got %v", err)
 	}
 }
 
 func TestRunShouldWrapUnstructuredFailureWithStderrText(t *testing.T) {
-	f := &fakeRunner{responses: map[string]fakeResp{"agent get": {stderr: "boom", err: errors.New("exit status 9")}}}
-	_, err := New(f).AgentGet(context.Background(), "x")
+	f := &fakeRunner{responses: map[string]fakeResp{"agent list": {stderr: "boom", err: errors.New("exit status 9")}}}
+	_, err := New(f).AgentList(context.Background())
 	var he *Error
 	if !errors.As(err, &he) || he.Message != "boom" {
 		t.Fatalf("want wrapped error carrying stderr, got %v", err)
@@ -151,8 +134,8 @@ func TestRunShouldWrapUnstructuredFailureWithStderrText(t *testing.T) {
 }
 
 func TestRunShouldReportInvalidJSONResponse(t *testing.T) {
-	f := &fakeRunner{responses: map[string]fakeResp{"agent get": {stdout: "not json"}}}
-	if _, err := New(f).AgentGet(context.Background(), "x"); err == nil {
+	f := &fakeRunner{responses: map[string]fakeResp{"agent list": {stdout: "not json"}}}
+	if _, err := New(f).AgentList(context.Background()); err == nil {
 		t.Fatal("garbage output must not be treated as success")
 	}
 }
@@ -171,20 +154,15 @@ func TestIntegrationStatusShouldReturnStateWithoutVersionAndPath(t *testing.T) {
 	}
 }
 
-func TestSocketPathShouldResolveDefaultNamedAndStoppedSessions(t *testing.T) {
+func TestSessionsShouldReportWhichSessionsAreRunning(t *testing.T) {
 	f := &fakeRunner{responses: map[string]fakeResp{"session list": {stdout: sessionListJSON}}}
-	c := New(f)
-	if p, err := c.SocketPath(context.Background(), ""); err != nil || p != "/d.sock" {
-		t.Fatalf("default: %q %v", p, err)
+	ss, err := New(f).Sessions(context.Background())
+	if err != nil {
+		t.Fatal(err)
 	}
-	if p, err := c.SocketPath(context.Background(), "delamain-spike"); err != nil || p != "/s.sock" {
-		t.Fatalf("named: %q %v", p, err)
-	}
-	if _, err := c.SocketPath(context.Background(), "old"); err == nil {
-		t.Fatal("a stopped session has no live socket")
-	}
-	if _, err := c.SocketPath(context.Background(), "ghost"); err == nil {
-		t.Fatal("unknown session must fail")
+	// doctor requires a running server: a stopped session must not look alive.
+	if len(ss) != 3 || !ss[0].Default || !ss[0].Running || ss[2].Name != "old" || ss[2].Running {
+		t.Fatalf("unexpected sessions: %+v", ss)
 	}
 }
 
@@ -218,29 +196,29 @@ func TestClientShouldMapExitCodeTwoToUsageError(t *testing.T) {
 	}
 }
 
-func TestErrorShouldNotEmbedPromptTextInMessage(t *testing.T) {
-	prompt := strings.Repeat("instrução longa\n", 50)
-	f := &fakeRunner{responses: map[string]fakeResp{"agent prompt": {stderr: `{"error":{"code":"server_unavailable","message":"server is shutting down"}}`, err: errors.New("exit 1")}}}
-	_, err := New(f).AgentPrompt(context.Background(), "implementer-r1", prompt, time.Second)
+func TestErrorShouldNotEmbedCommandPayloadInMessage(t *testing.T) {
+	payload := strings.Repeat("comando longo\n", 50)
+	f := &fakeRunner{responses: map[string]fakeResp{"pane run": {stderr: serverDownJSON, err: errors.New("exit 1")}}}
+	err := New(f).PaneRun(context.Background(), "w2:p1", payload)
 	msg := err.Error()
-	if strings.Contains(msg, "instrução longa") || len(msg) > 200 {
+	if strings.Contains(msg, "comando longo") || len(msg) > 200 {
 		t.Fatalf("error must stay short and payload-free: %q", msg)
 	}
-	if !strings.Contains(msg, "agent prompt implementer-r1") || !strings.Contains(msg, "server is shutting down") {
+	if !strings.Contains(msg, "pane run w2:p1") || !strings.Contains(msg, "server is shutting down") {
 		t.Fatalf("error must keep command, target and cause: %q", msg)
 	}
 }
 
 func TestMutatingCommandsShouldAcceptEmptySuccessOutput(t *testing.T) {
-	f := &fakeRunner{responses: map[string]fakeResp{"pane run": {stdout: ""}, "agent send-keys": {stdout: "\n"}, "agent get": {stdout: ""}}}
+	f := &fakeRunner{responses: map[string]fakeResp{"pane run": {stdout: ""}, "tab rename": {stdout: "\n"}, "agent list": {stdout: ""}}}
 	c := New(f)
 	if err := c.PaneRun(context.Background(), "w1:p1", "go test ./..."); err != nil {
 		t.Fatalf("herdr prints nothing on a successful pane run: %v", err)
 	}
-	if err := c.AgentSendKeys(context.Background(), "a", "ctrl+d"); err != nil {
-		t.Fatalf("send-keys: %v", err)
+	if err := c.TabRename(context.Background(), "w1:t2", "planner ✓"); err != nil {
+		t.Fatalf("tab rename: %v", err)
 	}
-	if _, err := c.AgentGet(context.Background(), "a"); err == nil {
+	if _, err := c.AgentList(context.Background()); err == nil {
 		t.Fatal("a query that must return data cannot succeed on empty output")
 	}
 }
