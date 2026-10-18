@@ -17,10 +17,10 @@ dist:
 	rm -rf dist && mkdir -p dist
 	for p in $(PLATFORMS); do \
 		os=$${p%/*}; arch=$${p#*/}; \
-		CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch timeout 300s go build -trimpath -ldflags '$(LDFLAGS)' \
+		CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch go build -trimpath -ldflags '$(LDFLAGS)' \
 			-o dist/delamain_$${os}_$${arch} ./cmd/delamain || exit 1; \
 	done
-	cd dist && sha256sum delamain_* > checksums.txt
+	cd dist && shasum -a 256 delamain_* > checksums.txt
 
 # make bump [BUMP=patch|minor|major]: rewrites VERSION; commit it and merge to main to release.
 bump:
