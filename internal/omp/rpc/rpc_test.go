@@ -37,7 +37,7 @@ func assistant(stop, errMsg string, input int64) map[string]any {
 	return map[string]any{
 		"role": "assistant", "model": "gpt-test", "stopReason": stop, "errorMessage": errMsg,
 		"content": []any{map[string]any{"type": "text", "text": "DONE /tmp/x"}},
-		"usage":   map[string]any{"input": input, "output": 5, "cacheRead": 100, "cacheWrite": 7},
+		"usage":   map[string]any{"input": input, "output": 5, "cacheRead": 100, "cacheWrite": 7, "cost": map[string]any{"total": 0.5}},
 	}
 }
 
@@ -87,7 +87,8 @@ func playPrompt(scenario, id string) {
 		emit(map[string]any{"type": "tool_execution_start", "toolName": "bash", "intent": "rodar testes", "args": map[string]any{"command": "go test"}})
 		emit(map[string]any{"type": "message_end", "message": map[string]any{"role": "user", "content": "x"}})
 		emit(map[string]any{"type": "message_end", "message": assistant("toolUse", "", 900)})
-		emit(map[string]any{"type": "agent_end", "isTerminal": false}) // async continuation: not the end
+		emit(map[string]any{"type": "turn_end", "message": assistant("toolUse", "", 900)}) // repeats the message: not new usage
+		emit(map[string]any{"type": "agent_end", "isTerminal": false})                     // async continuation: not the end
 		emit(map[string]any{"type": "message_end", "message": assistant("stop", "", 1200)})
 		emit(map[string]any{"type": "agent_end", "messages": []any{}})
 	case "error401":
@@ -109,6 +110,7 @@ func playPrompt(scenario, id string) {
 		emit(map[string]any{"type": "agent_end"})
 	case "hang":
 		emit(ack) // never ends on its own: only abort finishes the turn
+		emit(map[string]any{"type": "message_end", "message": assistant("toolUse", "", 4000)})
 	case "die":
 		emit(ack)
 		os.Exit(3)
@@ -230,6 +232,39 @@ func TestPromptShouldIgnoreUnknownFramesAndCancelInteractiveUIRequests(t *testin
 	if strings.Contains(strings.Join(h.lines(t), "\n"), `"id":"w1"`) {
 		t.Fatal("fire-and-forget UI requests take no reply")
 	}
+}
+
+func TestSpentShouldSumEveryAssistantMessageAcrossTurns(t *testing.T) {
+	c, _ := start(t, "ok")
+	for range 2 {
+		if _, err := c.Prompt(context.Background(), "x", 5*time.Second); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Per turn: 900 + 1200 input. turn_end repeats a message and user messages carry no usage.
+	got := c.Spent()
+	if got.Input != 4200 || got.Output != 20 || got.CacheWrite != 28 || got.Cost.Total != 2 {
+		t.Fatalf("spent = %+v", got)
+	}
+}
+
+func TestSpentShouldReportUsageWhileATurnIsInFlight(t *testing.T) {
+	c, _ := start(t, "hang")
+	ended := make(chan struct{})
+	go func() {
+		defer close(ended)
+		_, _ = c.Prompt(context.Background(), "x", 10*time.Second)
+	}()
+	// The budget watcher reads this mid-turn, before omp writes the session file.
+	deadline := time.Now().Add(5 * time.Second)
+	for c.Spent().Input != 4000 {
+		if time.Now().After(deadline) {
+			t.Fatalf("usage of the turn in flight never showed up: %+v", c.Spent())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	_ = c.Abort()
+	<-ended
 }
 
 func TestPromptShouldAbortTheTurnWhenItTimesOut(t *testing.T) {

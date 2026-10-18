@@ -20,6 +20,8 @@ type Agent interface {
 	Prompt(ctx context.Context, text string, timeout time.Duration) (rpc.Turn, error)
 	// Abort stops the turn in flight, which then ends with StopReason "aborted".
 	Abort() error
+	// Spent is the session's usage as reported live, ahead of what omp has written to disk.
+	Spent() rpc.Usage
 	Close() error
 }
 

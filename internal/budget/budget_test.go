@@ -61,7 +61,7 @@ func TestCheckShouldCountAllRolesAndSubagentsExcludingCacheRead(t *testing.T) {
 	turn(t, filepath.Join(f.dir, "planner", "s", "Analyze.jsonl"), 200, 0, 0, 0, 0.2)
 	turn(t, filepath.Join(f.dir, "reviewer", "r.jsonl"), 40, 0, 0, 0, 0.05)
 
-	s, err := f.m.Check(context.Background(), id, f.dir)
+	s, err := f.m.Check(context.Background(), id, f.dir, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,12 +79,12 @@ func TestCheckShouldNotDoubleCountWhenCalledRepeatedly(t *testing.T) {
 	p := filepath.Join(f.dir, "implementer", "s.jsonl")
 	turn(t, p, 100, 0, 0, 0, 0)
 	for range 3 {
-		if _, err := f.m.Check(context.Background(), id, f.dir); err != nil {
+		if _, err := f.m.Check(context.Background(), id, f.dir, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
 	turn(t, p, 50, 0, 0, 0, 0)
-	s, _ := f.m.Check(context.Background(), id, f.dir)
+	s, _ := f.m.Check(context.Background(), id, f.dir, nil)
 	if s.Run != 150 {
 		t.Fatalf("watcher ticks re-read the same files: spent must be 150, got %v", s.Run)
 	}
@@ -100,7 +100,7 @@ func TestCheckShouldGoSoftThenHardAtTheIssueLimit(t *testing.T) {
 	}{{799, OK}, {1, Soft}, {199, Soft}, {1, Hard}}
 	for _, c := range cases {
 		turn(t, p, c.add, 0, 0, 0, 0)
-		s, err := f.m.Check(context.Background(), id, f.dir)
+		s, err := f.m.Check(context.Background(), id, f.dir, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -114,11 +114,11 @@ func TestCheckShouldEnforceTheDailyCapAcrossRuns(t *testing.T) {
 	f := newFixture(t, tokens(0, 500)) // no per-issue limit
 	first, second := f.newRun(t, "#1"), f.newRun(t, "#2")
 	turn(t, filepath.Join(f.dir, "a", "planner", "s.jsonl"), 450, 0, 0, 0, 0)
-	if _, err := f.m.Check(context.Background(), first, filepath.Join(f.dir, "a")); err != nil {
+	if _, err := f.m.Check(context.Background(), first, filepath.Join(f.dir, "a"), nil); err != nil {
 		t.Fatal(err)
 	}
 	turn(t, filepath.Join(f.dir, "b", "planner", "s.jsonl"), 60, 0, 0, 0, 0)
-	s, err := f.m.Check(context.Background(), second, filepath.Join(f.dir, "b"))
+	s, err := f.m.Check(context.Background(), second, filepath.Join(f.dir, "b"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +135,7 @@ func TestCheckShouldUseProviderCostInUSDMode(t *testing.T) {
 	f := newFixture(t, config.Budget{Mode: config.BudgetUSD, PerIssue: 1, SoftRatio: 0.8})
 	id := f.newRun(t, "#1")
 	turn(t, filepath.Join(f.dir, "planner", "s.jsonl"), 999999, 0, 0, 0, 0.85)
-	s, _ := f.m.Check(context.Background(), id, f.dir)
+	s, _ := f.m.Check(context.Background(), id, f.dir, nil)
 	if s.Run != 0.85 || s.Level != Soft || !strings.Contains(s.Left(), "US$") {
 		t.Fatalf("usd mode = %+v left=%q", s, s.Left())
 	}
@@ -145,7 +145,7 @@ func TestZeroLimitsShouldDisableEnforcement(t *testing.T) {
 	f := newFixture(t, tokens(0, 0))
 	id := f.newRun(t, "#1")
 	turn(t, filepath.Join(f.dir, "planner", "s.jsonl"), 1e9, 0, 0, 0, 0)
-	if s, _ := f.m.Check(context.Background(), id, f.dir); s.Level != OK {
+	if s, _ := f.m.Check(context.Background(), id, f.dir, nil); s.Level != OK {
 		t.Fatalf("0 means unlimited: %+v", s)
 	}
 }
@@ -173,5 +173,55 @@ func TestFormatShouldBeCompact(t *testing.T) {
 	}
 	if got := Format(0.6712, config.BudgetUSD); got != "US$ 0.67" {
 		t.Errorf("usd = %q", got)
+	}
+}
+
+func TestCheckShouldStopARunWhoseOnlySpendIsStillUnwritten(t *testing.T) {
+	f := newFixture(t, tokens(1000, 5000))
+	id := f.newRun(t, "#1")
+	// omp has not written the implementer's first turn yet: only RPC knows about it.
+	live := map[string]store.Usage{"implementer": {Input: 900, Output: 100, CacheRead: 50000, CostUSD: 0.4}}
+	s, err := f.m.Check(context.Background(), id, f.dir, live)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Run != 1000 || s.Level != Hard || s.Day != 1000 || s.Usage.CostUSD != 0.4 {
+		t.Fatalf("live usage must count toward run and day: %+v", s)
+	}
+}
+
+func TestCheckShouldTakeTheLargerOfFileAndLiveUsagePerRole(t *testing.T) {
+	f := newFixture(t, tokens(10000, 0))
+	id := f.newRun(t, "#1")
+	turn(t, filepath.Join(f.dir, "planner", "s.jsonl"), 300, 0, 0, 0, 0)
+	turn(t, filepath.Join(f.dir, "implementer", "s.jsonl"), 200, 0, 0, 0, 0)
+	turn(t, filepath.Join(f.dir, "implementer", "s", "Tester.jsonl"), 100, 0, 0, 0, 0)
+	live := map[string]store.Usage{
+		"planner":     {Input: 250}, // behind the file: nothing extra
+		"implementer": {Input: 450}, // main + subagent files hold 300 of it
+	}
+	s, err := f.m.Check(context.Background(), id, f.dir, live)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Run != 750 {
+		t.Fatalf("each role counts once, at its larger measure: got %v, want 300+450", s.Run)
+	}
+}
+
+func TestCheckShouldKeepLiveUsageOutOfTheLedger(t *testing.T) {
+	f := newFixture(t, tokens(10000, 0))
+	id := f.newRun(t, "#1")
+	if _, err := f.m.Check(context.Background(), id, f.dir, map[string]store.Usage{"reviewer": {Input: 500}}); err != nil {
+		t.Fatal(err)
+	}
+	turn(t, filepath.Join(f.dir, "reviewer", "s.jsonl"), 500, 0, 0, 0, 0)
+	s, err := f.m.Check(context.Background(), id, f.dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Recording the estimate as well would bill the same turn twice once the file lands.
+	if s.Run != 500 {
+		t.Fatalf("the ledger holds only what session files say: %+v", s)
 	}
 }

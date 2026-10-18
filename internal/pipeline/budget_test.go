@@ -55,6 +55,53 @@ func TestBudgetWatcherShouldInterruptAnAgentThatOverspendsMidTurn(t *testing.T) 
 	}
 }
 
+// unwrittenSpending makes the implementer report n tokens over RPC that omp has not written to
+// its session file yet, as on a session's first turn.
+func unwrittenSpending(n int64, hang bool) behavior {
+	return func(role string, i int, text string) reply {
+		rep := happy(role, i, text)
+		if role == "implementer" {
+			rep.unwritten, rep.hang = n, hang
+		}
+		return rep
+	}
+}
+
+func TestBudgetWatcherShouldInterruptATurnWhoseSpendIsNotWrittenYet(t *testing.T) {
+	hs := newHarness(t, unwrittenSpending(5000, true))
+	hs.r.Cfg.Budget.PerIssue = 1000
+	hs.r.BudgetInterval = 5 * time.Millisecond
+	res := hs.run(t)
+
+	if res.Outcome != OutcomeHalted || !strings.Contains(res.Reason, "interrompido") {
+		t.Fatalf("the session file lags behind; live usage must still stop the turn: %s: %s", res.Outcome, res.Reason)
+	}
+	if keys := hs.h.keys["implementer-r1"]; len(keys) == 0 || keys[0] != "abort" {
+		t.Fatalf("the overspending turn must be aborted, keys=%v", keys)
+	}
+}
+
+func TestBudgetShouldHaltAfterATurnWhoseSpendIsNotWrittenYet(t *testing.T) {
+	hs := newHarness(t, unwrittenSpending(5000, false))
+	hs.r.Cfg.Budget.PerIssue = 1000
+	res := hs.run(t)
+
+	if res.Outcome != OutcomeHalted || !strings.Contains(res.Reason, "budget da issue esgotado") {
+		t.Fatalf("got %s: %s", res.Outcome, res.Reason)
+	}
+	if len(hs.h.prompts["reviewer"]) != 0 {
+		t.Fatal("no stage may start after the budget is exhausted")
+	}
+}
+
+func TestBudgetShouldNotCountATurnTwiceWhenItIsBothWrittenAndReportedLive(t *testing.T) {
+	hs := newHarness(t, spending(600, false)) // the fake reports written usage live as well
+	hs.r.Cfg.Budget.PerIssue = 1000
+	if res := hs.run(t); res.Outcome != OutcomeApproved {
+		t.Fatalf("600 of 1000 must pass, not be read as 1200: %s %s (%s)", res.Outcome, res.Reason, res.Budget)
+	}
+}
+
 func TestBudgetShouldWarnAgentsPastTheSoftLimit(t *testing.T) {
 	hs := newHarness(t, func(role string, n int, text string) reply {
 		rep := happy(role, n, text)

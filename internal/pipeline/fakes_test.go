@@ -24,8 +24,10 @@ type reply struct {
 	provider string // non-empty makes the omp session end with this provider error
 	mutate   func(g *fakeGit)
 	usage    int64 // input tokens the turn consumes
-	hang     bool  // the turn only ends when the agent is aborted
-	lost     bool  // the final message never reaches the client (only the session file has it)
+	// unwritten tokens the turn reports over RPC but omp has not written to the session yet
+	unwritten int64
+	hang      bool // the turn only ends when the agent is aborted
+	lost      bool // the final message never reaches the client (only the session file has it)
 }
 
 // behavior decides the reply for a role's n-th prompt (1-based).
@@ -127,8 +129,9 @@ func (f *fakeHerdr) Start(_ context.Context, o AgentOptions) (Agent, error) {
 }
 
 type fakeAgent struct {
-	f    *fakeHerdr
-	name string
+	f     *fakeHerdr
+	name  string
+	spent int64 // guarded by f.mu
 }
 
 var artifactRe = regexp.MustCompile("DONE `?([^`\\s]+)`?")
@@ -140,6 +143,9 @@ func (a *fakeAgent) Prompt(ctx context.Context, text string, timeout time.Durati
 	if err != nil {
 		return rpc.Turn{}, err
 	}
+	a.f.mu.Lock()
+	a.spent += rep.usage + rep.unwritten
+	a.f.mu.Unlock()
 	if rep.hang {
 		select {
 		case <-a.f.interrupt:
@@ -171,6 +177,12 @@ func (a *fakeAgent) Abort() error {
 	default:
 	}
 	return nil
+}
+
+func (a *fakeAgent) Spent() rpc.Usage {
+	a.f.mu.Lock()
+	defer a.f.mu.Unlock()
+	return rpc.Usage{Input: a.spent}
 }
 
 func (a *fakeAgent) Close() error {

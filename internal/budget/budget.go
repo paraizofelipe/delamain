@@ -44,11 +44,15 @@ type Meter struct {
 
 // Check records the current usage of every session under sessionsDir (layout <role>/...jsonl)
 // and returns the run's status. Safe to call repeatedly: the ledger keeps only deltas.
-func (m Meter) Check(ctx context.Context, runID int64, sessionsDir string) (Status, error) {
+//
+// live is the usage each running role reported over RPC. omp writes session files in batches,
+// so a role's spend is the larger of the two; only the files go to the ledger.
+func (m Meter) Check(ctx context.Context, runID int64, sessionsDir string, live map[string]store.Usage) (Status, error) {
 	files, err := omp.SessionFiles(sessionsDir)
 	if err != nil {
 		return Status{}, err
 	}
+	written := map[string]store.Usage{}
 	for _, f := range files {
 		u, err := omp.SumUsage(f)
 		if err != nil {
@@ -58,6 +62,11 @@ func (m Meter) Check(ctx context.Context, runID int64, sessionsDir string) (Stat
 		if _, err := m.Store.RecordUsage(ctx, runID, role, f, store.Usage(u)); err != nil {
 			return Status{}, err
 		}
+		written[role] = written[role].Add(store.Usage(u))
+	}
+	var unwritten store.Usage
+	for role, u := range live {
+		unwritten = unwritten.Add(u.Beyond(written[role]))
 	}
 	run, err := m.Store.RunUsage(ctx, runID)
 	if err != nil {
@@ -67,7 +76,8 @@ func (m Meter) Check(ctx context.Context, runID int64, sessionsDir string) (Stat
 	if err != nil {
 		return Status{}, err
 	}
-	s.Usage, s.Run = run, m.spent(run)
+	s.Usage = run.Add(unwritten)
+	s.Run, s.Day = m.spent(s.Usage), s.Day+m.spent(unwritten)
 	s.evaluate(m.Cfg.SoftRatio)
 	return s, nil
 }

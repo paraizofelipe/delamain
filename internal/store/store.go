@@ -65,6 +65,15 @@ func (u Usage) sub(o Usage) Usage {
 	return Usage{u.Input - o.Input, u.Output - o.Output, u.CacheRead - o.CacheRead, u.CacheWrite - o.CacheWrite, u.CostUSD - o.CostUSD}
 }
 
+func (u Usage) Add(o Usage) Usage {
+	return Usage{u.Input + o.Input, u.Output + o.Output, u.CacheRead + o.CacheRead, u.CacheWrite + o.CacheWrite, u.CostUSD + o.CostUSD}
+}
+
+// Beyond is how much u exceeds o in each field, never negative.
+func (u Usage) Beyond(o Usage) Usage {
+	return Usage{max(u.Input-o.Input, 0), max(u.Output-o.Output, 0), max(u.CacheRead-o.CacheRead, 0), max(u.CacheWrite-o.CacheWrite, 0), max(u.CostUSD-o.CostUSD, 0)}
+}
+
 func (u Usage) negative() bool {
 	return u.Input < 0 || u.Output < 0 || u.CacheRead < 0 || u.CacheWrite < 0 || u.CostUSD < 0
 }

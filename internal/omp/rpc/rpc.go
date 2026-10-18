@@ -45,6 +45,15 @@ type Usage struct {
 	Output     int64 `json:"output"`
 	CacheRead  int64 `json:"cacheRead"`
 	CacheWrite int64 `json:"cacheWrite"`
+	Cost       Cost  `json:"cost"`
+}
+
+type Cost struct {
+	Total float64 `json:"total"`
+}
+
+func (u Usage) add(o Usage) Usage {
+	return Usage{u.Input + o.Input, u.Output + o.Output, u.CacheRead + o.CacheRead, u.CacheWrite + o.CacheWrite, Cost{u.Cost.Total + o.Cost.Total}}
 }
 
 // Turn is the outcome of one prompt, taken from its last assistant message. StopReason is
@@ -113,10 +122,11 @@ type Client struct {
 	log     io.Writer
 	closeIn time.Duration
 
-	wmu  sync.Mutex // serializes stdin writes
-	tmu  sync.Mutex // one turn at a time
-	smu  sync.Mutex
-	sink *sink // frames for the turn in flight; nil between turns
+	wmu   sync.Mutex // serializes stdin writes
+	tmu   sync.Mutex // one turn at a time
+	smu   sync.Mutex
+	sink  *sink // frames for the turn in flight; nil between turns
+	spent Usage // every assistant message so far, subagents included
 
 	done    chan struct{} // closed when stdout ends (omp exited)
 	readErr error
@@ -171,6 +181,14 @@ func Start(ctx context.Context, o Options) (*Client, error) {
 	}
 }
 
+// Spent is the usage of every assistant message the session reported, subagents' included.
+// It is live, unlike the session JSONL, which omp writes in batches.
+func (c *Client) Spent() Usage {
+	c.smu.Lock()
+	defer c.smu.Unlock()
+	return c.spent
+}
+
 // PID is omp's process id, which is also its process group id.
 func (c *Client) PID() int { return c.cmd.Process.Pid }
 
@@ -197,6 +215,9 @@ func (c *Client) read(stdout io.Reader, ready chan struct{}) {
 		}
 		c.logFrame(f)
 		c.smu.Lock()
+		if m := f.msg(); f.Type == "message_end" && m != nil && m.Role == "assistant" {
+			c.spent = c.spent.add(m.Usage)
+		}
 		s := c.sink
 		c.smu.Unlock()
 		if s != nil {

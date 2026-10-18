@@ -3,10 +3,12 @@ package pipeline
 import (
 	"context"
 	"fmt"
+	"maps"
 	"path/filepath"
 	"time"
 
 	"github.com/paraizo/delamain/internal/budget"
+	"github.com/paraizo/delamain/internal/store"
 )
 
 const defaultBudgetInterval = 10 * time.Second
@@ -16,7 +18,7 @@ func (r *Runner) meter() budget.Meter { return budget.Meter{Store: r.Store, Cfg:
 // checkBudget records the run's usage after a turn and stops the run at the hard limit.
 // Accounting failures halt too: an unmeasured run would spend without a ceiling.
 func (r *Runner) checkBudget(ctx context.Context, ru *run) error {
-	s, err := r.meter().Check(ctx, ru.rec.ID, filepath.Join(ru.dir, "sessions"))
+	s, err := r.meter().Check(ctx, ru.rec.ID, filepath.Join(ru.dir, "sessions"), liveUsage(ru.agents))
 	if err != nil {
 		return haltf("contabilidade de tokens falhou: %v", err)
 	}
@@ -44,6 +46,7 @@ func (r *Runner) watchBudget(ctx context.Context, ru *run, agent Agent) func() w
 	if interval <= 0 {
 		interval = defaultBudgetInterval
 	}
+	agents := maps.Clone(ru.agents) // the run's map is not touched from this goroutine
 	done, out := make(chan struct{}), make(chan watchResult, 1)
 	go func() {
 		var res watchResult
@@ -59,7 +62,7 @@ func (r *Runner) watchBudget(ctx context.Context, ru *run, agent Agent) func() w
 				return
 			case <-t.C:
 			}
-			s, err := r.meter().Check(ctx, ru.rec.ID, filepath.Join(ru.dir, "sessions"))
+			s, err := r.meter().Check(ctx, ru.rec.ID, filepath.Join(ru.dir, "sessions"), liveUsage(agents))
 			if err != nil || s.Level != budget.Hard {
 				continue
 			}
@@ -76,6 +79,16 @@ func (r *Runner) watchBudget(ctx context.Context, ru *run, agent Agent) func() w
 		close(done)
 		return <-out
 	}
+}
+
+// liveUsage is what each running agent reported over RPC, keyed like the sessions dir (by role).
+func liveUsage(agents map[string]Agent) map[string]store.Usage {
+	live := make(map[string]store.Usage, len(agents))
+	for role, a := range agents {
+		u := a.Spent()
+		live[role] = store.Usage{Input: u.Input, Output: u.Output, CacheRead: u.CacheRead, CacheWrite: u.CacheWrite, CostUSD: u.Cost.Total}
+	}
+	return live
 }
 
 // reportMeta shows the run's progress in herdr's sidebar. Display only: failures are logged.
