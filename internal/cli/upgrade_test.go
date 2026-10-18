@@ -89,11 +89,11 @@ func TestUpgradeShouldReplaceTheInstalledBinaryWhenANewerReleaseExists(t *testin
 	}
 }
 
-func TestUpgradeShouldDoNothingWhenAlreadyOnTheLatestRelease(t *testing.T) {
+func TestUpgradeShouldReportInEnglishWhenAlreadyCurrent(t *testing.T) {
 	releaseServer(t, "v0.1.0")
 	target := installedAt(t, "v0.1.0")
 	out, err := execute(t, "upgrade")
-	if err != nil || !strings.Contains(out, "já está na última versão (v0.1.0)") || content(t, target) != oldBinary {
+	if err != nil || !strings.Contains(out, "already on the latest version (v0.1.0)") || content(t, target) != oldBinary {
 		t.Fatalf("%v %q", err, out)
 	}
 }

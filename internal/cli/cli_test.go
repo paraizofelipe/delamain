@@ -55,7 +55,7 @@ func TestVersionShouldPrintBuildVersion(t *testing.T) {
 
 func TestPromptsLintShouldPassForShippedPrompts(t *testing.T) {
 	out, err := execute(t, "--config", filepath.Join(t.TempDir(), "none.yaml"), "prompts", "lint")
-	if err != nil || !strings.Contains(out, "prompts válidos") {
+	if err != nil || !strings.Contains(out, "prompts are valid") {
 		t.Fatalf("got %q %v", out, err)
 	}
 }

@@ -29,7 +29,7 @@ func promptsTarget(cfg config.Config) prompts.Target {
 }
 
 func newPromptsCmd(load func() (config.Config, error)) *cobra.Command {
-	cmd := &cobra.Command{Use: "prompts", Short: "Valida, instala e pré-visualiza os prompts .md dos agentes"}
+	cmd := &cobra.Command{Use: "prompts", Short: "Validate, install and preview agent .md prompts"}
 
 	withSet := func(run func(*cobra.Command, config.Config, *prompts.Set, []string) error) func(*cobra.Command, []string) error {
 		return func(c *cobra.Command, args []string) error {
@@ -48,7 +48,7 @@ func newPromptsCmd(load func() (config.Config, error)) *cobra.Command {
 	cmd.AddCommand(
 		&cobra.Command{
 			Use:   "lint",
-			Short: "Valida manifest, frontmatter, referências e templates",
+			Short: "Validate manifests, frontmatter, references and templates",
 			RunE: withSet(func(c *cobra.Command, _ config.Config, set *prompts.Set, _ []string) error {
 				errs := set.Lint()
 				for _, e := range errs {
@@ -57,13 +57,13 @@ func newPromptsCmd(load func() (config.Config, error)) *cobra.Command {
 				if len(errs) > 0 {
 					return ErrChecksFailed
 				}
-				fmt.Fprintln(c.OutOrStdout(), "✅ prompts válidos")
+				fmt.Fprintln(c.OutOrStdout(), "✅ prompts are valid")
 				return nil
 			}),
 		},
 		&cobra.Command{
 			Use:   "install",
-			Short: "Instala agents e skills no omp e os roles no state dir",
+			Short: "Install agents and skills in omp and roles in the state directory",
 			RunE: withSet(func(c *cobra.Command, cfg config.Config, set *prompts.Set, _ []string) error {
 				written, err := set.Install(promptsTarget(cfg))
 				for _, p := range written {
@@ -74,7 +74,7 @@ func newPromptsCmd(load func() (config.Config, error)) *cobra.Command {
 		},
 		&cobra.Command{
 			Use:   "render <stage>",
-			Short: "Mostra o prompt de um passo renderizado com dados de exemplo",
+			Short: "Show a rendered stage prompt with sample data",
 			Args:  cobra.ExactArgs(1),
 			RunE: withSet(func(c *cobra.Command, _ config.Config, set *prompts.Set, args []string) error {
 				out, err := set.Render(args[0], prompts.SampleStageData())

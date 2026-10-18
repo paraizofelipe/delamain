@@ -32,22 +32,22 @@ func NewRoot() *cobra.Command {
 	var cfgPath string
 	root := &cobra.Command{
 		Use:           "delamain",
-		Short:         "Orquestrador autônomo de agents de desenvolvimento (omp; herdr opcional)",
+		Short:         "Autonomous development-agent orchestrator (omp; optional herdr)",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
-	root.PersistentFlags().StringVar(&cfgPath, "config", config.DefaultPath(), "arquivo de configuração")
+	root.PersistentFlags().StringVar(&cfgPath, "config", config.DefaultPath(), "configuration file")
 	load := func() (config.Config, error) { return config.Load(cfgPath, os.Getenv) }
 
 	root.AddCommand(
 		&cobra.Command{
 			Use:   "version",
-			Short: "Mostra a versão",
+			Short: "Show the version",
 			Run:   func(cmd *cobra.Command, _ []string) { fmt.Fprintln(cmd.OutOrStdout(), Version) },
 		},
 		&cobra.Command{
 			Use:   "config",
-			Short: "Mostra a configuração efetiva (arquivo + env)",
+			Short: "Show the effective configuration (file + env)",
 			RunE: func(cmd *cobra.Command, _ []string) error {
 				cfg, err := load()
 				if err != nil {
@@ -58,7 +58,7 @@ func NewRoot() *cobra.Command {
 		},
 		&cobra.Command{
 			Use:   "doctor",
-			Short: "Verifica omp (modo RPC), git, prompts, ferramentas e, se ligado, o herdr",
+			Short: "Check omp (RPC mode), git, prompts, tools and, when enabled, herdr",
 			RunE: func(cmd *cobra.Command, _ []string) error {
 				cfg, err := load()
 				if err != nil {

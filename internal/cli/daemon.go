@@ -21,11 +21,11 @@ import (
 func newDaemonCmd(load func() (config.Config, error)) *cobra.Command {
 	var repos []string
 	cmd := &cobra.Command{
-		Use:   "daemon [--repo <caminho>]...",
-		Short: "Processa continuamente as issues com a label ready dos repositórios configurados",
-		Long: `Busca issues abertas com forge.labels.ready a cada daemon.poll_interval e executa até
-pipeline.max_parallel ao mesmo tempo. Ao subir, finaliza runs deixadas por um processo que morreu.
-Só uma instância roda por state_dir. Ctrl+C encerra: runs em andamento terminam como interrompidas.`,
+		Use:   "daemon [--repo <path>]...",
+		Short: "Continuously process issues with the ready label from configured repositories",
+		Long: `Polls open issues with forge.labels.ready every daemon.poll_interval and processes up to
+pipeline.max_parallel at once. On start, it finalizes runs left by a process that died.
+Only one instance runs per state_dir. Ctrl+C stops it: active runs end as interrupted.`,
 		RunE: func(c *cobra.Command, _ []string) error {
 			cfg, err := load()
 			if err != nil {
@@ -89,7 +89,7 @@ Só uma instância roda por state_dir. Ctrl+C encerra: runs em andamento termina
 			return d.Serve(ctx)
 		},
 	}
-	cmd.Flags().StringArrayVar(&repos, "repo", nil, "repositório a observar (repetível; padrão: daemon.repos)")
+	cmd.Flags().StringArrayVar(&repos, "repo", nil, "repository to watch (repeatable; default: daemon.repos)")
 	addHerdrFlag(cmd)
 	return cmd
 }
@@ -97,7 +97,7 @@ Só uma instância roda por state_dir. Ctrl+C encerra: runs em andamento termina
 func newRecoverCmd(load func() (config.Config, error)) *cobra.Command {
 	return &cobra.Command{
 		Use:   "recover",
-		Short: "Finaliza runs deixadas por um processo do delamain que morreu",
+		Short: "Finalize runs left by a delamain process that died",
 		RunE: func(c *cobra.Command, _ []string) error {
 			cfg, err := load()
 			if err != nil {
@@ -124,11 +124,11 @@ func recoverRuns(c *cobra.Command, cfg config.Config, base *pipeline.Runner) err
 		return err
 	}
 	if len(results) == 0 {
-		fmt.Fprintln(c.OutOrStdout(), "nenhuma run órfã para recuperar")
+		fmt.Fprintln(c.OutOrStdout(), "no orphaned runs to recover")
 		return nil
 	}
 	for _, res := range results {
-		fmt.Fprintf(c.OutOrStdout(), "run %d recuperada:\n", res.RunID)
+		fmt.Fprintf(c.OutOrStdout(), "recovered run %d:\n", res.RunID)
 		printResult(c, res)
 	}
 	return nil
