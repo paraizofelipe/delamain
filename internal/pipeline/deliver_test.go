@@ -63,7 +63,7 @@ func TestDeliverShouldOpenDraftWhenIterationsAreExhausted(t *testing.T) {
 		t.Fatalf("exhausted work must become a draft: %s draft=%v created=%+v", res.Outcome, res.Draft, f.created)
 	}
 	body := f.created[0].Body
-	if !strings.Contains(body, "subtrai em vez de somar") || !strings.Contains(body, "3 iterações sem aprovação") {
+	if !strings.Contains(body, "subtrai em vez de somar") || !strings.Contains(body, "3 iterations without approval") {
 		t.Fatalf("draft body must say why a human is needed:\n%s", body)
 	}
 }
@@ -128,8 +128,7 @@ func TestDeliverShouldHaltLoudlyWhenPushFails(t *testing.T) {
 	f := withForge(hs)
 	hs.g.pushErr = errors.New("remote: permission denied")
 	res := hs.run(t)
-
-	if res.Outcome != OutcomeHalted || !strings.Contains(res.Reason, "entrega falhou") || !strings.Contains(res.Reason, "permission denied") {
+	if res.Outcome != OutcomeHalted || !strings.Contains(res.Reason, "delivery failed") || !strings.Contains(res.Reason, "permission denied") {
 		t.Fatalf("got %s: %s", res.Outcome, res.Reason)
 	}
 	if len(f.created) != 0 {

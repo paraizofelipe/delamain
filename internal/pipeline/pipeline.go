@@ -173,7 +173,7 @@ func (r *Runner) Run(ctx context.Context, t Task) (Result, error) {
 		return res, err
 	}
 	if day.Level == budget.Hard {
-		res.Outcome, res.Reason = OutcomeHalted, day.Reason+"; nenhuma run iniciada"
+		res.Outcome, res.Reason = OutcomeHalted, day.Reason+"; no run started"
 		return res, nil
 	}
 
@@ -261,10 +261,10 @@ func (r *Runner) discardEmpty(ctx context.Context, ru *run) {
 		return
 	}
 	if err := r.Git.DiscardEmptyWork(ctx, ru.rec.Repo, ru.repo.Worktree, ru.repo.Branch, ru.repo.Base); err != nil {
-		res.Warnings = append(res.Warnings, fmt.Sprintf("worktree %s preservada: %v", ru.repo.Worktree, err))
+		res.Warnings = append(res.Warnings, fmt.Sprintf("worktree %s preserved: %v", ru.repo.Worktree, err))
 		return
 	}
-	res.Delivery += "; worktree e branch vazias removidas"
+	res.Delivery += "; empty worktree and branch removed"
 }
 
 func (r *Runner) setState(ctx context.Context, ru *run, s store.RunState) error {
@@ -347,7 +347,7 @@ func (r *Runner) execute(ctx context.Context, ru *run, repo string, t Task) erro
 		feedback = reviewFeedback(review)
 	}
 	ru.res.Outcome = OutcomeExhausted
-	ru.res.Reason = fmt.Sprintf("%d iterações sem aprovação", maxIter)
+	ru.res.Reason = fmt.Sprintf("%d iterations without approval", maxIter)
 	return r.setState(ctx, ru, store.StateDeliverDraft)
 }
 

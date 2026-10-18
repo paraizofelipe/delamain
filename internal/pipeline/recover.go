@@ -60,12 +60,12 @@ func (r *Runner) Recover(ctx context.Context, forgeFor func(repo string) (forge.
 func (r *Runner) recoverRun(ctx context.Context, rec store.Run) (Result, error) {
 	who := fmt.Sprintf("pid %d", rec.OwnerPID)
 	if rec.OwnerPID == 0 {
-		who = "pid desconhecido"
+		who = "unknown pid"
 	}
 	res := Result{
 		RunID: rec.ID, Outcome: OutcomeHalted, Branch: rec.Branch, Base: rec.Base, Worktree: rec.Worktree,
 		WorkspaceID: rec.Workspace, Iterations: rec.Iteration, PRURL: rec.MRURL,
-		Reason: fmt.Sprintf("run interrompida: o processo do delamain (%s) parou no estado %s", who, rec.State),
+		Reason: fmt.Sprintf("run interrupted: delamain process (%s) stopped in state %s", who, rec.State),
 	}
 	t := Task{Ref: rec.IssueRef, Title: rec.Title, Kind: kindFromBranch(rec.Branch), Repo: rec.Repo, Issue: issueNumber(rec.IssueRef)}
 	day, err := r.meter().Today(ctx)

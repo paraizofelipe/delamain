@@ -20,7 +20,7 @@ func (r *Runner) meter() budget.Meter { return budget.Meter{Store: r.Store, Cfg:
 func (r *Runner) checkBudget(ctx context.Context, ru *run) error {
 	s, err := r.meter().Check(ctx, ru.rec.ID, filepath.Join(ru.dir, "sessions"), liveUsage(ru.agents))
 	if err != nil {
-		return haltf("contabilidade de tokens falhou: %v", err)
+		return haltf("token accounting failed: %v", err)
 	}
 	if s.Level == budget.Soft && ru.budget.Level < budget.Soft {
 		ru.log.Warn("budget soft limit", "run", ru.rec.ID, "reason", s.Reason)

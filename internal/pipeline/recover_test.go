@@ -148,7 +148,7 @@ func TestHaltedRunWithoutCommitsShouldRemoveItsWorktreeAndBranch(t *testing.T) {
 		return happy(role, n, text)
 	})
 	res := hs.run(t)
-	if res.Outcome != OutcomeHalted || !slices.Equal(hs.g.discarded, []string{"fix/7-fix-add"}) || !strings.Contains(res.Delivery, "removidas") {
+	if res.Outcome != OutcomeHalted || !slices.Equal(hs.g.discarded, []string{"fix/7-fix-add"}) || !strings.Contains(res.Delivery, "removed") {
 		t.Fatalf("empty halted work must not block the next attempt: %s discarded=%v delivery=%q", res.Outcome, hs.g.discarded, res.Delivery)
 	}
 	if !slices.Equal(hs.h.keys["planner-r1"], []string{"close"}) {
@@ -165,7 +165,7 @@ func TestHaltedRunShouldKeepWorktreeWhenDiscardIsRefused(t *testing.T) {
 	})
 	hs.g.discardErr = errors.New("worktree contains modified or untracked files")
 	res := hs.run(t)
-	if len(res.Warnings) == 0 || !strings.Contains(res.Warnings[0], "preservada") {
+	if len(res.Warnings) == 0 || !strings.Contains(res.Warnings[0], "preserved") {
 		t.Fatalf("a refused discard must be reported, warnings=%v", res.Warnings)
 	}
 }

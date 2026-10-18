@@ -64,10 +64,10 @@ func (r *Runner) deliver(ctx context.Context, ru *run) {
 	case res.PRURL != "":
 		return // delivered before the process died
 	case len(res.Commits) == 0:
-		res.Delivery = "nenhum commit na branch: nada a entregar"
+		res.Delivery = "no commits on branch: nothing to deliver"
 		return
 	case r.Forge == nil:
-		res.Delivery = "repositório sem forge (origin ausente ou forge.kind=none): branch mantida apenas localmente"
+		res.Delivery = "repository has no forge (origin is absent or forge.kind=none): branch kept locally"
 		return
 	}
 	draft := res.Outcome != OutcomeApproved
@@ -76,7 +76,7 @@ func (r *Runner) deliver(ctx context.Context, ru *run) {
 		if res.Reason != "" {
 			prev = res.Reason + "; "
 		}
-		res.Outcome, res.Reason = OutcomeHalted, fmt.Sprintf("%sentrega falhou: %v (branch local %s preservada)", prev, err, ru.repo.Branch)
+		res.Outcome, res.Reason = OutcomeHalted, fmt.Sprintf("%sdelivery failed: %v (local branch %s preserved)", prev, err, ru.repo.Branch)
 	}
 
 	// The branch did not exist on origin at setup and agents run with push blocked:

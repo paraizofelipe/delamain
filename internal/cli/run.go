@@ -184,22 +184,22 @@ func printResult(c *cobra.Command, res pipeline.Result) {
 	}
 	fmt.Fprintln(w)
 	if res.Branch != "" {
-		fmt.Fprintf(w, "   branch:    %s (base %s)\n   worktree:  %s\n   iterações: %d · commits: %d\n", res.Branch, res.Base, res.Worktree, res.Iterations, len(res.Commits))
+		fmt.Fprintf(w, "   branch:    %s (base %s)\n   worktree:  %s\n   iterations: %d · commits: %d\n", res.Branch, res.Base, res.Worktree, res.Iterations, len(res.Commits))
 	}
 	if res.PRURL != "" {
 		fmt.Fprintf(w, "   PR/MR:     %s%s\n", res.PRURL, map[bool]string{true: " (draft)"}[res.Draft])
 	}
 	if res.Delivery != "" {
-		fmt.Fprintf(w, "   entrega:   %s\n", res.Delivery)
+		fmt.Fprintf(w, "   delivery:  %s\n", res.Delivery)
 	}
 	if res.Budget != "" {
-		fmt.Fprintf(w, "   consumo:   %s\n", res.Budget)
+		fmt.Fprintf(w, "   usage:     %s\n", res.Budget)
 	}
 	for _, warn := range res.Warnings {
 		fmt.Fprintf(w, "   ⚠️  %s\n", warn)
 	}
 	if res.ReportPath != "" {
-		fmt.Fprintf(w, "   relatório: %s\n", res.ReportPath)
+		fmt.Fprintf(w, "   report:    %s\n", res.ReportPath)
 	}
 }
 
