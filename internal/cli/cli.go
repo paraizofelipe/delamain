@@ -32,7 +32,7 @@ func NewRoot() *cobra.Command {
 	var cfgPath string
 	root := &cobra.Command{
 		Use:           "delamain",
-		Short:         "Orquestrador autônomo de agents de desenvolvimento (omp + herdr)",
+		Short:         "Orquestrador autônomo de agents de desenvolvimento (omp; herdr opcional)",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
@@ -58,7 +58,7 @@ func NewRoot() *cobra.Command {
 		},
 		&cobra.Command{
 			Use:   "doctor",
-			Short: "Verifica herdr, omp (modo RPC), prompts e ferramentas",
+			Short: "Verifica omp (modo RPC), git, prompts, ferramentas e, se ligado, o herdr",
 			RunE: func(cmd *cobra.Command, _ []string) error {
 				cfg, err := load()
 				if err != nil {
@@ -88,6 +88,9 @@ func NewRoot() *cobra.Command {
 		newRunCmd(load),
 		newDaemonCmd(load),
 		newRecoverCmd(load),
+		newListCmd(load),
+		newStatusCmd(load),
+		newLogsCmd(load),
 	)
 	return root
 }
