@@ -24,7 +24,7 @@ func (r *Runner) Recover(ctx context.Context, forgeFor func(repo string) (forge.
 	}
 	alive := r.Alive
 	if alive == nil {
-		alive = processAlive
+		alive = ProcessAlive
 	}
 	var out []Result
 	for _, rec := range runs {
@@ -74,16 +74,24 @@ func (r *Runner) recoverRun(ctx context.Context, rec store.Run) (Result, error) 
 	}
 	ru := &run{
 		rec: rec, task: prompts.Issue{Ref: t.Ref, Title: t.Title, Kind: t.Kind},
-		dir: r.runDir(rec.Repo, rec.ID), agents: map[string]Agent{}, panes: map[string]string{}, tabs: map[string]string{},
+		dir: r.runDir(rec.Repo, rec.ID), agents: map[string]Agent{},
 		res: &res, issue: t.Issue, maxIter: r.Cfg.Pipeline.MaxIterations, budget: day,
-		workspace: rec.Workspace, recovered: true,
+		recovered: true,
 	}
 	res.RunDir = ru.dir
+	r.openLog(ru)
+	defer ru.closeLog()
+	if rec.Workspace != "" && r.Display != nil {
+		ru.view = r.Display.Attach(rec.Workspace)
+	}
 	if rec.Worktree != "" && rec.Base != "" {
 		ru.repo = prompts.Repo{Worktree: rec.Worktree, Branch: rec.Branch, Base: rec.Base}
 	}
 	// No agent to stop: omp sessions are children of the dead process and die with it.
-	r.Log.Warn("recovering run", "run", rec.ID, "state", rec.State, "owner", who)
+	ru.log.Warn("recovering run", "run", rec.ID, "state", rec.State, "owner", who)
+	if _, err := r.Store.FailRunningAgents(ctx, rec.ID); err != nil {
+		ru.log.Warn("could not record agents", "err", err)
+	}
 	return res, r.finish(ctx, ru, t)
 }
 
@@ -94,8 +102,8 @@ func kindFromBranch(branch string) string {
 	return "feature"
 }
 
-// processAlive reports whether pid exists; EPERM means it exists under another user.
-func processAlive(pid int) bool {
+// ProcessAlive reports whether pid exists; EPERM means it exists under another user.
+func ProcessAlive(pid int) bool {
 	if pid <= 0 {
 		return false
 	}

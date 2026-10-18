@@ -271,3 +271,70 @@ func TestDiscardEmptyWorkShouldKeepUncommittedChanges(t *testing.T) {
 		t.Fatal("dirty worktree and its branch must survive")
 	}
 }
+
+func TestAddWorktreeShouldCheckANewWorkBranchOutAtBase(t *testing.T) {
+	g, ctx := New(), context.Background()
+	r := repo(t)
+	wt := filepath.Join(t.TempDir(), "wts", "repo", "feat", "1-x")
+	if err := g.AddWorktree(ctx, r, wt, "feat/1-x", "main"); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := g.CurrentBranch(ctx, wt); b != "feat/1-x" {
+		t.Fatalf("worktree is on %q", b)
+	}
+	head, _ := g.Head(ctx, wt)
+	base, _ := g.Head(ctx, r)
+	if head != base {
+		t.Fatalf("branch starts at base: %s vs %s", head, base)
+	}
+	if err := g.AddWorktree(ctx, r, filepath.Join(t.TempDir(), "again"), "feat/1-x", "main"); err == nil {
+		t.Fatal("an existing branch is never reused")
+	}
+}
+
+func TestAddWorktreeShouldRefuseProtectedBranches(t *testing.T) {
+	g, ctx := New(), context.Background()
+	r := repo(t)
+	wt := filepath.Join(t.TempDir(), "wt")
+	if err := g.AddWorktree(ctx, r, wt, "main", "main"); err == nil {
+		t.Fatal("work never happens on a protected branch")
+	}
+	if _, err := os.Stat(wt); !os.IsNotExist(err) {
+		t.Fatal("nothing is created when refused")
+	}
+}
+
+func TestListWorktreesShouldReportEveryCheckoutWithItsBranch(t *testing.T) {
+	g, ctx := New(), context.Background()
+	r := repo(t)
+	wt := filepath.Join(t.TempDir(), "wt")
+	if err := g.AddWorktree(ctx, r, wt, "feat/2-y", "main"); err != nil {
+		t.Fatal(err)
+	}
+	detached := filepath.Join(t.TempDir(), "detached")
+	if err := g.AddDetachedWorktree(ctx, r, detached, "main"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := g.ListWorktrees(ctx, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("main checkout + 2 worktrees, got %+v", got)
+	}
+	byPath := map[string]Worktree{}
+	for _, w := range got {
+		p, _ := filepath.EvalSymlinks(w.Path)
+		byPath[p] = w
+	}
+	resolve := func(p string) string { s, _ := filepath.EvalSymlinks(p); return s }
+	if w := byPath[resolve(wt)]; w.Branch != "feat/2-y" || len(w.Head) != 40 {
+		t.Fatalf("work worktree = %+v", w)
+	}
+	if w := byPath[resolve(detached)]; w.Branch != "" || !w.Detached {
+		t.Fatalf("detached worktree = %+v", w)
+	}
+	if w := byPath[resolve(r)]; w.Branch != "main" {
+		t.Fatalf("main checkout = %+v", w)
+	}
+}

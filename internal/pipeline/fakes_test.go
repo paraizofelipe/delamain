@@ -52,14 +52,14 @@ type fakeHerdr struct {
 	keys        map[string][]string // agent name -> "abort"/"close" calls, in order
 	checkRuns   map[string]int
 	startErr    func(role string) error // fails Agents.Start for a role
-	worktreeOps int
-	liveAgents  []herdr.Agent
+	closeErr    error                   // returned by every Agent.Close
+	workspaces  int                     // herdr workspaces opened
+	shellEnv    [][]string              // env of each workspace/tab shell, in order
 	closed      []string
-	lastCheck   string
 	tails       map[string]string // pane -> log file it follows
-	onWorktree  func(path string) // seeds the base checkout (e.g. go.mod, .delamain.yaml)
 	interrupt   chan string       // aborts that end a hanging turn
 	metadata    []metaCall
+	checkCalls  []Check
 }
 
 type metaCall struct {
@@ -87,19 +87,14 @@ func defaultChecks(name string, _ int) int {
 	return 0
 }
 
-func (f *fakeHerdr) WorktreeCreate(_ context.Context, o herdr.WorktreeOptions) (herdr.Worktree, error) {
-	f.worktreeOps++
-	if err := os.MkdirAll(o.Path, 0o700); err != nil {
-		return herdr.Worktree{}, err
-	}
-	f.git.branch, f.git.wt = o.Branch, o.Path
-	if f.onWorktree != nil {
-		f.onWorktree(o.Path)
-	}
-	return herdr.Worktree{WorkspaceID: "w9", TabID: "w9:t1", RootPaneID: "w9:p1", Path: o.Path, Branch: o.Branch}, nil
+func (f *fakeHerdr) WorkspaceCreate(_ context.Context, _, _ string, env []string) (herdr.Workspace, error) {
+	f.workspaces++
+	f.shellEnv = append(f.shellEnv, env)
+	return herdr.Workspace{ID: "w9", TabID: "w9:t1", RootPaneID: "w9:p1"}, nil
 }
 
-func (f *fakeHerdr) TabCreate(_ context.Context, workspace, _, label string) (herdr.Tab, error) {
+func (f *fakeHerdr) TabCreate(_ context.Context, workspace, _, label string, env []string) (herdr.Tab, error) {
+	f.shellEnv = append(f.shellEnv, env)
 	if f.tabErr != nil {
 		return herdr.Tab{}, f.tabErr
 	}
@@ -185,11 +180,13 @@ func (a *fakeAgent) Spent() rpc.Usage {
 	return rpc.Usage{Input: a.spent}
 }
 
+func (a *fakeAgent) PID() int { return 4242 }
+
 func (a *fakeAgent) Close() error {
 	a.f.mu.Lock()
 	defer a.f.mu.Unlock()
 	a.f.keys[a.name] = append(a.f.keys[a.name], "close")
-	return nil
+	return a.f.closeErr
 }
 
 func (f *fakeHerdr) turn(name, text string) (reply, error) {
@@ -237,8 +234,6 @@ func writeSession(path, providerErr string, input int64) error {
 	return err
 }
 
-func (f *fakeHerdr) AgentList(context.Context) ([]herdr.Agent, error) { return f.liveAgents, nil }
-
 func (f *fakeHerdr) WorkspaceClose(_ context.Context, id string) error {
 	f.closed = append(f.closed, id)
 	return nil
@@ -249,46 +244,42 @@ func (f *fakeHerdr) WorkspaceReportMetadata(_ context.Context, _, _ string, seq 
 	return nil
 }
 
-var scriptRe = regexp.MustCompile(`verify-([a-z]+)\.sh`)
-
 func (f *fakeHerdr) PaneRun(_ context.Context, pane, command string) error {
-	if log, ok := strings.CutPrefix(command, "tail -n +1 -F "); ok {
-		f.tails[pane] = log
-		return nil
+	log, ok := strings.CutPrefix(command, "tail -n +1 -F ")
+	if !ok {
+		return fmt.Errorf("a pane only ever follows a log, got %q", command)
 	}
-	m := scriptRe.FindStringSubmatch(command)
-	if m == nil {
-		return fmt.Errorf("unexpected pane command %q", command)
-	}
-	f.checkRuns[m[1]]++
-	f.lastCheck = m[1]
+	f.tails[pane] = log
 	return nil
 }
 
-func (f *fakeHerdr) PaneWaitOutput(_ context.Context, _, regex string, _ time.Duration) (string, error) {
-	name := f.lastCheck
-	if f.checkHang[name] {
-		return "", &herdr.Error{Code: herdr.CodeTimeout, Message: "timeout"}
+// Run makes fakeHerdr the run's Checks too: a gate's exit code comes from f.checks.
+func (f *fakeHerdr) Run(_ context.Context, c Check) (int, error) {
+	f.checkRuns[c.Name]++
+	f.checkCalls = append(f.checkCalls, c)
+	if f.checkHang[c.Name] {
+		return 0, ErrCheckTimeout
 	}
-	nonce := strings.TrimSuffix(strings.TrimPrefix(regex, "__DLM_"), "_EXIT=[0-9]+")
-	return fmt.Sprintf("__DLM_%s_EXIT=%d", nonce, f.checks(name, f.checkRuns[name])), nil
+	return f.checks(c.Name, f.checkRuns[c.Name]), nil
 }
 
 // fakeGit models just enough repository state for the guardrails.
 type fakeGit struct {
-	branch     string
-	head       string
-	status     string
-	commits    []string
-	existing   map[string]bool
-	remote     map[string]bool // branches on origin
-	pushed     []string
-	pushErr    error
-	wt         string   // worktree path, set by the fake herdr
-	changed    []string // files changed since base
-	redproof   []string // log of red-proof git operations
-	discarded  []string
-	discardErr error
+	branch      string
+	head        string
+	status      string
+	commits     []string
+	existing    map[string]bool
+	remote      map[string]bool // branches on origin
+	pushed      []string
+	pushErr     error
+	wt          string            // worktree path, set by AddWorktree
+	onWorktree  func(path string) // seeds the base checkout (e.g. go.mod, .delamain.yaml)
+	worktreeOps int
+	changed     []string // files changed since base
+	redproof    []string // log of red-proof git operations
+	discarded   []string
+	discardErr  error
 }
 
 func newFakeGit() *fakeGit {
@@ -315,6 +306,18 @@ func (g *fakeGit) commitFiles(msg string, files map[string]string) {
 func (g *fakeGit) ChangedFiles(context.Context, string, string) ([]string, error) {
 	return g.changed, nil
 }
+func (g *fakeGit) AddWorktree(_ context.Context, _, path, branch, _ string) error {
+	g.worktreeOps++
+	if err := os.MkdirAll(path, 0o700); err != nil {
+		return err
+	}
+	g.branch, g.wt = branch, path
+	if g.onWorktree != nil {
+		g.onWorktree(path)
+	}
+	return nil
+}
+
 func (g *fakeGit) AddDetachedWorktree(_ context.Context, _, path, ref string) error {
 	g.redproof = append(g.redproof, "add "+ref)
 	return os.MkdirAll(path, 0o700)

@@ -31,6 +31,7 @@ Só uma instância roda por state_dir. Ctrl+C encerra: runs em andamento termina
 			if err != nil {
 				return err
 			}
+			applyHerdrFlag(c, &cfg)
 			if len(repos) == 0 {
 				repos = cfg.Daemon.Repos
 			}
@@ -89,6 +90,7 @@ Só uma instância roda por state_dir. Ctrl+C encerra: runs em andamento termina
 		},
 	}
 	cmd.Flags().StringArrayVar(&repos, "repo", nil, "repositório a observar (repetível; padrão: daemon.repos)")
+	addHerdrFlag(cmd)
 	return cmd
 }
 

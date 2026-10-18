@@ -2,12 +2,11 @@ package pipeline
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
-	"strconv"
 	"strings"
 
 	"github.com/paraizo/delamain/internal/gates"
@@ -122,7 +121,7 @@ func (r *Runner) detectNewStack(ru *run) {
 		return
 	}
 	ru.cmds, ru.res.CommandSources = gates.Effective(ru.repoCfg.Commands, ru.stack.Commands, ru.plan.Commands)
-	r.Log.Info("gate commands", "run", ru.rec.ID, "stack", ru.stack.Name, "sources", ru.res.CommandSources, "detected_after", "implement")
+	ru.log.Info("gate commands", "run", ru.rec.ID, "stack", ru.stack.Name, "sources", ru.res.CommandSources, "detected_after", "implement")
 }
 
 func (r *Runner) requireTests(ru *run) bool {
@@ -167,7 +166,7 @@ func (r *Runner) redProof(ctx context.Context, ru *run, iterDir string, changed 
 	}
 	defer func() {
 		if err := r.Git.RemoveWorktree(context.WithoutCancel(ctx), ru.repo.Worktree, dir); err != nil {
-			r.Log.Warn("could not remove red-proof worktree", "path", dir, "err", err)
+			ru.log.Warn("could not remove red-proof worktree", "path", dir, "err", err)
 		}
 	}()
 	if err := r.Git.CheckoutFiles(ctx, dir, ru.repo.Branch, tests); err != nil {
@@ -212,42 +211,29 @@ func gitCheck(name string, ok bool, detail string) CheckResult {
 	return CheckResult{Name: name, Command: "git", ExitCode: 1, Tail: detail}
 }
 
-// runCheck executes a command in the visible checks pane through a script file:
-// no shell quoting of the command, any interactive shell works, and output lands in a log.
+// runCheck runs a gate in the worktree. Its output goes to its own log and to the run's
+// checks.log, which `delamain logs` (and a herdr tab) follow.
 func (r *Runner) runCheck(ctx context.Context, ru *run, iterDir, name, line string) (CheckResult, error) {
 	return r.runCheckIn(ctx, ru, iterDir, name, line, ru.repo.Worktree)
 }
 
 func (r *Runner) runCheckIn(ctx context.Context, ru *run, iterDir, name, line, dir string) (CheckResult, error) {
-	nonce := r.Nonce()
+	checks := r.Checks
+	if checks == nil {
+		checks = ExecChecks{}
+	}
 	logPath := filepath.Join(iterDir, "verify-"+name+".log")
-	script := filepath.Join(iterDir, "verify-"+name+".sh")
-	body := fmt.Sprintf("cd %s || exit 97\n( %s ) > %s 2>&1\nrc=$?\ntail -n 30 %s\necho \"__DLM_%s_EXIT=$rc\"\n",
-		shellQuote(dir), line, shellQuote(logPath), shellQuote(logPath), nonce)
-	if err := os.WriteFile(script, []byte(body), 0o600); err != nil {
-		return CheckResult{}, err
+	code, err := checks.Run(ctx, Check{
+		Name: name, Command: line, Dir: dir, LogPath: logPath, Echo: r.checksLog(ru), Timeout: r.Cfg.Pipeline.CheckTimeout,
+	})
+	if errors.Is(err, ErrCheckTimeout) {
+		return CheckResult{}, haltf("check %s não terminou em %s", name, r.Cfg.Pipeline.CheckTimeout)
 	}
-	pane := ru.panes["checks"]
-	if err := r.Herdr.PaneRun(ctx, pane, "sh "+shellQuote(script)); err != nil {
-		return CheckResult{}, err
-	}
-	matched, err := r.Herdr.PaneWaitOutput(ctx, pane, `__DLM_`+nonce+`_EXIT=[0-9]+`, r.Cfg.Pipeline.CheckTimeout)
-	if err != nil {
-		return CheckResult{}, haltf("check %s não terminou em %s: %v", name, r.Cfg.Pipeline.CheckTimeout, err)
-	}
-	code, err := exitCode(matched, nonce)
 	if err != nil {
 		return CheckResult{}, err
 	}
+	ru.log.Info("gate", "run", ru.rec.ID, "name", name, "exit", code)
 	return CheckResult{Name: name, Command: line, ExitCode: code, LogPath: logPath, Tail: tailFile(logPath, 60, 4000)}, nil
-}
-
-func exitCode(line, nonce string) (int, error) {
-	m := regexp.MustCompile(`__DLM_` + regexp.QuoteMeta(nonce) + `_EXIT=([0-9]+)`).FindStringSubmatch(line)
-	if m == nil {
-		return 0, fmt.Errorf("sentinel not found in %q", line)
-	}
-	return strconv.Atoi(m[1])
 }
 
 func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }

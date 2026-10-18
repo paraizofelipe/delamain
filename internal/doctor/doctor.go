@@ -52,7 +52,13 @@ func Run(ctx context.Context, cfg config.Config, d Deps) []Check {
 	}
 
 	found := map[string]string{}
-	for _, bin := range []struct{ name, path string }{{"herdr", cfg.Herdr.Binary}, {"omp", cfg.Omp.Binary}, {"git", "git"}} {
+	bins := []struct{ name, path string }{{"omp", cfg.Omp.Binary}, {"git", "git"}}
+	if cfg.Herdr.Enabled {
+		bins = append([]struct{ name, path string }{{"herdr", cfg.Herdr.Binary}}, bins...)
+	} else {
+		add("herdr", OK, "off: runs are followed with `delamain logs` (enable with herdr.enabled or --herdr)")
+	}
+	for _, bin := range bins {
 		p, err := d.LookPath(bin.path)
 		if err != nil {
 			add(bin.name, Fail, "%s not found in PATH", bin.path)
@@ -76,24 +82,8 @@ func Run(ctx context.Context, cfg config.Config, d Deps) []Check {
 		add("omp rpc", OK, "ready")
 	}
 
-	session := cfg.Herdr.Session
-	label := session
-	if label == "" {
-		label = "default"
-	}
-	if sessions, err := d.Herdr.Sessions(ctx); err != nil {
-		add("herdr server", Fail, "cannot list sessions: %v", err)
-	} else {
-		add("herdr server", Fail, "session %q not found", label)
-		for _, s := range sessions {
-			if (session == "" && s.Default) || s.Name == session {
-				if s.Running {
-					checks[len(checks)-1] = Check{"herdr server", OK, fmt.Sprintf("session %q running", s.Name)}
-				} else {
-					checks[len(checks)-1] = Check{"herdr server", Fail, fmt.Sprintf("session %q stopped (run: herdr --session %s server)", s.Name, s.Name)}
-				}
-			}
-		}
+	if cfg.Herdr.Enabled {
+		checks = append(checks, herdrServer(ctx, cfg, d.Herdr)...)
 	}
 
 	forges := 0
@@ -168,4 +158,26 @@ func writable(dir string) error {
 func firstLine(s string) string {
 	line, _, _ := strings.Cut(strings.TrimSpace(s), "\n")
 	return line
+}
+
+// herdrServer checks that the configured herdr session is running, when herdr shows the runs.
+func herdrServer(ctx context.Context, cfg config.Config, h Herdr) []Check {
+	session := cfg.Herdr.Session
+	label := session
+	if label == "" {
+		label = "default"
+	}
+	sessions, err := h.Sessions(ctx)
+	if err != nil {
+		return []Check{{"herdr server", Fail, fmt.Sprintf("cannot list sessions: %v", err)}}
+	}
+	for _, s := range sessions {
+		if (session == "" && s.Default) || s.Name == session {
+			if s.Running {
+				return []Check{{"herdr server", OK, fmt.Sprintf("session %q running", s.Name)}}
+			}
+			return []Check{{"herdr server", Fail, fmt.Sprintf("session %q stopped (run: herdr --session %s server)", s.Name, s.Name)}}
+		}
+	}
+	return []Check{{"herdr server", Fail, fmt.Sprintf("session %q not found", label)}}
 }

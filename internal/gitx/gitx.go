@@ -102,6 +102,53 @@ func (g Git) ChangedFiles(ctx context.Context, dir, base string) ([]string, erro
 	return strings.Split(out, "\n"), nil
 }
 
+// AddWorktree creates branch at base and checks it out at path. The branch must be a new work
+// branch: protected branches are refused and an existing branch makes git fail.
+func (g Git) AddWorktree(ctx context.Context, repo, path, branch, base string) error {
+	if err := GuardWorkBranch(branch, base); err != nil {
+		return err
+	}
+	_, err := g.run(ctx, repo, "worktree", "add", "--quiet", "-b", branch, path, base)
+	return err
+}
+
+// Worktree is one checkout of a repository, as listed by `git worktree list`.
+type Worktree struct {
+	Path     string `json:"path" yaml:"path"`
+	Branch   string `json:"branch,omitempty" yaml:"branch,omitempty"`
+	Head     string `json:"head" yaml:"head"`
+	Detached bool   `json:"detached,omitempty" yaml:"detached,omitempty"`
+}
+
+// ListWorktrees returns every checkout of repo, the main one first.
+func (g Git) ListWorktrees(ctx context.Context, repo string) ([]Worktree, error) {
+	out, err := g.run(ctx, repo, "worktree", "list", "--porcelain")
+	if err != nil {
+		return nil, err
+	}
+	var list []Worktree
+	for _, block := range strings.Split(out, "\n\n") {
+		var w Worktree
+		for _, line := range strings.Split(block, "\n") {
+			key, val, _ := strings.Cut(line, " ")
+			switch key {
+			case "worktree":
+				w.Path = val
+			case "HEAD":
+				w.Head = val
+			case "branch":
+				w.Branch = strings.TrimPrefix(val, "refs/heads/")
+			case "detached":
+				w.Detached = true
+			}
+		}
+		if w.Path != "" {
+			list = append(list, w)
+		}
+	}
+	return list, nil
+}
+
 // AddDetachedWorktree checks ref out at path without creating a branch (used for the red proof).
 func (g Git) AddDetachedWorktree(ctx context.Context, repo, path, ref string) error {
 	_, err := g.run(ctx, repo, "worktree", "add", "--quiet", "--detach", path, ref)

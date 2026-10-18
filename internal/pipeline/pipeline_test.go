@@ -7,13 +7,13 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/paraizo/delamain/internal/config"
-	"github.com/paraizo/delamain/internal/herdr"
 	"github.com/paraizo/delamain/internal/prompts"
 	"github.com/paraizo/delamain/internal/store"
 	embedded "github.com/paraizo/delamain/prompts"
@@ -89,10 +89,9 @@ func newHarness(t *testing.T, b behavior) *harness {
 	h := newFakeHerdr(sessions, g, b)
 	return &harness{
 		r: &Runner{
-			Cfg: cfg, Herdr: h, Agents: h, Git: g, Store: st, Prompts: set,
+			Cfg: cfg, Display: HerdrDisplay{Herdr: h}, Agents: h, Checks: h, Git: g, Store: st, Prompts: set,
 			PromptsTarget: prompts.Target{OmpAgentDir: filepath.Join(root, "omp"), RolesDir: filepath.Join(root, "roles")},
 			Log:           slog.New(slog.NewTextHandler(io.Discard, nil)),
-			Nonce:         func() string { return "n0nce" },
 			LookPath:      func(string) (string, error) { return "", errors.New("not installed") },
 		},
 		h: h, g: g, st: st,
@@ -324,7 +323,7 @@ func TestRunShouldRejectTaskWithoutAcceptanceCriteriaBeforeCreatingAnything(t *t
 	if res.Outcome != OutcomeNeedsInfo || !strings.Contains(res.Reason, "critérios de aceite") {
 		t.Fatalf("got %s: %s", res.Outcome, res.Reason)
 	}
-	if hs.h.worktreeOps != 0 || res.RunID != 0 {
+	if hs.g.worktreeOps != 0 || res.RunID != 0 {
 		t.Fatal("needs-info must not create worktrees or runs")
 	}
 }
@@ -333,8 +332,8 @@ func TestRunShouldHaltWhenBranchAlreadyExists(t *testing.T) {
 	hs := newHarness(t, happy)
 	hs.g.existing["fix/7-fix-add"] = true
 	res := hs.run(t)
-	if res.Outcome != OutcomeHalted || hs.h.worktreeOps != 0 {
-		t.Fatalf("existing work must never be overwritten: %s, worktree ops %d", res.Outcome, hs.h.worktreeOps)
+	if res.Outcome != OutcomeHalted || hs.g.worktreeOps != 0 {
+		t.Fatalf("existing work must never be overwritten: %s, worktree ops %d", res.Outcome, hs.g.worktreeOps)
 	}
 }
 
@@ -399,27 +398,64 @@ func TestRunShouldRefuseSecondConcurrentRunForSameTask(t *testing.T) {
 	}
 }
 
-func TestRunShouldHaltWhenHerdrReturnsAWorkspaceWithLiveAgents(t *testing.T) {
+func TestRunShouldCompleteWithoutADisplay(t *testing.T) {
 	hs := newHarness(t, happy)
-	// After a server restart herdr restored an old run's workspace with its agents.
-	hs.h.liveAgents = []herdr.Agent{{Name: "planner-r1", WorkspaceID: "w9"}}
+	hs.r.Display = nil // the default: herdr is optional
 	res := hs.run(t)
-	if res.Outcome != OutcomeHalted || !strings.Contains(res.Reason, "planner-r1") {
+	if res.Outcome != OutcomeApproved || len(res.Commits) != 1 {
 		t.Fatalf("got %s: %s", res.Outcome, res.Reason)
 	}
-	if len(hs.h.started) != 0 {
-		t.Fatal("no agent may be started into panes another run owns")
+	if hs.h.workspaces+len(hs.h.tabs)+len(hs.h.tails)+len(hs.h.closed)+len(hs.h.metadata) != 0 {
+		t.Fatalf("a headless run never touches herdr: tabs=%v tails=%v closed=%v", hs.h.tabs, hs.h.tails, hs.h.closed)
 	}
-	if len(hs.h.closed) != 0 {
-		t.Fatal("a workspace that is not ours must never be closed")
+	if res.WorkspaceID != "" || hs.finalRun(t, res.RunID).Workspace != "" {
+		t.Fatal("no workspace exists to record")
+	}
+	if hs.g.worktreeOps != 1 || res.Worktree != filepath.Join(hs.r.Cfg.Paths.WorktreesDir, "repo", res.Branch) {
+		t.Fatalf("the worktree is created under worktrees_dir by git itself: ops=%d path=%s", hs.g.worktreeOps, res.Worktree)
 	}
 }
 
-func TestRunShouldIgnoreLiveAgentsOfOtherWorkspaces(t *testing.T) {
+func TestRunShouldWriteTheOrchestratorLogAndGateOutputUnderTheRunDir(t *testing.T) {
 	hs := newHarness(t, happy)
-	hs.h.liveAgents = []herdr.Agent{{Name: "reviewer", WorkspaceID: "w1"}}
-	if res := hs.run(t); res.Outcome != OutcomeApproved {
-		t.Fatalf("agents elsewhere are irrelevant: %s %s", res.Outcome, res.Reason)
+	hs.r.Display = nil
+	res := hs.run(t)
+	logs := filepath.Join(res.RunDir, "logs")
+	main, err := os.ReadFile(filepath.Join(logs, "delamain.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"state run=1 state=plan", "agent started run=1 role=planner pid=4242", "agent stopped run=1 role=reviewer state=done", "state run=1 state=recorded"} {
+		if !strings.Contains(string(main), want) {
+			t.Errorf("delamain.log must tell the run's story, missing %q:\n%s", want, main)
+		}
+	}
+	if !regexp.MustCompile(`(?m)^\d\d:\d\d:\d\d `).Match(main) {
+		t.Errorf("lines carry the same time prefix as agent logs, so they can be interleaved:\n%s", main)
+	}
+	for _, c := range hs.h.checkCalls {
+		if c.Echo != filepath.Join(logs, "checks.log") || c.Dir == "" || c.Timeout != hs.r.Cfg.Pipeline.CheckTimeout {
+			t.Fatalf("every gate echoes into the run's checks.log, bounded by check_timeout: %+v", c)
+		}
+	}
+}
+
+func TestRunShouldRecordEachAgentForOtherProcessesToSee(t *testing.T) {
+	hs := newHarness(t, happy)
+	res := hs.run(t)
+	agents, err := hs.st.Agents(context.Background(), res.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var roles []string
+	for _, a := range agents {
+		roles = append(roles, a.Role)
+		if a.State != store.AgentDone || a.PID != 4242 || !strings.HasSuffix(a.LogPath, "/logs/"+a.Role+".log") || a.EndedAt.IsZero() {
+			t.Errorf("%s = %+v", a.Role, a)
+		}
+	}
+	if !slices.Equal(roles, []string{"planner", "implementer", "reviewer"}) {
+		t.Fatalf("roles = %v", roles)
 	}
 }
 
@@ -498,11 +534,44 @@ func TestStoppedAgentTabShouldBeMarkedDoneAndKept(t *testing.T) {
 	}
 }
 
-func TestRunShouldHaltWhenAnAgentTabCannotBeOpened(t *testing.T) {
+func TestRunShouldRecordAnAgentThatDidNotStopCleanlyAsFailed(t *testing.T) {
+	hs := newHarness(t, happy)
+	hs.h.closeErr = errors.New("omp did not exit")
+	res := hs.run(t)
+	agents, _ := hs.st.Agents(context.Background(), res.RunID)
+	if len(agents) == 0 {
+		t.Fatal("agents must be recorded")
+	}
+	for _, a := range agents {
+		if a.State != store.AgentFailed {
+			t.Errorf("%s = %s", a.Role, a.State)
+		}
+	}
+}
+
+func TestHerdrTabsShouldStartAQuietShellWhenConfigured(t *testing.T) {
+	hs := newHarness(t, happy)
+	quiet := filepath.Join(t.TempDir(), "herdr-shell")
+	hs.r.Display = HerdrDisplay{Herdr: hs.h, QuietShell: quiet}
+	hs.run(t)
+	if len(hs.h.shellEnv) != 4 {
+		t.Fatalf("workspace + 3 agent tabs: %v", hs.h.shellEnv)
+	}
+	for _, env := range hs.h.shellEnv {
+		if !slices.Equal(env, []string{"ZDOTDIR=" + quiet}) {
+			t.Fatalf("every tab only runs tail, so it skips the user's zsh startup: %v", hs.h.shellEnv)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(quiet, ".zshrc")); err != nil {
+		t.Fatalf("the quiet ZDOTDIR has an empty .zshrc, or zsh's new-user wizard eats the typed command: %v", err)
+	}
+}
+
+func TestRunShouldContinueWhenTheDisplayFails(t *testing.T) {
 	hs := newHarness(t, happy)
 	hs.h.tabErr = errors.New("workspace not found")
-	if res := hs.run(t); res.Outcome != OutcomeHalted || !strings.Contains(res.Reason, "workspace not found") || len(hs.h.started) != 0 {
-		t.Fatalf("got %s: %s started=%v", res.Outcome, res.Reason, hs.h.started)
+	if res := hs.run(t); res.Outcome != OutcomeApproved {
+		t.Fatalf("the display is never a reason to stop: %s %s", res.Outcome, res.Reason)
 	}
 }
 

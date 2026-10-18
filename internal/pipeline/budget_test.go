@@ -135,7 +135,7 @@ func TestBudgetShouldRefuseToStartWhenTheDailyCapIsSpent(t *testing.T) {
 	if res.Outcome != OutcomeHalted || !strings.Contains(res.Reason, "diário") || res.RunID != 0 {
 		t.Fatalf("got %s (%s) run=%d", res.Outcome, res.Reason, res.RunID)
 	}
-	if hs.h.worktreeOps != 0 || len(f.relabels) != 0 {
+	if hs.g.worktreeOps != 0 || len(f.relabels) != 0 {
 		t.Fatal("a spent day creates nothing and leaves the issue ready for tomorrow")
 	}
 }

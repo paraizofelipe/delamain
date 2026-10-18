@@ -34,8 +34,11 @@ type Config struct {
 	Paths    Paths    `yaml:"paths"`
 }
 
+// Herdr optionally shows runs in herdr workspaces. Off by default: the orchestrator drives
+// agents and gates itself, and `delamain logs` follows them.
 type Herdr struct {
-	Binary string `yaml:"binary"`
+	Enabled bool   `yaml:"enabled"`
+	Binary  string `yaml:"binary"`
 	// Session targets a named herdr session; empty means the default session.
 	Session string `yaml:"session"`
 }
@@ -102,7 +105,9 @@ type Daemon struct {
 }
 
 type Paths struct {
-	StateDir     string `yaml:"state_dir"`
+	StateDir string `yaml:"state_dir"`
+	// WorktreesDir holds every run's worktree, as <worktrees_dir>/<repo>/<branch>; `delamain
+	// status` lists the worktrees found there.
 	WorktreesDir string `yaml:"worktrees_dir"`
 	// PromptsDir overrides the embedded prompts when set.
 	PromptsDir string `yaml:"prompts_dir"`
@@ -186,6 +191,13 @@ func applyEnv(cfg *Config, getenv func(string) string) error {
 		if v := getenv(key); v != "" {
 			*dst = v
 		}
+	}
+	if v := getenv("DELAMAIN_HERDR"); v != "" {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			return fmt.Errorf("DELAMAIN_HERDR: %q is not a boolean", v)
+		}
+		cfg.Herdr.Enabled = b
 	}
 	ints := map[string]*int{
 		"DELAMAIN_MAX_ITERATIONS": &cfg.Pipeline.MaxIterations,

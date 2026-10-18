@@ -121,3 +121,20 @@ func TestValidateShouldAcceptBoundaryValues(t *testing.T) {
 		t.Fatalf("boundary values must be valid: %v", err)
 	}
 }
+
+func TestHerdrShouldBeOffUnlessTheFileOrEnvTurnsItOn(t *testing.T) {
+	if cfg, err := Load(filepath.Join(t.TempDir(), "x.yaml"), noEnv); err != nil || cfg.Herdr.Enabled {
+		t.Fatalf("the orchestrator's own flow is the default: %+v %v", cfg.Herdr, err)
+	}
+	cfg, err := Load(writeFile(t, "herdr:\n  enabled: true\n"), noEnv)
+	if err != nil || !cfg.Herdr.Enabled {
+		t.Fatalf("file: %+v %v", cfg.Herdr, err)
+	}
+	cfg, err = Load(writeFile(t, "herdr:\n  enabled: true\n"), envOf(map[string]string{"DELAMAIN_HERDR": "false"}))
+	if err != nil || cfg.Herdr.Enabled {
+		t.Fatalf("env wins over file: %+v %v", cfg.Herdr, err)
+	}
+	if _, err := Load(filepath.Join(t.TempDir(), "x.yaml"), envOf(map[string]string{"DELAMAIN_HERDR": "talvez"})); err == nil || !strings.Contains(err.Error(), "DELAMAIN_HERDR") {
+		t.Fatalf("want error naming the bad variable, got %v", err)
+	}
+}

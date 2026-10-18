@@ -106,7 +106,7 @@ func TestTestsTouchedShouldRejectProductionChangeWithoutTests(t *testing.T) {
 
 func TestRepoConfigShouldOverridePlannerCommandsAndGates(t *testing.T) {
 	hs := newHarness(t, happy)
-	hs.h.onWorktree = func(path string) {
+	hs.g.onWorktree = func(path string) {
 		_ = os.WriteFile(filepath.Join(path, ".delamain.yaml"), []byte("commands:\n  test: make test\ngates:\n  red_proof: never\n"), 0o600)
 	}
 	res := hs.run(t)
@@ -126,7 +126,7 @@ func TestDetectedStackShouldBeatPlannerCommands(t *testing.T) {
 		}
 		return happy(role, n, text)
 	})
-	hs.h.onWorktree = func(path string) { _ = os.WriteFile(filepath.Join(path, "go.mod"), []byte("module x\n"), 0o600) }
+	hs.g.onWorktree = func(path string) { _ = os.WriteFile(filepath.Join(path, "go.mod"), []byte("module x\n"), 0o600) }
 	res := hs.run(t)
 	test, _ := checkNamed(res.History[0], "test")
 	if test.Command != "go test ./..." {
@@ -174,7 +174,7 @@ func TestStackShouldNotBeRedetectedWhenTheBaseHadOne(t *testing.T) {
 		map[string]string{"package.json": `{"scripts":{"test":"true"}}`},
 		func(g *fakeGit) { _ = os.Remove(filepath.Join(g.wt, "go.mod")) },
 	))
-	hs.h.onWorktree = func(path string) { _ = os.WriteFile(filepath.Join(path, "go.mod"), []byte("module x\n"), 0o600) }
+	hs.g.onWorktree = func(path string) { _ = os.WriteFile(filepath.Join(path, "go.mod"), []byte("module x\n"), 0o600) }
 	res := hs.run(t)
 	if test, _ := checkNamed(res.History[0], "test"); test.Command != "go test ./..." {
 		t.Fatalf("an agent must not swap the base stack's gates for its own: %+v", test)
@@ -183,7 +183,7 @@ func TestStackShouldNotBeRedetectedWhenTheBaseHadOne(t *testing.T) {
 
 func TestInvalidRepoConfigShouldHaltBeforeAgentsWork(t *testing.T) {
 	hs := newHarness(t, happy)
-	hs.h.onWorktree = func(path string) {
+	hs.g.onWorktree = func(path string) {
 		_ = os.WriteFile(filepath.Join(path, ".delamain.yaml"), []byte("comands: {}\n"), 0o600)
 	}
 	res := hs.run(t)

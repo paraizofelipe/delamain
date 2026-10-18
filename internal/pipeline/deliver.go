@@ -115,7 +115,7 @@ func (r *Runner) deliver(ctx context.Context, ru *run) {
 	}
 	res.PRURL, res.Draft = pr.URL, pr.Draft
 	ru.rec.MRURL = pr.URL
-	r.Log.Info("delivered", "run", ru.rec.ID, "url", pr.URL, "draft", pr.Draft)
+	ru.log.Info("delivered", "run", ru.rec.ID, "url", pr.URL, "draft", pr.Draft)
 }
 
 // announce records the result on the issue (step 11): final label and a status comment.

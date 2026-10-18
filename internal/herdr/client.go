@@ -17,7 +17,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"time"
 )
 
 // Runner executes the herdr binary. The exec implementation is swapped for a fake in tests.
@@ -93,25 +92,15 @@ type Agent struct {
 	Cwd         string `json:"cwd"`
 }
 
-type Worktree struct {
-	WorkspaceID string
-	TabID       string
-	RootPaneID  string
-	Path        string
-	Branch      string
+type Workspace struct {
+	ID         string
+	TabID      string
+	RootPaneID string
 }
 
 type Tab struct {
 	ID         string
 	RootPaneID string
-}
-
-type WorktreeOptions struct {
-	Cwd    string
-	Branch string
-	Base   string
-	Path   string
-	Label  string
 }
 
 type Session struct {
@@ -184,8 +173,6 @@ func (c *Client) runJSON(ctx context.Context, dst any, args ...string) error {
 	return nil
 }
 
-func ms(d time.Duration) string { return strconv.FormatInt(d.Milliseconds(), 10) }
-
 // Sessions lists named herdr sessions (works without a running server).
 func (c *Client) Sessions(ctx context.Context) ([]Session, error) {
 	out, err := c.run(ctx, "session", "list", "--json")
@@ -201,18 +188,14 @@ func (c *Client) Sessions(ctx context.Context) ([]Session, error) {
 	return v.Sessions, nil
 }
 
-// WorktreeCreate creates a git worktree and its herdr workspace without stealing focus.
-func (c *Client) WorktreeCreate(ctx context.Context, o WorktreeOptions) (Worktree, error) {
-	args := []string{"worktree", "create", "--cwd", o.Cwd, "--branch", o.Branch, "--no-focus"}
-	if o.Base != "" {
-		args = append(args, "--base", o.Base)
+// WorkspaceCreate opens a workspace at cwd without stealing focus. herdr creates its first tab
+// and root pane with it; env (KEY=VALUE) is set for the pane's shell.
+func (c *Client) WorkspaceCreate(ctx context.Context, cwd, label string, env []string) (Workspace, error) {
+	args := []string{"workspace", "create", "--cwd", cwd, "--no-focus"}
+	if label != "" {
+		args = append(args, "--label", label)
 	}
-	if o.Path != "" {
-		args = append(args, "--path", o.Path)
-	}
-	if o.Label != "" {
-		args = append(args, "--label", o.Label)
-	}
+	args = appendEnv(args, env)
 	var res struct {
 		Workspace struct {
 			ID string `json:"workspace_id"`
@@ -223,25 +206,19 @@ func (c *Client) WorktreeCreate(ctx context.Context, o WorktreeOptions) (Worktre
 		RootPane struct {
 			ID string `json:"pane_id"`
 		} `json:"root_pane"`
-		Worktree struct {
-			Path   string `json:"path"`
-			Branch string `json:"branch"`
-		} `json:"worktree"`
 	}
 	if err := c.runJSON(ctx, &res, args...); err != nil {
-		return Worktree{}, err
+		return Workspace{}, err
 	}
-	if res.RootPane.ID == "" {
-		return Worktree{}, errors.New("herdr worktree create: response has no root pane")
+	if res.Workspace.ID == "" || res.RootPane.ID == "" {
+		return Workspace{}, errors.New("herdr workspace create: response has no workspace or root pane")
 	}
-	return Worktree{
-		WorkspaceID: res.Workspace.ID, TabID: res.Tab.ID, RootPaneID: res.RootPane.ID,
-		Path: res.Worktree.Path, Branch: res.Worktree.Branch,
-	}, nil
+	return Workspace{ID: res.Workspace.ID, TabID: res.Tab.ID, RootPaneID: res.RootPane.ID}, nil
 }
 
-// TabCreate opens a labeled tab in workspace. It never passes --focus.
-func (c *Client) TabCreate(ctx context.Context, workspace, cwd, label string) (Tab, error) {
+// TabCreate opens a labeled tab in workspace, with env (KEY=VALUE) set for its shell. It never
+// passes --focus.
+func (c *Client) TabCreate(ctx context.Context, workspace, cwd, label string, env []string) (Tab, error) {
 	var res struct {
 		Tab struct {
 			ID string `json:"tab_id"`
@@ -250,7 +227,7 @@ func (c *Client) TabCreate(ctx context.Context, workspace, cwd, label string) (T
 			ID string `json:"pane_id"`
 		} `json:"root_pane"`
 	}
-	if err := c.runJSON(ctx, &res, "tab", "create", "--workspace", workspace, "--cwd", cwd, "--label", label); err != nil {
+	if err := c.runJSON(ctx, &res, appendEnv([]string{"tab", "create", "--workspace", workspace, "--cwd", cwd, "--label", label}, env)...); err != nil {
 		return Tab{}, err
 	}
 	if res.RootPane.ID == "" {
@@ -276,15 +253,6 @@ func (c *Client) PaneRun(ctx context.Context, pane, command string) error {
 	return c.runJSON(ctx, nil, "pane", "run", pane, command)
 }
 
-// PaneWaitOutput waits until a line of recent unwrapped output matches regex and returns that line.
-func (c *Client) PaneWaitOutput(ctx context.Context, pane, regex string, timeout time.Duration) (string, error) {
-	var res struct {
-		MatchedLine string `json:"matched_line"`
-	}
-	err := c.runJSON(ctx, &res, "pane", "wait-output", pane, "--regex", regex, "--source", "recent-unwrapped", "--timeout", ms(timeout))
-	return res.MatchedLine, err
-}
-
 // WorkspaceClose closes a workspace created by delamain. It never passes --group.
 func (c *Client) WorkspaceClose(ctx context.Context, workspaceID string) error {
 	return c.runJSON(ctx, nil, "workspace", "close", workspaceID)
@@ -298,4 +266,11 @@ func (c *Client) WorkspaceReportMetadata(ctx context.Context, workspaceID, sourc
 		args = append(args, "--token", k+"="+tokens[k])
 	}
 	return c.runJSON(ctx, nil, args...)
+}
+
+func appendEnv(args, env []string) []string {
+	for _, kv := range env {
+		args = append(args, "--env", kv)
+	}
+	return args
 }

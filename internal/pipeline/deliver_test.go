@@ -170,8 +170,8 @@ func TestSetupShouldHaltWhenAnOpenPRAlreadyExistsForTheBranch(t *testing.T) {
 	f.open = &forge.PR{Number: 3, URL: "https://github.com/acme/api/pull/3"}
 	res := hs.run(t)
 
-	if res.Outcome != OutcomeHalted || !strings.Contains(res.Reason, "pull/3") || hs.h.worktreeOps != 0 {
-		t.Fatalf("existing PR must stop before any worktree: %s (%s) worktrees=%d", res.Outcome, res.Reason, hs.h.worktreeOps)
+	if res.Outcome != OutcomeHalted || !strings.Contains(res.Reason, "pull/3") || hs.g.worktreeOps != 0 {
+		t.Fatalf("existing PR must stop before any worktree: %s (%s) worktrees=%d", res.Outcome, res.Reason, hs.g.worktreeOps)
 	}
 }
 
@@ -179,8 +179,8 @@ func TestSetupShouldHaltWhenBranchAlreadyExistsOnOrigin(t *testing.T) {
 	hs := newHarness(t, happy)
 	withForge(hs)
 	hs.g.remote["fix/7-fix-add"] = true
-	if res := hs.run(t); res.Outcome != OutcomeHalted || !strings.Contains(res.Reason, "origin") || hs.h.worktreeOps != 0 {
-		t.Fatalf("got %s (%s) worktrees=%d", res.Outcome, res.Reason, hs.h.worktreeOps)
+	if res := hs.run(t); res.Outcome != OutcomeHalted || !strings.Contains(res.Reason, "origin") || hs.g.worktreeOps != 0 {
+		t.Fatalf("got %s (%s) worktrees=%d", res.Outcome, res.Reason, hs.g.worktreeOps)
 	}
 }
 
@@ -192,8 +192,8 @@ func TestSetupShouldStartEveryAgentWithPushBlocked(t *testing.T) {
 			t.Errorf("%s must start with the push-blocking env, got %v", role, env)
 		}
 	}
-	if _, ok := hs.h.tails["w9:p1"]; ok {
-		t.Error("the checks tab (root) runs the orchestrator's gates, not an agent log")
+	if log := hs.h.tails["w9:p1"]; !strings.HasSuffix(log, "/logs/checks.log'") {
+		t.Errorf("the checks tab (root) follows the gates' output, not an agent log: %q", log)
 	}
 }
 
@@ -238,7 +238,7 @@ func TestIssueShouldGetNeedsInfoWhenPreflightFails(t *testing.T) {
 	if len(f.relabels) != 1 || !slices.Contains(f.relabels[0][0], hs.r.Cfg.Forge.Labels.NeedsInfo) {
 		t.Fatalf("labels = %v", f.relabels)
 	}
-	if runs, _ := hs.st.UnfinishedRuns(context.Background()); len(runs) != 0 || hs.h.worktreeOps != 0 {
+	if runs, _ := hs.st.UnfinishedRuns(context.Background()); len(runs) != 0 || hs.g.worktreeOps != 0 {
 		t.Fatal("needs_info must not create a run or a worktree")
 	}
 }

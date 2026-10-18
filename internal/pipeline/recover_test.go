@@ -192,3 +192,30 @@ func TestRecoverShouldYieldWhenAnotherRecovererClaimsTheRunFirst(t *testing.T) {
 		t.Fatalf("a run is finalized by exactly one recoverer: %+v", out)
 	}
 }
+
+func TestRecoverShouldMarkTheDeadRunsAgentsAsFailed(t *testing.T) {
+	hs := newHarness(t, happy)
+	rec := crashed(t, hs, store.StateImplement)
+	ctx := context.Background()
+	_ = hs.st.StartAgent(ctx, store.Agent{RunID: rec.ID, Role: "planner"})
+	_ = hs.st.EndAgent(ctx, rec.ID, "planner", store.AgentDone)
+	_ = hs.st.StartAgent(ctx, store.Agent{RunID: rec.ID, Role: "implementer", PID: deadPID})
+	recoverAll(t, hs)
+
+	agents, _ := hs.st.Agents(ctx, rec.ID)
+	if len(agents) != 2 || agents[0].State != store.AgentDone || agents[1].State != store.AgentFailed {
+		t.Fatalf("the implementer died with its owner; the planner had finished: %+v", agents)
+	}
+	if log, _ := os.ReadFile(filepath.Join(hs.r.runDir("/repo", rec.ID), "logs", "delamain.log")); !strings.Contains(string(log), "recovering run") {
+		t.Fatalf("the recovery is part of the run's log:\n%s", log)
+	}
+}
+
+func TestRecoverShouldLeaveARestoredWorkspaceAloneWithoutADisplay(t *testing.T) {
+	hs := newHarness(t, happy)
+	hs.r.Display = nil
+	crashed(t, hs, store.StateImplement)
+	if out := recoverAll(t, hs); len(out) != 1 || len(hs.h.closed) != 0 {
+		t.Fatalf("herdr is never called when it is off: %+v closed=%v", out, hs.h.closed)
+	}
+}

@@ -22,6 +22,8 @@ type Agent interface {
 	Abort() error
 	// Spent is the session's usage as reported live, ahead of what omp has written to disk.
 	Spent() rpc.Usage
+	// PID is omp's process id, recorded so other delamain processes can tell it is alive.
+	PID() int
 	Close() error
 }
 
@@ -30,7 +32,7 @@ type AgentOptions struct {
 	Dir     string
 	Args    []string
 	Env     []string // wins over the inherited environment
-	LogPath string   // human-readable event log, shown in the role's herdr tab
+	LogPath string   // human-readable event log, read by `delamain logs` (and a herdr tab)
 	ErrPath string   // omp's stderr
 }
 

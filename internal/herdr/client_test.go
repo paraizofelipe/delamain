@@ -34,45 +34,46 @@ func (f *fakeRunner) Run(_ context.Context, args ...string) ([]byte, []byte, err
 
 // Fixtures captured from herdr 0.9.3 during the M0 spike.
 const (
-	worktreeCreateJSON = `{"id":"cli:worktree:create","result":{"root_pane":{"pane_id":"w2:p1"},"tab":{"tab_id":"w2:t1"},"workspace":{"workspace_id":"w2"},"worktree":{"branch":"fix/1-add","is_linked_worktree":true,"path":"/tmp/wt-fix-1-add"}}}`
-	agentListJSON      = `{"id":"cli:agent:list","result":{"agents":[{"agent":"omp","agent_status":"done","cwd":"/tmp/wt","name":"implementer","pane_id":"w2:p1","tab_id":"w2:t1","workspace_id":"w2"}]}}`
-	serverDownJSON     = `{"error":{"code":"server_unavailable","message":"server is shutting down"},"id":"cli:agent:list"}`
-	tabCreateJSON      = `{"id":"cli:tab:create","result":{"root_pane":{"agent_status":"unknown","pane_id":"w2D:p2","tab_id":"w2D:t2","workspace_id":"w2D"},"tab":{"agent_status":"unknown","focused":false,"label":"planner","number":2,"tab_id":"w2D:t2"},"type":"tab_created"}}` // herdr 0.9.3, tab spike
-	sessionListJSON    = `{"sessions":[{"default":true,"name":"default","running":true,"socket_path":"/d.sock"},{"default":false,"name":"delamain-spike","running":true,"socket_path":"/s.sock"},{"default":false,"name":"old","running":false,"socket_path":"/o.sock"}]}`
+	// Shape documented for `workspace create` (herdr cli-reference 0.9.x): same ids as worktree create.
+	workspaceCreateJSON = `{"id":"cli:workspace:create","result":{"root_pane":{"pane_id":"w2:p1"},"tab":{"tab_id":"w2:t1"},"workspace":{"workspace_id":"w2"}}}`
+	agentListJSON       = `{"id":"cli:agent:list","result":{"agents":[{"agent":"omp","agent_status":"done","cwd":"/tmp/wt","name":"implementer","pane_id":"w2:p1","tab_id":"w2:t1","workspace_id":"w2"}]}}`
+	serverDownJSON      = `{"error":{"code":"server_unavailable","message":"server is shutting down"},"id":"cli:agent:list"}`
+	tabCreateJSON       = `{"id":"cli:tab:create","result":{"root_pane":{"agent_status":"unknown","pane_id":"w2D:p2","tab_id":"w2D:t2","workspace_id":"w2D"},"tab":{"agent_status":"unknown","focused":false,"label":"planner","number":2,"tab_id":"w2D:t2"},"type":"tab_created"}}` // herdr 0.9.3, tab spike
+	sessionListJSON     = `{"sessions":[{"default":true,"name":"default","running":true,"socket_path":"/d.sock"},{"default":false,"name":"delamain-spike","running":true,"socket_path":"/s.sock"},{"default":false,"name":"old","running":false,"socket_path":"/o.sock"}]}`
 )
 
-func TestWorktreeCreateShouldParseIDsAndNeverStealFocus(t *testing.T) {
-	f := &fakeRunner{responses: map[string]fakeResp{"worktree create": {stdout: worktreeCreateJSON}}}
-	wt, err := New(f).WorktreeCreate(context.Background(), WorktreeOptions{Cwd: "/repo", Branch: "fix/1-add", Base: "main", Path: "/tmp/wt-fix-1-add", Label: "#1"})
+func TestWorkspaceCreateShouldParseIDsAndNeverStealFocus(t *testing.T) {
+	f := &fakeRunner{responses: map[string]fakeResp{"workspace create": {stdout: workspaceCreateJSON}}}
+	ws, err := New(f).WorkspaceCreate(context.Background(), "/wt/fix-1-add", "#1 add", []string{"ZDOTDIR=/q"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := Worktree{WorkspaceID: "w2", TabID: "w2:t1", RootPaneID: "w2:p1", Path: "/tmp/wt-fix-1-add", Branch: "fix/1-add"}
-	if wt != want {
-		t.Fatalf("got %+v want %+v", wt, want)
+	if want := (Workspace{ID: "w2", TabID: "w2:t1", RootPaneID: "w2:p1"}); ws != want {
+		t.Fatalf("got %+v want %+v", ws, want)
 	}
-	if !slices.Contains(f.calls[0], "--no-focus") {
-		t.Fatalf("background work must not steal the user's focus: %v", f.calls[0])
+	want := []string{"workspace", "create", "--cwd", "/wt/fix-1-add", "--no-focus", "--label", "#1 add", "--env", "ZDOTDIR=/q"}
+	if !slices.Equal(f.calls[0], want) {
+		t.Fatalf("background work must open at the worktree without stealing focus: %v", f.calls[0])
 	}
 }
 
-func TestWorktreeCreateShouldFailWhenResponseHasNoPane(t *testing.T) {
-	f := &fakeRunner{responses: map[string]fakeResp{"worktree create": {stdout: `{"result":{}}`}}}
-	if _, err := New(f).WorktreeCreate(context.Background(), WorktreeOptions{Cwd: "/r", Branch: "b"}); err == nil {
-		t.Fatal("a response without a pane id cannot be used and must fail")
+func TestWorkspaceCreateShouldFailWhenResponseHasNoPane(t *testing.T) {
+	f := &fakeRunner{responses: map[string]fakeResp{"workspace create": {stdout: `{"result":{"workspace":{"workspace_id":"w2"}}}`}}}
+	if _, err := New(f).WorkspaceCreate(context.Background(), "/r", "", nil); err == nil {
+		t.Fatal("a workspace without a pane cannot show anything")
 	}
 }
 
 func TestTabCreateShouldParseIDsAndNeverStealFocus(t *testing.T) {
 	f := &fakeRunner{responses: map[string]fakeResp{"tab create": {stdout: tabCreateJSON}}}
-	tab, err := New(f).TabCreate(context.Background(), "w2D", "/tmp/wt", "planner")
+	tab, err := New(f).TabCreate(context.Background(), "w2D", "/tmp/wt", "planner", []string{"ZDOTDIR=/q"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if tab != (Tab{ID: "w2D:t2", RootPaneID: "w2D:p2"}) {
 		t.Fatalf("got %+v", tab)
 	}
-	want := []string{"tab", "create", "--workspace", "w2D", "--cwd", "/tmp/wt", "--label", "planner"}
+	want := []string{"tab", "create", "--workspace", "w2D", "--cwd", "/tmp/wt", "--label", "planner", "--env", "ZDOTDIR=/q"}
 	if !slices.Equal(f.calls[0], want) {
 		t.Fatalf("args = %v, want %v (no --focus: background work must not steal the user's focus)", f.calls[0], want)
 	}
@@ -80,7 +81,7 @@ func TestTabCreateShouldParseIDsAndNeverStealFocus(t *testing.T) {
 
 func TestTabCreateShouldFailWhenResponseHasNoPane(t *testing.T) {
 	f := &fakeRunner{responses: map[string]fakeResp{"tab create": {stdout: `{"result":{"tab":{"tab_id":"w2D:t2"}}}`}}}
-	if _, err := New(f).TabCreate(context.Background(), "w2D", "/tmp/wt", "planner"); err == nil {
+	if _, err := New(f).TabCreate(context.Background(), "w2D", "/tmp/wt", "planner", nil); err == nil {
 		t.Fatal("a tab without a pane cannot host an agent and must fail")
 	}
 }

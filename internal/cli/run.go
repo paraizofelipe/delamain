@@ -39,10 +39,11 @@ func newRunCmd(load func() (config.Config, error)) *cobra.Command {
 		Use:   "run (--task <arquivo.md> | --issue <n>) [--repo <caminho>]",
 		Short: "Executa uma task ou issue: plano, implementação TDD, verificação, revisão e PR/MR",
 		Long: `Executa uma task markdown ("# Título" + descrição com critérios de aceite) ou uma issue do
-GitHub/GitLab num repositório git. Cria uma worktree isolada e um workspace herdr. Cada agente
-(planner, implementer, reviewer) roda como omp em modo RPC e só sobe na sua etapa; o workspace
-tem uma tab "checks" com os gates e uma tab por agente com o log ao vivo. No fim faz push da
-branch e abre o PR/MR (draft quando não aprovado). Nunca faz merge.
+GitHub/GitLab num repositório git. Cria uma worktree isolada em paths.worktrees_dir. Cada agente
+(planner, implementer, reviewer) roda como omp em modo RPC e só sobe na sua etapa; os gates rodam
+no próprio delamain. Acompanhe com "delamain logs <run> -f" e "delamain status <run>". Com --herdr
+(ou herdr.enabled), a run também ganha um workspace herdr com uma tab "checks" e uma tab por agente.
+No fim faz push da branch e abre o PR/MR (draft quando não aprovado). Nunca faz merge.
 
 Códigos de saída: 0 aprovado · 1 interrompido · 3 iterações esgotadas · 4 task sem informação suficiente.`,
 		RunE: func(c *cobra.Command, _ []string) error {
@@ -50,6 +51,7 @@ Códigos de saída: 0 aprovado · 1 interrompido · 3 iterações esgotadas · 4
 			if err != nil {
 				return err
 			}
+			applyHerdrFlag(c, &cfg)
 			if (taskFile == "") == (issue == 0) {
 				return errors.New("informe exatamente um de --task ou --issue")
 			}
@@ -89,7 +91,19 @@ Códigos de saída: 0 aprovado · 1 interrompido · 3 iterações esgotadas · 4
 	cmd.Flags().IntVar(&issue, "issue", 0, "número da issue no forge do origin")
 	cmd.Flags().StringVar(&repo, "repo", "", "repositório alvo (padrão: diretório atual)")
 	cmd.Flags().StringVar(&kind, "kind", "", "feature|bug (padrão: inferido do título)")
+	addHerdrFlag(cmd)
 	return cmd
+}
+
+// addHerdrFlag lets one execution show its runs in herdr, overriding herdr.enabled.
+func addHerdrFlag(cmd *cobra.Command) {
+	cmd.Flags().Bool("herdr", false, "mostra as runs em workspaces do herdr (padrão: herdr.enabled)")
+}
+
+func applyHerdrFlag(c *cobra.Command, cfg *config.Config) {
+	if c.Flags().Changed("herdr") {
+		cfg.Herdr.Enabled, _ = c.Flags().GetBool("herdr")
+	}
 }
 
 func fileTask(path, repo string) (pipeline.Task, error) {
@@ -129,22 +143,29 @@ func runTask(ctx context.Context, cfg config.Config, task pipeline.Task, fg forg
 	return r.Run(ctx, task)
 }
 
-// newRunner wires the real herdr, git and prompts; the caller sets Forge per repository.
+// newRunner wires the real omp, git, prompts and, when enabled, herdr; the caller sets Forge per repository.
 func newRunner(cfg config.Config, st *store.Store) (*pipeline.Runner, error) {
 	set, err := loadPrompts(cfg)
 	if err != nil {
 		return nil, err
 	}
+	var display pipeline.Display
+	if cfg.Herdr.Enabled {
+		display = pipeline.HerdrDisplay{
+			Herdr:      herdr.New(herdr.ExecRunner{Binary: cfg.Herdr.Binary, Session: cfg.Herdr.Session}),
+			QuietShell: filepath.Join(cfg.Paths.StateDir, "herdr-shell"),
+		}
+	}
 	return &pipeline.Runner{
 		Cfg:           cfg,
-		Herdr:         herdr.New(herdr.ExecRunner{Binary: cfg.Herdr.Binary, Session: cfg.Herdr.Session}),
+		Display:       display,
 		Agents:        pipeline.RPCAgents{Binary: cfg.Omp.Binary},
+		Checks:        pipeline.ExecChecks{},
 		Git:           gitx.New(),
 		Store:         st,
 		Prompts:       set,
 		PromptsTarget: promptsTarget(cfg),
 		Log:           slog.New(slog.NewTextHandler(os.Stderr, nil)),
-		Nonce:         pipeline.RandomNonce,
 	}, nil
 }
 

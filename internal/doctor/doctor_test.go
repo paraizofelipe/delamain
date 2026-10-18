@@ -25,6 +25,7 @@ func (f fakeHerdr) Sessions(context.Context) ([]herdr.Session, error) {
 func healthy(t *testing.T) (config.Config, Deps) {
 	cfg := config.Default()
 	cfg.Paths.StateDir = t.TempDir()
+	cfg.Herdr.Enabled = true
 	return cfg, Deps{
 		LookPath: func(b string) (string, error) { return "/usr/bin/" + b, nil },
 		Version:  func(_ context.Context, b string) (string, error) { return filepath.Base(b) + " 1.0\nextra", nil },
@@ -96,6 +97,25 @@ func TestRunShouldFailWhenConfiguredSessionIsStoppedOrAbsent(t *testing.T) {
 	cfg.Herdr.Session = "ghost"
 	if c := byName(Run(context.Background(), cfg, d))["herdr server"]; c.Status != Fail {
 		t.Fatalf("absent session: %+v", c)
+	}
+}
+
+func TestRunShouldNotRequireHerdrWhenItIsOff(t *testing.T) {
+	cfg, d := healthy(t)
+	cfg.Herdr.Enabled = false
+	d.LookPath = func(b string) (string, error) {
+		if b == "herdr" {
+			return "", errors.New("not found")
+		}
+		return "/usr/bin/" + b, nil
+	}
+	d.Herdr = fakeHerdr{sessionsErr: errors.New("socket down")}
+	m := byName(Run(context.Background(), cfg, d))
+	if m["herdr"].Status != OK || m["herdr server"] != (Check{}) {
+		t.Fatalf("herdr is optional and off: %+v %+v", m["herdr"], m["herdr server"])
+	}
+	if m["omp rpc"].Status != OK || m["git"].Status != OK {
+		t.Fatalf("the headless flow still needs omp and git: %+v", m)
 	}
 }
 

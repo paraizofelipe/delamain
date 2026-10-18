@@ -1,13 +1,12 @@
 // Package pipeline runs one task through plan → [implement → verify → review]×N.
 //
-// Agents run interactively in herdr panes; the orchestrator only trusts what it can
-// check itself: artifact files, the omp session, git state and the checks it runs.
+// Agents are omp sessions driven over RPC; the orchestrator only trusts what it can check
+// itself: artifact files, the omp session, git state and the checks it runs. A Display (herdr)
+// may show the run, but nothing depends on it.
 package pipeline
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -23,24 +22,11 @@ import (
 	"github.com/paraizo/delamain/internal/forge"
 	"github.com/paraizo/delamain/internal/gates"
 	"github.com/paraizo/delamain/internal/gitx"
-	"github.com/paraizo/delamain/internal/herdr"
 	"github.com/paraizo/delamain/internal/omp"
 	"github.com/paraizo/delamain/internal/omp/rpc"
 	"github.com/paraizo/delamain/internal/prompts"
 	"github.com/paraizo/delamain/internal/store"
 )
-
-// Herdr is the subset of the herdr client the pipeline drives.
-type Herdr interface {
-	WorktreeCreate(ctx context.Context, o herdr.WorktreeOptions) (herdr.Worktree, error)
-	TabCreate(ctx context.Context, workspace, cwd, label string) (herdr.Tab, error)
-	TabRename(ctx context.Context, tab, label string) error
-	AgentList(ctx context.Context) ([]herdr.Agent, error)
-	WorkspaceClose(ctx context.Context, workspaceID string) error
-	WorkspaceReportMetadata(ctx context.Context, workspaceID, source string, seq int64, tokens map[string]string) error
-	PaneRun(ctx context.Context, pane, command string) error
-	PaneWaitOutput(ctx context.Context, pane, regex string, timeout time.Duration) (string, error)
-}
 
 // Git is the subset of gitx the pipeline uses.
 type Git interface {
@@ -52,6 +38,7 @@ type Git interface {
 	Status(ctx context.Context, dir string) (string, error)
 	CommitsSince(ctx context.Context, dir, base string) ([]string, error)
 	ChangedFiles(ctx context.Context, dir, base string) ([]string, error)
+	AddWorktree(ctx context.Context, repo, path, branch, base string) error
 	AddDetachedWorktree(ctx context.Context, repo, path, ref string) error
 	CheckoutFiles(ctx context.Context, dir, ref string, files []string) error
 	DiscardEmptyWork(ctx context.Context, repo, worktree, branch, base string) error
@@ -106,9 +93,12 @@ type Iteration struct {
 const startTimeout = 60 * time.Second
 
 type Runner struct {
-	Cfg           config.Config
-	Herdr         Herdr
-	Agents        Agents
+	Cfg config.Config
+	// Display shows runs while they happen (herdr); nil runs them headless.
+	Display Display
+	Agents  Agents
+	// Checks runs the gates (default ExecChecks).
+	Checks        Checks
 	Git           Git
 	Store         *store.Store
 	Prompts       *prompts.Set
@@ -116,8 +106,6 @@ type Runner struct {
 	// Forge opens the PR/MR and updates the issue; nil keeps the work local (repo without origin).
 	Forge forge.Forge
 	Log   *slog.Logger
-	// Nonce makes check sentinels unguessable; overridable in tests.
-	Nonce func() string
 	// LookPath finds optional tools such as gitleaks (default exec.LookPath).
 	LookPath func(string) (string, error)
 	// Alive reports whether a run's owner process still exists (default: signal 0).
@@ -139,23 +127,22 @@ type run struct {
 	task   prompts.Issue
 	repo   prompts.Repo
 	dir    string
-	agents map[string]Agent  // role -> running session
-	panes  map[string]string // role -> pane id
-	tabs   map[string]string // role -> tab id
-	// workspace is set only after setup proves it is ours, so cleanup never closes someone else's.
-	workspace string
-	planPath  string
-	planJSON  string
-	plan      artifacts.Plan
-	res       *Result
-	issue     int // forge issue number; 0 for local tasks
-	maxIter   int
+	agents map[string]Agent // role -> running session
+	view   View             // nil without a display
+	// log also writes the run's own logs/delamain.log, read by `delamain logs`.
+	log      *slog.Logger
+	closeLog func()
+	planPath string
+	planJSON string
+	plan     artifacts.Plan
+	res      *Result
+	issue    int // forge issue number; 0 for local tasks
+	maxIter  int
 	// Read from the base checkout before any agent runs, so agents cannot weaken them.
 	repoCfg gates.RepoConfig
 	stack   gates.Stack
 	cmds    artifacts.Commands
 	budget  budget.Status
-	metaSeq int64
 	// recovered marks a run finalized by Recover after its process died.
 	recovered bool
 }
@@ -200,8 +187,6 @@ func (r *Runner) Run(ctx context.Context, t Task) (Result, error) {
 		task:    prompts.Issue{Ref: t.Ref, Title: t.Title, Body: t.Body, URL: t.URL, Kind: t.Kind},
 		dir:     r.runDir(repo, rec.ID),
 		agents:  map[string]Agent{},
-		panes:   map[string]string{},
-		tabs:    map[string]string{},
 		res:     &res,
 		issue:   t.Issue,
 		maxIter: r.Cfg.Pipeline.MaxIterations,
@@ -209,6 +194,8 @@ func (r *Runner) Run(ctx context.Context, t Task) (Result, error) {
 	}
 	ru.planPath, ru.planJSON = filepath.Join(ru.dir, "plan.md"), filepath.Join(ru.dir, "plan.json")
 	res.RunDir = ru.dir
+	r.openLog(ru)
+	defer ru.closeLog()
 	r.issueUpdate(ctx, t, &res, []string{r.Cfg.Forge.Labels.InProgress}, []string{r.Cfg.Forge.Labels.Ready}, "")
 
 	defer r.cleanup(context.WithoutCancel(ctx), ru) // safety net; finish normally stops agents first
@@ -240,8 +227,11 @@ func (r *Runner) finish(ctx context.Context, ru *run, t Task) error {
 	return r.record(ctx, ru)
 }
 
-func (r *Runner) runDir(repo string, id int64) string {
-	return filepath.Join(r.Cfg.Paths.StateDir, "runs", filepath.Base(repo), fmt.Sprintf("%d", id))
+func (r *Runner) runDir(repo string, id int64) string { return RunDir(r.Cfg.Paths.StateDir, repo, id) }
+
+// RunDir holds a run's artifacts, sessions and logs, outside its worktree.
+func RunDir(stateDir, repo string, id int64) string {
+	return filepath.Join(stateDir, "runs", filepath.Base(repo), fmt.Sprintf("%d", id))
 }
 
 // installMu serializes prompt installs between concurrent runs of one daemon.
@@ -279,7 +269,7 @@ func (r *Runner) discardEmpty(ctx context.Context, ru *run) {
 
 func (r *Runner) setState(ctx context.Context, ru *run, s store.RunState) error {
 	ru.rec.State = s
-	r.Log.Info("state", "run", ru.rec.ID, "state", s, "iteration", ru.rec.Iteration)
+	ru.log.Info("state", "run", ru.rec.ID, "state", s, "iteration", ru.rec.Iteration)
 	r.reportMeta(ctx, ru)
 	return r.Store.UpdateRun(ctx, ru.rec)
 }
@@ -308,7 +298,7 @@ func (r *Runner) execute(ctx context.Context, ru *run, repo string, t Task) erro
 	ru.plan = plan
 	r.stopAgent(ctx, ru, "planner") // its job is done: an idle agent is only a failure point
 	ru.cmds, ru.res.CommandSources = gates.Effective(ru.repoCfg.Commands, ru.stack.Commands, plan.Commands)
-	r.Log.Info("gate commands", "run", ru.rec.ID, "stack", ru.stack.Name, "sources", ru.res.CommandSources)
+	ru.log.Info("gate commands", "run", ru.rec.ID, "stack", ru.stack.Name, "sources", ru.res.CommandSources)
 
 	feedback := ""
 	maxIter := r.Cfg.Pipeline.MaxIterations
@@ -381,54 +371,65 @@ func (r *Runner) setup(ctx context.Context, ru *run, repo string, t Task) error 
 		return haltf("o caminho da worktree %s já existe", wtPath)
 	}
 
-	wt, err := r.Herdr.WorktreeCreate(ctx, herdr.WorktreeOptions{
-		Cwd: repo, Branch: branch, Base: base, Path: wtPath, Label: t.Ref + " " + t.Title,
-	})
-	if err != nil {
+	if err := r.Git.AddWorktree(ctx, repo, wtPath, branch, base); err != nil {
 		return err
 	}
-	if wt.Path == "" {
-		wt.Path = wtPath
-	}
-	// herdr returns an already-open workspace for a known worktree, and restores workspaces
-	// (with their agents) after a server restart. Never drive panes another run still owns.
-	live, err := r.Herdr.AgentList(ctx)
-	if err != nil {
-		return err
-	}
-	for _, a := range live {
-		if a.WorkspaceID == wt.WorkspaceID {
-			return haltf("o herdr reabriu o workspace %s, que ainda tem o agente %s ativo; feche-o antes de rodar de novo", wt.WorkspaceID, a.Name)
-		}
-	}
-	ru.workspace = wt.WorkspaceID
-	ru.repo = prompts.Repo{Worktree: wt.Path, Branch: branch, Base: base}
-	ru.rec.Branch, ru.rec.Worktree, ru.rec.Base, ru.rec.Workspace = branch, wt.Path, base, wt.WorkspaceID
-	ru.res.Branch, ru.res.Base, ru.res.Worktree, ru.res.WorkspaceID = branch, base, wt.Path, wt.WorkspaceID
-	if err := r.Store.UpdateRun(ctx, ru.rec); err != nil {
-		return err
-	}
-
-	// One full-width tab per role: the root tab runs the gates, each agent gets its own tab
-	// when it starts (see startAgent).
-	ru.panes["checks"], ru.tabs["checks"] = wt.RootPaneID, wt.TabID
-	r.renameTab(ctx, ru, "checks", "checks")
-	return nil
+	ru.repo = prompts.Repo{Worktree: wtPath, Branch: branch, Base: base}
+	ru.rec.Branch, ru.rec.Worktree, ru.rec.Base = branch, wtPath, base
+	ru.res.Branch, ru.res.Base, ru.res.Worktree = branch, base, wtPath
+	ru.log.Info("worktree", "run", ru.rec.ID, "path", wtPath, "branch", branch, "base", base)
+	r.openView(ctx, ru, t.Ref+" "+t.Title)
+	return r.Store.UpdateRun(ctx, ru.rec)
 }
 
-// renameTab labels a role's tab. Display only: a failure never stops the run.
-func (r *Runner) renameTab(ctx context.Context, ru *run, role, label string) {
-	if ru.tabs[role] == "" {
+// openView shows the run on the display, if any. Display only: a failure never stops the run.
+func (r *Runner) openView(ctx context.Context, ru *run, label string) {
+	if r.Display == nil {
 		return
 	}
-	if err := r.Herdr.TabRename(ctx, ru.tabs[role], label); err != nil {
-		r.Log.Warn("could not rename tab", "tab", ru.tabs[role], "err", err)
+	v, err := r.Display.Open(ctx, ru.repo.Worktree, label, r.checksLog(ru))
+	if err != nil {
+		ru.log.Warn("display", "err", err)
 	}
+	if v != nil {
+		ru.view = v
+		ru.rec.Workspace, ru.res.WorkspaceID = v.ID(), v.ID()
+	}
+}
+
+// viewDo runs a display step when the run has a view. Display only: failures are logged.
+func (ru *run) viewDo(what string, fn func(View) error) {
+	if ru.view == nil {
+		return
+	}
+	if err := fn(ru.view); err != nil {
+		ru.log.Warn("display: "+what, "err", err)
+	}
+}
+
+func (r *Runner) logsDir(ru *run) string   { return filepath.Join(ru.dir, "logs") }
+func (r *Runner) checksLog(ru *run) string { return filepath.Join(r.logsDir(ru), "checks.log") }
+
+// openLog tees the orchestrator's log of this run into logs/delamain.log. Without the file the
+// run still logs to r.Log.
+func (r *Runner) openLog(ru *run) {
+	ru.log, ru.closeLog = r.Log, func() {}
+	if err := os.MkdirAll(r.logsDir(ru), 0o700); err != nil {
+		r.Log.Warn("could not create the run log", "err", err)
+		return
+	}
+	f, err := os.OpenFile(filepath.Join(r.logsDir(ru), "delamain.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		r.Log.Warn("could not create the run log", "err", err)
+		return
+	}
+	ru.log = slog.New(teeHandler{r.Log.Handler(), newLineHandler(f)})
+	ru.closeLog = func() { _ = f.Close() }
 }
 
 func (r *Runner) startAgent(ctx context.Context, ru *run, role string) error {
 	sessDir := filepath.Join(ru.dir, "sessions", role)
-	logDir := filepath.Join(ru.dir, "logs")
+	logDir := r.logsDir(ru)
 	for _, d := range []string{sessDir, logDir} {
 		if err := os.MkdirAll(d, 0o700); err != nil {
 			return err
@@ -438,15 +439,7 @@ func (r *Runner) startAgent(ctx context.Context, ru *run, role string) error {
 	if err := os.WriteFile(logPath, nil, 0o600); err != nil {
 		return err
 	}
-	tab, err := r.Herdr.TabCreate(ctx, ru.workspace, ru.repo.Worktree, role)
-	if err != nil {
-		return fmt.Errorf("tab %s: %w", role, err)
-	}
-	ru.panes[role], ru.tabs[role] = tab.RootPaneID, tab.ID
-	// The tab only shows the session: omp itself runs under the orchestrator, not in the pane.
-	if err := r.Herdr.PaneRun(ctx, tab.RootPaneID, "tail -n +1 -F "+shellQuote(logPath)); err != nil {
-		r.Log.Warn("could not show agent log", "role", role, "err", err)
-	}
+	ru.viewDo("show "+role, func(v View) error { return v.Show(ctx, role, logPath) })
 	o := r.Cfg.Omp
 	agent, err := r.Agents.Start(ctx, AgentOptions{
 		Name: fmt.Sprintf("%s-r%d", role, ru.rec.ID), Dir: ru.repo.Worktree,
@@ -462,6 +455,10 @@ func (r *Runner) startAgent(ctx context.Context, ru *run, role string) error {
 		return haltf("o agente %s não subiu: %v", role, err)
 	}
 	ru.agents[role] = agent
+	ru.log.Info("agent started", "run", ru.rec.ID, "role", role, "pid", agent.PID())
+	if err := r.Store.StartAgent(ctx, store.Agent{RunID: ru.rec.ID, Role: role, PID: agent.PID(), LogPath: logPath, SessionDir: sessDir}); err != nil {
+		ru.log.Warn("could not record agent", "role", role, "err", err)
+	}
 	return nil
 }
 
@@ -527,7 +524,7 @@ func stepArtifact[T validated](ctx context.Context, r *Runner, ru *run, role, st
 	if err == nil {
 		return v, nil
 	}
-	r.Log.Warn("invalid artifact, asking for a correction", "stage", stage, "err", err)
+	ru.log.Warn("invalid artifact, asking for a correction", "stage", stage, "err", err)
 	fix := fmt.Sprintf("O artefato `%s` está ausente ou inválido:\n\n%s\n\nCorrija o arquivo no mesmo caminho, exatamente no formato pedido no passo anterior, e responda apenas: `DONE %s`",
 		data.ArtifactPath, truncate(err.Error(), 1500), data.ArtifactPath)
 	if err := r.send(ctx, ru, role, fix); err != nil {
@@ -576,26 +573,27 @@ func (r *Runner) stopAgent(ctx context.Context, ru *run, role string) {
 	if !ok {
 		return
 	}
+	state := store.AgentDone
 	if err := agent.Close(); err != nil {
-		r.Log.Warn("could not stop agent", "role", role, "err", err)
+		state = store.AgentFailed
+		ru.log.Warn("could not stop agent", "role", role, "err", err)
 	}
 	delete(ru.agents, role)
-	r.renameTab(ctx, ru, role, role+" ✓")
+	ru.log.Info("agent stopped", "run", ru.rec.ID, "role", role, "state", state)
+	if err := r.Store.EndAgent(ctx, ru.rec.ID, role, state); err != nil {
+		ru.log.Warn("could not record agent", "role", role, "err", err)
+	}
+	ru.viewDo("done "+role, func(v View) error { return v.Done(ctx, role) })
 }
 
-// cleanup stops the run's agents and closes its workspace (step 12). The git worktree stays:
+// cleanup stops the run's agents and closes its view (step 12). The git worktree stays:
 // it holds the branch that will become the MR. Idempotent.
 func (r *Runner) cleanup(ctx context.Context, ru *run) {
 	for role := range ru.agents {
 		r.stopAgent(ctx, ru, role)
 	}
-	if ru.workspace == "" {
-		return
-	}
-	if err := r.Herdr.WorkspaceClose(ctx, ru.workspace); err != nil {
-		r.Log.Warn("could not close workspace", "workspace", ru.workspace, "err", err)
-	}
-	ru.workspace = ""
+	ru.viewDo("close", func(v View) error { return v.Close(ctx) })
+	ru.view = nil
 }
 
 func (r *Runner) record(ctx context.Context, ru *run) error {
@@ -604,7 +602,7 @@ func (r *Runner) record(ctx context.Context, ru *run) error {
 		if err := os.MkdirAll(ru.dir, 0o700); err == nil {
 			res.ReportPath = filepath.Join(ru.dir, "report.md")
 			if err := os.WriteFile(res.ReportPath, []byte(renderReport(*res, ru.task)), 0o600); err != nil {
-				r.Log.Warn("could not write report", "err", err)
+				ru.log.Warn("could not write report", "err", err)
 			}
 		}
 	}
@@ -617,13 +615,6 @@ func (r *Runner) record(ctx context.Context, ru *run) error {
 		ru.rec.Reason += ": " + res.Reason
 	}
 	return r.setState(ctx, ru, store.StateRecorded)
-}
-
-// RandomNonce returns an unguessable token for check sentinels.
-func RandomNonce() string {
-	b := make([]byte, 6)
-	_, _ = rand.Read(b)
-	return hex.EncodeToString(b)
 }
 
 func truncate(s string, n int) string {
