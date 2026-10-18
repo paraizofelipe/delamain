@@ -285,26 +285,6 @@ func (c *Client) PaneWaitOutput(ctx context.Context, pane, regex string, timeout
 	return res.MatchedLine, err
 }
 
-// IntegrationStatus returns the installation state of a built-in integration (e.g. "current", "not installed").
-func (c *Client) IntegrationStatus(ctx context.Context, name string) (string, error) {
-	out, err := c.run(ctx, "integration", "status")
-	if err != nil {
-		return "", err
-	}
-	for line := range strings.SplitSeq(string(out), "\n") {
-		k, v, ok := strings.Cut(line, ":")
-		if !ok || strings.TrimSpace(k) != name {
-			continue
-		}
-		v = strings.TrimSpace(v)
-		if i := strings.Index(v, " ("); i >= 0 {
-			v = v[:i]
-		}
-		return v, nil
-	}
-	return "", fmt.Errorf("herdr integration status: %q not listed", name)
-}
-
 // WorkspaceClose closes a workspace created by delamain. It never passes --group.
 func (c *Client) WorkspaceClose(ctx context.Context, workspaceID string) error {
 	return c.runJSON(ctx, nil, "workspace", "close", workspaceID)

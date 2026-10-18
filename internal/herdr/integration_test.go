@@ -25,9 +25,6 @@ func TestIntegrationShouldReadState(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
-	if st, err := c.IntegrationStatus(ctx, "omp"); err != nil || st == "" {
-		t.Fatalf("integration status: %q %v", st, err)
-	}
 	if _, err := c.AgentList(ctx); err != nil {
 		t.Fatalf("agent list: %v", err)
 	}

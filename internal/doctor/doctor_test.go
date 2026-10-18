@@ -16,15 +16,10 @@ import (
 type fakeHerdr struct {
 	sessions    []herdr.Session
 	sessionsErr error
-	integration string
-	intErr      error
 }
 
 func (f fakeHerdr) Sessions(context.Context) ([]herdr.Session, error) {
 	return f.sessions, f.sessionsErr
-}
-func (f fakeHerdr) IntegrationStatus(context.Context, string) (string, error) {
-	return f.integration, f.intErr
 }
 
 func healthy(t *testing.T) (config.Config, Deps) {
@@ -33,10 +28,8 @@ func healthy(t *testing.T) (config.Config, Deps) {
 	return cfg, Deps{
 		LookPath: func(b string) (string, error) { return "/usr/bin/" + b, nil },
 		Version:  func(_ context.Context, b string) (string, error) { return filepath.Base(b) + " 1.0\nextra", nil },
-		Herdr: fakeHerdr{
-			sessions:    []herdr.Session{{Name: "default", Default: true, Running: true}},
-			integration: "current",
-		},
+		OmpRPC:   func(context.Context, string) error { return nil },
+		Herdr:    fakeHerdr{sessions: []herdr.Session{{Name: "default", Default: true, Running: true}}},
 	}
 }
 
@@ -59,19 +52,44 @@ func TestRunShouldPassWhenToolchainIsComplete(t *testing.T) {
 	}
 }
 
-func TestRunShouldFailWhenOmpIntegrationIsMissing(t *testing.T) {
+func TestRunShouldFailWhenOmpDoesNotBecomeReadyInRPCMode(t *testing.T) {
 	cfg, d := healthy(t)
-	d.Herdr = fakeHerdr{sessions: d.Herdr.(fakeHerdr).sessions, integration: "not installed"}
-	c := byName(Run(context.Background(), cfg, d))["herdr omp integration"]
-	if c.Status != Fail {
-		t.Fatalf("screen-detection fallback produced false idle states; must fail: %+v", c)
+	var got string
+	d.OmpRPC = func(_ context.Context, bin string) error {
+		got = bin
+		return errors.New("omp não ficou pronto em 15s")
+	}
+	c := byName(Run(context.Background(), cfg, d))["omp rpc"]
+	// Every agent runs over RPC: without it no run can start.
+	if c.Status != Fail || c.Detail != "omp não ficou pronto em 15s" {
+		t.Fatalf("rpc failure must fail doctor with its reason: %+v", c)
+	}
+	if got != "/usr/bin/omp" {
+		t.Fatalf("the rpc check must use the resolved omp binary, got %q", got)
+	}
+}
+
+func TestRunShouldNotStartOmpRPCWhenOmpIsMissing(t *testing.T) {
+	cfg, d := healthy(t)
+	d.LookPath = func(b string) (string, error) {
+		if b == cfg.Omp.Binary {
+			return "", errors.New("not found")
+		}
+		return "/usr/bin/" + b, nil
+	}
+	d.OmpRPC = func(context.Context, string) error {
+		t.Fatal("omp rpc must not run without an omp binary")
+		return nil
+	}
+	if c := byName(Run(context.Background(), cfg, d))["omp rpc"]; c.Status != Fail {
+		t.Fatalf("a missing omp cannot be reported as rpc-ready: %+v", c)
 	}
 }
 
 func TestRunShouldFailWhenConfiguredSessionIsStoppedOrAbsent(t *testing.T) {
 	cfg, d := healthy(t)
 	cfg.Herdr.Session = "delamain-test"
-	d.Herdr = fakeHerdr{integration: "current", sessions: []herdr.Session{{Name: "delamain-test", Running: false}}}
+	d.Herdr = fakeHerdr{sessions: []herdr.Session{{Name: "delamain-test", Running: false}}}
 	if c := byName(Run(context.Background(), cfg, d))["herdr server"]; c.Status != Fail {
 		t.Fatalf("stopped session: %+v", c)
 	}
@@ -84,9 +102,9 @@ func TestRunShouldFailWhenConfiguredSessionIsStoppedOrAbsent(t *testing.T) {
 func TestRunShouldReportEveryProblemInsteadOfStoppingAtFirst(t *testing.T) {
 	cfg, d := healthy(t)
 	d.LookPath = func(b string) (string, error) { return "", errors.New("not found") }
-	d.Herdr = fakeHerdr{sessionsErr: errors.New("socket down"), intErr: errors.New("socket down")}
+	d.Herdr = fakeHerdr{sessionsErr: errors.New("socket down")}
 	m := byName(Run(context.Background(), cfg, d))
-	for _, name := range []string{"herdr", "omp", "git", "herdr server", "herdr omp integration"} {
+	for _, name := range []string{"herdr", "omp", "omp rpc", "git", "herdr server"} {
 		if m[name].Status != Fail {
 			t.Errorf("%s should fail: %+v", name, m[name])
 		}

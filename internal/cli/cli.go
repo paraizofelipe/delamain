@@ -2,6 +2,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -18,6 +19,7 @@ import (
 	"github.com/paraizo/delamain/internal/config"
 	"github.com/paraizo/delamain/internal/doctor"
 	"github.com/paraizo/delamain/internal/herdr"
+	"github.com/paraizo/delamain/internal/omp/rpc"
 )
 
 // Version is set at build time with -ldflags "-X github.com/paraizo/delamain/internal/cli.Version=...".
@@ -56,7 +58,7 @@ func NewRoot() *cobra.Command {
 		},
 		&cobra.Command{
 			Use:   "doctor",
-			Short: "Verifica herdr, omp, integração e ferramentas",
+			Short: "Verifica herdr, omp (modo RPC), prompts e ferramentas",
 			RunE: func(cmd *cobra.Command, _ []string) error {
 				cfg, err := load()
 				if err != nil {
@@ -70,7 +72,7 @@ func NewRoot() *cobra.Command {
 					return err
 				}
 				checks := doctor.Run(ctx, cfg, doctor.Deps{
-					LookPath: exec.LookPath, Version: binVersion, Herdr: h,
+					LookPath: exec.LookPath, Version: binVersion, OmpRPC: ompRPCReady, Herdr: h,
 					Prompts: set, PromptsTarget: promptsTarget(cfg),
 				})
 				if err := printChecks(cmd.OutOrStdout(), checks); err != nil {
@@ -88,6 +90,22 @@ func NewRoot() *cobra.Command {
 		newRecoverCmd(load),
 	)
 	return root
+}
+
+// ompRPCReady starts omp in RPC mode without a session and stops it once it is ready.
+func ompRPCReady(ctx context.Context, bin string) error {
+	var stderr bytes.Buffer
+	c, err := rpc.Start(ctx, rpc.Options{
+		Binary: bin, Dir: os.TempDir(), Args: []string{"--no-session"},
+		Stderr: &stderr, ReadyTimeout: 15 * time.Second, CloseTimeout: 5 * time.Second,
+	})
+	if err != nil {
+		if msg, _, _ := strings.Cut(strings.TrimSpace(stderr.String()), "\n"); msg != "" {
+			return fmt.Errorf("%w: %s", err, msg)
+		}
+		return err
+	}
+	return c.Close()
 }
 
 func binVersion(ctx context.Context, bin string) (string, error) {

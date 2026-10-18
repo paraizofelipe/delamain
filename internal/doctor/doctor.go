@@ -30,14 +30,15 @@ type Check struct {
 // Herdr is the subset of the herdr client doctor needs.
 type Herdr interface {
 	Sessions(ctx context.Context) ([]herdr.Session, error)
-	IntegrationStatus(ctx context.Context, name string) (string, error)
 }
 
 type Deps struct {
 	LookPath func(string) (string, error)
 	// Version runs "<bin> --version" and returns trimmed output.
 	Version func(ctx context.Context, bin string) (string, error)
-	Herdr   Herdr
+	// OmpRPC starts "<bin> --mode rpc" and returns once it is ready, or why it is not.
+	OmpRPC func(ctx context.Context, bin string) error
+	Herdr  Herdr
 	// Prompts is optional; when set, doctor lints it and checks the installation is current.
 	Prompts       *prompts.Set
 	PromptsTarget prompts.Target
@@ -50,6 +51,7 @@ func Run(ctx context.Context, cfg config.Config, d Deps) []Check {
 		checks = append(checks, Check{name, s, fmt.Sprintf(format, a...)})
 	}
 
+	found := map[string]string{}
 	for _, bin := range []struct{ name, path string }{{"herdr", cfg.Herdr.Binary}, {"omp", cfg.Omp.Binary}, {"git", "git"}} {
 		p, err := d.LookPath(bin.path)
 		if err != nil {
@@ -61,7 +63,17 @@ func Run(ctx context.Context, cfg config.Config, d Deps) []Check {
 			add(bin.name, Fail, "%s --version failed: %v", p, err)
 			continue
 		}
+		found[bin.name] = p
 		add(bin.name, OK, "%s (%s)", firstLine(v), p)
+	}
+
+	// The pipeline drives every agent over omp's RPC mode.
+	if p, ok := found["omp"]; !ok {
+		add("omp rpc", Fail, "omp unavailable")
+	} else if err := d.OmpRPC(ctx, p); err != nil {
+		add("omp rpc", Fail, "%v", err)
+	} else {
+		add("omp rpc", OK, "ready")
 	}
 
 	session := cfg.Herdr.Session
@@ -82,16 +94,6 @@ func Run(ctx context.Context, cfg config.Config, d Deps) []Check {
 				}
 			}
 		}
-	}
-
-	// Without the omp integration herdr falls back to screen detection, which reported
-	// false idle states in the M0 spike.
-	if st, err := d.Herdr.IntegrationStatus(ctx, "omp"); err != nil {
-		add("herdr omp integration", Fail, "%v", err)
-	} else if st != "current" {
-		add("herdr omp integration", Fail, "%s (run: herdr integration install omp)", st)
-	} else {
-		add("herdr omp integration", OK, "current")
 	}
 
 	forges := 0

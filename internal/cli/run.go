@@ -39,9 +39,10 @@ func newRunCmd(load func() (config.Config, error)) *cobra.Command {
 		Use:   "run (--task <arquivo.md> | --issue <n>) [--repo <caminho>]",
 		Short: "Executa uma task ou issue: plano, implementação TDD, verificação, revisão e PR/MR",
 		Long: `Executa uma task markdown ("# Título" + descrição com critérios de aceite) ou uma issue do
-GitHub/GitLab num repositório git. Cria uma worktree isolada e um workspace herdr com planner,
-implementer, reviewer e checks. No fim faz push da branch e abre o PR/MR (draft quando não
-aprovado). Nunca faz merge.
+GitHub/GitLab num repositório git. Cria uma worktree isolada e um workspace herdr. Cada agente
+(planner, implementer, reviewer) roda como omp em modo RPC e só sobe na sua etapa; o workspace
+tem uma tab "checks" com os gates e uma tab por agente com o log ao vivo. No fim faz push da
+branch e abre o PR/MR (draft quando não aprovado). Nunca faz merge.
 
 Códigos de saída: 0 aprovado · 1 interrompido · 3 iterações esgotadas · 4 task sem informação suficiente.`,
 		RunE: func(c *cobra.Command, _ []string) error {

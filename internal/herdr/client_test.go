@@ -37,7 +37,6 @@ const (
 	worktreeCreateJSON = `{"id":"cli:worktree:create","result":{"root_pane":{"pane_id":"w2:p1"},"tab":{"tab_id":"w2:t1"},"workspace":{"workspace_id":"w2"},"worktree":{"branch":"fix/1-add","is_linked_worktree":true,"path":"/tmp/wt-fix-1-add"}}}`
 	agentListJSON      = `{"id":"cli:agent:list","result":{"agents":[{"agent":"omp","agent_status":"done","cwd":"/tmp/wt","name":"implementer","pane_id":"w2:p1","tab_id":"w2:t1","workspace_id":"w2"}]}}`
 	serverDownJSON     = `{"error":{"code":"server_unavailable","message":"server is shutting down"},"id":"cli:agent:list"}`
-	integrationStatus  = "pi: not installed (/home/u/.pi/agent/extensions/herdr-agent-state.ts)\nomp: current (v10) (/home/u/.omp/agent/extensions/herdr-omp-agent-state.ts)\n"
 	tabCreateJSON      = `{"id":"cli:tab:create","result":{"root_pane":{"agent_status":"unknown","pane_id":"w2D:p2","tab_id":"w2D:t2","workspace_id":"w2D"},"tab":{"agent_status":"unknown","focused":false,"label":"planner","number":2,"tab_id":"w2D:t2"},"type":"tab_created"}}` // herdr 0.9.3, tab spike
 	sessionListJSON    = `{"sessions":[{"default":true,"name":"default","running":true,"socket_path":"/d.sock"},{"default":false,"name":"delamain-spike","running":true,"socket_path":"/s.sock"},{"default":false,"name":"old","running":false,"socket_path":"/o.sock"}]}`
 )
@@ -137,20 +136,6 @@ func TestRunShouldReportInvalidJSONResponse(t *testing.T) {
 	f := &fakeRunner{responses: map[string]fakeResp{"agent list": {stdout: "not json"}}}
 	if _, err := New(f).AgentList(context.Background()); err == nil {
 		t.Fatal("garbage output must not be treated as success")
-	}
-}
-
-func TestIntegrationStatusShouldReturnStateWithoutVersionAndPath(t *testing.T) {
-	f := &fakeRunner{responses: map[string]fakeResp{"integration status": {stdout: integrationStatus}}}
-	c := New(f)
-	if s, err := c.IntegrationStatus(context.Background(), "omp"); err != nil || s != "current" {
-		t.Fatalf("omp: %q %v", s, err)
-	}
-	if s, _ := c.IntegrationStatus(context.Background(), "pi"); s != "not installed" {
-		t.Fatalf("pi: %q", s)
-	}
-	if _, err := c.IntegrationStatus(context.Background(), "nope"); err == nil {
-		t.Fatal("unlisted integration must be an error")
 	}
 }
 
