@@ -10,7 +10,6 @@ import (
 	"testing"
 
 	"github.com/paraizo/delamain/internal/forge"
-	"github.com/paraizo/delamain/internal/herdr"
 	"github.com/paraizo/delamain/internal/store"
 )
 
@@ -47,22 +46,15 @@ func recoverAll(t *testing.T, hs *harness) []Result {
 	return out
 }
 
-func TestRecoverShouldStopAgentsAndDeliverCommittedWorkAsDraft(t *testing.T) {
+func TestRecoverShouldDeliverCommittedWorkAsDraft(t *testing.T) {
 	hs := newHarness(t, happy)
 	f := withForge(hs)
 	rec := crashed(t, hs, store.StateImplement)
 	fixAdd(hs.g)
-	hs.h.liveAgents = []herdr.Agent{
-		{Name: "implementer-r1", WorkspaceID: "w5"}, {Name: "reviewer-r1", WorkspaceID: "w5"},
-		{Name: "implementer-r12", WorkspaceID: "w8"}, // another run: suffix must match exactly
-	}
 	out := recoverAll(t, hs)
 
 	if len(out) != 1 || out[0].Outcome != OutcomeHalted || !strings.Contains(out[0].Reason, "pid 999999") || !strings.Contains(out[0].Reason, "implement") {
 		t.Fatalf("results = %+v", out)
-	}
-	if !slices.Equal(hs.h.keys["implementer-r1"], []string{"ctrl+d"}) || !slices.Equal(hs.h.keys["reviewer-r1"], []string{"ctrl+d"}) || len(hs.h.keys["implementer-r12"]) != 0 {
-		t.Fatalf("only this run's agents are stopped: %v", hs.h.keys)
 	}
 	if !slices.Equal(hs.h.closed, []string{"w5"}) {
 		t.Fatalf("its restored workspace is closed, closed=%v", hs.h.closed)
@@ -159,7 +151,7 @@ func TestHaltedRunWithoutCommitsShouldRemoveItsWorktreeAndBranch(t *testing.T) {
 	if res.Outcome != OutcomeHalted || !slices.Equal(hs.g.discarded, []string{"fix/7-fix-add"}) || !strings.Contains(res.Delivery, "removidas") {
 		t.Fatalf("empty halted work must not block the next attempt: %s discarded=%v delivery=%q", res.Outcome, hs.g.discarded, res.Delivery)
 	}
-	if !slices.Equal(hs.h.keys["planner-r1"], []string{"ctrl+d"}) {
+	if !slices.Equal(hs.h.keys["planner-r1"], []string{"close"}) {
 		t.Fatal("agents stop before their worktree is removed")
 	}
 }

@@ -36,10 +36,10 @@ type watchResult struct {
 	status  budget.Status
 }
 
-// watchBudget meters the run while an agent turn is in flight. At the hard limit it interrupts
-// the agent (esc, then ctrl+c on the next tick) so a long turn cannot overspend unchecked.
+// watchBudget meters the run while an agent turn is in flight. At the hard limit it aborts the
+// turn so a long one cannot overspend unchecked.
 // The returned stop waits for the watcher to exit before the caller touches run state again.
-func (r *Runner) watchBudget(ctx context.Context, ru *run, agent string) func() watchResult {
+func (r *Runner) watchBudget(ctx context.Context, ru *run, agent Agent) func() watchResult {
 	interval := r.BudgetInterval
 	if interval <= 0 {
 		interval = defaultBudgetInterval
@@ -50,7 +50,7 @@ func (r *Runner) watchBudget(ctx context.Context, ru *run, agent string) func() 
 		defer func() { out <- res }()
 		t := time.NewTicker(interval)
 		defer t.Stop()
-		sent := 0
+		aborted := false
 		for {
 			select {
 			case <-done:
@@ -64,12 +64,11 @@ func (r *Runner) watchBudget(ctx context.Context, ru *run, agent string) func() 
 				continue
 			}
 			res = watchResult{tripped: true, status: s}
-			if sent < 2 {
-				key := [...]string{"esc", "ctrl+c"}[sent]
-				if err := r.Herdr.AgentSendKeys(ctx, agent, key); err != nil {
-					r.Log.Warn("could not interrupt agent", "agent", agent, "err", err)
+			if !aborted {
+				if err := agent.Abort(); err != nil {
+					r.Log.Warn("could not abort agent turn", "err", err)
 				}
-				sent++
+				aborted = true
 			}
 		}
 	}()

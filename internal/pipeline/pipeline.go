@@ -25,6 +25,7 @@ import (
 	"github.com/paraizo/delamain/internal/gitx"
 	"github.com/paraizo/delamain/internal/herdr"
 	"github.com/paraizo/delamain/internal/omp"
+	"github.com/paraizo/delamain/internal/omp/rpc"
 	"github.com/paraizo/delamain/internal/prompts"
 	"github.com/paraizo/delamain/internal/store"
 )
@@ -34,10 +35,6 @@ type Herdr interface {
 	WorktreeCreate(ctx context.Context, o herdr.WorktreeOptions) (herdr.Worktree, error)
 	TabCreate(ctx context.Context, workspace, cwd, label string) (herdr.Tab, error)
 	TabRename(ctx context.Context, tab, label string) error
-	AgentStart(ctx context.Context, name, kind, pane string, timeout time.Duration, agentArgs ...string) (herdr.Agent, error)
-	AgentPrompt(ctx context.Context, target, text string, timeout time.Duration) (herdr.Agent, error)
-	AgentWait(ctx context.Context, target string, timeout time.Duration) (herdr.Agent, error)
-	AgentSendKeys(ctx context.Context, target string, keys ...string) error
 	AgentList(ctx context.Context) ([]herdr.Agent, error)
 	WorkspaceClose(ctx context.Context, workspaceID string) error
 	WorkspaceReportMetadata(ctx context.Context, workspaceID, source string, seq int64, tokens map[string]string) error
@@ -105,14 +102,13 @@ type Iteration struct {
 	Feedback string
 }
 
-const (
-	roleTimeout = 60 * time.Second
-	kindOmp     = "omp"
-)
+// startTimeout bounds an omp session's startup until its RPC ready frame.
+const startTimeout = 60 * time.Second
 
 type Runner struct {
 	Cfg           config.Config
 	Herdr         Herdr
+	Agents        Agents
 	Git           Git
 	Store         *store.Store
 	Prompts       *prompts.Set
@@ -128,8 +124,6 @@ type Runner struct {
 	Alive func(pid int) bool
 	// BudgetInterval paces the budget watcher during agent turns (default 10s).
 	BudgetInterval time.Duration
-	// RetryInterval paces retries while a fresh pane's shell is still starting (default 1s).
-	RetryInterval time.Duration
 }
 
 // halt is a guardrail stop: the run is recorded with this reason instead of failing the process.
@@ -145,7 +139,7 @@ type run struct {
 	task   prompts.Issue
 	repo   prompts.Repo
 	dir    string
-	agents map[string]string // role -> agent name
+	agents map[string]Agent  // role -> running session
 	panes  map[string]string // role -> pane id
 	tabs   map[string]string // role -> tab id
 	// workspace is set only after setup proves it is ours, so cleanup never closes someone else's.
@@ -205,7 +199,7 @@ func (r *Runner) Run(ctx context.Context, t Task) (Result, error) {
 		rec:     rec,
 		task:    prompts.Issue{Ref: t.Ref, Title: t.Title, Body: t.Body, URL: t.URL, Kind: t.Kind},
 		dir:     r.runDir(repo, rec.ID),
-		agents:  map[string]string{},
+		agents:  map[string]Agent{},
 		panes:   map[string]string{},
 		tabs:    map[string]string{},
 		res:     &res,
@@ -433,9 +427,15 @@ func (r *Runner) renameTab(ctx context.Context, ru *run, role, label string) {
 }
 
 func (r *Runner) startAgent(ctx context.Context, ru *run, role string) error {
-	name := fmt.Sprintf("%s-r%d", role, ru.rec.ID)
 	sessDir := filepath.Join(ru.dir, "sessions", role)
-	if err := os.MkdirAll(sessDir, 0o700); err != nil {
+	logDir := filepath.Join(ru.dir, "logs")
+	for _, d := range []string{sessDir, logDir} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			return err
+		}
+	}
+	logPath := filepath.Join(logDir, role+".log")
+	if err := os.WriteFile(logPath, nil, 0o600); err != nil {
 		return err
 	}
 	tab, err := r.Herdr.TabCreate(ctx, ru.workspace, ru.repo.Worktree, role)
@@ -443,51 +443,26 @@ func (r *Runner) startAgent(ctx context.Context, ru *run, role string) error {
 		return fmt.Errorf("tab %s: %w", role, err)
 	}
 	ru.panes[role], ru.tabs[role] = tab.RootPaneID, tab.ID
-	// Only the orchestrator publishes work: the agent's shell gets an env where push fails.
-	if err := r.Herdr.PaneRun(ctx, ru.panes[role], "export "+strings.Join(gitx.AgentEnv(), " ")); err != nil {
-		return fmt.Errorf("agent env %s: %w", role, err)
+	// The tab only shows the session: omp itself runs under the orchestrator, not in the pane.
+	if err := r.Herdr.PaneRun(ctx, tab.RootPaneID, "tail -n +1 -F "+shellQuote(logPath)); err != nil {
+		r.Log.Warn("could not show agent log", "role", role, "err", err)
 	}
 	o := r.Cfg.Omp
-	args := []string{
-		"--model", o.Model, "--thinking", o.Thinking, "--approval-mode", o.ApprovalMode,
-		"--session-dir", sessDir, "--append-system-prompt", r.PromptsTarget.RolePath(role),
+	agent, err := r.Agents.Start(ctx, AgentOptions{
+		Name: fmt.Sprintf("%s-r%d", role, ru.rec.ID), Dir: ru.repo.Worktree,
+		Args: []string{
+			"--model", o.Model, "--thinking", o.Thinking, "--approval-mode", o.ApprovalMode,
+			"--session-dir", sessDir, "--append-system-prompt", r.PromptsTarget.RolePath(role),
+		},
+		// Only the orchestrator publishes work: the agent gets an env where push fails.
+		Env:     gitx.AgentEnv(),
+		LogPath: logPath, ErrPath: filepath.Join(logDir, role+".stderr"),
+	})
+	if err != nil {
+		return haltf("o agente %s não subiu: %v", role, err)
 	}
-	if err := r.agentStart(ctx, name, ru.panes[role], args); err != nil {
-		return fmt.Errorf("start %s: %w", role, err)
-	}
-	ru.agents[role] = name
-
-	// herdr reported ready during omp's login wizard (M0): prove the agent really answers.
-	ready := filepath.Join(ru.dir, "ready-"+role)
-	if err := r.prompt(ctx, ru, role, "handshake", prompts.StageData{ArtifactPath: ready}); err != nil {
-		return err
-	}
-	b, err := os.ReadFile(ready) //nolint:gosec // inside the run dir
-	if err != nil || strings.TrimSpace(string(b)) != "ok" {
-		return haltf("handshake do %s falhou: o agente não criou %s", role, ready)
-	}
+	ru.agents[role] = agent
 	return nil
-}
-
-// agentStart retries while the pane's shell is still starting: right after a tab or
-// worktree create, herdr rejects the start with agent_pane_busy (seen in E2E with zsh).
-func (r *Runner) agentStart(ctx context.Context, name, pane string, args []string) error {
-	interval := r.RetryInterval
-	if interval <= 0 {
-		interval = time.Second
-	}
-	deadline := time.Now().Add(roleTimeout)
-	for {
-		_, err := r.Herdr.AgentStart(ctx, name, kindOmp, pane, roleTimeout, args...)
-		if !herdr.IsCode(err, herdr.CodeAgentPaneBusy) || time.Now().After(deadline) {
-			return err
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(interval):
-		}
-	}
 }
 
 // prompt renders a stage, submits it and proves the turn ended without a provider error.
@@ -505,40 +480,37 @@ func (r *Runner) send(ctx context.Context, ru *run, role, text string) error {
 			return err
 		}
 	}
-	name := ru.agents[role]
 	timeout := r.Cfg.Pipeline.PromptTimeout
-	stop := r.watchBudget(ctx, ru, name)
-	agent, err := r.Herdr.AgentPrompt(ctx, name, text, timeout)
-	if herdr.IsCode(err, herdr.CodeAgentPromptStalled) || herdr.IsCode(err, herdr.CodeTimeout) {
-		// The prompt may have been delivered: never resubmit blindly, wait once more instead.
-		r.Log.Warn("prompt not settled, waiting", "agent", name, "err", err)
-		agent, err = r.Herdr.AgentWait(ctx, name, timeout)
-	}
+	stop := r.watchBudget(ctx, ru, ru.agents[role])
+	turn, err := ru.agents[role].Prompt(ctx, text, timeout)
 	if w := stop(); w.tripped {
 		ru.budget, ru.res.Budget = w.status, w.status.Summary()
-		return haltf("%s (agente %s interrompido no meio do turno)", w.status.Reason, name)
+		return haltf("%s (%s interrompido no meio do turno)", w.status.Reason, role)
+	}
+	if errors.Is(err, rpc.ErrTimeout) {
+		return haltf("o %s não terminou o turno em %s; turno abortado", role, timeout)
 	}
 	if err != nil {
-		return haltf("agente %s: %v", name, err)
+		return haltf("agente %s: %v", role, err)
 	}
-	if agent.Status == herdr.StatusBlocked {
-		return haltf("agente %s está bloqueado aguardando aprovação ou resposta", name)
-	}
-	if agent.Status == herdr.StatusWorking {
-		return haltf("agente %s ainda trabalhando após %s", name, timeout)
-	}
-	sess := agent.Session.Value
-	if sess == "" {
-		if sess, err = omp.LatestSession(filepath.Join(ru.dir, "sessions", role)); err != nil {
+	if turn.StopReason == "" {
+		// The final message never reached us (e.g. a frame over the transport limit): the
+		// session file still has it.
+		sess, err := omp.LatestSession(filepath.Join(ru.dir, "sessions", role))
+		if err != nil {
 			return haltf("sessão do %s não encontrada: %v", role, err)
 		}
+		last, err := omp.LastAssistant(sess)
+		if err != nil {
+			return haltf("sessão do %s sem resposta: %v", role, err)
+		}
+		turn = rpc.Turn{StopReason: last.StopReason, ErrorMessage: last.ErrorMessage, Model: last.Model}
 	}
-	last, err := omp.LastAssistant(sess)
-	if err != nil {
-		return haltf("sessão do %s sem resposta: %v", role, err)
-	}
-	if last.Failed() {
-		return haltf("erro do provider no %s (%s): %s", role, last.Model, truncate(last.ErrorMessage, 300))
+	switch turn.StopReason {
+	case "error":
+		return haltf("erro do provider no %s (%s): %s", role, turn.Model, truncate(turn.ErrorMessage, 300))
+	case "aborted":
+		return haltf("o turno do %s foi abortado", role)
 	}
 	return r.checkBudget(ctx, ru)
 }
@@ -600,12 +572,12 @@ func (r *Runner) review(ctx context.Context, ru *run, iter int, artifact string,
 }
 
 func (r *Runner) stopAgent(ctx context.Context, ru *run, role string) {
-	name, ok := ru.agents[role]
+	agent, ok := ru.agents[role]
 	if !ok {
 		return
 	}
-	if err := r.Herdr.AgentSendKeys(ctx, name, "ctrl+d"); err != nil {
-		r.Log.Warn("could not stop agent", "agent", name, "err", err)
+	if err := agent.Close(); err != nil {
+		r.Log.Warn("could not stop agent", "role", role, "err", err)
 	}
 	delete(ru.agents, role)
 	r.renameTab(ctx, ru, role, role+" ✓")

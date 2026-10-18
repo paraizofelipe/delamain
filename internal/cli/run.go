@@ -137,6 +137,7 @@ func newRunner(cfg config.Config, st *store.Store) (*pipeline.Runner, error) {
 	return &pipeline.Runner{
 		Cfg:           cfg,
 		Herdr:         herdr.New(herdr.ExecRunner{Binary: cfg.Herdr.Binary, Session: cfg.Herdr.Session}),
+		Agents:        pipeline.RPCAgents{Binary: cfg.Omp.Binary},
 		Git:           gitx.New(),
 		Store:         st,
 		Prompts:       set,

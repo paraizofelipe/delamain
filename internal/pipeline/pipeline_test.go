@@ -89,11 +89,10 @@ func newHarness(t *testing.T, b behavior) *harness {
 	h := newFakeHerdr(sessions, g, b)
 	return &harness{
 		r: &Runner{
-			Cfg: cfg, Herdr: h, Git: g, Store: st, Prompts: set,
+			Cfg: cfg, Herdr: h, Agents: h, Git: g, Store: st, Prompts: set,
 			PromptsTarget: prompts.Target{OmpAgentDir: filepath.Join(root, "omp"), RolesDir: filepath.Join(root, "roles")},
 			Log:           slog.New(slog.NewTextHandler(io.Discard, nil)),
 			Nonce:         func() string { return "n0nce" },
-			RetryInterval: time.Millisecond,
 			LookPath:      func(string) (string, error) { return "", errors.New("not installed") },
 		},
 		h: h, g: g, st: st,
@@ -152,10 +151,10 @@ func TestRunShouldDeliverApprovedWorkInOneIteration(t *testing.T) {
 		if !strings.Contains(args, "--append-system-prompt "+hs.r.PromptsTarget.RolePath(role)) || !strings.Contains(args, "--model openai-codex/gpt-5.6-terra") {
 			t.Errorf("%s started with wrong args: %s", role, args)
 		}
-		if hs.h.startPanes[name] != hs.h.tabPanes[role] {
-			t.Errorf("%s must run in its own tab, started in %q", role, hs.h.startPanes[name])
+		if log := hs.h.tails[hs.h.tabPanes[role]]; !strings.HasSuffix(log, "/logs/"+role+".log'") || log != shellQuote(hs.h.starts[name].LogPath) {
+			t.Errorf("%s's tab must follow the session log, got %q (session logs to %q)", role, log, hs.h.starts[name].LogPath)
 		}
-		if k := hs.h.keys[name]; len(k) != 1 || k[0] != "ctrl+d" {
+		if k := hs.h.keys[name]; len(k) != 1 || k[0] != "close" {
 			t.Errorf("%s must be stopped at the end, keys=%v", role, k)
 		}
 	}
@@ -245,18 +244,6 @@ func TestRunShouldHaltOnProviderErrorEvenWhenHerdrSaysDone(t *testing.T) {
 	}
 	if hs.finalRun(t, res.RunID).State != store.StateRecorded {
 		t.Fatal("halted runs are still recorded")
-	}
-}
-
-func TestRunShouldHaltWhenAgentIsBlocked(t *testing.T) {
-	hs := newHarness(t, func(role string, n int, text string) reply {
-		if role == "implementer" {
-			return reply{status: herdr.StatusBlocked}
-		}
-		return happy(role, n, text)
-	})
-	if res := hs.run(t); res.Outcome != OutcomeHalted || !strings.Contains(res.Reason, "bloqueado") {
-		t.Fatalf("got %s: %s", res.Outcome, res.Reason)
 	}
 }
 
@@ -351,24 +338,46 @@ func TestRunShouldHaltWhenBranchAlreadyExists(t *testing.T) {
 	}
 }
 
-func TestRunShouldHaltWhenHandshakeFails(t *testing.T) {
+func TestRunShouldHaltWhenAnAgentFailsToStart(t *testing.T) {
 	hs := newHarness(t, happy)
-	hs.h.handshake = func(role string) bool { return role != "reviewer" }
-	if res := hs.run(t); res.Outcome != OutcomeHalted || !strings.Contains(res.Reason, "handshake do reviewer") {
+	hs.h.startErr = failStart("reviewer")
+	if res := hs.run(t); res.Outcome != OutcomeHalted || !strings.Contains(res.Reason, "o agente reviewer não subiu") || !strings.Contains(res.Reason, "não ficou pronto") {
 		t.Fatalf("got %s: %s", res.Outcome, res.Reason)
 	}
 }
 
-func TestRunShouldWaitInsteadOfResubmittingAStalledPrompt(t *testing.T) {
+func failStart(role string) func(string) error {
+	return func(r string) error {
+		if r == role {
+			return errors.New("omp não ficou pronto em 1m0s")
+		}
+		return nil
+	}
+}
+
+func TestRunShouldHaltWhenATurnTimesOut(t *testing.T) {
 	hs := newHarness(t, func(role string, n int, text string) reply {
 		if role == "planner" {
-			return reply{write: planJSON, err: &herdr.Error{Code: herdr.CodeAgentPromptStalled}}
+			return reply{hang: true}
 		}
 		return happy(role, n, text)
 	})
-	res := hs.run(t)
-	if res.Outcome != OutcomeApproved || hs.h.waits != 1 || len(hs.h.prompts["planner"]) != 1 {
-		t.Fatalf("stall → one wait, no resubmission: outcome=%s waits=%d prompts=%d", res.Outcome, hs.h.waits, len(hs.h.prompts["planner"]))
+	hs.r.Cfg.Pipeline.PromptTimeout = 50 * time.Millisecond
+	if res := hs.run(t); res.Outcome != OutcomeHalted || !strings.Contains(res.Reason, "não terminou o turno") {
+		t.Fatalf("got %s: %s", res.Outcome, res.Reason)
+	}
+}
+
+func TestRunShouldHaltWhenATurnIsAbortedOutsideTheBudget(t *testing.T) {
+	hs := newHarness(t, func(role string, n int, text string) reply {
+		if role == "planner" {
+			return reply{hang: true}
+		}
+		return happy(role, n, text)
+	})
+	hs.h.interrupt <- "abort" // e.g. omp itself gave up on the turn
+	if res := hs.run(t); res.Outcome != OutcomeHalted || !strings.Contains(res.Reason, "o turno do planner foi abortado") || len(hs.h.prompts["planner"]) != 1 {
+		t.Fatalf("an aborted turn produced no work and must not pass as done: %s %s", res.Outcome, res.Reason)
 	}
 }
 
@@ -387,14 +396,6 @@ func TestRunShouldRefuseSecondConcurrentRunForSameTask(t *testing.T) {
 	}
 	if _, err := hs.r.Run(context.Background(), hs.task); err == nil {
 		t.Fatal("an active run for the same task must block a second one")
-	}
-}
-
-func TestRunShouldRetryAgentStartWhileFreshPaneShellIsStarting(t *testing.T) {
-	hs := newHarness(t, happy)
-	hs.h.busyStarts = 3
-	if res := hs.run(t); res.Outcome != OutcomeApproved {
-		t.Fatalf("a slow shell startup must not halt the run: %s %s", res.Outcome, res.Reason)
 	}
 }
 
@@ -502,5 +503,17 @@ func TestRunShouldHaltWhenAnAgentTabCannotBeOpened(t *testing.T) {
 	hs.h.tabErr = errors.New("workspace not found")
 	if res := hs.run(t); res.Outcome != OutcomeHalted || !strings.Contains(res.Reason, "workspace not found") || len(hs.h.started) != 0 {
 		t.Fatalf("got %s: %s started=%v", res.Outcome, res.Reason, hs.h.started)
+	}
+}
+
+func TestRunShouldReadTheTurnOutcomeFromTheSessionWhenTheFinalMessageIsLost(t *testing.T) {
+	hs := newHarness(t, func(role string, n int, text string) reply {
+		if role == "implementer" {
+			return reply{provider: "529 overloaded", lost: true}
+		}
+		return happy(role, n, text)
+	})
+	if res := hs.run(t); res.Outcome != OutcomeHalted || !strings.Contains(res.Reason, "529 overloaded") {
+		t.Fatalf("a provider error must not pass as done when its frame is lost: %s %s", res.Outcome, res.Reason)
 	}
 }

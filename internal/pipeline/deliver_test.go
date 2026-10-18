@@ -88,21 +88,21 @@ func TestDeliverShouldOpenDraftWhenHaltedAfterCommits(t *testing.T) {
 
 func TestDeliverShouldOpenDraftWhenTheReviewerFailsToStartAfterCommits(t *testing.T) {
 	hs := newHarness(t, happy)
-	hs.h.handshake = func(role string) bool { return role != "reviewer" }
+	hs.h.startErr = failStart("reviewer")
 	f := withForge(hs)
 	res := hs.run(t)
 
 	if res.Outcome != OutcomeHalted || len(f.created) != 1 || !f.created[0].Draft {
 		t.Fatalf("a late agent start must not lose committed work: %s (%s) created=%+v", res.Outcome, res.Reason, f.created)
 	}
-	if !strings.Contains(f.created[0].Body, "handshake do reviewer") {
+	if !strings.Contains(f.created[0].Body, "o agente reviewer não subiu") {
 		t.Fatalf("draft must carry the halt reason:\n%s", f.created[0].Body)
 	}
 }
 
 func TestDeliverShouldDoNothingWithoutCommits(t *testing.T) {
 	hs := newHarness(t, happy)
-	hs.h.handshake = func(role string) bool { return role != "planner" }
+	hs.h.startErr = failStart("planner")
 	f := withForge(hs)
 	res := hs.run(t)
 
@@ -187,15 +187,13 @@ func TestSetupShouldHaltWhenBranchAlreadyExistsOnOrigin(t *testing.T) {
 func TestSetupShouldStartEveryAgentWithPushBlocked(t *testing.T) {
 	hs := newHarness(t, happy)
 	hs.run(t)
-	want := strings.Join(gitx.AgentEnv(), " ")
 	for _, role := range []string{"planner", "implementer", "reviewer"} {
-		pane := hs.h.tabPanes[role]
-		if !strings.Contains(hs.h.exports[pane], "GIT_CONFIG_COUNT=") || !strings.Contains(hs.h.exports[pane], "GH_TOKEN=") {
-			t.Errorf("%s pane %s must export the agent env before omp starts, got %q (want %s)", role, pane, hs.h.exports[pane], want)
+		if env := hs.h.starts[role+"-r1"].Env; !slices.Equal(env, gitx.AgentEnv()) {
+			t.Errorf("%s must start with the push-blocking env, got %v", role, env)
 		}
 	}
-	if _, ok := hs.h.exports["w9:p1"]; ok {
-		t.Error("the checks pane (root tab) runs the orchestrator's gates, not an agent")
+	if _, ok := hs.h.tails["w9:p1"]; ok {
+		t.Error("the checks tab (root) runs the orchestrator's gates, not an agent log")
 	}
 }
 

@@ -27,9 +27,8 @@ skills:
   - implement
   - commit-gate
 
-# Prompts de cada passo, enviados por `herdr agent prompt`. Go text/template.
+# Prompts de cada passo, enviados ao omp em modo RPC. Go text/template.
 stages:
-  - handshake
   - plan
   - implement
   - review

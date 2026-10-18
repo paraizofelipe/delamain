@@ -74,7 +74,7 @@ func (r *Runner) recoverRun(ctx context.Context, rec store.Run) (Result, error) 
 	}
 	ru := &run{
 		rec: rec, task: prompts.Issue{Ref: t.Ref, Title: t.Title, Kind: t.Kind},
-		dir: r.runDir(rec.Repo, rec.ID), agents: map[string]string{}, panes: map[string]string{}, tabs: map[string]string{},
+		dir: r.runDir(rec.Repo, rec.ID), agents: map[string]Agent{}, panes: map[string]string{}, tabs: map[string]string{},
 		res: &res, issue: t.Issue, maxIter: r.Cfg.Pipeline.MaxIterations, budget: day,
 		workspace: rec.Workspace, recovered: true,
 	}
@@ -82,25 +82,10 @@ func (r *Runner) recoverRun(ctx context.Context, rec store.Run) (Result, error) 
 	if rec.Worktree != "" && rec.Base != "" {
 		ru.repo = prompts.Repo{Worktree: rec.Worktree, Branch: rec.Branch, Base: rec.Base}
 	}
-	// herdr restores workspaces with their agents after a restart: stop the ones of this run.
-	live, err := r.Herdr.AgentList(ctx)
-	if err != nil {
-		return res, err
-	}
-	suffix := fmt.Sprintf("-r%d", rec.ID)
-	for _, a := range live {
-		if role, ok := strings.CutSuffix(a.Name, suffix); ok && isRole(role) {
-			ru.agents[role] = a.Name
-			if ru.workspace == "" {
-				ru.workspace = a.WorkspaceID
-			}
-		}
-	}
-	r.Log.Warn("recovering run", "run", rec.ID, "state", rec.State, "owner", who, "agents", len(ru.agents))
+	// No agent to stop: omp sessions are children of the dead process and die with it.
+	r.Log.Warn("recovering run", "run", rec.ID, "state", rec.State, "owner", who)
 	return res, r.finish(ctx, ru, t)
 }
-
-func isRole(s string) bool { return s == "planner" || s == "implementer" || s == "reviewer" }
 
 func kindFromBranch(branch string) string {
 	if strings.HasPrefix(branch, "fix/") {

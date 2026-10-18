@@ -50,8 +50,8 @@ func TestBudgetWatcherShouldInterruptAnAgentThatOverspendsMidTurn(t *testing.T) 
 	if res.Outcome != OutcomeHalted || !strings.Contains(res.Reason, "budget da issue esgotado") || !strings.Contains(res.Reason, "interrompido") {
 		t.Fatalf("got %s: %s", res.Outcome, res.Reason)
 	}
-	if keys := hs.h.keys["implementer-r1"]; len(keys) == 0 || keys[0] != "esc" {
-		t.Fatalf("the agent must be interrupted with esc first, keys=%v", keys)
+	if keys := hs.h.keys["implementer-r1"]; len(keys) == 0 || keys[0] != "abort" {
+		t.Fatalf("the overspending turn must be aborted, keys=%v", keys)
 	}
 }
 
