@@ -138,3 +138,47 @@ func TestHerdrShouldBeOffUnlessTheFileOrEnvTurnsItOn(t *testing.T) {
 		t.Fatalf("want error naming the bad variable, got %v", err)
 	}
 }
+
+func TestLabelsShouldBeNamedAfterThePrefix(t *testing.T) {
+	cases := map[string]struct {
+		file string
+		env  map[string]string
+		want Labels
+	}{
+		"default prefix": {want: Labels{Prefix: "delamain", Ready: "delamain:ready", InProgress: "delamain:in-progress",
+			MROpened: "delamain:mr-opened", NeedsHuman: "delamain:needs-human", NeedsInfo: "delamain:needs-info"}},
+		"prefix from file": {file: "forge:\n  labels:\n    prefix: paraizo\n", want: Labels{Prefix: "paraizo", Ready: "paraizo:ready",
+			InProgress: "paraizo:in-progress", MROpened: "paraizo:mr-opened", NeedsHuman: "paraizo:needs-human", NeedsInfo: "paraizo:needs-info"}},
+		"an explicit label wins over the prefix": {file: "forge:\n  labels:\n    prefix: paraizo\n    in_progress: wip\n", want: Labels{Prefix: "paraizo",
+			Ready: "paraizo:ready", InProgress: "wip", MROpened: "paraizo:mr-opened", NeedsHuman: "paraizo:needs-human", NeedsInfo: "paraizo:needs-info"}},
+		"env wins over file": {file: "forge:\n  labels:\n    prefix: paraizo\n", env: map[string]string{"DELAMAIN_LABEL_PREFIX": "bot"},
+			want: Labels{Prefix: "bot", Ready: "bot:ready", InProgress: "bot:in-progress", MROpened: "bot:mr-opened", NeedsHuman: "bot:needs-human", NeedsInfo: "bot:needs-info"}},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			cfg, err := Load(writeFile(t, tc.file), envOf(tc.env))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.Forge.Labels != tc.want {
+				t.Fatalf("labels = %+v, want %+v", cfg.Forge.Labels, tc.want)
+			}
+		})
+	}
+}
+
+func TestLabelsShouldRejectAPrefixThatCannotNameThem(t *testing.T) {
+	for name, file := range map[string]string{
+		"empty prefix, labels unset": "forge:\n  labels:\n    prefix: \"\"\n",
+		"comma":                      "forge:\n  labels:\n    prefix: a,b\n",
+		"trailing colon":             "forge:\n  labels:\n    prefix: \"paraizo:\"\n",
+	} {
+		if _, err := Load(writeFile(t, file), noEnv); err == nil || !strings.Contains(err.Error(), "forge.labels") {
+			t.Errorf("%s: want a forge.labels error, got %v", name, err)
+		}
+	}
+	file := "forge:\n  labels:\n    prefix: \"\"\n    ready: r\n    in_progress: i\n    mr_opened: m\n    needs_human: h\n    needs_info: n\n"
+	if cfg, err := Load(writeFile(t, file), noEnv); err != nil || cfg.Forge.Labels.InProgress != "i" {
+		t.Errorf("no prefix is fine when every label is set: %+v %v", cfg.Forge.Labels, err)
+	}
+}
