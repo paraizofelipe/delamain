@@ -12,6 +12,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"sync"
 	"syscall"
@@ -91,10 +92,13 @@ type frame struct {
 	Intent       string          `json:"intent"`
 	Args         json.RawMessage `json:"args"`
 	IsError      bool            `json:"isError"`
-	Level        string          `json:"level"`
-	Attempt      int             `json:"attempt"`
-	MaxAttempts  int             `json:"maxAttempts"`
-	ErrorMessage string          `json:"errorMessage"`
+	Result       struct {
+		Content json.RawMessage `json:"content"`
+	} `json:"result"` // of tool_execution_end
+	Level        string `json:"level"`
+	Attempt      int    `json:"attempt"`
+	MaxAttempts  int    `json:"maxAttempts"`
+	ErrorMessage string `json:"errorMessage"`
 	Payload      struct {
 		Agent  string `json:"agent"`
 		ID     string `json:"id"`
@@ -391,7 +395,7 @@ func (c *Client) logFrame(f frame) {
 		c.logf("🔧 %s: %s", f.ToolName, detail)
 	case "tool_execution_end":
 		if f.IsError {
-			c.logf("✗ %s falhou", f.ToolName)
+			c.logf("✗ %s falhou%s", f.ToolName, toolFailure(text(f.Result.Content)))
 		}
 	case "message_end":
 		m := f.msg()
@@ -432,6 +436,44 @@ func text(content json.RawMessage) string {
 		}
 	}
 	return strings.Join(parts, "\n")
+}
+
+var (
+	exitRe = regexp.MustCompile(`(?m)^Command exited with code (\d+)\s*$`)
+	// errRe spots the line that says what went wrong, e.g. "--- FAIL: TestX" after make echoes its recipe.
+	errRe = regexp.MustCompile(`(?i)\b(fail|error|erro|panic|fatal|denied|not found|no such|undefined|cannot)\b`)
+	// omp's own trailer lines, never the cause.
+	noiseRe = regexp.MustCompile(`^(Command exited with code \d+|Wall time: .*|\[raw output: .*\])$`)
+)
+
+// toolFailure summarises a failed tool's output for the log: " (exit N): <first error line>
+// | <next line>", so the cause shows without opening the session JSONL.
+func toolFailure(out string) string {
+	var exit string
+	if m := exitRe.FindStringSubmatch(out); m != nil {
+		exit = " (exit " + m[1] + ")"
+	}
+	var lines []string
+	for _, l := range strings.Split(out, "\n") {
+		if l = strings.TrimSpace(l); l != "" && !noiseRe.MatchString(l) {
+			lines = append(lines, l)
+		}
+	}
+	if len(lines) == 0 {
+		return exit
+	}
+	at := 0
+	for i, l := range lines {
+		if errRe.MatchString(l) {
+			at = i
+			break
+		}
+	}
+	cause := lines[at]
+	if at+1 < len(lines) {
+		cause += " | " + lines[at+1]
+	}
+	return exit + ": " + truncate(cause, 300)
 }
 
 func truncate(s string, n int) string {
