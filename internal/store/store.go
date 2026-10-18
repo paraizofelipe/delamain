@@ -152,6 +152,17 @@ var migrations = []string{
 	`ALTER TABLE runs ADD COLUMN owner_pid INTEGER NOT NULL DEFAULT 0;
 	ALTER TABLE runs ADD COLUMN base TEXT NOT NULL DEFAULT '';
 	ALTER TABLE runs ADD COLUMN workspace TEXT NOT NULL DEFAULT '';`,
+	`CREATE TABLE agents (
+		run_id      INTEGER NOT NULL REFERENCES runs(id),
+		role        TEXT NOT NULL,
+		pid         INTEGER NOT NULL DEFAULT 0,
+		state       TEXT NOT NULL,
+		log_path    TEXT NOT NULL DEFAULT '',
+		session_dir TEXT NOT NULL DEFAULT '',
+		started_at  TIMESTAMP NOT NULL,
+		ended_at    TIMESTAMP,
+		PRIMARY KEY (run_id, role)
+	);`,
 }
 
 func (s *Store) migrate(ctx context.Context) error {
@@ -224,8 +235,11 @@ func (s *Store) ActiveRun(ctx context.Context, repo, issueRef string) (Run, erro
 
 // UnfinishedRuns lists non-terminal runs, oldest first, for resume after a crash.
 func (s *Store) UnfinishedRuns(ctx context.Context) ([]Run, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT `+runCols+` FROM runs WHERE state NOT IN (?, ?) ORDER BY id`, StateRecorded, StateNeedsInfo)
+	return s.queryRuns(ctx, `SELECT `+runCols+` FROM runs WHERE state NOT IN (?, ?) ORDER BY id`, StateRecorded, StateNeedsInfo)
+}
+
+func (s *Store) queryRuns(ctx context.Context, query string, args ...any) ([]Run, error) {
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -239,6 +253,11 @@ func (s *Store) UnfinishedRuns(ctx context.Context) ([]Run, error) {
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// RecentRuns lists the newest runs first, finished ones included.
+func (s *Store) RecentRuns(ctx context.Context, limit int) ([]Run, error) {
+	return s.queryRuns(ctx, `SELECT `+runCols+` FROM runs ORDER BY id DESC LIMIT ?`, limit)
 }
 
 // ClaimRun moves ownership of a run from one process to another atomically; false means someone
