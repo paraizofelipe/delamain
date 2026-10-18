@@ -1,0 +1,4 @@
+name: delamain-standards-reviewer
+description: Revisa uma diff no eixo Padrões — convenções documentadas do repositório, qualidade dos testes e smells de código. Somente leitura.
+tools: [read, grep, glob, lsp, bash]
+thinking-level: high

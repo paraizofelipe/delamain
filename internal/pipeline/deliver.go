@@ -1,0 +1,175 @@
+package pipeline
+
+import (
+	"context"
+	"fmt"
+	"regexp"
+	"strings"
+	"unicode"
+	"unicode/utf8"
+
+	"github.com/paraizo/delamain/internal/gates"
+	"github.com/paraizo/delamain/internal/store"
+)
+
+// blockers resolves the issues a task declares as dependencies ("blocked by #N", "depende de #N").
+// It fails closed: an unverifiable blocker counts as open.
+func (r *Runner) blockers(ctx context.Context, t Task) []string {
+	if r.Forge == nil {
+		return nil
+	}
+	var problems []string
+	for _, n := range gates.Dependencies(t.Body) {
+		is, err := r.Forge.Issue(ctx, n)
+		switch {
+		case err != nil:
+			problems = append(problems, fmt.Sprintf("não foi possível verificar a dependência #%d: %v", n, err))
+		case is.Open:
+			problems = append(problems, fmt.Sprintf("depende da issue #%d, que ainda está aberta", n))
+		}
+	}
+	return problems
+}
+
+// checkForge stops before any worktree exists when the branch was already published or has an
+// open PR/MR: delamain never piles a second PR on top of earlier work.
+func (r *Runner) checkForge(ctx context.Context, repo, branch string) error {
+	if r.Forge == nil {
+		return nil
+	}
+	onOrigin, err := r.Git.RemoteBranchExists(ctx, repo, branch)
+	if err != nil {
+		return err
+	}
+	if onOrigin {
+		return haltf("a branch %s já existe no origin; finalize ou remova o trabalho anterior", branch)
+	}
+	pr, err := r.Forge.OpenPR(ctx, branch)
+	if err != nil {
+		return err
+	}
+	if pr != nil {
+		return haltf("já existe PR/MR aberto para %s: %s", branch, pr.URL)
+	}
+	return nil
+}
+
+// deliver pushes the work branch and opens the PR/MR (step 10): ready when approved, draft
+// otherwise. It never merges. Failures turn the run into a loud halt; the local branch stays.
+func (r *Runner) deliver(ctx context.Context, ru *run) {
+	res := ru.res
+	switch {
+	case ru.repo.Worktree == "":
+		return // setup never produced a branch
+	case res.PRURL != "":
+		return // delivered before the process died
+	case len(res.Commits) == 0:
+		res.Delivery = "nenhum commit na branch: nada a entregar"
+		return
+	case r.Forge == nil:
+		res.Delivery = "repositório sem forge (origin ausente ou forge.kind=none): branch mantida apenas localmente"
+		return
+	}
+	draft := res.Outcome != OutcomeApproved
+	fail := func(err error) {
+		prev := ""
+		if res.Reason != "" {
+			prev = res.Reason + "; "
+		}
+		res.Outcome, res.Reason = OutcomeHalted, fmt.Sprintf("%sentrega falhou: %v (branch local %s preservada)", prev, err, ru.repo.Branch)
+	}
+
+	// The branch did not exist on origin at setup and agents run with push blocked:
+	// if it is there now, something bypassed the guard and the work is not trustworthy.
+	onOrigin, err := r.Git.RemoteBranchExists(ctx, ru.repo.Worktree, ru.repo.Branch)
+	if err != nil {
+		fail(err)
+		return
+	}
+	pushedBeforeCrash := onOrigin && ru.recovered && (ru.rec.State == store.StateDeliver || ru.rec.State == store.StateDeliverDraft)
+	switch {
+	case pushedBeforeCrash:
+		// The dead process pushed but may not have opened the PR/MR: reuse an open one.
+		pr, err := r.Forge.OpenPR(ctx, ru.repo.Branch)
+		if err != nil {
+			fail(err)
+			return
+		}
+		if pr != nil {
+			res.PRURL, res.Draft, ru.rec.MRURL = pr.URL, pr.Draft, pr.URL
+			return
+		}
+	case onOrigin:
+		fail(fmt.Errorf("a branch %s apareceu no origin durante a run: um agente fez push por fora do delamain", ru.repo.Branch))
+		return
+	default:
+		if err := r.Git.Push(ctx, ru.repo.Worktree, ru.repo.Branch, ru.repo.Base); err != nil {
+			fail(err)
+			return
+		}
+	}
+	pr, err := r.Forge.CreatePR(ctx, forgePROptions(ru, draft))
+	if err != nil {
+		fail(err)
+		return
+	}
+	res.PRURL, res.Draft = pr.URL, pr.Draft
+	ru.rec.MRURL = pr.URL
+	ru.log.Info("delivered", "run", ru.rec.ID, "url", pr.URL, "draft", pr.Draft)
+}
+
+// announce records the result on the issue (step 11): final label and a status comment.
+func (r *Runner) announce(ctx context.Context, ru *run, t Task) {
+	l := r.Cfg.Forge.Labels
+	final := l.NeedsHuman
+	if ru.res.PRURL != "" && !ru.res.Draft {
+		final = l.MROpened
+	}
+	r.issueUpdate(ctx, t, ru.res, []string{final}, []string{l.InProgress}, issueComment(*ru.res))
+}
+
+func (r *Runner) needsInfo(ctx context.Context, t Task, problems []string, res *Result) {
+	l := r.Cfg.Forge.Labels
+	var b strings.Builder
+	b.WriteString("🤖 **delamain** não iniciou esta issue: faltam informações.\n\n")
+	for _, p := range problems {
+		fmt.Fprintf(&b, "- %s\n", p)
+	}
+	fmt.Fprintf(&b, "\nAjuste a issue e recoloque a label `%s`.", l.Ready)
+	r.issueUpdate(ctx, t, res, []string{l.NeedsInfo}, []string{l.Ready, l.InProgress}, b.String())
+}
+
+// issueUpdate relabels and comments on the task's issue. Forge hiccups here never fail the run:
+// they are logged and reported as warnings.
+func (r *Runner) issueUpdate(ctx context.Context, t Task, res *Result, add, remove []string, comment string) {
+	if r.Forge == nil || t.Issue == 0 {
+		return
+	}
+	if err := r.Forge.Relabel(ctx, t.Issue, add, remove); err != nil {
+		r.Log.Warn("could not relabel issue", "issue", t.Issue, "err", err)
+		res.Warnings = append(res.Warnings, "labels da issue: "+err.Error())
+	}
+	if comment == "" {
+		return
+	}
+	if err := r.Forge.Comment(ctx, t.Issue, comment); err != nil {
+		r.Log.Warn("could not comment on issue", "issue", t.Issue, "err", err)
+		res.Warnings = append(res.Warnings, "comentário na issue: "+err.Error())
+	}
+}
+
+var conventional = regexp.MustCompile(`^(feat|fix|chore|docs|refactor|test|ci|perf|build|style)(\([^)]+\))?!?: `)
+
+// prTitle makes a Conventional Commits title, keeping one the issue already has.
+func prTitle(kind, title string) string {
+	title = strings.TrimSpace(title)
+	if conventional.MatchString(title) {
+		return title
+	}
+	prefix := "feat: "
+	if kind == "bug" {
+		prefix = "fix: "
+	}
+	r, n := utf8.DecodeRuneInString(title)
+	return prefix + string(unicode.ToLower(r)) + title[n:]
+}

@@ -1,0 +1,34 @@
+# Manifesto dos prompts do delamain — o que é carregado, instalado e validado.
+#
+# A ordem é a do fluxo, não alfabética. Diretório novo em roles/, agents/, skills/
+# ou stages/ precisa entrar nesta lista: `delamain prompts lint` (e o go test)
+# falha nomeando o que faltou ou sobrou.
+#
+# Conteúdo adaptado de catlog-agents (skills tdd, implement, code-review) e
+# coder (analyse-code, review-code/OWASP) para o modo autônomo: sem perguntas
+# ao usuário, suposições registradas no plano, e push/MR feitos pelo orquestrador.
+
+# Sessões principais, uma por pane do herdr. O body.md entra via --append-system-prompt.
+roles:
+  - planner
+  - implementer
+  - reviewer
+
+# Subagentes do omp (tool `task`). Instalados como ~/.omp/agent/agents/delamain-<nome>.md.
+agents:
+  - analyzer
+  - spec-reviewer
+  - standards-reviewer
+  - security-reviewer
+
+# Skills do omp. Instaladas como ~/.omp/agent/skills/delamain-<nome>/ (com references/).
+skills:
+  - tdd
+  - implement
+  - commit-gate
+
+# Prompts de cada passo, enviados ao omp em modo RPC. Go text/template.
+stages:
+  - plan
+  - implement
+  - review
