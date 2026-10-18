@@ -188,13 +188,14 @@ func TestSetupShouldStartEveryAgentWithPushBlocked(t *testing.T) {
 	hs := newHarness(t, happy)
 	hs.run(t)
 	want := strings.Join(gitx.AgentEnv(), " ")
-	for _, pane := range []string{"w9:p1", "w9:p2", "w9:p3"} { // planner, implementer, reviewer
+	for _, role := range []string{"planner", "implementer", "reviewer"} {
+		pane := hs.h.tabPanes[role]
 		if !strings.Contains(hs.h.exports[pane], "GIT_CONFIG_COUNT=") || !strings.Contains(hs.h.exports[pane], "GH_TOKEN=") {
-			t.Errorf("pane %s must export the agent env before omp starts, got %q (want %s)", pane, hs.h.exports[pane], want)
+			t.Errorf("%s pane %s must export the agent env before omp starts, got %q (want %s)", role, pane, hs.h.exports[pane], want)
 		}
 	}
-	if _, ok := hs.h.exports["w9:p4"]; ok {
-		t.Error("the checks pane runs the orchestrator's gates, not an agent")
+	if _, ok := hs.h.exports["w9:p1"]; ok {
+		t.Error("the checks pane (root tab) runs the orchestrator's gates, not an agent")
 	}
 }
 

@@ -40,6 +40,7 @@ const (
 	agentPromptJSON    = `{"id":"cli:agent:prompt","result":{"agent":{"agent":"omp","agent_session":{"agent":"omp","kind":"path","source":"herdr:omp","value":"/tmp/sessions/implementer/s.jsonl"},"agent_status":"done","cwd":"/tmp/wt","interactive_ready":true,"name":"implementer","pane_id":"w2:p1","tab_id":"w2:t1","workspace_id":"w2"}}}`
 	agentNotFoundJSON  = `{"error":{"code":"agent_not_found","message":"agent target nonexistent not found"},"id":"cli:agent:get"}`
 	integrationStatus  = "pi: not installed (/home/u/.pi/agent/extensions/herdr-agent-state.ts)\nomp: current (v10) (/home/u/.omp/agent/extensions/herdr-omp-agent-state.ts)\n"
+	tabCreateJSON      = `{"id":"cli:tab:create","result":{"root_pane":{"agent_status":"unknown","pane_id":"w2D:p2","tab_id":"w2D:t2","workspace_id":"w2D"},"tab":{"agent_status":"unknown","focused":false,"label":"planner","number":2,"tab_id":"w2D:t2"},"type":"tab_created"}}` // herdr 0.9.3, tab spike
 	sessionListJSON    = `{"sessions":[{"default":true,"name":"default","running":true,"socket_path":"/d.sock"},{"default":false,"name":"delamain-spike","running":true,"socket_path":"/s.sock"},{"default":false,"name":"old","running":false,"socket_path":"/o.sock"}]}`
 )
 
@@ -62,6 +63,38 @@ func TestWorktreeCreateShouldFailWhenResponseHasNoPane(t *testing.T) {
 	f := &fakeRunner{responses: map[string]fakeResp{"worktree create": {stdout: `{"result":{}}`}}}
 	if _, err := New(f).WorktreeCreate(context.Background(), WorktreeOptions{Cwd: "/r", Branch: "b"}); err == nil {
 		t.Fatal("a response without a pane id cannot be used and must fail")
+	}
+}
+
+func TestTabCreateShouldParseIDsAndNeverStealFocus(t *testing.T) {
+	f := &fakeRunner{responses: map[string]fakeResp{"tab create": {stdout: tabCreateJSON}}}
+	tab, err := New(f).TabCreate(context.Background(), "w2D", "/tmp/wt", "planner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tab != (Tab{ID: "w2D:t2", RootPaneID: "w2D:p2"}) {
+		t.Fatalf("got %+v", tab)
+	}
+	want := []string{"tab", "create", "--workspace", "w2D", "--cwd", "/tmp/wt", "--label", "planner"}
+	if !slices.Equal(f.calls[0], want) {
+		t.Fatalf("args = %v, want %v (no --focus: background work must not steal the user's focus)", f.calls[0], want)
+	}
+}
+
+func TestTabCreateShouldFailWhenResponseHasNoPane(t *testing.T) {
+	f := &fakeRunner{responses: map[string]fakeResp{"tab create": {stdout: `{"result":{"tab":{"tab_id":"w2D:t2"}}}`}}}
+	if _, err := New(f).TabCreate(context.Background(), "w2D", "/tmp/wt", "planner"); err == nil {
+		t.Fatal("a tab without a pane cannot host an agent and must fail")
+	}
+}
+
+func TestTabRenameShouldSendTheLabelAsOneArgument(t *testing.T) {
+	f := &fakeRunner{responses: map[string]fakeResp{"tab rename": {stdout: `{"result":{}}`}}}
+	if err := New(f).TabRename(context.Background(), "w2D:t2", "planner ✓"); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"tab", "rename", "w2D:t2", "planner ✓"}; !slices.Equal(f.calls[0], want) {
+		t.Fatalf("args = %v, want %v", f.calls[0], want)
 	}
 }
 

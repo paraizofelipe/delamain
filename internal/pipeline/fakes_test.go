@@ -38,7 +38,11 @@ type fakeHerdr struct {
 	checks    func(name string, n int) int // exit code of the n-th run of a check
 	checkHang map[string]bool
 
-	splits      int
+	tabs        []string          // labels of created tabs, in order
+	tabPanes    map[string]string // label -> root pane of the created tab
+	labels      map[string]string // tab id -> label after the last rename
+	tabErr      error
+	startPanes  map[string]string   // agent name -> pane it was started in
 	started     map[string][]string // agent name -> args
 	prompts     map[string][]string // role -> prompt texts (excluding handshakes)
 	promptCalls int
@@ -68,6 +72,7 @@ func newFakeHerdr(dir string, g *fakeGit, b behavior) *fakeHerdr {
 		checks:    defaultChecks,
 		checkHang: map[string]bool{},
 		started:   map[string][]string{}, prompts: map[string][]string{},
+		tabPanes: map[string]string{}, labels: map[string]string{}, startPanes: map[string]string{},
 		keys: map[string][]string{}, checkRuns: map[string]int{}, exports: map[string]string{},
 		handshake: func(string) bool { return true },
 		interrupt: make(chan string, 4),
@@ -94,12 +99,23 @@ func (f *fakeHerdr) WorktreeCreate(_ context.Context, o herdr.WorktreeOptions) (
 	return herdr.Worktree{WorkspaceID: "w9", TabID: "w9:t1", RootPaneID: "w9:p1", Path: o.Path, Branch: o.Branch}, nil
 }
 
-func (f *fakeHerdr) PaneSplit(context.Context, string, string, string) (string, error) {
-	f.splits++
-	return fmt.Sprintf("w9:p%d", f.splits+1), nil
+func (f *fakeHerdr) TabCreate(_ context.Context, workspace, _, label string) (herdr.Tab, error) {
+	if f.tabErr != nil {
+		return herdr.Tab{}, f.tabErr
+	}
+	f.tabs = append(f.tabs, label)
+	n := len(f.tabs) + 1
+	tab := herdr.Tab{ID: fmt.Sprintf("%s:t%d", workspace, n), RootPaneID: fmt.Sprintf("%s:p%d", workspace, n)}
+	f.tabPanes[label], f.labels[tab.ID] = tab.RootPaneID, label
+	return tab, nil
 }
 
-func (f *fakeHerdr) AgentStart(_ context.Context, name, kind, _ string, _ time.Duration, args ...string) (herdr.Agent, error) {
+func (f *fakeHerdr) TabRename(_ context.Context, tab, label string) error {
+	f.labels[tab] = label
+	return nil
+}
+
+func (f *fakeHerdr) AgentStart(_ context.Context, name, kind, pane string, _ time.Duration, args ...string) (herdr.Agent, error) {
 	if kind != "omp" {
 		return herdr.Agent{}, fmt.Errorf("unexpected kind %s", kind)
 	}
@@ -107,7 +123,7 @@ func (f *fakeHerdr) AgentStart(_ context.Context, name, kind, _ string, _ time.D
 		f.busyStarts--
 		return herdr.Agent{}, &herdr.Error{Code: herdr.CodeAgentPaneBusy, Message: "not an available shell"}
 	}
-	f.started[name] = args
+	f.started[name], f.startPanes[name] = args, pane
 	return herdr.Agent{Name: name, Status: herdr.StatusIdle}, nil
 }
 

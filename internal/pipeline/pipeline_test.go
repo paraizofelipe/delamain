@@ -140,14 +140,20 @@ func TestRunShouldDeliverApprovedWorkInOneIteration(t *testing.T) {
 	if err != nil || !strings.Contains(string(report), "**approved**") {
 		t.Fatalf("report: %v\n%s", err, report)
 	}
-	if hs.h.splits != 3 {
-		t.Fatalf("2x2 layout needs 3 splits, got %d", hs.h.splits)
+	if want := []string{"planner", "implementer", "reviewer"}; !slices.Equal(hs.h.tabs, want) {
+		t.Fatalf("one tab per agent, named after it, opened as it starts: got %v want %v", hs.h.tabs, want)
+	}
+	if hs.h.labels["w9:t1"] != "checks" {
+		t.Fatalf("the worktree's root tab runs the gates and must say so, labels=%v", hs.h.labels)
 	}
 	for _, role := range []string{"planner", "implementer", "reviewer"} {
 		name := role + "-r1"
 		args := strings.Join(hs.h.started[name], " ")
 		if !strings.Contains(args, "--append-system-prompt "+hs.r.PromptsTarget.RolePath(role)) || !strings.Contains(args, "--model openai-codex/gpt-5.6-terra") {
 			t.Errorf("%s started with wrong args: %s", role, args)
+		}
+		if hs.h.startPanes[name] != hs.h.tabPanes[role] {
+			t.Errorf("%s must run in its own tab, started in %q", role, hs.h.startPanes[name])
 		}
 		if k := hs.h.keys[name]; len(k) != 1 || k[0] != "ctrl+d" {
 			t.Errorf("%s must be stopped at the end, keys=%v", role, k)
@@ -472,7 +478,29 @@ func TestReviewerShouldNeverStartWhenVerifyNeverPasses(t *testing.T) {
 	if res := hs.run(t); res.Outcome != OutcomeExhausted {
 		t.Fatalf("got %s: %s", res.Outcome, res.Reason)
 	}
-	if _, ok := hs.h.started["reviewer-r1"]; ok {
-		t.Fatal("no review happens, so no reviewer session must be paid for")
+	if _, ok := hs.h.started["reviewer-r1"]; ok || slices.Contains(hs.h.tabs, "reviewer") {
+		t.Fatalf("no review happens, so no reviewer tab or session, tabs=%v", hs.h.tabs)
+	}
+}
+
+func TestStoppedAgentTabShouldBeMarkedDoneAndKept(t *testing.T) {
+	var hs *harness
+	hs = newHarness(t, func(role string, n int, text string) reply {
+		if role == "implementer" && n == 1 && hs.h.labels["w9:t2"] != "planner ✓" {
+			t.Errorf("the planner tab must show it finished once the plan is valid, labels=%v", hs.h.labels)
+		}
+		return happy(role, n, text)
+	})
+	hs.run(t)
+	if hs.h.labels["w9:t2"] != "planner ✓" {
+		t.Fatalf("the finished planner's tab stays, so its output can be read, labels=%v", hs.h.labels)
+	}
+}
+
+func TestRunShouldHaltWhenAnAgentTabCannotBeOpened(t *testing.T) {
+	hs := newHarness(t, happy)
+	hs.h.tabErr = errors.New("workspace not found")
+	if res := hs.run(t); res.Outcome != OutcomeHalted || !strings.Contains(res.Reason, "workspace not found") || len(hs.h.started) != 0 {
+		t.Fatalf("got %s: %s started=%v", res.Outcome, res.Reason, hs.h.started)
 	}
 }

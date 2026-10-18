@@ -125,6 +125,11 @@ type Worktree struct {
 	Branch      string
 }
 
+type Tab struct {
+	ID         string
+	RootPaneID string
+}
+
 type WorktreeOptions struct {
 	Cwd    string
 	Branch string
@@ -259,20 +264,27 @@ func (c *Client) WorktreeCreate(ctx context.Context, o WorktreeOptions) (Worktre
 	}, nil
 }
 
-// PaneSplit splits target in direction ("right"|"down") and returns the new pane ID.
-func (c *Client) PaneSplit(ctx context.Context, target, direction, cwd string) (string, error) {
+// TabCreate opens a labeled tab in workspace. It never passes --focus.
+func (c *Client) TabCreate(ctx context.Context, workspace, cwd, label string) (Tab, error) {
 	var res struct {
-		Pane struct {
+		Tab struct {
+			ID string `json:"tab_id"`
+		} `json:"tab"`
+		RootPane struct {
 			ID string `json:"pane_id"`
-		} `json:"pane"`
+		} `json:"root_pane"`
 	}
-	if err := c.runJSON(ctx, &res, "pane", "split", target, "--direction", direction, "--cwd", cwd, "--no-focus"); err != nil {
-		return "", err
+	if err := c.runJSON(ctx, &res, "tab", "create", "--workspace", workspace, "--cwd", cwd, "--label", label); err != nil {
+		return Tab{}, err
 	}
-	if res.Pane.ID == "" {
-		return "", errors.New("herdr pane split: response has no pane id")
+	if res.RootPane.ID == "" {
+		return Tab{}, errors.New("herdr tab create: response has no root pane")
 	}
-	return res.Pane.ID, nil
+	return Tab{ID: res.Tab.ID, RootPaneID: res.RootPane.ID}, nil
+}
+
+func (c *Client) TabRename(ctx context.Context, tab, label string) error {
+	return c.runJSON(ctx, nil, "tab", "rename", tab, label)
 }
 
 // AgentStart launches an agent of kind in an idle shell pane. agentArgs go after "--".

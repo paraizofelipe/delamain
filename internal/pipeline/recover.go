@@ -74,7 +74,7 @@ func (r *Runner) recoverRun(ctx context.Context, rec store.Run) (Result, error) 
 	}
 	ru := &run{
 		rec: rec, task: prompts.Issue{Ref: t.Ref, Title: t.Title, Kind: t.Kind},
-		dir: r.runDir(rec.Repo, rec.ID), agents: map[string]string{}, panes: map[string]string{},
+		dir: r.runDir(rec.Repo, rec.ID), agents: map[string]string{}, panes: map[string]string{}, tabs: map[string]string{},
 		res: &res, issue: t.Issue, maxIter: r.Cfg.Pipeline.MaxIterations, budget: day,
 		workspace: rec.Workspace, recovered: true,
 	}

@@ -32,7 +32,8 @@ import (
 // Herdr is the subset of the herdr client the pipeline drives.
 type Herdr interface {
 	WorktreeCreate(ctx context.Context, o herdr.WorktreeOptions) (herdr.Worktree, error)
-	PaneSplit(ctx context.Context, target, direction, cwd string) (string, error)
+	TabCreate(ctx context.Context, workspace, cwd, label string) (herdr.Tab, error)
+	TabRename(ctx context.Context, tab, label string) error
 	AgentStart(ctx context.Context, name, kind, pane string, timeout time.Duration, agentArgs ...string) (herdr.Agent, error)
 	AgentPrompt(ctx context.Context, target, text string, timeout time.Duration) (herdr.Agent, error)
 	AgentWait(ctx context.Context, target string, timeout time.Duration) (herdr.Agent, error)
@@ -146,6 +147,7 @@ type run struct {
 	dir    string
 	agents map[string]string // role -> agent name
 	panes  map[string]string // role -> pane id
+	tabs   map[string]string // role -> tab id
 	// workspace is set only after setup proves it is ours, so cleanup never closes someone else's.
 	workspace string
 	planPath  string
@@ -205,6 +207,7 @@ func (r *Runner) Run(ctx context.Context, t Task) (Result, error) {
 		dir:     r.runDir(repo, rec.ID),
 		agents:  map[string]string{},
 		panes:   map[string]string{},
+		tabs:    map[string]string{},
 		res:     &res,
 		issue:   t.Issue,
 		maxIter: r.Cfg.Pipeline.MaxIterations,
@@ -412,18 +415,21 @@ func (r *Runner) setup(ctx context.Context, ru *run, repo string, t Task) error 
 		return err
 	}
 
-	// 2x2 grid: planner | implementer on top, checks | reviewer below.
-	ru.panes["planner"] = wt.RootPaneID
-	if ru.panes["implementer"], err = r.Herdr.PaneSplit(ctx, wt.RootPaneID, "right", wt.Path); err != nil {
-		return err
+	// One full-width tab per role: the root tab runs the gates, each agent gets its own tab
+	// when it starts (see startAgent).
+	ru.panes["checks"], ru.tabs["checks"] = wt.RootPaneID, wt.TabID
+	r.renameTab(ctx, ru, "checks", "checks")
+	return nil
+}
+
+// renameTab labels a role's tab. Display only: a failure never stops the run.
+func (r *Runner) renameTab(ctx context.Context, ru *run, role, label string) {
+	if ru.tabs[role] == "" {
+		return
 	}
-	if ru.panes["reviewer"], err = r.Herdr.PaneSplit(ctx, ru.panes["implementer"], "down", wt.Path); err != nil {
-		return err
+	if err := r.Herdr.TabRename(ctx, ru.tabs[role], label); err != nil {
+		r.Log.Warn("could not rename tab", "tab", ru.tabs[role], "err", err)
 	}
-	if ru.panes["checks"], err = r.Herdr.PaneSplit(ctx, wt.RootPaneID, "down", wt.Path); err != nil {
-		return err
-	}
-	return nil // agents start on their first prompt (see send)
 }
 
 func (r *Runner) startAgent(ctx context.Context, ru *run, role string) error {
@@ -432,6 +438,11 @@ func (r *Runner) startAgent(ctx context.Context, ru *run, role string) error {
 	if err := os.MkdirAll(sessDir, 0o700); err != nil {
 		return err
 	}
+	tab, err := r.Herdr.TabCreate(ctx, ru.workspace, ru.repo.Worktree, role)
+	if err != nil {
+		return fmt.Errorf("tab %s: %w", role, err)
+	}
+	ru.panes[role], ru.tabs[role] = tab.RootPaneID, tab.ID
 	// Only the orchestrator publishes work: the agent's shell gets an env where push fails.
 	if err := r.Herdr.PaneRun(ctx, ru.panes[role], "export "+strings.Join(gitx.AgentEnv(), " ")); err != nil {
 		return fmt.Errorf("agent env %s: %w", role, err)
@@ -458,7 +469,7 @@ func (r *Runner) startAgent(ctx context.Context, ru *run, role string) error {
 	return nil
 }
 
-// agentStart retries while the pane's shell is still starting: right after a split or
+// agentStart retries while the pane's shell is still starting: right after a tab or
 // worktree create, herdr rejects the start with agent_pane_busy (seen in E2E with zsh).
 func (r *Runner) agentStart(ctx context.Context, name, pane string, args []string) error {
 	interval := r.RetryInterval
@@ -597,6 +608,7 @@ func (r *Runner) stopAgent(ctx context.Context, ru *run, role string) {
 		r.Log.Warn("could not stop agent", "agent", name, "err", err)
 	}
 	delete(ru.agents, role)
+	r.renameTab(ctx, ru, role, role+" ✓")
 }
 
 // cleanup stops the run's agents and closes its workspace (step 12). The git worktree stays:
