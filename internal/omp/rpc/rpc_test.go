@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -70,7 +71,7 @@ func fakeOmp(scenario string) {
 			emit(map[string]any{"type": "message_end", "message": assistant("aborted", "Interrupted by user", 0)})
 			emit(map[string]any{"type": "agent_end", "messages": []any{}})
 		case "prompt":
-			playPrompt(scenario, cmd.ID)
+			playPrompt(scenario, cmd.ID, in, trace)
 		}
 	}
 	if scenario == "stubborn" {
@@ -78,7 +79,7 @@ func fakeOmp(scenario string) {
 	}
 }
 
-func playPrompt(scenario, id string) {
+func playPrompt(scenario, id string, in *bufio.Scanner, trace io.Writer) {
 	ack := map[string]any{"id": id, "type": "response", "command": "prompt", "success": true}
 	switch scenario {
 	case "ok", "stubborn":
@@ -106,6 +107,10 @@ func playPrompt(scenario, id string) {
 		emit(map[string]any{"type": "notice", "level": "warning", "message": "context almost full"})
 		emit(ack)
 		emit(map[string]any{"type": "extension_ui_request", "id": "ui-7", "method": "confirm", "title": "ok?", "message": "?"})
+		// Like omp, the dialog blocks the turn until the client answers it.
+		if in.Scan() {
+			fmt.Fprintln(trace, in.Text())
+		}
 		emit(map[string]any{"type": "message_end", "message": assistant("stop", "", 10)})
 		emit(map[string]any{"type": "agent_end"})
 	case "hang":
