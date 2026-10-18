@@ -25,7 +25,7 @@ import (
 var outputFormats = []string{"table", "yaml", "json"}
 
 func addOutputFlag(cmd *cobra.Command, dst *string) {
-	cmd.Flags().StringVarP(dst, "output", "o", "table", "formato: "+strings.Join(outputFormats, "|"))
+	cmd.Flags().StringVarP(dst, "output", "o", "table", "format: "+strings.Join(outputFormats, "|"))
 	_ = cmd.RegisterFlagCompletionFunc("output", func(*cobra.Command, []string, string) ([]cobra.Completion, cobra.ShellCompDirective) {
 		return outputFormats, cobra.ShellCompDirectiveNoFileComp
 	})
@@ -45,7 +45,7 @@ func printAs(w io.Writer, format string, v any, table func(io.Writer) error) err
 		enc.SetIndent("", "  ")
 		return enc.Encode(v)
 	}
-	return fmt.Errorf("formato %q inválido: use %s", format, strings.Join(outputFormats, "|"))
+	return fmt.Errorf("invalid format %q: use %s", format, strings.Join(outputFormats, "|"))
 }
 
 // RunView is a run as `ls` and `status` show it.
@@ -223,7 +223,7 @@ func newListCmd(load func() (config.Config, error)) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "list",
 		Aliases: []string{"ls"},
-		Short:   "Lista as runs ativas (--all inclui as finalizadas)",
+		Short:   "List active runs (--all includes finished runs)",
 		Args:    cobra.NoArgs,
 		RunE: func(c *cobra.Command, _ []string) error {
 			ctx := c.Context()
@@ -251,16 +251,16 @@ func newListCmd(load func() (config.Config, error)) *cobra.Command {
 		},
 	}
 	addOutputFlag(cmd, &output)
-	cmd.Flags().BoolVar(&all, "all", false, "inclui as runs finalizadas")
-	cmd.Flags().IntVar(&limit, "limit", 20, "máximo de runs com --all")
+	cmd.Flags().BoolVar(&all, "all", false, "include finished runs")
+	cmd.Flags().IntVar(&limit, "limit", 20, "maximum runs with --all")
 	return cmd
 }
 
 func listTable(w io.Writer, views []RunView, all bool) error {
 	if len(views) == 0 {
-		msg := "nenhuma run ativa"
+		msg := "no active runs"
 		if all {
-			msg = "nenhuma run"
+			msg = "no runs"
 		}
 		_, err := fmt.Fprintln(w, msg)
 		return err
@@ -278,7 +278,7 @@ func newStatusCmd(load func() (config.Config, error)) *cobra.Command {
 	var output string
 	cmd := &cobra.Command{
 		Use:   "status RUN_ID",
-		Short: "Mostra uma run: repositório, worktrees, agentes em execução e consumo",
+		Short: "Show a run: repository, worktrees, active agents and usage",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(c *cobra.Command, args []string) error {
 			id, err := runID(args[0])
@@ -305,7 +305,7 @@ func newStatusCmd(load func() (config.Config, error)) *cobra.Command {
 func runID(arg string) (int64, error) {
 	id, err := strconv.ParseInt(strings.TrimPrefix(arg, "#"), 10, 64)
 	if err != nil || id <= 0 {
-		return 0, fmt.Errorf("RUN_ID inválido %q: use o número mostrado por `delamain ls`", arg)
+		return 0, fmt.Errorf("invalid RUN_ID %q: use the number shown by `delamain ls`", arg)
 	}
 	return id, nil
 }
@@ -315,7 +315,7 @@ func statusTable(w io.Writer, s RunStatus) error {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	fmt.Fprintf(tw, "RUN\t%d · %s %s\n", v.ID, v.Issue, v.Title)
 	fmt.Fprintf(tw, "REPO\t%s\n", v.Repo)
-	fmt.Fprintf(tw, "STATE\t%s (iteração %s)\n", v.State, v.iter())
+	fmt.Fprintf(tw, "STATE\t%s (iteration %s)\n", v.State, v.iter())
 	if v.Branch != "" {
 		fmt.Fprintf(tw, "BRANCH\t%s (base %s)\n", v.Branch, v.Base)
 		fmt.Fprintf(tw, "WORKTREE\t%s\n", v.Worktree)
@@ -336,11 +336,11 @@ func statusTable(w io.Writer, s RunStatus) error {
 		return err
 	}
 
-	fmt.Fprintf(w, "\nWORKTREES em %s\n", s.WorktreesDir)
+	fmt.Fprintf(w, "\nWORKTREES in %s\n", s.WorktreesDir)
 	if s.WorktreesError != "" {
-		fmt.Fprintf(w, "  não listadas: %s\n", s.WorktreesError)
+		fmt.Fprintf(w, "  not listed: %s\n", s.WorktreesError)
 	} else if len(s.Worktrees) == 0 {
-		fmt.Fprintln(w, "  nenhuma")
+		fmt.Fprintln(w, "  none")
 	} else {
 		tw = tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 		fmt.Fprintln(tw, "\tBRANCH\tHEAD\tPATH")
@@ -360,13 +360,13 @@ func statusTable(w io.Writer, s RunStatus) error {
 		}
 	}
 
-	fmt.Fprintln(w, "\nAGENTES")
+	fmt.Fprintln(w, "\nAGENTS")
 	if len(v.Agents) == 0 {
-		_, err := fmt.Fprintln(w, "  nenhum iniciado")
+		_, err := fmt.Fprintln(w, "  none started")
 		return err
 	}
 	tw = tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "ROLE\tSTATE\tPID\tVIVO\tDURAÇÃO\tTOKENS\tUS$")
+	fmt.Fprintln(tw, "ROLE\tSTATE\tPID\tALIVE\tDURATION\tTOKENS\tUS$")
 	for _, a := range v.Agents {
 		end := time.Now()
 		if a.EndedAt != nil {
@@ -392,11 +392,11 @@ func (v RunView) owner() string {
 	case v.Owner.PID == 0:
 		return "-"
 	case v.terminal:
-		return fmt.Sprintf("pid %d (finalizada)", v.Owner.PID)
+		return fmt.Sprintf("pid %d (finished)", v.Owner.PID)
 	case v.Owner.Alive:
-		return fmt.Sprintf("pid %d (vivo)", v.Owner.PID)
+		return fmt.Sprintf("pid %d (alive)", v.Owner.PID)
 	}
-	return fmt.Sprintf("pid %d (morto: rode delamain recover)", v.Owner.PID)
+	return fmt.Sprintf("pid %d (dead: run delamain recover)", v.Owner.PID)
 }
 
 func runningAgents(as []AgentView) string {
@@ -441,7 +441,7 @@ func orDash(s string) string {
 
 func yesNo(b bool) string {
 	if b {
-		return "sim"
+		return "yes"
 	}
-	return "não"
+	return "no"
 }
