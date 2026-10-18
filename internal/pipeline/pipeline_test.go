@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -412,5 +413,66 @@ func TestRunShouldIgnoreLiveAgentsOfOtherWorkspaces(t *testing.T) {
 	hs.h.liveAgents = []herdr.Agent{{Name: "reviewer", WorkspaceID: "w1"}}
 	if res := hs.run(t); res.Outcome != OutcomeApproved {
 		t.Fatalf("agents elsewhere are irrelevant: %s %s", res.Outcome, res.Reason)
+	}
+}
+
+func TestAgentsShouldStartOnlyWhenTheirStageBegins(t *testing.T) {
+	var hs *harness
+	seen := map[string][]string{} // role -> agents alive when its first prompt arrived
+	hs = newHarness(t, func(role string, n int, text string) reply {
+		if n == 1 {
+			for name := range hs.h.started {
+				if len(hs.h.keys[name]) == 0 {
+					seen[role] = append(seen[role], name)
+				}
+			}
+			slices.Sort(seen[role])
+		}
+		return happy(role, n, text)
+	})
+	if res := hs.run(t); res.Outcome != OutcomeApproved {
+		t.Fatalf("got %s: %s", res.Outcome, res.Reason)
+	}
+	want := map[string][]string{
+		"planner":     {"planner-r1"},
+		"implementer": {"implementer-r1"}, // planner already stopped after a valid plan
+		"reviewer":    {"implementer-r1", "reviewer-r1"},
+	}
+	for role, alive := range want {
+		if !slices.Equal(seen[role], alive) {
+			t.Errorf("agents alive at the first %s prompt = %v, want %v", role, seen[role], alive)
+		}
+	}
+}
+
+func TestPlannerShouldKeepRunningWhenThePlanNeedsACorrection(t *testing.T) {
+	var hs *harness
+	hs = newHarness(t, func(role string, n int, text string) reply {
+		if role == "planner" && n == 1 {
+			return reply{write: "{"}
+		}
+		if role == "planner" && len(hs.h.keys["planner-r1"]) != 0 {
+			t.Error("the planner was stopped before its plan was valid")
+		}
+		return happy(role, n, text)
+	})
+	if res := hs.run(t); res.Outcome != OutcomeApproved {
+		t.Fatalf("got %s: %s", res.Outcome, res.Reason)
+	}
+}
+
+func TestReviewerShouldNeverStartWhenVerifyNeverPasses(t *testing.T) {
+	hs := newHarness(t, happy)
+	hs.h.checks = func(name string, n int) int {
+		if name == "test" {
+			return 1
+		}
+		return defaultChecks(name, n)
+	}
+	if res := hs.run(t); res.Outcome != OutcomeExhausted {
+		t.Fatalf("got %s: %s", res.Outcome, res.Reason)
+	}
+	if _, ok := hs.h.started["reviewer-r1"]; ok {
+		t.Fatal("no review happens, so no reviewer session must be paid for")
 	}
 }

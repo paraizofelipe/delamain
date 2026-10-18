@@ -309,6 +309,7 @@ func (r *Runner) execute(ctx context.Context, ru *run, repo string, t Task) erro
 		return err
 	}
 	ru.plan = plan
+	r.stopAgent(ctx, ru, "planner") // its job is done: an idle agent is only a failure point
 	ru.cmds, ru.res.CommandSources = gates.Effective(ru.repoCfg.Commands, ru.stack.Commands, plan.Commands)
 	r.Log.Info("gate commands", "run", ru.rec.ID, "stack", ru.stack.Name, "sources", ru.res.CommandSources)
 
@@ -422,13 +423,7 @@ func (r *Runner) setup(ctx context.Context, ru *run, repo string, t Task) error 
 	if ru.panes["checks"], err = r.Herdr.PaneSplit(ctx, wt.RootPaneID, "down", wt.Path); err != nil {
 		return err
 	}
-
-	for _, role := range []string{"planner", "implementer", "reviewer"} {
-		if err := r.startAgent(ctx, ru, role); err != nil {
-			return err
-		}
-	}
-	return nil
+	return nil // agents start on their first prompt (see send)
 }
 
 func (r *Runner) startAgent(ctx context.Context, ru *run, role string) error {
@@ -494,6 +489,11 @@ func (r *Runner) prompt(ctx context.Context, ru *run, role, stage string, data p
 }
 
 func (r *Runner) send(ctx context.Context, ru *run, role, text string) error {
+	if _, ok := ru.agents[role]; !ok {
+		if err := r.startAgent(ctx, ru, role); err != nil {
+			return err
+		}
+	}
 	name := ru.agents[role]
 	timeout := r.Cfg.Pipeline.PromptTimeout
 	stop := r.watchBudget(ctx, ru, name)
@@ -588,15 +588,23 @@ func (r *Runner) review(ctx context.Context, ru *run, iter int, artifact string,
 	return review, nil
 }
 
+func (r *Runner) stopAgent(ctx context.Context, ru *run, role string) {
+	name, ok := ru.agents[role]
+	if !ok {
+		return
+	}
+	if err := r.Herdr.AgentSendKeys(ctx, name, "ctrl+d"); err != nil {
+		r.Log.Warn("could not stop agent", "agent", name, "err", err)
+	}
+	delete(ru.agents, role)
+}
+
 // cleanup stops the run's agents and closes its workspace (step 12). The git worktree stays:
 // it holds the branch that will become the MR. Idempotent.
 func (r *Runner) cleanup(ctx context.Context, ru *run) {
-	for _, name := range ru.agents {
-		if err := r.Herdr.AgentSendKeys(ctx, name, "ctrl+d"); err != nil {
-			r.Log.Warn("could not stop agent", "agent", name, "err", err)
-		}
+	for role := range ru.agents {
+		r.stopAgent(ctx, ru, role)
 	}
-	ru.agents = map[string]string{}
 	if ru.workspace == "" {
 		return
 	}

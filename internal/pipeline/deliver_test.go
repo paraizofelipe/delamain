@@ -86,9 +86,23 @@ func TestDeliverShouldOpenDraftWhenHaltedAfterCommits(t *testing.T) {
 	}
 }
 
-func TestDeliverShouldDoNothingWithoutCommits(t *testing.T) {
+func TestDeliverShouldOpenDraftWhenTheReviewerFailsToStartAfterCommits(t *testing.T) {
 	hs := newHarness(t, happy)
 	hs.h.handshake = func(role string) bool { return role != "reviewer" }
+	f := withForge(hs)
+	res := hs.run(t)
+
+	if res.Outcome != OutcomeHalted || len(f.created) != 1 || !f.created[0].Draft {
+		t.Fatalf("a late agent start must not lose committed work: %s (%s) created=%+v", res.Outcome, res.Reason, f.created)
+	}
+	if !strings.Contains(f.created[0].Body, "handshake do reviewer") {
+		t.Fatalf("draft must carry the halt reason:\n%s", f.created[0].Body)
+	}
+}
+
+func TestDeliverShouldDoNothingWithoutCommits(t *testing.T) {
+	hs := newHarness(t, happy)
+	hs.h.handshake = func(role string) bool { return role != "planner" }
 	f := withForge(hs)
 	res := hs.run(t)
 
