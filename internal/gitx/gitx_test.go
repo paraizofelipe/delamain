@@ -127,7 +127,6 @@ func withOrigin(t *testing.T, r string) string {
 }
 
 func TestPushShouldPublishWorkBranchWithoutForce(t *testing.T) {
-	t.Setenv("GIT_CONFIG_COUNT", "0")
 	g, ctx := New(), context.Background()
 	r := repo(t)
 	withOrigin(t, r)

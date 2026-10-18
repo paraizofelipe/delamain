@@ -32,6 +32,8 @@ var outcomeExit = map[pipeline.Outcome]int{
 	pipeline.OutcomeNeedsInfo: 4,
 }
 
+var runTaskCommand = runTask
+
 func newRunCmd(load func() (config.Config, error)) *cobra.Command {
 	var taskFile, repo, kind string
 	var issue int
@@ -76,7 +78,7 @@ Exit codes: 0 approved · 1 halted · 3 iterations exhausted · 4 task needs mor
 				task.Kind = kind
 			}
 
-			res, err := runTask(c.Context(), cfg, task, fg)
+			res, err := runTaskCommand(c.Context(), cfg, task, fg)
 			if err != nil {
 				return err
 			}

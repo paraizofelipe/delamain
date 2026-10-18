@@ -45,7 +45,7 @@ func printAs(w io.Writer, format string, v any, table func(io.Writer) error) err
 		enc.SetIndent("", "  ")
 		return enc.Encode(v)
 	}
-	return fmt.Errorf("invalid format %q: use %s", format, strings.Join(outputFormats, "|"))
+	return fmt.Errorf("formato %q inválido: use %s", format, strings.Join(outputFormats, "|"))
 }
 
 // RunView is a run as `ls` and `status` show it.

@@ -51,7 +51,7 @@ binary for this platform, verifies its sha256 against checksums.txt and replaces
 				return err
 			}
 			if Version == "dev" && !force {
-				return errors.New("this is a source build (dev); use --force to replace it with release " + rel.Tag)
+				return errors.New("este é um build do código-fonte (dev); use --force para trocá-lo pela release " + rel.Tag)
 			}
 			target, err := executable()
 			if err != nil {
@@ -61,7 +61,7 @@ binary for this platform, verifies its sha256 against checksums.txt and replaces
 				return err
 			}
 			if err := u.Install(ctx, rel, target); err != nil {
-				return fmt.Errorf("upgrade to %s: %w", rel.Tag, err)
+				return fmt.Errorf("upgrade para %s: %w", rel.Tag, err)
 			}
 			_, err = fmt.Fprintf(out, "%s → %s (%s)\n", Version, rel.Tag, target)
 			return err

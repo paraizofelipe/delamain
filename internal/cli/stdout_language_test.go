@@ -1,28 +1,41 @@
 package cli
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
 
 func TestCLIStdoutShouldUseEnglishForSupportedCommands(t *testing.T) {
-	for _, args := range [][]string{
-		{"run", "--help"},
-		{"daemon", "--help"},
-		{"prompts", "--help"},
-		{"recover", "--help"},
-		{"upgrade", "--help"},
-		{"list", "--help"},
-		{"status", "--help"},
-		{"logs", "--help"},
+	cfgFile := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(cfgFile, []byte("pipeline:\n  max_iterations: 4\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		args []string
+		want []string
+	}{
+		{[]string{"--help"}, []string{"Autonomous development-agent orchestrator", "Available Commands:"}},
+		{[]string{"version"}, []string{Version}},
+		{[]string{"--config", cfgFile, "config"}, []string{"pipeline:", "max_iterations: 4"}},
+		{[]string{"run", "--help"}, []string{"Runs a Markdown task", "Exit codes:"}},
+		{[]string{"daemon", "--help"}, []string{"Polls open issues", "Only one instance runs"}},
+		{[]string{"prompts", "--help"}, []string{"Validate, install and preview", "Available Commands:"}},
+		{[]string{"recover", "--help"}, []string{"Finalize runs left"}},
+		{[]string{"upgrade", "--help"}, []string{"Compares the installed version", "GITHUB_TOKEN"}},
+		{[]string{"list", "--help"}, []string{"List active runs", "include finished runs"}},
+		{[]string{"status", "--help"}, []string{"Show a run", "active agents and usage"}},
+		{[]string{"logs", "--help"}, []string{"Interleaves the orchestrator", "follow the live run"}},
 	} {
-		out, err := execute(t, args...)
+		out, err := execute(t, tc.args...)
 		if err != nil {
-			t.Fatalf("%q: %v", args, err)
+			t.Fatalf("%q: %v", tc.args, err)
 		}
-		for _, portuguese := range []string{"Executa uma task", "Processa continuamente", "Valida, instala", "Finaliza runs", "Atualiza o delamain", "última release", "Lista as runs", "Mostra uma run", "Mostra os logs"} {
-			if strings.Contains(out, portuguese) {
-				t.Errorf("%q contains Portuguese interface text %q:\n%s", args, portuguese, out)
+		for _, want := range tc.want {
+			if !strings.Contains(out, want) {
+				t.Errorf("%q missing English interface text %q:\n%s", tc.args, want, out)
 			}
 		}
 	}
