@@ -60,7 +60,7 @@ func (r *Runner) Recover(ctx context.Context, forgeFor func(repo string) (forge.
 func (r *Runner) recoverRun(ctx context.Context, rec store.Run) (Result, error) {
 	who := fmt.Sprintf("pid %d", rec.OwnerPID)
 	if rec.OwnerPID == 0 {
-		who = "pid desconhecido"
+		who = "unknown pid"
 	}
 	res := Result{
 		RunID: rec.ID, Outcome: OutcomeHalted, Branch: rec.Branch, Base: rec.Base, Worktree: rec.Worktree,

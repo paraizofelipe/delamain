@@ -36,16 +36,16 @@ func newRunCmd(load func() (config.Config, error)) *cobra.Command {
 	var taskFile, repo, kind string
 	var issue int
 	cmd := &cobra.Command{
-		Use:   "run (--task <arquivo.md> | --issue <n>) [--repo <caminho>]",
-		Short: "Executa uma task ou issue: plano, implementação TDD, verificação, revisão e PR/MR",
-		Long: `Executa uma task markdown ("# Título" + descrição com critérios de aceite) ou uma issue do
-GitHub/GitLab num repositório git. Cria uma worktree isolada em paths.worktrees_dir. Cada agente
-(planner, implementer, reviewer) roda como omp em modo RPC e só sobe na sua etapa; os gates rodam
-no próprio delamain. Acompanhe com "delamain logs <run> -f" e "delamain status <run>". Com --herdr
-(ou herdr.enabled), a run também ganha um workspace herdr com uma tab "checks" e uma tab por agente.
-No fim faz push da branch e abre o PR/MR (draft quando não aprovado). Nunca faz merge.
+		Use:   "run (--task <file.md> | --issue <n>) [--repo <path>]",
+		Short: "Runs a task or issue: plan, TDD implementation, verification, review, and PR/MR",
+		Long: `Runs a markdown task ("# Title" + acceptance criteria) or a GitHub/GitLab issue in a git
+repository. Creates an isolated worktree in paths.worktrees_dir. Each agent (planner, implementer,
+reviewer) runs as omp in RPC mode and starts only for its stage; gates run in delamain itself.
+Follow with "delamain logs <run> -f" and "delamain status <run>". With --herdr (or herdr.enabled),
+the run also gets a herdr workspace with a "checks" tab and one tab per agent. At the end it pushes
+the branch and opens the PR/MR (draft when not approved). It never merges.
 
-Códigos de saída: 0 aprovado · 1 interrompido · 3 iterações esgotadas · 4 task sem informação suficiente.`,
+Exit codes: 0 approved · 1 halted · 3 iterations exhausted · 4 task needs more information.`,
 		RunE: func(c *cobra.Command, _ []string) error {
 			cfg, err := load()
 			if err != nil {
@@ -53,7 +53,7 @@ Códigos de saída: 0 aprovado · 1 interrompido · 3 iterações esgotadas · 4
 			}
 			applyHerdrFlag(c, &cfg)
 			if (taskFile == "") == (issue == 0) {
-				return errors.New("informe exatamente um de --task ou --issue")
+				return errors.New("specify exactly one of --task or --issue")
 			}
 			if repo == "" {
 				if repo, err = os.Getwd(); err != nil {
@@ -87,17 +87,17 @@ Códigos de saída: 0 aprovado · 1 interrompido · 3 iterações esgotadas · 4
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&taskFile, "task", "", "arquivo markdown da task")
-	cmd.Flags().IntVar(&issue, "issue", 0, "número da issue no forge do origin")
-	cmd.Flags().StringVar(&repo, "repo", "", "repositório alvo (padrão: diretório atual)")
-	cmd.Flags().StringVar(&kind, "kind", "", "feature|bug (padrão: inferido do título)")
+	cmd.Flags().StringVar(&taskFile, "task", "", "task markdown file")
+	cmd.Flags().IntVar(&issue, "issue", 0, "issue number from the origin forge")
+	cmd.Flags().StringVar(&repo, "repo", "", "target repository (default: current directory)")
+	cmd.Flags().StringVar(&kind, "kind", "", "feature|bug (default: inferred from title)")
 	addHerdrFlag(cmd)
 	return cmd
 }
 
 // addHerdrFlag lets one execution show its runs in herdr, overriding herdr.enabled.
 func addHerdrFlag(cmd *cobra.Command) {
-	cmd.Flags().Bool("herdr", false, "mostra as runs em workspaces do herdr (padrão: herdr.enabled)")
+	cmd.Flags().Bool("herdr", false, "shows runs in herdr workspaces (default: herdr.enabled)")
 }
 
 func applyHerdrFlag(c *cobra.Command, cfg *config.Config) {
@@ -184,22 +184,22 @@ func printResult(c *cobra.Command, res pipeline.Result) {
 	}
 	fmt.Fprintln(w)
 	if res.Branch != "" {
-		fmt.Fprintf(w, "   branch:    %s (base %s)\n   worktree:  %s\n   iterações: %d · commits: %d\n", res.Branch, res.Base, res.Worktree, res.Iterations, len(res.Commits))
+		fmt.Fprintf(w, "   branch:    %s (base %s)\n   worktree:  %s\n   iterations: %d · commits: %d\n", res.Branch, res.Base, res.Worktree, res.Iterations, len(res.Commits))
 	}
 	if res.PRURL != "" {
 		fmt.Fprintf(w, "   PR/MR:     %s%s\n", res.PRURL, map[bool]string{true: " (draft)"}[res.Draft])
 	}
 	if res.Delivery != "" {
-		fmt.Fprintf(w, "   entrega:   %s\n", res.Delivery)
+		fmt.Fprintf(w, "   delivery:  %s\n", res.Delivery)
 	}
 	if res.Budget != "" {
-		fmt.Fprintf(w, "   consumo:   %s\n", res.Budget)
+		fmt.Fprintf(w, "   spend:     %s\n", res.Budget)
 	}
 	for _, warn := range res.Warnings {
 		fmt.Fprintf(w, "   ⚠️  %s\n", warn)
 	}
 	if res.ReportPath != "" {
-		fmt.Fprintf(w, "   relatório: %s\n", res.ReportPath)
+		fmt.Fprintf(w, "   report:    %s\n", res.ReportPath)
 	}
 }
 

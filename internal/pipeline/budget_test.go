@@ -27,7 +27,7 @@ func TestBudgetShouldHaltAndDeliverDraftWhenIssueLimitIsReached(t *testing.T) {
 	f := withForge(hs)
 	res := hs.run(t)
 
-	if res.Outcome != OutcomeHalted || !strings.Contains(res.Reason, "budget da issue esgotado") {
+	if res.Outcome != OutcomeHalted || !strings.Contains(res.Reason, "budget per issue exhausted") {
 		t.Fatalf("got %s: %s", res.Outcome, res.Reason)
 	}
 	if len(hs.h.prompts["reviewer"]) != 0 {
@@ -36,7 +36,7 @@ func TestBudgetShouldHaltAndDeliverDraftWhenIssueLimitIsReached(t *testing.T) {
 	if len(f.created) != 1 || !f.created[0].Draft || !strings.Contains(f.created[0].Body, "budget") {
 		t.Fatalf("committed work is delivered as draft with the reason: %+v", f.created)
 	}
-	if !strings.Contains(res.Budget, "5K de 1K") {
+	if !strings.Contains(res.Budget, "5K of 1K") {
 		t.Fatalf("result must carry the spend, got %q", res.Budget)
 	}
 }
@@ -47,7 +47,7 @@ func TestBudgetWatcherShouldInterruptAnAgentThatOverspendsMidTurn(t *testing.T) 
 	hs.r.BudgetInterval = 5 * time.Millisecond
 	res := hs.run(t)
 
-	if res.Outcome != OutcomeHalted || !strings.Contains(res.Reason, "budget da issue esgotado") || !strings.Contains(res.Reason, "interrompido") {
+	if res.Outcome != OutcomeHalted || !strings.Contains(res.Reason, "budget per issue exhausted") || !strings.Contains(res.Reason, "interrupted") {
 		t.Fatalf("got %s: %s", res.Outcome, res.Reason)
 	}
 	if keys := hs.h.keys["implementer-r1"]; len(keys) == 0 || keys[0] != "abort" {
@@ -73,7 +73,7 @@ func TestBudgetWatcherShouldInterruptATurnWhoseSpendIsNotWrittenYet(t *testing.T
 	hs.r.BudgetInterval = 5 * time.Millisecond
 	res := hs.run(t)
 
-	if res.Outcome != OutcomeHalted || !strings.Contains(res.Reason, "interrompido") {
+	if res.Outcome != OutcomeHalted || !strings.Contains(res.Reason, "interrupted") {
 		t.Fatalf("the session file lags behind; live usage must still stop the turn: %s: %s", res.Outcome, res.Reason)
 	}
 	if keys := hs.h.keys["implementer-r1"]; len(keys) == 0 || keys[0] != "abort" {
@@ -86,7 +86,7 @@ func TestBudgetShouldHaltAfterATurnWhoseSpendIsNotWrittenYet(t *testing.T) {
 	hs.r.Cfg.Budget.PerIssue = 1000
 	res := hs.run(t)
 
-	if res.Outcome != OutcomeHalted || !strings.Contains(res.Reason, "budget da issue esgotado") {
+	if res.Outcome != OutcomeHalted || !strings.Contains(res.Reason, "budget per issue exhausted") {
 		t.Fatalf("got %s: %s", res.Outcome, res.Reason)
 	}
 	if len(hs.h.prompts["reviewer"]) != 0 {
@@ -132,7 +132,7 @@ func TestBudgetShouldRefuseToStartWhenTheDailyCapIsSpent(t *testing.T) {
 		t.Fatal(err)
 	}
 	res := hs.run(t)
-	if res.Outcome != OutcomeHalted || !strings.Contains(res.Reason, "diário") || res.RunID != 0 {
+	if res.Outcome != OutcomeHalted || !strings.Contains(res.Reason, "daily") || res.RunID != 0 {
 		t.Fatalf("got %s (%s) run=%d", res.Outcome, res.Reason, res.RunID)
 	}
 	if hs.g.worktreeOps != 0 || len(f.relabels) != 0 {
@@ -156,7 +156,7 @@ func TestBudgetShouldBeShownInTheHerdrSidebarAndReport(t *testing.T) {
 		t.Fatalf("sidebar tokens = %v", last)
 	}
 	report, _ := os.ReadFile(res.ReportPath)
-	if !strings.Contains(string(report), "| Budget | 1.5K de 2M tokens") {
+	if !strings.Contains(string(report), "| Budget | 1.5K of 2M tokens") {
 		t.Fatalf("report must show the spend:\n%s", report)
 	}
 }

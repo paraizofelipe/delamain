@@ -110,18 +110,18 @@ func (s *Status) evaluate(soft float64) {
 	for _, l := range []struct {
 		name         string
 		spent, limit float64
-	}{{"da issue", s.Run, s.PerIssue}, {"diário", s.Day, s.Daily}} {
+	}{{"per issue", s.Run, s.PerIssue}, {"daily", s.Day, s.Daily}} {
 		if l.limit <= 0 {
 			continue
 		}
 		switch {
 		case l.spent >= l.limit:
 			s.Level = Hard
-			s.Reason = fmt.Sprintf("budget %s esgotado: %s de %s", l.name, Format(l.spent, s.Mode), Format(l.limit, s.Mode))
+			s.Reason = fmt.Sprintf("budget %s exhausted: %s of %s", l.name, Format(l.spent, s.Mode), Format(l.limit, s.Mode))
 			return
 		case l.spent >= soft*l.limit && s.Level < Soft:
 			s.Level = Soft
-			s.Reason = fmt.Sprintf("budget %s em %.0f%%", l.name, 100*l.spent/l.limit)
+			s.Reason = fmt.Sprintf("budget %s at %.0f%%", l.name, 100*l.spent/l.limit)
 		}
 	}
 }
@@ -143,7 +143,7 @@ func (s Status) Left() string {
 func (s Status) Summary() string {
 	out := Format(s.Run, s.Mode)
 	if s.PerIssue > 0 {
-		out += " de " + Format(s.PerIssue, s.Mode)
+		out += " of " + Format(s.PerIssue, s.Mode)
 	}
 	if s.Mode != config.BudgetUSD {
 		out += fmt.Sprintf(" tokens · US$ %.2f", s.Usage.CostUSD)

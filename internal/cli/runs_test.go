@@ -146,7 +146,7 @@ func TestStatusShouldShowTheRunItsWorktreesAndAgents(t *testing.T) {
 
 	out := f.exec(t, "status", "1")
 	for _, want := range []string{
-		"#1 Fix #1", "implement (iteração 1/3)", "fix/1-a (base main)", "(vivo)", "1.5K de 2M tokens · US$ 0.25",
+		"#1 Fix #1", "implement (iteração 1/3)", "fix/1-a (base main)", "(vivo)", "1.5K of 2M tokens · US$ 0.25",
 		"delamain logs 1 -f", "fix/2-b", "implementer  running",
 	} {
 		if !strings.Contains(out, want) {

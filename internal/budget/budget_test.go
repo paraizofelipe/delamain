@@ -122,7 +122,7 @@ func TestCheckShouldEnforceTheDailyCapAcrossRuns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.Level != Hard || !strings.Contains(s.Reason, "diário") {
+	if s.Level != Hard || !strings.Contains(s.Reason, "daily") {
 		t.Fatalf("today's spend of all runs counts: %+v", s)
 	}
 	day, err := f.m.Today(context.Background())

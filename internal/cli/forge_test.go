@@ -8,6 +8,7 @@ import (
 
 	"github.com/paraizo/delamain/internal/config"
 	"github.com/paraizo/delamain/internal/forge"
+	"github.com/paraizo/delamain/internal/pipeline"
 )
 
 func gitRepo(t *testing.T, origin string) string {
@@ -109,5 +110,34 @@ func TestRecoverShouldReportWhenNothingIsOrphaned(t *testing.T) {
 	out, err := execute(t, "recover", "--config", "/nonexistent.yaml")
 	if err != nil || !strings.Contains(out, "nenhuma run órfã") {
 		t.Fatalf("out=%q err=%v", out, err)
+	}
+}
+
+func TestRunShouldReportResultInEnglish(t *testing.T) {
+	var out strings.Builder
+	cmd := NewRoot()
+	cmd.SetOut(&out)
+	printResult(cmd, pipeline.Result{
+		Outcome:    pipeline.OutcomeHalted,
+		Reason:     "budget per issue exhausted: 2M of 2M",
+		Branch:     "fix/6-stdout",
+		Base:       "main",
+		Iterations: 1,
+		Commits:    []string{"abc1234"},
+		Delivery:   "no commits on branch: nothing to deliver",
+		Budget:     "1.5K of 2M tokens · US$ 0.25",
+		ReportPath: "/tmp/report.json",
+	})
+
+	for _, want := range []string{
+		"budget per issue exhausted: 2M of 2M",
+		"iterations: 1",
+		"delivery:  no commits on branch: nothing to deliver",
+		"spend:     1.5K of 2M tokens · US$ 0.25",
+		"report:    /tmp/report.json",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("output missing %q:\n%s", want, out.String())
+		}
 	}
 }

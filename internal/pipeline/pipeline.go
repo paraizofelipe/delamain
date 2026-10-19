@@ -173,7 +173,7 @@ func (r *Runner) Run(ctx context.Context, t Task) (Result, error) {
 		return res, err
 	}
 	if day.Level == budget.Hard {
-		res.Outcome, res.Reason = OutcomeHalted, day.Reason+"; nenhuma run iniciada"
+		res.Outcome, res.Reason = OutcomeHalted, day.Reason+"; no run started"
 		return res, nil
 	}
 
@@ -347,7 +347,7 @@ func (r *Runner) execute(ctx context.Context, ru *run, repo string, t Task) erro
 		feedback = reviewFeedback(review)
 	}
 	ru.res.Outcome = OutcomeExhausted
-	ru.res.Reason = fmt.Sprintf("%d iterações sem aprovação", maxIter)
+	ru.res.Reason = fmt.Sprintf("%d iterations without approval", maxIter)
 	return r.setState(ctx, ru, store.StateDeliverDraft)
 }
 
@@ -482,32 +482,32 @@ func (r *Runner) send(ctx context.Context, ru *run, role, text string) error {
 	turn, err := ru.agents[role].Prompt(ctx, text, timeout)
 	if w := stop(); w.tripped {
 		ru.budget, ru.res.Budget = w.status, w.status.Summary()
-		return haltf("%s (%s interrompido no meio do turno)", w.status.Reason, role)
+		return haltf("%s (%s interrupted mid-turn)", w.status.Reason, role)
 	}
 	if errors.Is(err, rpc.ErrTimeout) {
-		return haltf("o %s não terminou o turno em %s; turno abortado", role, timeout)
+		return haltf("%s did not finish the turn within %s; turn aborted", role, timeout)
 	}
 	if err != nil {
-		return haltf("agente %s: %v", role, err)
+		return haltf("agent %s: %v", role, err)
 	}
 	if turn.StopReason == "" {
 		// The final message never reached us (e.g. a frame over the transport limit): the
 		// session file still has it.
 		sess, err := omp.LatestSession(filepath.Join(ru.dir, "sessions", role))
 		if err != nil {
-			return haltf("sessão do %s não encontrada: %v", role, err)
+			return haltf("%s session not found: %v", role, err)
 		}
 		last, err := omp.LastAssistant(sess)
 		if err != nil {
-			return haltf("sessão do %s sem resposta: %v", role, err)
+			return haltf("%s session has no response: %v", role, err)
 		}
 		turn = rpc.Turn{StopReason: last.StopReason, ErrorMessage: last.ErrorMessage, Model: last.Model}
 	}
 	switch turn.StopReason {
 	case "error":
-		return haltf("erro do provider no %s (%s): %s", role, turn.Model, truncate(turn.ErrorMessage, 300))
+		return haltf("provider error in %s (%s): %s", role, turn.Model, truncate(turn.ErrorMessage, 300))
 	case "aborted":
-		return haltf("o turno do %s foi abortado", role)
+		return haltf("%s turn was aborted", role)
 	}
 	return r.checkBudget(ctx, ru)
 }

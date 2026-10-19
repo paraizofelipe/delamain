@@ -362,7 +362,7 @@ func TestRunShouldHaltWhenATurnTimesOut(t *testing.T) {
 		return happy(role, n, text)
 	})
 	hs.r.Cfg.Pipeline.PromptTimeout = 50 * time.Millisecond
-	if res := hs.run(t); res.Outcome != OutcomeHalted || !strings.Contains(res.Reason, "não terminou o turno") {
+	if res := hs.run(t); res.Outcome != OutcomeHalted || !strings.Contains(res.Reason, "did not finish the turn") {
 		t.Fatalf("got %s: %s", res.Outcome, res.Reason)
 	}
 }
@@ -375,7 +375,7 @@ func TestRunShouldHaltWhenATurnIsAbortedOutsideTheBudget(t *testing.T) {
 		return happy(role, n, text)
 	})
 	hs.h.interrupt <- "abort" // e.g. omp itself gave up on the turn
-	if res := hs.run(t); res.Outcome != OutcomeHalted || !strings.Contains(res.Reason, "o turno do planner foi abortado") || len(hs.h.prompts["planner"]) != 1 {
+	if res := hs.run(t); res.Outcome != OutcomeHalted || !strings.Contains(res.Reason, "planner turn was aborted") || len(hs.h.prompts["planner"]) != 1 {
 		t.Fatalf("an aborted turn produced no work and must not pass as done: %s %s", res.Outcome, res.Reason)
 	}
 }

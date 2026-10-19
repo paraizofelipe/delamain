@@ -64,10 +64,10 @@ func (r *Runner) deliver(ctx context.Context, ru *run) {
 	case res.PRURL != "":
 		return // delivered before the process died
 	case len(res.Commits) == 0:
-		res.Delivery = "nenhum commit na branch: nada a entregar"
+		res.Delivery = "no commits on branch: nothing to deliver"
 		return
 	case r.Forge == nil:
-		res.Delivery = "repositório sem forge (origin ausente ou forge.kind=none): branch mantida apenas localmente"
+		res.Delivery = "repository has no forge (origin missing or forge.kind=none): branch kept local only"
 		return
 	}
 	draft := res.Outcome != OutcomeApproved
@@ -76,7 +76,7 @@ func (r *Runner) deliver(ctx context.Context, ru *run) {
 		if res.Reason != "" {
 			prev = res.Reason + "; "
 		}
-		res.Outcome, res.Reason = OutcomeHalted, fmt.Sprintf("%sentrega falhou: %v (branch local %s preservada)", prev, err, ru.repo.Branch)
+		res.Outcome, res.Reason = OutcomeHalted, fmt.Sprintf("%sdelivery failed: %v (local branch %s preserved)", prev, err, ru.repo.Branch)
 	}
 
 	// The branch did not exist on origin at setup and agents run with push blocked:
@@ -100,7 +100,7 @@ func (r *Runner) deliver(ctx context.Context, ru *run) {
 			return
 		}
 	case onOrigin:
-		fail(fmt.Errorf("a branch %s apareceu no origin durante a run: um agente fez push por fora do delamain", ru.repo.Branch))
+		fail(fmt.Errorf("branch %s appeared on origin during the run: an agent pushed outside delamain", ru.repo.Branch))
 		return
 	default:
 		if err := r.Git.Push(ctx, ru.repo.Worktree, ru.repo.Branch, ru.repo.Base); err != nil {
