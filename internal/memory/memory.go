@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"time"
 	"unicode/utf8"
 )
@@ -167,5 +168,10 @@ func lock(path string) (func(), error) {
 	if err != nil {
 		return nil, err
 	}
-	return func() { f.Close() }, nil
+	// Blocking: a concurrent writer waits its turn instead of failing.
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil { //nolint:gosec // fd fits in int
+		f.Close()
+		return nil, err
+	}
+	return func() { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN); f.Close() }, nil //nolint:gosec // fd fits in int
 }

@@ -6,7 +6,9 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -258,6 +260,42 @@ func TestReadShouldReturnNewestFirstWithinMaxBytesWithoutSplittingLines(t *testi
 		}
 		if len(got) > max(c.max, 0) {
 			t.Errorf("Read(max=%d) returned %d bytes", c.max, len(got))
+		}
+	}
+}
+
+func TestAppendShouldBeSafeUnderConcurrentWriters(t *testing.T) {
+	s := newStore(t)
+	const writers, perWriter = 20, 3
+	var wg sync.WaitGroup
+	errs := make(chan error, writers)
+	for w := range writers {
+		wg.Go(func() {
+			var in []string
+			for i := range perWriter {
+				in = append(in, fmt.Sprintf("writer %d learning %d", w, i))
+			}
+			if _, err := s.Append("github.com", "acme/app", int64(w), w, in, day); err != nil {
+				errs <- err
+			}
+		})
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+	got := readFile(t, s.Path("github.com", "acme/app"))
+	lines := strings.Split(strings.TrimSuffix(got, "\n"), "\n")
+	if len(lines) != writers*perWriter {
+		t.Fatalf("got %d lines, want %d:\n%s", len(lines), writers*perWriter, got)
+	}
+	for w := range writers {
+		for i := range perWriter {
+			want := fmt.Sprintf("- 2026-10-19 (run %d, pr #%d): writer %d learning %d", w, w, w, i)
+			if !slices.Contains(lines, want) {
+				t.Errorf("missing line %q", want)
+			}
 		}
 	}
 }
