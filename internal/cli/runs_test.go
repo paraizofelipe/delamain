@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -263,6 +264,22 @@ func TestStatusShouldPrintTheSameDataAsYAMLAndJSON(t *testing.T) {
 		}
 		if s.Budget.Tokens != 16 || s.WorktreesDir != filepath.Join(f.wtDir, "app") {
 			t.Errorf("%s budget/dir = %+v %s", name, s.Budget, s.WorktreesDir)
+		}
+	}
+
+	// Scripts read the keys by name: harness and max_iterations are added, iteration stays.
+	var rawJSON, rawYAML struct {
+		Run map[string]any `json:"run" yaml:"run"`
+	}
+	if err := json.Unmarshal([]byte(f.exec(t, "status", "1", "-o", "json")), &rawJSON); err != nil {
+		t.Fatal(err)
+	}
+	if err := yaml.Unmarshal([]byte(f.exec(t, "status", "1", "-o", "yaml")), &rawYAML); err != nil {
+		t.Fatal(err)
+	}
+	for name, run := range map[string]map[string]any{"json": rawJSON.Run, "yaml": rawYAML.Run} {
+		if fmt.Sprint(run["harness"]) != "omp" || fmt.Sprint(run["max_iterations"]) != "3" || fmt.Sprint(run["iteration"]) != "1" {
+			t.Errorf("%s run keys: harness=%v max_iterations=%v iteration=%v", name, run["harness"], run["max_iterations"], run["iteration"])
 		}
 	}
 }
