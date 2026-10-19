@@ -29,7 +29,12 @@ type fakeBus struct {
 	noOwner  bool                        // org.freedesktop.Notifications has no owner
 	onNotify func(context.Context) error // inspects the call's context
 	caps     []string
+	server   [2]string   // name, version
 	signals  chan signal // nil until subscribed
+}
+
+func (b *fakeBus) ServerInfo(context.Context) (string, string, error) {
+	return b.server[0], b.server[1], nil
 }
 
 func (b *fakeBus) Capabilities(context.Context) ([]string, error) { return b.caps, nil }

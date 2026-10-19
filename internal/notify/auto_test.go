@@ -96,3 +96,25 @@ func TestAutoShouldDisableAndWarnOnceWithoutServer(t *testing.T) {
 		t.Fatal("a bus without a notification server is closed")
 	}
 }
+
+func TestDiagnoseShouldReportTheServerAndItsActions(t *testing.T) {
+	b := &fakeBus{caps: []string{"body", "actions"}, server: [2]string{"mako", "1.9.0"}}
+	p := diagnose(context.Background(), "auto", dbusSys(b))
+	if p.Backend != "dbus" || p.Server != "mako" || p.Version != "1.9.0" || !p.Actions {
+		t.Fatalf("probe = %+v", p)
+	}
+	if !b.isClosed() {
+		t.Fatal("the probe closes its bus")
+	}
+
+	x := &fakeExec{}
+	if p := diagnose(context.Background(), "auto", macSys(x, true)); p.Backend != "macos" || p.TerminalNotifier != "/opt/homebrew/bin/terminal-notifier" {
+		t.Fatalf("probe = %+v", p)
+	}
+	if p := diagnose(context.Background(), "auto", macSys(x, false)); p.Backend != "macos" || p.TerminalNotifier != "" {
+		t.Fatalf("probe = %+v", p)
+	}
+	if p := diagnose(context.Background(), "auto", sys{goos: "linux", getenv: env(nil)}); p.Backend != "none" || p.Err == nil {
+		t.Fatalf("probe = %+v", p)
+	}
+}

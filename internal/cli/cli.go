@@ -20,6 +20,7 @@ import (
 	"github.com/paraizo/delamain/internal/config"
 	"github.com/paraizo/delamain/internal/doctor"
 	"github.com/paraizo/delamain/internal/herdr"
+	"github.com/paraizo/delamain/internal/notify"
 	"github.com/paraizo/delamain/internal/omp/rpc"
 )
 
@@ -75,6 +76,7 @@ func NewRoot() *cobra.Command {
 				checks := doctor.Run(ctx, cfg, doctor.Deps{
 					LookPath: exec.LookPath, Version: binVersion, OmpRPC: ompRPCReady, ClaudeAuth: claudeAuth, Herdr: h,
 					Prompts: set, PromptsTarget: promptsTarget(cfg),
+					Notify: func(ctx context.Context) notify.Probe { return notify.Diagnose(ctx, cfg.Notify) },
 				})
 				if err := printChecks(cmd.OutOrStdout(), checks); err != nil {
 					return err
@@ -89,6 +91,7 @@ func NewRoot() *cobra.Command {
 		newRunCmd(load),
 		newDaemonCmd(load),
 		newRecoverCmd(load),
+		newNotifyCmd(load),
 		newListCmd(load),
 		newStatusCmd(load),
 		newLogsCmd(load),

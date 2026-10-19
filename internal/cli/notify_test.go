@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -134,5 +135,51 @@ func TestDaemonShouldCreateInteractiveNotifier(t *testing.T) {
 	}
 	if !n.closed {
 		t.Fatal("the daemon closes its notifier when it stops")
+	}
+}
+
+// testableNotifier is a fake with a resolved backend that can send the sample toast.
+type testableNotifier struct {
+	fakeNotifier
+	backend string
+}
+
+func (n *testableNotifier) Backend() string { return n.backend }
+
+func (n *testableNotifier) Send(ctx context.Context, m notify.Message) error { return n.Notify(ctx, m) }
+
+func TestNotifyTestShouldFailWhenBackendIsNone(t *testing.T) {
+	cfgFile, _ := isolatedConfig(t, "notify:\n  backend: none\n")
+	out, err := execute(t, "--config", cfgFile, "notify", "--test")
+	if err == nil || !strings.Contains(err.Error(), "none") {
+		t.Fatalf("a test toast without a backend must fail, got %v\n%s", err, out)
+	}
+
+	n := &testableNotifier{backend: "dbus"}
+	prev := newNotifier
+	newNotifier = func(cfg config.Notify, opts notify.Options) notify.Notifier { n.cfg, n.opts = cfg, opts; return n }
+	t.Cleanup(func() { newNotifier = prev })
+	cfgFile, _ = isolatedConfig(t, "notify:\n  enabled: false\n  events: [halted]\n")
+	if out, err := execute(t, "--config", cfgFile, "notify", "--test", "--event", "needs_human"); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if len(n.sent) != 1 || n.sent[0].Title != "⚠️ Needs review · delamain #12" || len(n.sent[0].Actions) != 0 {
+		t.Fatalf("the sample toast goes out without actions, whatever enabled/events say: %+v", n.sent)
+	}
+	if n.opts.Interactive || !n.closed {
+		t.Fatalf("the test toast has no click and the notifier is closed: opts=%+v closed=%v", n.opts, n.closed)
+	}
+}
+
+func TestNotifyTestShouldRejectUnknownEvent(t *testing.T) {
+	n := &testableNotifier{backend: "dbus"}
+	useFakeNotifier(t, &n.fakeNotifier, nil)
+	cfgFile, _ := isolatedConfig(t, "")
+	_, err := execute(t, "--config", cfgFile, "notify", "--test", "--event", "deploy")
+	if err == nil || !strings.Contains(err.Error(), "deploy") {
+		t.Fatalf("an unknown event must be rejected, got %v", err)
+	}
+	if len(n.sent) != 0 {
+		t.Fatalf("nothing is sent for an unknown event: %+v", n.sent)
 	}
 }

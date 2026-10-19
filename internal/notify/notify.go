@@ -76,10 +76,14 @@ func New(cfg config.Notify, opts Options) Notifier {
 	if opts.Log == nil {
 		opts.Log = slog.Default()
 	}
-	return newWith(cfg, opts, sys{
+	return newWith(cfg, opts, realSys())
+}
+
+func realSys() sys {
+	return sys{
 		goos: runtime.GOOS, getenv: os.Getenv, dial: dialBus, lookPath: exec.LookPath, run: runCommand,
 		open: xdgOpen, now: time.Now,
-	})
+	}
 }
 
 // runCommand runs a program directly: its arguments never reach a shell.
@@ -156,12 +160,17 @@ func (c *Client) Notify(ctx context.Context, m Message) error {
 	if !c.events[m.Event] {
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	if err := c.backend.send(ctx, m); err != nil {
+	if err := c.Send(ctx, m); err != nil {
 		c.log.Warn("desktop notification failed", "event", m.Event, "err", err)
 	}
 	return nil
+}
+
+// Send delivers a toast whatever the configured events, and returns why it failed.
+func (c *Client) Send(ctx context.Context, m Message) error {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	return c.backend.send(ctx, m)
 }
 
 // Backend is the resolved backend: dbus, macos or none.

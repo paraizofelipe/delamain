@@ -27,6 +27,7 @@ type notification struct {
 type bus interface {
 	NameHasOwner(name string) (bool, error)
 	Capabilities(ctx context.Context) ([]string, error)
+	ServerInfo(ctx context.Context) (name, version string, err error)
 	// Subscribe delivers the server's ActionInvoked and NotificationClosed signals until Close.
 	Subscribe() (<-chan signal, error)
 	Notify(ctx context.Context, n notification) (uint32, error)
@@ -247,4 +248,11 @@ func (b connBus) Subscribe() (<-chan signal, error) {
 		}
 	}()
 	return out, nil
+}
+
+func (b connBus) ServerInfo(ctx context.Context) (string, string, error) {
+	var name, vendor, version, spec string
+	err := b.conn.Object(notificationsName, notificationsPath).CallWithContext(ctx, notificationsName+".GetServerInformation", 0).
+		Store(&name, &vendor, &version, &spec)
+	return name, version, err
 }
