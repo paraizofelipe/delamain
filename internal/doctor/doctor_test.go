@@ -87,6 +87,59 @@ func TestRunShouldNotStartOmpRPCWhenOmpIsMissing(t *testing.T) {
 	}
 }
 
+func claudeHarness(t *testing.T) (config.Config, Deps) {
+	cfg, d := healthy(t)
+	cfg.Agent.Harness = config.HarnessClaude
+	d.Version = func(_ context.Context, b string) (string, error) {
+		if filepath.Base(b) == "claude" {
+			return "2.1.303 (Claude Code)", nil
+		}
+		return filepath.Base(b) + " 1.0", nil
+	}
+	d.ClaudeAuth = func(context.Context, string) error { return nil }
+	d.OmpRPC = func(context.Context, string) error {
+		t.Fatal("the claude harness never needs omp")
+		return nil
+	}
+	return cfg, d
+}
+
+func TestRunShouldCheckClaudeInsteadOfOmpWhenItIsTheHarness(t *testing.T) {
+	cfg, d := claudeHarness(t)
+	d.LookPath = func(b string) (string, error) {
+		if b == cfg.Omp.Binary {
+			return "", errors.New("not found")
+		}
+		return "/usr/bin/" + b, nil
+	}
+	checks := byName(Run(context.Background(), cfg, d))
+	if Failed(Run(context.Background(), cfg, d)) {
+		t.Fatalf("omp is not needed with harness=claude: %+v", checks)
+	}
+	if _, ok := checks["omp"]; ok {
+		t.Fatalf("omp must not be checked: %+v", checks)
+	}
+	if c := checks["claude"]; c.Status != OK || c.Detail != "2.1.303 (Claude Code) (/usr/bin/claude)" {
+		t.Fatalf("claude: %+v", c)
+	}
+	if c := checks["claude auth"]; c.Status != OK {
+		t.Fatalf("claude auth: %+v", c)
+	}
+}
+
+func TestRunShouldFailWhenClaudeIsNotLoggedInAndWarnOnAnOldClaude(t *testing.T) {
+	cfg, d := claudeHarness(t)
+	d.ClaudeAuth = func(context.Context, string) error { return errors.New("not logged in") }
+	if c := byName(Run(context.Background(), cfg, d))["claude auth"]; c.Status != Fail || c.Detail != "not logged in (run: claude auth login)" {
+		t.Fatalf("an agent without credentials fails its first turn: %+v", c)
+	}
+	cfg, d = claudeHarness(t)
+	d.Version = func(_ context.Context, b string) (string, error) { return "2.1.100 (Claude Code)", nil }
+	if c := byName(Run(context.Background(), cfg, d))["claude"]; c.Status != Warn {
+		t.Fatalf("a claude older than %s must be flagged: %+v", MinClaude, c)
+	}
+}
+
 func TestRunShouldFailWhenConfiguredSessionIsStoppedOrAbsent(t *testing.T) {
 	cfg, d := healthy(t)
 	cfg.Herdr.Session = "delamain-test"

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"path"
 	"regexp"
 	"slices"
@@ -19,8 +20,9 @@ var (
 )
 
 type frontmatter struct {
-	Name        string `yaml:"name"`
-	Description string `yaml:"description"`
+	Name        string   `yaml:"name"`
+	Description string   `yaml:"description"`
+	Tools       []string `yaml:"tools"` // agents only
 }
 
 // Lint validates the tree a contributor edits. It returns every problem, not just the first.
@@ -82,6 +84,11 @@ func (s *Set) Lint() []error {
 			add("%s/omp.yml: %v", dir, err)
 		} else {
 			checkFrontmatter(add, dir+"/omp.yml", fm, Prefix+n)
+			for _, tool := range fm.Tools {
+				if _, ok := claudeTools[tool]; !ok {
+					add("%s/omp.yml: tool %q is not one of %s", dir, tool, strings.Join(slices.Sorted(maps.Keys(claudeTools)), ", "))
+				}
+			}
 		}
 		b, err := fs.ReadFile(s.FS, path.Join(dir, "body.md"))
 		if err != nil || len(bytes.TrimSpace(b)) == 0 {

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/paraizo/delamain/internal/config"
@@ -38,7 +40,9 @@ type Deps struct {
 	Version func(ctx context.Context, bin string) (string, error)
 	// OmpRPC starts "<bin> --mode rpc" and returns once it is ready, or why it is not.
 	OmpRPC func(ctx context.Context, bin string) error
-	Herdr  Herdr
+	// ClaudeAuth runs "<bin> auth status" and says why claude is not logged in, if it is not.
+	ClaudeAuth func(ctx context.Context, bin string) error
+	Herdr      Herdr
 	// Prompts is optional; when set, doctor lints it and checks the installation is current.
 	Prompts       *prompts.Set
 	PromptsTarget prompts.Target
@@ -52,7 +56,11 @@ func Run(ctx context.Context, cfg config.Config, d Deps) []Check {
 	}
 
 	found := map[string]string{}
-	bins := []struct{ name, path string }{{"omp", cfg.Omp.Binary}, {"git", "git"}}
+	harness := struct{ name, path string }{"omp", cfg.Omp.Binary}
+	if cfg.Agent.Harness == config.HarnessClaude {
+		harness.name, harness.path = "claude", cfg.Claude.Binary
+	}
+	bins := []struct{ name, path string }{harness, {"git", "git"}}
 	if cfg.Herdr.Enabled {
 		bins = append([]struct{ name, path string }{{"herdr", cfg.Herdr.Binary}}, bins...)
 	} else {
@@ -70,11 +78,23 @@ func Run(ctx context.Context, cfg config.Config, d Deps) []Check {
 			continue
 		}
 		found[bin.name] = p
+		if bin.name == "claude" && olderThan(v, MinClaude) {
+			add(bin.name, Warn, "%s (%s): older than %s, whose stream-json delamain relies on", firstLine(v), p, MinClaude)
+			continue
+		}
 		add(bin.name, OK, "%s (%s)", firstLine(v), p)
 	}
 
-	// The pipeline drives every agent over omp's RPC mode.
-	if p, ok := found["omp"]; !ok {
+	if cfg.Agent.Harness == config.HarnessClaude {
+		// Without credentials every agent fails its first turn.
+		if p, ok := found["claude"]; !ok {
+			add("claude auth", Fail, "claude unavailable")
+		} else if err := d.ClaudeAuth(ctx, p); err != nil {
+			add("claude auth", Fail, "%v (run: claude auth login)", err)
+		} else {
+			add("claude auth", OK, "logged in")
+		}
+	} else if p, ok := found["omp"]; !ok { // the pipeline drives every agent over omp's RPC mode
 		add("omp rpc", Fail, "omp unavailable")
 	} else if err := d.OmpRPC(ctx, p); err != nil {
 		add("omp rpc", Fail, "%v", err)
@@ -180,4 +200,31 @@ func herdrServer(ctx context.Context, cfg config.Config, h Herdr) []Check {
 		}
 	}
 	return []Check{{"herdr server", Fail, fmt.Sprintf("session %q not found", label)}}
+}
+
+// MinClaude is the oldest Claude Code whose stream-json ends a cut-off turn properly.
+const MinClaude = "2.1.290"
+
+// olderThan compares the leading x.y.z of a --version output with min; unparsable is not older.
+func olderThan(version, minimum string) bool {
+	parse := func(s string) []int {
+		f := strings.Fields(s)
+		if len(f) == 0 {
+			return nil
+		}
+		var n []int
+		for _, p := range strings.Split(f[0], ".") {
+			v, err := strconv.Atoi(p)
+			if err != nil {
+				return nil
+			}
+			n = append(n, v)
+		}
+		return n
+	}
+	got, want := parse(version), parse(minimum)
+	if len(got) != 3 || len(want) != 3 {
+		return false
+	}
+	return slices.Compare(got, want) < 0
 }

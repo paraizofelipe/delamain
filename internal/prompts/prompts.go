@@ -52,6 +52,24 @@ func (s *Set) Role(name string) (string, error) {
 	return string(b), nil
 }
 
+// agentParts reads an agent's parsed frontmatter and its body.
+func (s *Set) agentParts(name string) (frontmatter, []byte, error) {
+	dir := path.Join("agents", name)
+	var fm frontmatter
+	front, err := fs.ReadFile(s.FS, path.Join(dir, "omp.yml"))
+	if err != nil {
+		return fm, nil, fmt.Errorf("agent %s frontmatter: %w", name, err)
+	}
+	if err := yaml.Unmarshal(front, &fm); err != nil {
+		return fm, nil, fmt.Errorf("agent %s frontmatter: %w", name, err)
+	}
+	body, err := fs.ReadFile(s.FS, path.Join(dir, "body.md"))
+	if err != nil {
+		return fm, nil, fmt.Errorf("agent %s body: %w", name, err)
+	}
+	return fm, body, nil
+}
+
 // Agent assembles an omp agent file: "---\n<omp.yml>\n---\n\n<body.md>".
 // The frontmatter is passed through as opaque bytes, like catlog-agents' installer.
 func (s *Set) Agent(name string) ([]byte, error) {

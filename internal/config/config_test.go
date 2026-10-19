@@ -100,6 +100,10 @@ func TestValidateShouldRejectUnsafeOrMeaninglessValues(t *testing.T) {
 		"poll too often":       func(c *Config) { c.Daemon.PollInterval = time.Second },
 		"unknown red proof":    func(c *Config) { c.Gates.RedProof = "sometimes" },
 		"label with comma":     func(c *Config) { c.Forge.Labels.Ready = "a,b" }, // glab splits on commas
+		"unknown harness":      func(c *Config) { c.Agent.Harness = "codex" },
+		"empty claude model":   func(c *Config) { c.Agent.Harness = HarnessClaude; c.Claude.Model = " " },
+		"unknown effort":       func(c *Config) { c.Agent.Harness = HarnessClaude; c.Claude.Effort = "huge" },
+		"unknown permission":   func(c *Config) { c.Agent.Harness = HarnessClaude; c.Claude.PermissionMode = "plan" },
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -119,6 +123,39 @@ func TestValidateShouldAcceptBoundaryValues(t *testing.T) {
 	cfg.Budget.PerIssue = 0 // disabled limit
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("boundary values must be valid: %v", err)
+	}
+}
+
+func TestHarnessShouldDefaultToOmpAndBeChosenByFileOrEnv(t *testing.T) {
+	cfg, err := Load(filepath.Join(t.TempDir(), "x.yaml"), noEnv)
+	if err != nil || cfg.Agent.Harness != HarnessOmp {
+		t.Fatalf("omp stays the default harness: %q %v", cfg.Agent.Harness, err)
+	}
+	if cfg.Claude.Binary != "claude" || cfg.Claude.Model != "opus" || cfg.Claude.Effort != "high" || cfg.Claude.PermissionMode != "bypassPermissions" {
+		t.Fatalf("claude defaults: %+v", cfg.Claude)
+	}
+	cfg, err = Load(writeFile(t, "agent:\n  harness: claude\nclaude:\n  model: sonnet\n"), noEnv)
+	if err != nil || cfg.Agent.Harness != HarnessClaude || cfg.Claude.Model != "sonnet" || cfg.Claude.Effort != "high" {
+		t.Fatalf("file: %+v %+v %v", cfg.Agent, cfg.Claude, err)
+	}
+	env := envOf(map[string]string{"DELAMAIN_AGENT_HARNESS": "omp", "DELAMAIN_CLAUDE_MODEL": "haiku"})
+	cfg, err = Load(writeFile(t, "agent:\n  harness: claude\n"), env)
+	if err != nil || cfg.Agent.Harness != HarnessOmp || cfg.Claude.Model != "haiku" {
+		t.Fatalf("env wins over file: %+v %+v %v", cfg.Agent, cfg.Claude, err)
+	}
+}
+
+func TestValidateShouldOnlyCheckTheSelectedHarnessSection(t *testing.T) {
+	cfg := Default()
+	cfg.Agent.Harness = HarnessClaude
+	cfg.Omp.Model, cfg.Omp.ApprovalMode = "", "auto"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("an unused omp section must not block claude: %v", err)
+	}
+	cfg = Default()
+	cfg.Claude.Model, cfg.Claude.Effort = "", "huge"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("an unused claude section must not block omp: %v", err)
 	}
 }
 

@@ -25,7 +25,10 @@ func loadPrompts(cfg config.Config) (*prompts.Set, error) {
 }
 
 func promptsTarget(cfg config.Config) prompts.Target {
-	return prompts.Target{OmpAgentDir: cfg.Omp.AgentDir, RolesDir: cfg.Paths.RolesDir()}
+	return prompts.Target{
+		Harness: string(cfg.Agent.Harness), OmpAgentDir: cfg.Omp.AgentDir,
+		RolesDir: cfg.Paths.RolesDir(), ClaudeDir: cfg.Paths.ClaudeDir(),
+	}
 }
 
 func newPromptsCmd(load func() (config.Config, error)) *cobra.Command {

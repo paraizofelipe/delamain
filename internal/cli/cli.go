@@ -4,6 +4,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -72,7 +73,7 @@ func NewRoot() *cobra.Command {
 					return err
 				}
 				checks := doctor.Run(ctx, cfg, doctor.Deps{
-					LookPath: exec.LookPath, Version: binVersion, OmpRPC: ompRPCReady, Herdr: h,
+					LookPath: exec.LookPath, Version: binVersion, OmpRPC: ompRPCReady, ClaudeAuth: claudeAuth, Herdr: h,
 					Prompts: set, PromptsTarget: promptsTarget(cfg),
 				})
 				if err := printChecks(cmd.OutOrStdout(), checks); err != nil {
@@ -94,6 +95,21 @@ func NewRoot() *cobra.Command {
 		newUpgradeCmd(),
 	)
 	return root
+}
+
+// claudeAuth asks claude whether it has credentials; the account itself is never printed.
+func claudeAuth(ctx context.Context, bin string) error {
+	out, err := exec.CommandContext(ctx, bin, "auth", "status", "--json").Output() //nolint:gosec // configured binary
+	var st struct {
+		LoggedIn bool `json:"loggedIn"`
+	}
+	if jerr := json.Unmarshal(out, &st); jerr != nil {
+		return errors.Join(errors.New("unreadable auth status"), err)
+	}
+	if !st.LoggedIn {
+		return errors.New("not logged in")
+	}
+	return nil
 }
 
 // ompRPCReady starts omp in RPC mode without a session and stops it once it is ready.

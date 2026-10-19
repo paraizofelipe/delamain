@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/paraizo/delamain/internal/agent"
 	"github.com/paraizo/delamain/internal/artifacts"
 	"github.com/paraizo/delamain/internal/budget"
 	"github.com/paraizo/delamain/internal/config"
@@ -23,7 +24,6 @@ import (
 	"github.com/paraizo/delamain/internal/gates"
 	"github.com/paraizo/delamain/internal/gitx"
 	"github.com/paraizo/delamain/internal/omp"
-	"github.com/paraizo/delamain/internal/omp/rpc"
 	"github.com/paraizo/delamain/internal/prompts"
 	"github.com/paraizo/delamain/internal/store"
 )
@@ -440,13 +440,9 @@ func (r *Runner) startAgent(ctx context.Context, ru *run, role string) error {
 		return err
 	}
 	ru.viewDo("show "+role, func(v View) error { return v.Show(ctx, role, logPath) })
-	o := r.Cfg.Omp
 	agent, err := r.Agents.Start(ctx, AgentOptions{
 		Name: fmt.Sprintf("%s-r%d", role, ru.rec.ID), Dir: ru.repo.Worktree,
-		Args: []string{
-			"--model", o.Model, "--thinking", o.Thinking, "--approval-mode", o.ApprovalMode,
-			"--session-dir", sessDir, "--append-system-prompt", r.PromptsTarget.RolePath(role),
-		},
+		SessionDir: sessDir, SystemPrompt: r.PromptsTarget.RolePath(role),
 		// Only the orchestrator publishes work: the agent gets an env where push fails.
 		Env:     gitx.AgentEnv(),
 		LogPath: logPath, ErrPath: filepath.Join(logDir, role+".stderr"),
@@ -484,7 +480,7 @@ func (r *Runner) send(ctx context.Context, ru *run, role, text string) error {
 		ru.budget, ru.res.Budget = w.status, w.status.Summary()
 		return haltf("%s (%s interrompido no meio do turno)", w.status.Reason, role)
 	}
-	if errors.Is(err, rpc.ErrTimeout) {
+	if errors.Is(err, agent.ErrTimeout) {
 		return haltf("o %s não terminou o turno em %s; turno abortado", role, timeout)
 	}
 	if err != nil {
@@ -501,7 +497,7 @@ func (r *Runner) send(ctx context.Context, ru *run, role, text string) error {
 		if err != nil {
 			return haltf("sessão do %s sem resposta: %v", role, err)
 		}
-		turn = rpc.Turn{StopReason: last.StopReason, ErrorMessage: last.ErrorMessage, Model: last.Model}
+		turn = agent.Turn{StopReason: last.StopReason, ErrorMessage: last.ErrorMessage, Model: last.Model}
 	}
 	switch turn.StopReason {
 	case "error":

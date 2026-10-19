@@ -12,9 +12,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/paraizo/delamain/internal/agent"
+	"github.com/paraizo/delamain/internal/budget"
 	"github.com/paraizo/delamain/internal/forge"
 	"github.com/paraizo/delamain/internal/herdr"
-	"github.com/paraizo/delamain/internal/omp/rpc"
 )
 
 // reply is what a simulated agent does for one prompt.
@@ -45,7 +46,6 @@ type fakeHerdr struct {
 	tabPanes    map[string]string // label -> root pane of the created tab
 	labels      map[string]string // tab id -> label after the last rename
 	tabErr      error
-	started     map[string][]string // agent name -> args
 	starts      map[string]AgentOptions
 	prompts     map[string][]string // role -> prompt texts
 	promptCalls int
@@ -72,8 +72,8 @@ func newFakeHerdr(dir string, g *fakeGit, b behavior) *fakeHerdr {
 		dir: dir, git: g, behave: b,
 		checks:    defaultChecks,
 		checkHang: map[string]bool{},
-		started:   map[string][]string{}, prompts: map[string][]string{},
-		tabPanes: map[string]string{}, labels: map[string]string{}, starts: map[string]AgentOptions{},
+		prompts:   map[string][]string{},
+		tabPanes:  map[string]string{}, labels: map[string]string{}, starts: map[string]AgentOptions{},
 		keys: map[string][]string{}, checkRuns: map[string]int{}, tails: map[string]string{},
 		interrupt: make(chan string, 4),
 	}
@@ -118,7 +118,7 @@ func (f *fakeHerdr) Start(_ context.Context, o AgentOptions) (Agent, error) {
 		}
 	}
 	f.mu.Lock()
-	f.started[o.Name], f.starts[o.Name] = o.Args, o
+	f.starts[o.Name] = o
 	f.mu.Unlock()
 	return &fakeAgent{f: f, name: o.Name}, nil
 }
@@ -133,10 +133,10 @@ var artifactRe = regexp.MustCompile("DONE `?([^`\\s]+)`?")
 
 func roleOf(name string) string { return name[:strings.LastIndex(name, "-r")] }
 
-func (a *fakeAgent) Prompt(ctx context.Context, text string, timeout time.Duration) (rpc.Turn, error) {
+func (a *fakeAgent) Prompt(ctx context.Context, text string, timeout time.Duration) (agent.Turn, error) {
 	rep, err := a.f.turn(a.name, text)
 	if err != nil {
-		return rpc.Turn{}, err
+		return agent.Turn{}, err
 	}
 	a.f.mu.Lock()
 	a.spent += rep.usage + rep.unwritten
@@ -144,23 +144,23 @@ func (a *fakeAgent) Prompt(ctx context.Context, text string, timeout time.Durati
 	if rep.hang {
 		select {
 		case <-a.f.interrupt:
-			return rpc.Turn{StopReason: "aborted", Model: "fake"}, nil
+			return agent.Turn{StopReason: "aborted", Model: "fake"}, nil
 		case <-time.After(timeout):
-			return rpc.Turn{}, rpc.ErrTimeout
+			return agent.Turn{}, agent.ErrTimeout
 		case <-ctx.Done():
-			return rpc.Turn{}, ctx.Err()
+			return agent.Turn{}, ctx.Err()
 		}
 	}
 	if rep.err != nil {
-		return rpc.Turn{}, rep.err
+		return agent.Turn{}, rep.err
 	}
 	if rep.lost {
-		return rpc.Turn{}, nil
+		return agent.Turn{}, nil
 	}
 	if rep.provider != "" {
-		return rpc.Turn{StopReason: "error", ErrorMessage: rep.provider, Model: "fake"}, nil
+		return agent.Turn{StopReason: "error", ErrorMessage: rep.provider, Model: "fake"}, nil
 	}
-	return rpc.Turn{StopReason: "stop", Model: "fake"}, nil
+	return agent.Turn{StopReason: "stop", Model: "fake"}, nil
 }
 
 func (a *fakeAgent) Abort() error {
@@ -174,10 +174,10 @@ func (a *fakeAgent) Abort() error {
 	return nil
 }
 
-func (a *fakeAgent) Spent() rpc.Usage {
+func (a *fakeAgent) Spent() agent.Usage {
 	a.f.mu.Lock()
 	defer a.f.mu.Unlock()
-	return rpc.Usage{Input: a.spent}
+	return agent.Usage{Input: a.spent}
 }
 
 func (a *fakeAgent) PID() int { return 4242 }
@@ -208,15 +208,18 @@ func (f *fakeHerdr) turn(name, text string) (reply, error) {
 }
 
 // writeSession appends one assistant turn, as omp does, so usage accumulates across prompts.
-// sessionPath honors --session-dir like omp does, so the budget meter finds the usage.
+// sessionPath honors the session dir like omp does, so the budget meter finds the usage.
 func (f *fakeHerdr) sessionPath(name string) string {
 	dir := f.dir
-	if args := f.started[name]; len(args) > 0 {
-		if i := slices.Index(args, "--session-dir"); i >= 0 && i+1 < len(args) {
-			dir = args[i+1]
-		}
+	if o, ok := f.starts[name]; ok && o.SessionDir != "" {
+		dir = o.SessionDir
 	}
 	return filepath.Join(dir, name+".jsonl")
+}
+
+// Sessions reads what the fake wrote: omp's session format.
+func (f *fakeHerdr) Sessions(sessionsDir string) ([]budget.SessionUsage, error) {
+	return budget.OmpSessions(sessionsDir)
 }
 
 func writeSession(path, providerErr string, input int64) error {
