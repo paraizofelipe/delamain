@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -84,5 +85,38 @@ func TestDisabledNotifyShouldSendNothing(t *testing.T) {
 	}
 	if dialed || len(b.calls()) != 0 {
 		t.Fatalf("disabled notifications never touch the bus: dialed=%v sent=%d", dialed, len(b.calls()))
+	}
+}
+
+func TestNotifyShouldTimeOutAfterFiveSeconds(t *testing.T) {
+	var deadline time.Time
+	var bounded bool
+	b := &fakeBus{onNotify: func(ctx context.Context) error {
+		deadline, bounded = ctx.Deadline()
+		return nil
+	}}
+	c := newDBusClient(t, b, Options{})
+	start := time.Now()
+	if err := c.Notify(context.Background(), Message{Event: EventHalted, RunID: 1, Title: "t"}); err != nil {
+		t.Fatal(err)
+	}
+	end := time.Now()
+	if !bounded {
+		t.Fatal("the toast must be sent with a deadline")
+	}
+	if deadline.Before(start.Add(5*time.Second)) || deadline.After(end.Add(5*time.Second)) {
+		t.Fatalf("the deadline must be 5s after the call, got %v after it started", deadline.Sub(start))
+	}
+}
+
+func TestNotifyErrorsShouldNeverFailTheCaller(t *testing.T) {
+	var log syncBuffer
+	b := &fakeBus{err: context.DeadlineExceeded}
+	c := newDBusClient(t, b, Options{Log: slogTo(&log)})
+	if err := c.Notify(context.Background(), Message{Event: EventHalted, RunID: 1, Title: "t"}); err != nil {
+		t.Fatalf("a failed toast is never the caller's error: %v", err)
+	}
+	if out := log.String(); !strings.Contains(out, "level=WARN") || !strings.Contains(out, "desktop notification failed") || !strings.Contains(out, "deadline exceeded") {
+		t.Fatalf("the failure is a warning with its cause:\n%s", out)
 	}
 }

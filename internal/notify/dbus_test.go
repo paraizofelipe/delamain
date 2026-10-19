@@ -16,16 +16,27 @@ import (
 
 // fakeBus is a session bus whose notification server records every Notify call.
 type fakeBus struct {
-	mu     sync.Mutex
-	sent   []notification
-	nextID uint32
-	err    error
-	closed bool
+	mu       sync.Mutex
+	sent     []notification
+	nextID   uint32
+	err      error
+	closed   bool
+	noOwner  bool                        // org.freedesktop.Notifications has no owner
+	onNotify func(context.Context) error // inspects the call's context
 }
 
-func (b *fakeBus) Notify(_ context.Context, n notification) (uint32, error) {
+func (b *fakeBus) NameHasOwner(name string) (bool, error) {
+	return name == "org.freedesktop.Notifications" && !b.noOwner, nil
+}
+
+func (b *fakeBus) Notify(ctx context.Context, n notification) (uint32, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.onNotify != nil {
+		if err := b.onNotify(ctx); err != nil {
+			return 0, err
+		}
+	}
 	if b.err != nil {
 		return 0, b.err
 	}
@@ -42,6 +53,12 @@ func (b *fakeBus) Close() error {
 	defer b.mu.Unlock()
 	b.closed = true
 	return nil
+}
+
+func (b *fakeBus) isClosed() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.closed
 }
 
 func (b *fakeBus) calls() []notification {
@@ -77,6 +94,8 @@ func (b *fakeBus) lastCall(t *testing.T) notification {
 	}
 	return calls[len(calls)-1]
 }
+
+func slogTo(w io.Writer) *slog.Logger { return slog.New(slog.NewTextHandler(w, nil)) }
 
 func discardLog() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 

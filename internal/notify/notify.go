@@ -4,8 +4,14 @@ package notify
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"os"
+	"os/exec"
+	"runtime"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/paraizo/delamain/internal/config"
 )
@@ -62,6 +68,28 @@ type Options struct {
 	ForgeHosts []string
 }
 
+// timeout bounds each toast: a stuck notification server never holds a run.
+const timeout = 5 * time.Second
+
+// New resolves the configured backend once; without a server it sends nothing and warns once.
+func New(cfg config.Notify, opts Options) Notifier {
+	if opts.Log == nil {
+		opts.Log = slog.Default()
+	}
+	return newWith(cfg, opts, sys{
+		goos: runtime.GOOS, getenv: os.Getenv, dial: dialBus, lookPath: exec.LookPath, run: runCommand,
+	})
+}
+
+// runCommand runs a program directly: its arguments never reach a shell.
+func runCommand(ctx context.Context, name string, args ...string) error {
+	out, err := exec.CommandContext(ctx, name, args...).CombinedOutput() //nolint:gosec // fixed programs, text passed as argv
+	if err != nil && len(out) > 0 {
+		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return err
+}
+
 // sys is what the notifier touches outside the process; tests replace it.
 type sys struct {
 	goos   string
@@ -89,13 +117,14 @@ type Client struct {
 	log     *slog.Logger
 	backend backend
 	events  map[Event]bool // nil when notifications are off
+	kind    string
 
 	iconOnce sync.Once
 	iconPath string
 }
 
 func newWith(cfg config.Notify, opts Options, s sys) *Client {
-	c := &Client{log: opts.Log, backend: noBackend{}}
+	c := &Client{log: opts.Log, backend: noBackend{}, kind: config.NotifyNone}
 	if !cfg.Enabled {
 		return c
 	}
@@ -104,13 +133,16 @@ func newWith(cfg config.Notify, opts Options, s sys) *Client {
 		c.events[Event(e)] = true
 	}
 	icon := func() string { return c.icon(opts.StateDir) }
-	switch cfg.Backend {
+	kind, b, err := resolve(cfg.Backend, s)
+	switch kind {
 	case config.NotifyMacOS:
 		c.backend = newMacOS(s, icon, opts)
 	case config.NotifyDBus:
-		if b, err := s.dial(s.getenv("DBUS_SESSION_BUS_ADDRESS")); err == nil {
-			c.backend = newDBus(b, icon)
-		}
+		c.backend = newDBus(b, icon)
+	}
+	c.kind = kind
+	if err != nil {
+		c.log.Warn("no desktop notification server; notifications disabled", "err", err)
 	}
 	return c
 }
@@ -120,11 +152,16 @@ func (c *Client) Notify(ctx context.Context, m Message) error {
 	if !c.events[m.Event] {
 		return nil
 	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	if err := c.backend.send(ctx, m); err != nil {
 		c.log.Warn("desktop notification failed", "event", m.Event, "err", err)
 	}
 	return nil
 }
+
+// Backend is the resolved backend: dbus, macos or none.
+func (c *Client) Backend() string { return c.kind }
 
 func (c *Client) Close() error { return c.backend.close() }
 

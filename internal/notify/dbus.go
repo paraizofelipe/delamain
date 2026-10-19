@@ -22,6 +22,7 @@ type notification struct {
 
 // bus is the session bus with a notification server on it.
 type bus interface {
+	NameHasOwner(name string) (bool, error)
 	Notify(ctx context.Context, n notification) (uint32, error)
 	Close() error
 }
@@ -68,3 +69,31 @@ func (d *dbusBackend) send(ctx context.Context, m Message) error {
 }
 
 func (d *dbusBackend) close() error { return d.bus.Close() }
+
+const notificationsPath = dbus.ObjectPath("/org/freedesktop/Notifications")
+
+// connBus is the real session bus.
+type connBus struct{ conn *dbus.Conn }
+
+func dialBus(addr string) (bus, error) {
+	conn, err := dbus.Connect(addr)
+	if err != nil {
+		return nil, err
+	}
+	return connBus{conn}, nil
+}
+
+func (b connBus) NameHasOwner(name string) (bool, error) {
+	var owned bool
+	err := b.conn.BusObject().Call("org.freedesktop.DBus.NameHasOwner", 0, name).Store(&owned)
+	return owned, err
+}
+
+func (b connBus) Notify(ctx context.Context, n notification) (uint32, error) {
+	var id uint32
+	err := b.conn.Object(notificationsName, notificationsPath).CallWithContext(ctx, notificationsName+".Notify", 0,
+		n.AppName, n.ReplacesID, n.AppIcon, n.Summary, n.Body, n.Actions, n.Hints, n.Expire).Store(&id)
+	return id, err
+}
+
+func (b connBus) Close() error { return b.conn.Close() }
