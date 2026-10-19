@@ -22,7 +22,8 @@ dist:
 	done
 	cd dist && shasum -a 256 delamain_* > checksums.txt
 
-# make bump [BUMP=patch|minor|major]: rewrites VERSION; commit it and merge to main to release.
+# Every push to main is released with a version derived from its commits (.github/scripts/next-version.sh).
+# make bump [BUMP=patch|minor|major] rewrites VERSION to force a version; merge it to main to release it.
 bump:
 	@echo '$(VERSION)' | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$$' || { echo "VERSION '$(VERSION)' is not X.Y.Z" >&2; exit 1; }
 	@case '$(BUMP)' in patch|minor|major) ;; *) echo "BUMP must be patch|minor|major, got '$(BUMP)'" >&2; exit 1;; esac
