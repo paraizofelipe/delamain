@@ -21,11 +21,11 @@ import (
 func newDaemonCmd(load func() (config.Config, error)) *cobra.Command {
 	var repos []string
 	cmd := &cobra.Command{
-		Use:   "daemon [--repo <caminho>]...",
-		Short: "Processa continuamente as issues com a label ready dos repositórios configurados",
-		Long: `Busca issues abertas com forge.labels.ready a cada daemon.poll_interval e executa até
-pipeline.max_parallel ao mesmo tempo. Ao subir, finaliza runs deixadas por um processo que morreu.
-Só uma instância roda por state_dir. Ctrl+C encerra: runs em andamento terminam como interrompidas.`,
+		Use:   "daemon [--repo <path>]...",
+		Short: "Continuously process issues labeled ready in the configured repositories",
+		Long: `Polls open issues with forge.labels.ready every daemon.poll_interval and runs up to
+pipeline.max_parallel at once. On startup, finalizes runs left behind by a process that died.
+Only one instance runs per state_dir. Ctrl+C stops it: in-flight runs end as interrupted.`,
 		RunE: func(c *cobra.Command, _ []string) error {
 			cfg, err := load()
 			if err != nil {
@@ -36,7 +36,7 @@ Só uma instância roda por state_dir. Ctrl+C encerra: runs em andamento termina
 				repos = cfg.Daemon.Repos
 			}
 			if len(repos) == 0 {
-				return errors.New("nenhum repositório: use --repo ou daemon.repos no config")
+				return errors.New("no repository: use --repo or daemon.repos in the config")
 			}
 			ctx := c.Context()
 			unlock, err := lockDaemon(cfg.Paths.StateDir)
@@ -52,7 +52,7 @@ Só uma instância roda por state_dir. Ctrl+C encerra: runs em andamento termina
 					return fmt.Errorf("%s: %w", repo, err)
 				}
 				if fg == nil {
-					return fmt.Errorf("%s: o daemon exige um origin no GitHub ou GitLab", repo)
+					return fmt.Errorf("%s: the daemon requires a GitHub or GitLab origin", repo)
 				}
 				sources = append(sources, daemon.Source{Repo: repo, Forge: fg})
 			}
@@ -89,7 +89,7 @@ Só uma instância roda por state_dir. Ctrl+C encerra: runs em andamento termina
 			return d.Serve(ctx)
 		},
 	}
-	cmd.Flags().StringArrayVar(&repos, "repo", nil, "repositório a observar (repetível; padrão: daemon.repos)")
+	cmd.Flags().StringArrayVar(&repos, "repo", nil, "repository to watch (repeatable; default: daemon.repos)")
 	addHerdrFlag(cmd)
 	return cmd
 }
@@ -97,7 +97,7 @@ Só uma instância roda por state_dir. Ctrl+C encerra: runs em andamento termina
 func newRecoverCmd(load func() (config.Config, error)) *cobra.Command {
 	return &cobra.Command{
 		Use:   "recover",
-		Short: "Finaliza runs deixadas por um processo do delamain que morreu",
+		Short: "Finalize runs left behind by a delamain process that died",
 		RunE: func(c *cobra.Command, _ []string) error {
 			cfg, err := load()
 			if err != nil {
@@ -124,11 +124,11 @@ func recoverRuns(c *cobra.Command, cfg config.Config, base *pipeline.Runner) err
 		return err
 	}
 	if len(results) == 0 {
-		fmt.Fprintln(c.OutOrStdout(), "nenhuma run órfã para recuperar")
+		fmt.Fprintln(c.OutOrStdout(), "no orphaned run to recover")
 		return nil
 	}
 	for _, res := range results {
-		fmt.Fprintf(c.OutOrStdout(), "run %d recuperada:\n", res.RunID)
+		fmt.Fprintf(c.OutOrStdout(), "run %d recovered:\n", res.RunID)
 		printResult(c, res)
 	}
 	return nil
@@ -146,7 +146,7 @@ func lockDaemon(stateDir string) (func(), error) {
 	}
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil { //nolint:gosec // fd fits in int
 		f.Close()
-		return nil, fmt.Errorf("outro delamain daemon já usa %s", stateDir)
+		return nil, fmt.Errorf("another delamain daemon is already using %s", stateDir)
 	}
 	slog.Debug("daemon lock acquired", "path", path)
 	return func() { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN); f.Close() }, nil //nolint:gosec // fd fits in int
