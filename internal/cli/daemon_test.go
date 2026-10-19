@@ -11,6 +11,7 @@ import (
 	"github.com/paraizo/delamain/internal/budget"
 	"github.com/paraizo/delamain/internal/config"
 	"github.com/paraizo/delamain/internal/notify"
+	"github.com/paraizo/delamain/internal/pipeline"
 	"github.com/paraizo/delamain/internal/store"
 )
 
@@ -102,5 +103,24 @@ func TestRecoverShouldNotifyOnlyWhenRunsWereRecovered(t *testing.T) {
 	}
 	if m := n.sent[0]; m.Event != notify.EventRecover || m.Title != "♻️ Recovered 1 run" || m.Body != "api #7 (halted)" {
 		t.Fatalf("toast = %+v", m)
+	}
+}
+
+func TestRecoveredResultShouldFollowTheOutcomeMapping(t *testing.T) {
+	pr := "https://github.com/acme/api/pull/7"
+	for _, tc := range []struct {
+		res  pipeline.Result
+		want string
+	}{
+		{pipeline.Result{Outcome: pipeline.OutcomeHalted, PRURL: pr}, "PR opened"},
+		{pipeline.Result{Outcome: pipeline.OutcomeHalted, PRURL: pr, Draft: true}, "draft PR"},
+		{pipeline.Result{Outcome: pipeline.OutcomeApproved}, "needs review"}, // delivered locally: no PR to open
+		{pipeline.Result{Outcome: pipeline.OutcomeExhausted}, "needs review"},
+		{pipeline.Result{Outcome: pipeline.OutcomeNeedsInfo}, "needs info"},
+		{pipeline.Result{Outcome: pipeline.OutcomeHalted}, "halted"},
+	} {
+		if got := recoveredResult(tc.res); got != tc.want {
+			t.Errorf("%s pr=%q draft=%v: got %q, want %q", tc.res.Outcome, tc.res.PRURL, tc.res.Draft, got, tc.want)
+		}
 	}
 }

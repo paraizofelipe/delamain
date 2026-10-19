@@ -156,12 +156,12 @@ func recoveredResult(res pipeline.Result) string {
 		return "PR opened"
 	case res.PRURL != "":
 		return "draft PR"
-	case res.Outcome == pipeline.OutcomeExhausted:
-		return "needs review"
 	case res.Outcome == pipeline.OutcomeNeedsInfo:
 		return "needs info"
+	case res.Outcome == pipeline.OutcomeHalted:
+		return "halted"
 	}
-	return "halted"
+	return "needs review" // exhausted, or approved without a PR, as the needs_human toast
 }
 
 // lockDaemon allows one daemon per state dir: two schedulers would race for the same issues.
