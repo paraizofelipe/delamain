@@ -17,6 +17,11 @@ const (
 	maxPerCall = 10
 )
 
+var (
+	flatten = strings.NewReplacer("\r", " ", "\n", " ")
+	escape  = strings.NewReplacer("<", "&lt;", ">", "&gt;")
+)
+
 // Store keeps one markdown file of learnings per repository under Dir.
 type Store struct {
 	Dir string
@@ -90,8 +95,13 @@ func (s Store) Append(host, repoPath string, runID int64, pr int, learnings []st
 		if n == maxPerCall {
 			break
 		}
-		l = strings.TrimSpace(l)
-		if l == "" || utf8.RuneCountInString(l) > maxChars || seen[l] {
+		l = strings.TrimSpace(flatten.Replace(l))
+		if l == "" || utf8.RuneCountInString(l) > maxChars {
+			continue
+		}
+		// Escaped so a learning cannot close the <memory> delimiter it is quoted in.
+		l = escape.Replace(l)
+		if seen[l] {
 			continue
 		}
 		seen[l] = true
