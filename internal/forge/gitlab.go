@@ -61,8 +61,9 @@ func (g gitlab) Issue(ctx context.Context, n int) (Issue, error) {
 }
 
 func (g gitlab) ListReady(ctx context.Context, label string) ([]Issue, error) {
+	state, order, sort := "opened", "created_at", "asc"
 	vs, _, err := g.api.Issues.ListProjectIssues(g.repo.Path, &gl.ListProjectIssuesOptions{
-		State: gl.Ptr("opened"), Labels: &gl.LabelOptions{label}, OrderBy: gl.Ptr("created_at"), Sort: gl.Ptr("asc"),
+		State: &state, Labels: &gl.LabelOptions{label}, OrderBy: &order, Sort: &sort,
 		ListOptions: gl.ListOptions{PerPage: 100},
 	}, gl.WithContext(ctx))
 	if err != nil {
@@ -76,8 +77,9 @@ func (g gitlab) ListReady(ctx context.Context, label string) ([]Issue, error) {
 }
 
 func (g gitlab) OpenPR(ctx context.Context, head string) (*PR, error) {
+	state := "opened"
 	mrs, _, err := g.api.MergeRequests.ListProjectMergeRequests(g.repo.Path, &gl.ListProjectMergeRequestsOptions{
-		SourceBranch: &head, State: gl.Ptr("opened"),
+		SourceBranch: &head, State: &state,
 	}, gl.WithContext(ctx))
 	if err != nil || len(mrs) == 0 {
 		return nil, g.fail("openpr", err)
