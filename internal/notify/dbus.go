@@ -2,6 +2,7 @@ package notify
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"slices"
 	"strings"
@@ -25,7 +26,7 @@ type notification struct {
 
 // bus is the session bus with a notification server on it.
 type bus interface {
-	NameHasOwner(name string) (bool, error)
+	NameHasOwner(ctx context.Context, name string) (bool, error)
 	Capabilities(ctx context.Context) ([]string, error)
 	ServerInfo(ctx context.Context) (name, version string, err error)
 	// Subscribe delivers the server's ActionInvoked and NotificationClosed signals until Close.
@@ -192,19 +193,31 @@ func (d *dbusBackend) close() error { return d.bus.Close() }
 const notificationsPath = dbus.ObjectPath("/org/freedesktop/Notifications")
 
 // connBus is the real session bus.
-type connBus struct{ conn *dbus.Conn }
-
-func dialBus(addr string) (bus, error) {
-	conn, err := dbus.Connect(addr)
-	if err != nil {
-		return nil, err
-	}
-	return connBus{conn}, nil
+type connBus struct {
+	conn   *dbus.Conn
+	cancel context.CancelFunc // ends the connection's context
 }
 
-func (b connBus) NameHasOwner(name string) (bool, error) {
+// dialBus connects within ctx: godbus reads the auth handshake without a deadline, so the
+// connection's own context is cancelled, closing the socket, if ctx ends before it is ready.
+func dialBus(ctx context.Context, addr string) (bus, error) {
+	connCtx, closeConn := context.WithCancel(context.Background())
+	stop := context.AfterFunc(ctx, closeConn)
+	conn, err := dbus.Connect(addr, dbus.WithContext(connCtx))
+	if !stop() { // ctx ended first: the connection is closed or closing
+		closeConn()
+		return nil, errors.Join(ctx.Err(), err)
+	}
+	if err != nil {
+		closeConn()
+		return nil, err
+	}
+	return connBus{conn, closeConn}, nil
+}
+
+func (b connBus) NameHasOwner(ctx context.Context, name string) (bool, error) {
 	var owned bool
-	err := b.conn.BusObject().Call("org.freedesktop.DBus.NameHasOwner", 0, name).Store(&owned)
+	err := b.conn.BusObject().CallWithContext(ctx, "org.freedesktop.DBus.NameHasOwner", 0, name).Store(&owned)
 	return owned, err
 }
 
@@ -215,7 +228,10 @@ func (b connBus) Notify(ctx context.Context, n notification) (uint32, error) {
 	return id, err
 }
 
-func (b connBus) Close() error { return b.conn.Close() }
+func (b connBus) Close() error {
+	defer b.cancel()
+	return b.conn.Close()
+}
 
 func (b connBus) Capabilities(ctx context.Context) ([]string, error) {
 	var caps []string

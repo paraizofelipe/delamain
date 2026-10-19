@@ -1,6 +1,7 @@
 package notify
 
 import (
+	"context"
 	"errors"
 	"path/filepath"
 
@@ -41,11 +42,14 @@ func sessionBus(s sys) (bus, error) {
 		}
 		addr = "unix:path=" + filepath.Join(dir, "bus")
 	}
-	b, err := s.dial(addr)
+	// A broker that accepts but never answers must not hold the run that creates the notifier.
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	b, err := s.dial(ctx, addr)
 	if err != nil {
 		return nil, err
 	}
-	owned, err := b.NameHasOwner(notificationsName)
+	owned, err := b.NameHasOwner(ctx, notificationsName)
 	if err != nil || !owned {
 		_ = b.Close()
 		return nil, errors.Join(errNoServer, err)

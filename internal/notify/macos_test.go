@@ -39,7 +39,7 @@ func macSys(x *fakeExec, tn bool) sys {
 	return sys{
 		goos:   "darwin",
 		getenv: env(nil),
-		dial:   func(string) (bus, error) { return nil, errors.New("no bus on macOS") },
+		dial:   func(context.Context, string) (bus, error) { return nil, errors.New("no bus on macOS") },
 		lookPath: func(name string) (string, error) {
 			if tn && name == "terminal-notifier" {
 				return "/opt/homebrew/bin/terminal-notifier", nil

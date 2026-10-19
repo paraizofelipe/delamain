@@ -28,6 +28,7 @@ type fakeBus struct {
 	closed   bool
 	noOwner  bool                        // org.freedesktop.Notifications has no owner
 	onNotify func(context.Context) error // inspects the call's context
+	onOwner  func(context.Context)       // inspects NameHasOwner's context
 	caps     []string
 	server   [2]string   // name, version
 	signals  chan signal // nil until subscribed
@@ -65,7 +66,10 @@ func (b *fakeBus) emit(t *testing.T, s signal) {
 	}
 }
 
-func (b *fakeBus) NameHasOwner(name string) (bool, error) {
+func (b *fakeBus) NameHasOwner(ctx context.Context, name string) (bool, error) {
+	if b.onOwner != nil {
+		b.onOwner(ctx)
+	}
 	return name == "org.freedesktop.Notifications" && !b.noOwner, nil
 }
 
@@ -149,7 +153,7 @@ func dbusSys(b *fakeBus) sys {
 	return sys{
 		goos:   "linux",
 		getenv: env(map[string]string{"DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/1000/bus"}),
-		dial:   func(string) (bus, error) { return b, nil },
+		dial:   func(context.Context, string) (bus, error) { return b, nil },
 	}
 }
 

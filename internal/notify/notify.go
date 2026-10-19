@@ -99,7 +99,7 @@ func runCommand(ctx context.Context, name string, args ...string) error {
 type sys struct {
 	goos   string
 	getenv func(string) string
-	dial   func(addr string) (bus, error)
+	dial   func(ctx context.Context, addr string) (bus, error)
 	// lookPath and run execute a program directly, without a shell.
 	lookPath func(string) (string, error)
 	run      func(ctx context.Context, name string, args ...string) error

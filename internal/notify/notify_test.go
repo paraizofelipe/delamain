@@ -75,7 +75,7 @@ func TestDisabledNotifyShouldSendNothing(t *testing.T) {
 	b := &fakeBus{}
 	dialed := false
 	s := dbusSys(b)
-	s.dial = func(string) (bus, error) { dialed = true; return b, nil }
+	s.dial = func(context.Context, string) (bus, error) { dialed = true; return b, nil }
 	c := newWith(config.Notify{Enabled: false, Backend: "dbus", Events: allEvents()}, Options{StateDir: t.TempDir(), Log: discardLog()}, s)
 	if err := c.Notify(context.Background(), Message{Event: EventHalted, RunID: 1, Title: "t"}); err != nil {
 		t.Fatal(err)
