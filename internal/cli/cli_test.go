@@ -55,7 +55,7 @@ func TestVersionShouldPrintBuildVersion(t *testing.T) {
 
 func TestPromptsLintShouldPassForShippedPrompts(t *testing.T) {
 	out, err := execute(t, "--config", filepath.Join(t.TempDir(), "none.yaml"), "prompts", "lint")
-	if err != nil || !strings.Contains(out, "prompts válidos") {
+	if err != nil || !strings.Contains(out, "valid prompts") {
 		t.Fatalf("got %q %v", out, err)
 	}
 }
@@ -85,5 +85,32 @@ func TestPromptsShouldFailWhenOverrideDirIsMissing(t *testing.T) {
 	t.Setenv("DELAMAIN_PROMPTS_DIR", filepath.Join(t.TempDir(), "absent"))
 	if _, err := execute(t, "--config", filepath.Join(t.TempDir(), "none.yaml"), "prompts", "lint"); err == nil {
 		t.Fatal("a typo in prompts_dir must not silently fall back to defaults")
+	}
+}
+
+func TestCLIHelpAndDoctorShouldUseEnglish(t *testing.T) {
+	out, err := execute(t, "--help")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Autonomous development-agent orchestrator", "Check omp"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("help missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestPromptsLintShouldReportValidPromptsInEnglish(t *testing.T) {
+	out, err := execute(t, "--config", filepath.Join(t.TempDir(), "none.yaml"), "prompts", "lint")
+	if err != nil || !strings.Contains(out, "valid prompts") {
+		t.Fatalf("got %q %v", out, err)
+	}
+}
+
+func TestRecoverShouldReportNoOrphanedRunsInEnglish(t *testing.T) {
+	t.Setenv("DELAMAIN_STATE_DIR", t.TempDir())
+	out, err := execute(t, "recover", "--config", "/nonexistent.yaml")
+	if err != nil || !strings.Contains(out, "no orphaned runs to recover") {
+		t.Fatalf("got %q %v", out, err)
 	}
 }

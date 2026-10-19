@@ -97,7 +97,7 @@ Só uma instância roda por state_dir. Ctrl+C encerra: runs em andamento termina
 func newRecoverCmd(load func() (config.Config, error)) *cobra.Command {
 	return &cobra.Command{
 		Use:   "recover",
-		Short: "Finaliza runs deixadas por um processo do delamain que morreu",
+		Short: "Finalize runs left by a delamain process that died",
 		RunE: func(c *cobra.Command, _ []string) error {
 			cfg, err := load()
 			if err != nil {
@@ -124,11 +124,11 @@ func recoverRuns(c *cobra.Command, cfg config.Config, base *pipeline.Runner) err
 		return err
 	}
 	if len(results) == 0 {
-		fmt.Fprintln(c.OutOrStdout(), "nenhuma run órfã para recuperar")
+		fmt.Fprintln(c.OutOrStdout(), "no orphaned runs to recover")
 		return nil
 	}
 	for _, res := range results {
-		fmt.Fprintf(c.OutOrStdout(), "run %d recuperada:\n", res.RunID)
+		fmt.Fprintf(c.OutOrStdout(), "recovered run %d:\n", res.RunID)
 		printResult(c, res)
 	}
 	return nil
