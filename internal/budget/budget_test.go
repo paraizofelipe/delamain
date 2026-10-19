@@ -225,3 +225,24 @@ func TestCheckShouldKeepLiveUsageOutOfTheLedger(t *testing.T) {
 		t.Fatalf("the ledger holds only what session files say: %+v", s)
 	}
 }
+
+func TestTodayShouldReportTheDayUsage(t *testing.T) {
+	f := newFixture(t, tokens(0, 10_000))
+	ctx := context.Background()
+	for _, ref := range []string{"r1", "r2"} {
+		id := f.newRun(t, ref)
+		dir := filepath.Join(f.dir, ref)
+		turn(t, filepath.Join(dir, "implementer", "s.jsonl"), 1000, 500, 9000, 100, 1.25)
+		if _, err := f.m.Check(ctx, id, dir, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s, err := f.m.Today(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := store.Usage{Input: 2000, Output: 1000, CacheRead: 18000, CacheWrite: 200, CostUSD: 2.5}
+	if s.DayUsage != want {
+		t.Fatalf("day usage = %+v, want %+v", s.DayUsage, want)
+	}
+}

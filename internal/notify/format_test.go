@@ -171,3 +171,28 @@ func TestFormatPRNumberShouldFallBackToPRWithoutNumber(t *testing.T) {
 		t.Fatalf("without a number the fact is just PR: %q", m.Body)
 	}
 }
+
+func TestFormatBudgetSoftShouldMatchContract(t *testing.T) {
+	assertMessage(t, FormatBudget(Budget{Percent: 80, Used: "8.1M", Limit: "10M", CostUSD: 32.40}), Message{
+		Event:   EventBudget,
+		Title:   "💸 Daily budget at 80%",
+		Body:    "8.1M of 10M tokens · US$ 32.40\nNew runs continue until the hard limit",
+		Urgency: Normal, Expire: 15000, Category: "x-delamain.budget",
+	})
+}
+
+func TestFormatBudgetHardShouldBeCriticalAndNeverExpire(t *testing.T) {
+	assertMessage(t, FormatBudget(Budget{Hard: true, Percent: 80, Used: "10M", Limit: "10M", CostUSD: 40.02}), Message{
+		Event:   EventBudget,
+		Title:   "🛑 Daily budget exhausted",
+		Body:    "10M of 10M tokens · US$ 40.02\nDaemon paused until 00:00",
+		Urgency: Critical, Expire: 0, Category: "x-delamain.budget",
+	})
+}
+
+func TestFormatBudgetInUSDModeShouldShowDollars(t *testing.T) {
+	m := FormatBudget(Budget{USD: true, Percent: 80, Used: "US$ 32.40", Limit: "US$ 40.00", CostUSD: 32.40})
+	if m.Body != "US$ 32.40 of US$ 40.00\nNew runs continue until the hard limit" {
+		t.Fatalf("usd mode shows dollars instead of tokens: %q", m.Body)
+	}
+}

@@ -5,10 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
 	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -85,13 +87,7 @@ Only one instance runs per state_dir. Ctrl+C stops it: in-flight runs end as int
 					r.Forge = fg
 					return r.Run(ctx, t)
 				},
-				DayExhausted: func(ctx context.Context) (string, error) {
-					s, err := meter.Today(ctx)
-					if err != nil || s.Level != budget.Hard {
-						return "", err
-					}
-					return s.Reason, nil
-				},
+				DayExhausted: dayExhausted(meter.Today, &budgetAlert{notify: base.Notify, softRatio: cfg.Budget.SoftRatio, now: time.Now}),
 			})
 			base.Log.Info("daemon started", "repos", len(sources), "max_parallel", cfg.Pipeline.MaxParallel, "poll", cfg.Daemon.PollInterval)
 			return d.Serve(ctx)
@@ -159,4 +155,47 @@ func lockDaemon(stateDir string) (func(), error) {
 	}
 	slog.Debug("daemon lock acquired", "path", path)
 	return func() { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN); f.Close() }, nil //nolint:gosec // fd fits in int
+}
+
+// dayExhausted evaluates the daily budget on each poll: it alerts on the soft and hard levels and
+// returns the reason to start no run once the hard one is reached.
+func dayExhausted(today func(context.Context) (budget.Status, error), alert *budgetAlert) func(context.Context) (string, error) {
+	return func(ctx context.Context) (string, error) {
+		s, err := today(ctx)
+		if err != nil {
+			return "", err
+		}
+		alert.observe(ctx, s)
+		if s.Level != budget.Hard {
+			return "", nil
+		}
+		return s.Reason, nil
+	}
+}
+
+// budgetAlert notifies each daily budget level at most once a day; it forgets at midnight.
+type budgetAlert struct {
+	notify    notify.Notifier
+	softRatio float64
+	now       func() time.Time
+	day       string
+	sent      map[budget.Level]bool
+}
+
+func (a *budgetAlert) observe(ctx context.Context, s budget.Status) {
+	if a.notify == nil || s.Level == budget.OK {
+		return
+	}
+	if day := a.now().Format(time.DateOnly); day != a.day {
+		a.day, a.sent = day, map[budget.Level]bool{}
+	}
+	if a.sent[s.Level] {
+		return
+	}
+	a.sent[s.Level] = true
+	_ = a.notify.Notify(ctx, notify.FormatBudget(notify.Budget{
+		Hard: s.Level == budget.Hard, Percent: int(math.Round(a.softRatio * 100)),
+		Used: budget.Format(s.Day, s.Mode), Limit: budget.Format(s.Daily, s.Mode),
+		CostUSD: s.DayUsage.CostUSD, USD: s.Mode == config.BudgetUSD,
+	}))
 }

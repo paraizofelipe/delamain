@@ -160,3 +160,30 @@ func truncate(s string, n int) string {
 	}
 	return string([]rune(s)[:n-1]) + "…"
 }
+
+// Budget is what the daily budget toasts show.
+type Budget struct {
+	Hard        bool
+	Percent     int    // the soft limit crossed, e.g. 80
+	Used, Limit string // budget.Format of the day's spend and limit
+	CostUSD     float64
+	USD         bool // budget.mode usd: Used and Limit are already dollars
+}
+
+// FormatBudget is the toast of the daily budget crossing its soft or hard limit.
+func FormatBudget(b Budget) Message {
+	spend := fmt.Sprintf("%s of %s tokens · US$ %.2f", b.Used, b.Limit, b.CostUSD)
+	if b.USD {
+		spend = fmt.Sprintf("%s of %s", b.Used, b.Limit)
+	}
+	if b.Hard {
+		return Message{
+			Event: EventBudget, Title: "🛑 Daily budget exhausted", Body: spend + "\nDaemon paused until 00:00",
+			Urgency: Critical, Expire: 0, Category: "x-delamain.budget",
+		}
+	}
+	return Message{
+		Event: EventBudget, Title: fmt.Sprintf("💸 Daily budget at %d%%", b.Percent), Body: spend + "\nNew runs continue until the hard limit",
+		Urgency: Normal, Expire: expire, Category: "x-delamain.budget",
+	}
+}
