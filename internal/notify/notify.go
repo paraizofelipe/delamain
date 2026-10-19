@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"runtime"
 	"slices"
 	"time"
@@ -71,12 +72,14 @@ type Options struct {
 	Log         *slog.Logger
 
 	// Seams for tests; zero values are the real ones.
-	goos    string
-	getenv  func(string) string
-	dial    func(addr string) (bus, error)
-	timeout time.Duration
-	open    func(ctx context.Context, target string) error
-	now     func() time.Time
+	goos     string
+	getenv   func(string) string
+	dial     func(addr string) (bus, error)
+	timeout  time.Duration
+	open     func(ctx context.Context, target string) error
+	now      func() time.Time
+	lookPath func(string) (string, error)
+	run      func(ctx context.Context, name string, args ...string) error
 }
 
 // Allowed reports whether cfg lets event e be shown.
@@ -157,6 +160,12 @@ func (o Options) withDefaults() Options {
 	}
 	if o.now == nil {
 		o.now = time.Now
+	}
+	if o.lookPath == nil {
+		o.lookPath = exec.LookPath
+	}
+	if o.run == nil {
+		o.run = execRun
 	}
 	return o
 }
