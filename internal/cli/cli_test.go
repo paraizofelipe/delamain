@@ -3,11 +3,12 @@ package cli
 import (
 	"bytes"
 	"context"
-	"github.com/paraizo/delamain/internal/store"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/paraizo/delamain/internal/store"
 )
 
 func execute(t *testing.T, args ...string) (string, error) {
