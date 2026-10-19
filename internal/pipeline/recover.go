@@ -16,6 +16,7 @@ import (
 // Recover finalizes runs whose delamain process died (crash, reboot, kill): their agents are
 // stopped, committed work is delivered as a draft, empty work is removed and the run is recorded
 // as halted. It never resumes agent work: a half-finished turn is not trustworthy.
+// Runs that do not work an issue (review, address) are only cleaned up and halted, never delivered.
 // forgeFor resolves each run's repository forge; nil keeps delivery local.
 func (r *Runner) Recover(ctx context.Context, forgeFor func(repo string) (forge.Forge, error)) ([]Result, error) {
 	runs, err := r.Store.UnfinishedRuns(ctx)
@@ -40,7 +41,7 @@ func (r *Runner) Recover(ctx context.Context, forgeFor func(repo string) (forge.
 		}
 		rr := *r
 		rr.Forge = nil
-		if forgeFor != nil {
+		if forgeFor != nil && rec.Kind == store.KindIssue {
 			fg, err := forgeFor(rec.Repo)
 			if err != nil {
 				r.Log.Warn("recover: no forge, delivering locally", "run", rec.ID, "err", err)
@@ -81,6 +82,9 @@ func (r *Runner) recoverRun(ctx context.Context, rec store.Run) (Result, error) 
 	res.RunDir = ru.dir
 	r.openLog(ru)
 	defer ru.closeLog()
+	if rec.Kind != store.KindIssue {
+		return res, r.haltUnresumable(ctx, ru)
+	}
 	if rec.Workspace != "" && r.Display != nil {
 		ru.view = r.Display.Attach(rec.Workspace)
 	}
@@ -93,6 +97,25 @@ func (r *Runner) recoverRun(ctx context.Context, rec store.Run) (Result, error) 
 		ru.log.Warn("could not record agents", "err", err)
 	}
 	return res, r.finish(ctx, ru, t)
+}
+
+// haltUnresumable closes a review or address run whose process died: it has nothing to deliver,
+// so only its worktree and agents are cleaned up before it is recorded as halted.
+func (r *Runner) haltUnresumable(ctx context.Context, ru *run) error {
+	rec := ru.rec
+	ru.log.Warn("halting interrupted run", "run", rec.ID, "kind", rec.Kind, "state", rec.State)
+	if rec.Worktree != "" {
+		if _, err := os.Stat(rec.Worktree); err == nil {
+			if err := r.Git.RemoveWorktree(ctx, rec.Repo, rec.Worktree); err != nil {
+				ru.log.Warn("could not remove the worktree", "worktree", rec.Worktree, "err", err)
+			}
+		}
+	}
+	if _, err := r.Store.FailRunningAgents(ctx, rec.ID); err != nil {
+		ru.log.Warn("could not record agents", "err", err)
+	}
+	ru.res.Reason = "interrompida: run de review não é retomada"
+	return r.record(ctx, ru)
 }
 
 func kindFromBranch(branch string) string {

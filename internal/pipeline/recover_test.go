@@ -15,11 +15,17 @@ import (
 
 const deadPID = 999_999
 
-// crashed seeds a run that a dead process left in state at iteration 2, with its worktree.
+// crashed seeds an issue run that a dead process left in state at iteration 2, with its worktree.
 func crashed(t *testing.T, hs *harness, state store.RunState) store.Run {
 	t.Helper()
+	return crashedAs(t, hs, state, store.KindIssue, "#7")
+}
+
+// crashedAs is crashed for a run of any kind working on ref.
+func crashedAs(t *testing.T, hs *harness, state store.RunState, kind store.RunKind, ref string) store.Run {
+	t.Helper()
 	ctx := context.Background()
-	rec, err := hs.st.CreateRun(ctx, "/repo", "#7", "Fix add", "omp", 3, store.KindIssue)
+	rec, err := hs.st.CreateRun(ctx, "/repo", ref, "Fix add", "omp", 3, kind)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -217,5 +223,57 @@ func TestRecoverShouldLeaveARestoredWorkspaceAloneWithoutADisplay(t *testing.T) 
 	crashed(t, hs, store.StateImplement)
 	if out := recoverAll(t, hs); len(out) != 1 || len(hs.h.closed) != 0 {
 		t.Fatalf("herdr is never called when it is off: %+v closed=%v", out, hs.h.closed)
+	}
+}
+
+func TestRecoverShouldHaltReviewRunsWithoutDelivering(t *testing.T) {
+	hs := newHarness(t, happy)
+	f := withForge(hs)
+	rec := crashedAs(t, hs, store.StateImplement, store.KindReview, "pr:9")
+	fixAdd(hs.g)
+	ctx := context.Background()
+	_ = hs.st.StartAgent(ctx, store.Agent{RunID: rec.ID, Role: "reviewer", PID: deadPID})
+	out := recoverAll(t, hs)
+
+	if len(out) != 1 || out[0].Outcome != OutcomeHalted || out[0].Reason != "interrompida: run de review não é retomada" {
+		t.Fatalf("results = %+v", out)
+	}
+	if len(f.created) != 0 || len(f.comments) != 0 || len(f.relabels) != 0 || len(hs.g.pushed) != 0 {
+		t.Fatalf("a review run never delivers: created=%v comments=%v relabels=%v pushed=%v", f.created, f.comments, f.relabels, hs.g.pushed)
+	}
+	if !slices.Contains(hs.g.redproof, "remove") {
+		t.Fatalf("the review worktree must be removed, git ops=%v", hs.g.redproof)
+	}
+	if _, err := os.Stat(rec.Worktree); !os.IsNotExist(err) {
+		t.Fatalf("worktree %s still exists: %v", rec.Worktree, err)
+	}
+	if len(hs.h.closed) != 0 {
+		t.Fatalf("only the worktree and the agents are cleaned up, closed=%v", hs.h.closed)
+	}
+	agents, _ := hs.st.Agents(ctx, rec.ID)
+	if len(agents) != 1 || agents[0].State != store.AgentFailed {
+		t.Fatalf("the reviewer died with its owner: %+v", agents)
+	}
+	got, _ := hs.st.GetRun(ctx, rec.ID)
+	if !got.State.Terminal() || !strings.Contains(got.Reason, "interrompida: run de review não é retomada") {
+		t.Fatalf("the run must be closed with its reason: %+v", got)
+	}
+	if left, _ := hs.st.UnfinishedRuns(ctx); len(left) != 0 {
+		t.Fatalf("a closed review is not recovered again on the next restart: %+v", left)
+	}
+}
+
+func TestRecoverShouldKeepFinishingIssueRunsAsBefore(t *testing.T) {
+	hs := newHarness(t, happy)
+	f := withForge(hs)
+	crashedAs(t, hs, store.StateImplement, store.KindIssue, "#7")
+	fixAdd(hs.g)
+	out := recoverAll(t, hs)
+
+	if len(out) != 1 || out[0].Outcome != OutcomeHalted || out[0].PRURL == "" {
+		t.Fatalf("results = %+v", out)
+	}
+	if len(f.created) != 1 || !f.created[0].Draft || !slices.Equal(hs.g.pushed, []string{"fix/7-fix-add"}) {
+		t.Fatalf("an issue run keeps being delivered as a draft: created=%+v pushed=%v", f.created, hs.g.pushed)
 	}
 }
