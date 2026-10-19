@@ -81,7 +81,7 @@ func TestUpgradeShouldReplaceTheInstalledBinaryWhenANewerReleaseExists(t *testin
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
-	if !strings.Contains(out, "v0.1.0 → v0.2.0") || !strings.Contains(out, target) {
+	if !strings.Contains(out, "updated v0.1.0 to v0.2.0") || !strings.Contains(out, target) {
 		t.Fatalf("out = %q", out)
 	}
 	if got := content(t, target); !strings.Contains(got, "echo v0.2.0") {
@@ -93,7 +93,25 @@ func TestUpgradeShouldDoNothingWhenAlreadyOnTheLatestRelease(t *testing.T) {
 	releaseServer(t, "v0.1.0")
 	target := installedAt(t, "v0.1.0")
 	out, err := execute(t, "upgrade")
-	if err != nil || !strings.Contains(out, "já está na última versão (v0.1.0)") || content(t, target) != oldBinary {
+	if err != nil || !strings.Contains(out, "already on the latest version (v0.1.0)") || content(t, target) != oldBinary {
+		t.Fatalf("%v %q", err, out)
+	}
+}
+
+func TestUpgradeShouldReportLatestVersionInEnglish(t *testing.T) {
+	releaseServer(t, "v0.1.0")
+	installedAt(t, "v0.1.0")
+	out, err := execute(t, "upgrade")
+	if err != nil || !strings.Contains(out, "already on the latest version (v0.1.0)") {
+		t.Fatalf("%v %q", err, out)
+	}
+}
+
+func TestUpgradeShouldReportUpdatedVersionInEnglish(t *testing.T) {
+	releaseServer(t, "v0.2.0")
+	target := installedAt(t, "v0.1.0")
+	out, err := execute(t, "upgrade")
+	if err != nil || !strings.Contains(out, "updated v0.1.0 to v0.2.0") || !strings.Contains(out, target) {
 		t.Fatalf("%v %q", err, out)
 	}
 }
