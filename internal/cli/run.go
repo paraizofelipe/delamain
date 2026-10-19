@@ -16,6 +16,7 @@ import (
 	"github.com/paraizo/delamain/internal/gitx"
 	"github.com/paraizo/delamain/internal/herdr"
 	"github.com/paraizo/delamain/internal/pipeline"
+	"github.com/paraizo/delamain/internal/prompts"
 	"github.com/paraizo/delamain/internal/store"
 )
 
@@ -143,7 +144,7 @@ func runTask(ctx context.Context, cfg config.Config, task pipeline.Task, fg forg
 	return r.Run(ctx, task)
 }
 
-// newRunner wires the real omp, git, prompts and, when enabled, herdr; the caller sets Forge per repository.
+// newRunner wires the configured agent harness, git, prompts and, when enabled, herdr; the caller sets Forge per repository.
 func newRunner(cfg config.Config, st *store.Store) (*pipeline.Runner, error) {
 	set, err := loadPrompts(cfg)
 	if err != nil {
@@ -156,17 +157,31 @@ func newRunner(cfg config.Config, st *store.Store) (*pipeline.Runner, error) {
 			QuietShell: filepath.Join(cfg.Paths.StateDir, "herdr-shell"),
 		}
 	}
+	target := promptsTarget(cfg)
 	return &pipeline.Runner{
 		Cfg:           cfg,
 		Display:       display,
-		Agents:        pipeline.RPCAgents{Binary: cfg.Omp.Binary},
+		Agents:        agentsFor(cfg, target),
 		Checks:        pipeline.ExecChecks{},
 		Git:           gitx.New(),
 		Store:         st,
 		Prompts:       set,
-		PromptsTarget: promptsTarget(cfg),
+		PromptsTarget: target,
 		Log:           slog.New(slog.NewTextHandler(os.Stderr, nil)),
 	}, nil
+}
+
+// agentsFor starts the agents on the configured harness.
+func agentsFor(cfg config.Config, target prompts.Target) pipeline.Agents {
+	if cfg.Agent.Harness == config.HarnessClaude {
+		c := cfg.Claude
+		return pipeline.ClaudeAgents{
+			Binary: c.Binary, Model: c.Model, Effort: c.Effort, PermissionMode: c.PermissionMode,
+			AgentsFile: target.AgentsFile(), PluginDir: target.PluginDir(),
+		}
+	}
+	o := cfg.Omp
+	return pipeline.RPCAgents{Binary: o.Binary, Model: o.Model, Thinking: o.Thinking, ApprovalMode: o.ApprovalMode}
 }
 
 func openStore(ctx context.Context, cfg config.Config) (*store.Store, error) {

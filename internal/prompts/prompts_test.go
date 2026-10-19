@@ -1,6 +1,7 @@
 package prompts
 
 import (
+	"encoding/json"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -106,6 +107,9 @@ func TestLintShouldReportEveryContractBreak(t *testing.T) {
 		"stage without artifact": {func(m fstest.MapFS) {
 			m["stages/plan.md"] = &fstest.MapFile{Data: []byte("just do it")}
 		}, "never references {{.ArtifactPath}}"},
+		"unknown agent tool": {func(m fstest.MapFS) {
+			m["agents/analyzer/omp.yml"] = &fstest.MapFile{Data: []byte("name: delamain-analyzer\ndescription: d\ntools: [read, web]\n")}
+		}, `tool "web" is not one of`},
 		"empty role body": {func(m fstest.MapFS) {
 			m["roles/planner/body.md"] = &fstest.MapFile{Data: []byte("  \n")}
 		}, "roles/planner/body.md: missing or empty"},
@@ -230,6 +234,48 @@ func TestInstallShouldWriteNamespacedAssetsAndLeaveUserFilesAlone(t *testing.T) 
 	}
 	if _, err := os.Stat(stale); !os.IsNotExist(err) {
 		t.Fatal("a reference removed upstream must not linger in the installed skill")
+	}
+}
+
+func TestInstallForClaudeShouldWriteAgentsJSONAndASkillsPluginButNothingForOmp(t *testing.T) {
+	root := t.TempDir()
+	target := Target{Harness: HarnessClaude, OmpAgentDir: filepath.Join(root, "omp"), RolesDir: filepath.Join(root, "roles"), ClaudeDir: filepath.Join(root, "claude")}
+	written, err := mustLoad(t, validTree()).Install(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		target.AgentsFile(),
+		filepath.Join(target.PluginDir(), ".claude-plugin", "plugin.json"),
+		filepath.Join(target.PluginDir(), "skills", "delamain-tdd", "SKILL.md"),
+		filepath.Join(target.PluginDir(), "skills", "delamain-tdd", "references", "test-quality.md"),
+		target.RolePath("planner"),
+	}
+	if strings.Join(written, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("written:\n%s\nwant:\n%s", strings.Join(written, "\n"), strings.Join(want, "\n"))
+	}
+	if _, err := os.Stat(target.OmpAgentDir); !os.IsNotExist(err) {
+		t.Fatal("a claude install must not write omp's agent dir")
+	}
+	var agents map[string]struct {
+		Description, Prompt string
+		Tools               []string
+	}
+	b, _ := os.ReadFile(target.AgentsFile())
+	if err := json.Unmarshal(b, &agents); err != nil {
+		t.Fatalf("agents.json: %v\n%s", err, b)
+	}
+	a, ok := agents["delamain-analyzer"]
+	if !ok || a.Description != "maps the repo" || !strings.Contains(a.Prompt, "<role>analyzer</role>") || strings.Join(a.Tools, ",") != "Read" {
+		t.Fatalf("subagents keep their delamain- name and map tools to claude's: %+v", agents)
+	}
+	var plugin struct{ Name string }
+	b, _ = os.ReadFile(filepath.Join(target.PluginDir(), ".claude-plugin", "plugin.json"))
+	if err := json.Unmarshal(b, &plugin); err != nil || plugin.Name != "delamain" {
+		t.Fatalf("plugin.json: %v %s", err, b)
+	}
+	if missing, outdated, err := mustLoad(t, validTree()).Drift(target); err != nil || len(missing)+len(outdated) != 0 {
+		t.Fatalf("no drift right after a claude install: %v %v %v", missing, outdated, err)
 	}
 }
 

@@ -146,9 +146,8 @@ func TestRunShouldDeliverApprovedWorkInOneIteration(t *testing.T) {
 	}
 	for _, role := range []string{"planner", "implementer", "reviewer"} {
 		name := role + "-r1"
-		args := strings.Join(hs.h.started[name], " ")
-		if !strings.Contains(args, "--append-system-prompt "+hs.r.PromptsTarget.RolePath(role)) || !strings.Contains(args, "--model openai-codex/gpt-5.6-terra") {
-			t.Errorf("%s started with wrong args: %s", role, args)
+		if o := hs.h.starts[name]; o.SystemPrompt != hs.r.PromptsTarget.RolePath(role) || o.SessionDir != filepath.Join(res.RunDir, "sessions", role) {
+			t.Errorf("%s started with wrong options: %+v", role, o)
 		}
 		if log := hs.h.tails[hs.h.tabPanes[role]]; !strings.HasSuffix(log, "/logs/"+role+".log'") || log != shellQuote(hs.h.starts[name].LogPath) {
 			t.Errorf("%s's tab must follow the session log, got %q (session logs to %q)", role, log, hs.h.starts[name].LogPath)
@@ -464,7 +463,7 @@ func TestAgentsShouldStartOnlyWhenTheirStageBegins(t *testing.T) {
 	seen := map[string][]string{} // role -> agents alive when its first prompt arrived
 	hs = newHarness(t, func(role string, n int, text string) reply {
 		if n == 1 {
-			for name := range hs.h.started {
+			for name := range hs.h.starts {
 				if len(hs.h.keys[name]) == 0 {
 					seen[role] = append(seen[role], name)
 				}
@@ -515,7 +514,7 @@ func TestReviewerShouldNeverStartWhenVerifyNeverPasses(t *testing.T) {
 	if res := hs.run(t); res.Outcome != OutcomeExhausted {
 		t.Fatalf("got %s: %s", res.Outcome, res.Reason)
 	}
-	if _, ok := hs.h.started["reviewer-r1"]; ok || slices.Contains(hs.h.tabs, "reviewer") {
+	if _, ok := hs.h.starts["reviewer-r1"]; ok || slices.Contains(hs.h.tabs, "reviewer") {
 		t.Fatalf("no review happens, so no reviewer tab or session, tabs=%v", hs.h.tabs)
 	}
 }

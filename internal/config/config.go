@@ -24,8 +24,10 @@ const (
 )
 
 type Config struct {
+	Agent    Agent    `yaml:"agent"`
 	Herdr    Herdr    `yaml:"herdr"`
 	Omp      Omp      `yaml:"omp"`
+	Claude   Claude   `yaml:"claude"`
 	Pipeline Pipeline `yaml:"pipeline"`
 	Budget   Budget   `yaml:"budget"`
 	Forge    Forge    `yaml:"forge"`
@@ -41,6 +43,29 @@ type Herdr struct {
 	Binary  string `yaml:"binary"`
 	// Session targets a named herdr session; empty means the default session.
 	Session string `yaml:"session"`
+}
+
+// Harness is the coding agent CLI that runs the planner, implementer and reviewer.
+type Harness string
+
+const (
+	HarnessOmp    Harness = "omp"
+	HarnessClaude Harness = "claude"
+)
+
+type Agent struct {
+	// Harness picks the section (omp or claude) the agents are started from.
+	Harness Harness `yaml:"harness"`
+}
+
+// Claude runs the agents as Claude Code in headless stream-json mode (`claude -p`).
+type Claude struct {
+	Binary string `yaml:"binary"`
+	Model  string `yaml:"model"`
+	// Effort is Claude Code's --effort: low|medium|high|xhigh|max.
+	Effort string `yaml:"effort"`
+	// PermissionMode is bypassPermissions (omp's yolo) or acceptEdits.
+	PermissionMode string `yaml:"permission_mode"`
 }
 
 type Omp struct {
@@ -115,8 +140,11 @@ type Paths struct {
 	PromptsDir string `yaml:"prompts_dir"`
 }
 
-// RolesDir holds installed role bodies passed to omp via --append-system-prompt.
+// RolesDir holds installed role bodies appended to the agents' system prompt.
 func (p Paths) RolesDir() string { return filepath.Join(p.StateDir, "prompts", "roles") }
+
+// ClaudeDir holds the subagents (agents.json) and skills plugin installed for the claude harness.
+func (p Paths) ClaudeDir() string { return filepath.Join(p.StateDir, "prompts", "claude") }
 
 // DefaultLabelPrefix names the lifecycle labels when forge.labels.prefix is unset.
 const DefaultLabelPrefix = "delamain"
@@ -144,6 +172,7 @@ func Default() Config {
 // defaults leaves the label names unset, so a prefix from the file or env still names them.
 func defaults() Config {
 	return Config{
+		Agent: Agent{Harness: HarnessOmp},
 		Herdr: Herdr{Binary: "herdr"},
 		Omp: Omp{
 			Binary:       "omp",
@@ -152,6 +181,7 @@ func defaults() Config {
 			Thinking:     "medium",
 			ApprovalMode: "yolo",
 		},
+		Claude:   Claude{Binary: "claude", Model: "opus", Effort: "high", PermissionMode: "bypassPermissions"},
 		Pipeline: Pipeline{MaxIterations: 3, MaxParallel: 1, PromptTimeout: 30 * time.Minute, CheckTimeout: 20 * time.Minute},
 		Budget:   Budget{Mode: BudgetTokens, PerIssue: 2_000_000, Daily: 10_000_000, SoftRatio: 0.8},
 		Forge:    Forge{Kind: ForgeAuto, Labels: Labels{Prefix: DefaultLabelPrefix}},
@@ -204,6 +234,8 @@ func Load(path string, getenv func(string) string) (Config, error) {
 
 func applyEnv(cfg *Config, getenv func(string) string) error {
 	strs := map[string]*string{
+		"DELAMAIN_AGENT_HARNESS": (*string)(&cfg.Agent.Harness),
+		"DELAMAIN_CLAUDE_MODEL":  &cfg.Claude.Model,
 		"DELAMAIN_HERDR_SESSION": &cfg.Herdr.Session,
 		"DELAMAIN_OMP_MODEL":     &cfg.Omp.Model,
 		"DELAMAIN_OMP_AGENT_DIR": &cfg.Omp.AgentDir,
@@ -265,10 +297,13 @@ func (c Config) Validate() error {
 	if c.Budget.SoftRatio <= 0 || c.Budget.SoftRatio > 1 {
 		errs = append(errs, errors.New("budget.soft_ratio must be in (0, 1]"))
 	}
-	switch c.Omp.ApprovalMode {
-	case "always-ask", "write", "yolo":
+	switch c.Agent.Harness {
+	case HarnessOmp:
+		errs = append(errs, c.Omp.validate()...)
+	case HarnessClaude:
+		errs = append(errs, c.Claude.validate()...)
 	default:
-		errs = append(errs, fmt.Errorf("omp.approval_mode %q is not one of always-ask|write|yolo", c.Omp.ApprovalMode))
+		errs = append(errs, fmt.Errorf("agent.harness %q is not one of omp|claude", c.Agent.Harness))
 	}
 	switch c.Forge.Kind {
 	case ForgeAuto, ForgeGitHub, ForgeGitLab, ForgeNone:
@@ -292,10 +327,38 @@ func (c Config) Validate() error {
 	default:
 		errs = append(errs, fmt.Errorf("gates.red_proof %q is not one of bug|always|never", c.Gates.RedProof))
 	}
-	if strings.TrimSpace(c.Omp.Model) == "" {
+	return errors.Join(errs...)
+}
+
+func (o Omp) validate() []error {
+	var errs []error
+	switch o.ApprovalMode {
+	case "always-ask", "write", "yolo":
+	default:
+		errs = append(errs, fmt.Errorf("omp.approval_mode %q is not one of always-ask|write|yolo", o.ApprovalMode))
+	}
+	if strings.TrimSpace(o.Model) == "" {
 		errs = append(errs, errors.New("omp.model is required"))
 	}
-	return errors.Join(errs...)
+	return errs
+}
+
+func (c Claude) validate() []error {
+	var errs []error
+	switch c.Effort {
+	case "low", "medium", "high", "xhigh", "max":
+	default:
+		errs = append(errs, fmt.Errorf("claude.effort %q is not one of low|medium|high|xhigh|max", c.Effort))
+	}
+	switch c.PermissionMode {
+	case "bypassPermissions", "acceptEdits":
+	default:
+		errs = append(errs, fmt.Errorf("claude.permission_mode %q is not one of bypassPermissions|acceptEdits", c.PermissionMode))
+	}
+	if strings.TrimSpace(c.Model) == "" {
+		errs = append(errs, errors.New("claude.model is required"))
+	}
+	return errs
 }
 
 func homeDir() string {

@@ -12,15 +12,16 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"regexp"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/paraizo/delamain/internal/agent"
 )
 
 // ErrTimeout means a turn did not end in time; it was aborted.
-var ErrTimeout = errors.New("omp: turno não terminou no prazo")
+var ErrTimeout = agent.ErrTimeout
 
 const (
 	maxFrame     = 1 << 20 // omp's advertised maxFrameBytes in protocol v1
@@ -41,32 +42,13 @@ type Options struct {
 	CloseTimeout time.Duration
 }
 
-type Usage struct {
-	Input      int64 `json:"input"`
-	Output     int64 `json:"output"`
-	CacheRead  int64 `json:"cacheRead"`
-	CacheWrite int64 `json:"cacheWrite"`
-	Cost       Cost  `json:"cost"`
-}
-
-type Cost struct {
-	Total float64 `json:"total"`
-}
-
-func (u Usage) add(o Usage) Usage {
-	return Usage{u.Input + o.Input, u.Output + o.Output, u.CacheRead + o.CacheRead, u.CacheWrite + o.CacheWrite, Cost{u.Cost.Total + o.Cost.Total}}
-}
-
-// Turn is the outcome of one prompt, taken from its last assistant message. StopReason is
-// empty when no assistant message arrived (e.g. a locally handled command or a dropped frame).
-type Turn struct {
-	StopReason   string
-	ErrorMessage string
-	Model        string
-	Usage        Usage
-}
-
-func (t Turn) Failed() bool { return t.StopReason == "error" }
+type (
+	Usage = agent.Usage
+	Cost  = agent.Cost
+	// Turn is the outcome of one prompt, taken from its last assistant message. StopReason is
+	// empty when no assistant message arrived (e.g. a locally handled command or a dropped frame).
+	Turn = agent.Turn
+)
 
 type message struct {
 	Role         string          `json:"role"`
@@ -220,7 +202,7 @@ func (c *Client) read(stdout io.Reader, ready chan struct{}) {
 		c.logFrame(f)
 		c.smu.Lock()
 		if m := f.msg(); f.Type == "message_end" && m != nil && m.Role == "assistant" {
-			c.spent = c.spent.add(m.Usage)
+			c.spent = c.spent.Add(m.Usage)
 		}
 		s := c.sink
 		c.smu.Unlock()
@@ -290,7 +272,7 @@ func (c *Client) Prompt(ctx context.Context, text string, timeout time.Duration)
 	for {
 		select {
 		case f := <-sink:
-			if end, err := turn.apply(f, id); end {
+			if end, err := apply(&turn, f, id); end {
 				if err == nil {
 					c.logf("■ fim do turno: %s · in %d out %d cacheW %d", orDash(turn.StopReason), turn.Usage.Input, turn.Usage.Output, turn.Usage.CacheWrite)
 				}
@@ -307,7 +289,7 @@ func (c *Client) Prompt(ctx context.Context, text string, timeout time.Duration)
 }
 
 // apply folds one frame into the turn and reports whether the turn ended.
-func (t *Turn) apply(f frame, id string) (bool, error) {
+func apply(t *Turn, f frame, id string) (bool, error) {
 	switch {
 	case f.Type == "response" && f.ID == id && f.Success != nil && !*f.Success:
 		// A scheduled prompt can fail after its ack, with no agent_end at all.
@@ -390,12 +372,12 @@ func (c *Client) logFrame(f frame) {
 	case "tool_execution_start":
 		detail := f.Intent
 		if detail == "" {
-			detail = truncate(string(f.Args), 160)
+			detail = agent.Truncate(string(f.Args), 160)
 		}
 		c.logf("🔧 %s: %s", f.ToolName, detail)
 	case "tool_execution_end":
 		if f.IsError {
-			c.logf("✗ %s falhou%s", f.ToolName, toolFailure(text(f.Result.Content)))
+			c.logf("✗ %s falhou%s", f.ToolName, agent.ToolFailure(text(f.Result.Content)))
 		}
 	case "message_end":
 		m := f.msg()
@@ -403,21 +385,21 @@ func (c *Client) logFrame(f frame) {
 			return
 		}
 		if txt := text(m.Content); txt != "" {
-			c.logf("💬 %s", truncate(txt, 2000))
+			c.logf("💬 %s", agent.Truncate(txt, 2000))
 		}
 		if m.ErrorMessage != "" {
-			c.logf("✗ %s: %s", m.StopReason, truncate(m.ErrorMessage, 500))
+			c.logf("✗ %s: %s", m.StopReason, agent.Truncate(m.ErrorMessage, 500))
 		}
 	case "subagent_lifecycle":
 		c.logf("⑂ subagent %s (%s): %s", f.Payload.ID, f.Payload.Agent, f.Payload.Status)
 	case "notice":
 		var notice string
 		_ = json.Unmarshal(f.Message, &notice)
-		c.logf("⚠ %s %s", f.Level, truncate(notice, 500))
+		c.logf("⚠ %s %s", f.Level, agent.Truncate(notice, 500))
 	case "auto_retry_start":
-		c.logf("↻ retry %d/%d: %s", f.Attempt, f.MaxAttempts, truncate(f.ErrorMessage, 300))
+		c.logf("↻ retry %d/%d: %s", f.Attempt, f.MaxAttempts, agent.Truncate(f.ErrorMessage, 300))
 	case "rpc_frame_error", "extension_error":
-		c.logf("✗ %s: %s", f.Type, truncate(f.Error, 300))
+		c.logf("✗ %s: %s", f.Type, agent.Truncate(f.Error, 300))
 	}
 }
 
@@ -436,51 +418,6 @@ func text(content json.RawMessage) string {
 		}
 	}
 	return strings.Join(parts, "\n")
-}
-
-var (
-	exitRe = regexp.MustCompile(`(?m)^Command exited with code (\d+)\s*$`)
-	// errRe spots the line that says what went wrong, e.g. "--- FAIL: TestX" after make echoes its recipe.
-	errRe = regexp.MustCompile(`(?i)\b(fail|error|erro|panic|fatal|denied|not found|no such|undefined|cannot)\b`)
-	// omp's own trailer lines, never the cause.
-	noiseRe = regexp.MustCompile(`^(Command exited with code \d+|Wall time: .*|\[raw output: .*\])$`)
-)
-
-// toolFailure summarises a failed tool's output for the log: " (exit N): <first error line>
-// | <next line>", so the cause shows without opening the session JSONL.
-func toolFailure(out string) string {
-	var exit string
-	if m := exitRe.FindStringSubmatch(out); m != nil {
-		exit = " (exit " + m[1] + ")"
-	}
-	var lines []string
-	for _, l := range strings.Split(out, "\n") {
-		if l = strings.TrimSpace(l); l != "" && !noiseRe.MatchString(l) {
-			lines = append(lines, l)
-		}
-	}
-	if len(lines) == 0 {
-		return exit
-	}
-	at := 0
-	for i, l := range lines {
-		if errRe.MatchString(l) {
-			at = i
-			break
-		}
-	}
-	cause := lines[at]
-	if at+1 < len(lines) {
-		cause += " | " + lines[at+1]
-	}
-	return exit + ": " + truncate(cause, 300)
-}
-
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "…"
 }
 
 func orDash(s string) string {

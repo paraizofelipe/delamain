@@ -13,7 +13,9 @@ import (
 
 const defaultBudgetInterval = 10 * time.Second
 
-func (r *Runner) meter() budget.Meter { return budget.Meter{Store: r.Store, Cfg: r.Cfg.Budget} }
+func (r *Runner) meter() budget.Meter {
+	return budget.Meter{Store: r.Store, Cfg: r.Cfg.Budget, Sessions: r.Agents.Sessions}
+}
 
 // checkBudget records the run's usage after a turn and stops the run at the hard limit.
 // Accounting failures halt too: an unmeasured run would spend without a ceiling.
@@ -81,12 +83,11 @@ func (r *Runner) watchBudget(ctx context.Context, ru *run, agent Agent) func() w
 	}
 }
 
-// liveUsage is what each running agent reported over RPC, keyed like the sessions dir (by role).
+// liveUsage is what each running agent reported while its turn ran, keyed like the sessions dir (by role).
 func liveUsage(agents map[string]Agent) map[string]store.Usage {
 	live := make(map[string]store.Usage, len(agents))
 	for role, a := range agents {
-		u := a.Spent()
-		live[role] = store.Usage{Input: u.Input, Output: u.Output, CacheRead: u.CacheRead, CacheWrite: u.CacheWrite, CostUSD: u.Cost.Total}
+		live[role] = storeUsage(a.Spent())
 	}
 	return live
 }

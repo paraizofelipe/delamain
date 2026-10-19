@@ -1,4 +1,4 @@
-// Package budget turns omp session usage into a per-issue and daily spend and decides when a
+// Package budget turns agent session usage into a per-issue and daily spend and decides when a
 // run must wrap up (soft limit) or stop (hard limit).
 package budget
 
@@ -35,34 +35,63 @@ type Status struct {
 	Reason          string
 }
 
-// Meter reads session files into the store ledger and evaluates the limits.
+// SessionUsage is one session's cumulative usage so far, keyed by the file a harness keeps it in.
+type SessionUsage struct {
+	Role, File string
+	Usage      store.Usage
+}
+
+// Sessions lists the usage of every session under a run's sessions dir (layout <role>/...).
+type Sessions func(sessionsDir string) ([]SessionUsage, error)
+
+// OmpSessions reads omp's session JSONL files, subagents' included.
+func OmpSessions(sessionsDir string) ([]SessionUsage, error) {
+	files, err := omp.SessionFiles(sessionsDir)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]SessionUsage, 0, len(files))
+	for _, f := range files {
+		u, err := omp.SumUsage(f)
+		if err != nil {
+			return nil, err
+		}
+		role, _, _ := strings.Cut(relSlash(sessionsDir, f), "/")
+		out = append(out, SessionUsage{Role: role, File: f, Usage: store.Usage(u)})
+	}
+	return out, nil
+}
+
+// Meter reads session usage into the store ledger and evaluates the limits.
 type Meter struct {
 	Store *store.Store
 	Cfg   config.Budget
 	Now   func() time.Time
+	// Sessions reads the run's session usage; nil means omp's session files.
+	Sessions Sessions
 }
 
-// Check records the current usage of every session under sessionsDir (layout <role>/...jsonl)
+// Check records the current usage of every session under sessionsDir (layout <role>/...)
 // and returns the run's status. Safe to call repeatedly: the ledger keeps only deltas.
 //
-// live is the usage each running role reported over RPC. omp writes session files in batches,
-// so a role's spend is the larger of the two; only the files go to the ledger.
+// live is the usage each running role reported while its turn ran. A harness writes its
+// session usage in batches, so a role's spend is the larger of the two; only the files go to
+// the ledger.
 func (m Meter) Check(ctx context.Context, runID int64, sessionsDir string, live map[string]store.Usage) (Status, error) {
-	files, err := omp.SessionFiles(sessionsDir)
+	read := m.Sessions
+	if read == nil {
+		read = OmpSessions
+	}
+	sessions, err := read(sessionsDir)
 	if err != nil {
 		return Status{}, err
 	}
 	written := map[string]store.Usage{}
-	for _, f := range files {
-		u, err := omp.SumUsage(f)
-		if err != nil {
+	for _, s := range sessions {
+		if _, err := m.Store.RecordUsage(ctx, runID, s.Role, s.File, s.Usage); err != nil {
 			return Status{}, err
 		}
-		role, _, _ := strings.Cut(relSlash(sessionsDir, f), "/")
-		if _, err := m.Store.RecordUsage(ctx, runID, role, f, store.Usage(u)); err != nil {
-			return Status{}, err
-		}
-		written[role] = written[role].Add(store.Usage(u))
+		written[s.Role] = written[s.Role].Add(s.Usage)
 	}
 	var unwritten store.Usage
 	for role, u := range live {

@@ -2,6 +2,7 @@ package prompts
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -13,20 +14,38 @@ import (
 	"strings"
 )
 
+// Harnesses the prompts are installed for; empty means omp.
+const (
+	HarnessOmp    = "omp"
+	HarnessClaude = "claude"
+)
+
 // Target says where installed prompts go.
 type Target struct {
+	// Harness picks the layout of agents and skills: omp's agent dir or claude's files.
+	Harness string
 	// OmpAgentDir is omp's agent directory (default ~/.omp/agent); agents/ and skills/ live under it.
 	OmpAgentDir string
-	// RolesDir receives role bodies passed to omp via --append-system-prompt.
+	// RolesDir receives role bodies appended to the harness' system prompt.
 	RolesDir string
+	// ClaudeDir receives agents.json (claude --agents) and plugin/ (claude --plugin-dir, the skills).
+	ClaudeDir string
 }
 
 func (t Target) RolePath(role string) string { return filepath.Join(t.RolesDir, role+".md") }
 
+// AgentsFile is the subagents definition passed to claude --agents.
+func (t Target) AgentsFile() string { return filepath.Join(t.ClaudeDir, "agents.json") }
+
+// PluginDir is the plugin passed to claude --plugin-dir; it carries the skills.
+func (t Target) PluginDir() string { return filepath.Join(t.ClaudeDir, "plugin") }
+
+// claudeTools maps the tool names agents declare in omp.yml to Claude Code's.
+var claudeTools = map[string]string{"read": "Read", "grep": "Grep", "glob": "Glob", "lsp": "LSP", "bash": "Bash"}
+
 // files computes every installed path and its content.
 func (s *Set) files(t Target) (map[string][]byte, []string, error) {
 	out := map[string][]byte{}
-	var skillDirs []string
 	for _, r := range s.Manifest.Roles {
 		body, err := s.Role(r)
 		if err != nil {
@@ -34,15 +53,56 @@ func (s *Set) files(t Target) (map[string][]byte, []string, error) {
 		}
 		out[t.RolePath(r)] = []byte(body)
 	}
-	for _, a := range s.Manifest.Agents {
-		data, err := s.Agent(a)
+	skillsDir := filepath.Join(t.OmpAgentDir, "skills")
+	if t.Harness == HarnessClaude {
+		agents, err := s.claudeAgents()
 		if err != nil {
 			return nil, nil, err
 		}
-		out[filepath.Join(t.OmpAgentDir, "agents", Prefix+a+".md")] = data
+		out[t.AgentsFile()] = agents
+		out[filepath.Join(t.PluginDir(), ".claude-plugin", "plugin.json")] = []byte(`{"name":"delamain","description":"delamain's skills for its agents"}` + "\n")
+		skillsDir = filepath.Join(t.PluginDir(), "skills")
+	} else {
+		for _, a := range s.Manifest.Agents {
+			data, err := s.Agent(a)
+			if err != nil {
+				return nil, nil, err
+			}
+			out[filepath.Join(t.OmpAgentDir, "agents", Prefix+a+".md")] = data
+		}
 	}
+	skillDirs, err := s.skillFiles(skillsDir, out)
+	return out, skillDirs, err
+}
+
+// claudeAgents renders every agent as a claude --agents definition, keyed by its name.
+func (s *Set) claudeAgents() ([]byte, error) {
+	type def struct {
+		Description string   `json:"description"`
+		Prompt      string   `json:"prompt"`
+		Tools       []string `json:"tools,omitempty"`
+	}
+	defs := map[string]def{}
+	for _, a := range s.Manifest.Agents {
+		fm, body, err := s.agentParts(a)
+		if err != nil {
+			return nil, err
+		}
+		d := def{Description: fm.Description, Prompt: string(body)}
+		for _, tool := range fm.Tools {
+			d.Tools = append(d.Tools, claudeTools[tool])
+		}
+		defs[fm.Name] = d
+	}
+	b, err := json.MarshalIndent(defs, "", "  ")
+	return append(b, '\n'), err
+}
+
+// skillFiles adds every skill's files under dir/delamain-<skill>/ and returns those dirs.
+func (s *Set) skillFiles(dir string, out map[string][]byte) ([]string, error) {
+	var skillDirs []string
 	for _, sk := range s.Manifest.Skills {
-		dst := filepath.Join(t.OmpAgentDir, "skills", Prefix+sk)
+		dst := filepath.Join(dir, Prefix+sk)
 		skillDirs = append(skillDirs, dst)
 		src := path.Join("skills", sk)
 		err := fs.WalkDir(s.FS, src, func(p string, d fs.DirEntry, err error) error {
@@ -57,10 +117,10 @@ func (s *Set) files(t Target) (map[string][]byte, []string, error) {
 			return nil
 		})
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 	}
-	return out, skillDirs, nil
+	return skillDirs, nil
 }
 
 // Install writes roles, agents and skills, returning every written path (sorted).
