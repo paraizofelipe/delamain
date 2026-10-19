@@ -77,6 +77,12 @@ func (s Store) Append(host, repoPath string, runID int64, pr int, learnings []st
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return 0, err
 	}
+	seen := map[string]bool{}
+	for line := range strings.Lines(string(cur)) {
+		if _, text, ok := strings.Cut(strings.TrimSuffix(line, "\n"), "): "); ok {
+			seen[text] = true
+		}
+	}
 	var b strings.Builder
 	b.Write(cur)
 	n := 0
@@ -85,11 +91,15 @@ func (s Store) Append(host, repoPath string, runID int64, pr int, learnings []st
 			break
 		}
 		l = strings.TrimSpace(l)
-		if utf8.RuneCountInString(l) > maxChars {
+		if l == "" || utf8.RuneCountInString(l) > maxChars || seen[l] {
 			continue
 		}
+		seen[l] = true
 		fmt.Fprintf(&b, "- %s (run %d, pr #%d): %s\n", now.Format("2006-01-02"), runID, pr, l)
 		n++
+	}
+	if n == 0 {
+		return 0, nil
 	}
 	if err := writeAtomic(p, []byte(b.String())); err != nil {
 		return 0, err

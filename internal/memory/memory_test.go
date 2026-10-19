@@ -173,3 +173,31 @@ func TestAppendShouldKeepAtMost10PerCall(t *testing.T) {
 		t.Fatalf("must keep the first 10 in order:\n%s", got)
 	}
 }
+
+func TestAppendShouldSkipEmptyAndDuplicateLearnings(t *testing.T) {
+	s := newStore(t)
+	if _, err := s.Append("github.com", "acme/app", 1, 1, []string{"check nil maps"}, day); err != nil {
+		t.Fatal(err)
+	}
+	n, err := s.Append("github.com", "acme/app", 2, 3, []string{"", "   ", "check nil maps", " close bodies ", "close bodies", "new one"}, day)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("wrote %d, want 2", n)
+	}
+	want := "- 2026-10-19 (run 1, pr #1): check nil maps\n" +
+		"- 2026-10-19 (run 2, pr #3): close bodies\n" +
+		"- 2026-10-19 (run 2, pr #3): new one\n"
+	if got := readFile(t, s.Path("github.com", "acme/app")); got != want {
+		t.Fatalf("unexpected file body:\n%s", got)
+	}
+
+	n, err = s.Append("github.com", "acme/other", 1, 1, []string{"", " "}, day)
+	if err != nil || n != 0 {
+		t.Fatalf("Append(only empty) = %d, %v, want 0, nil", n, err)
+	}
+	if _, err := os.Stat(s.Path("github.com", "acme/other")); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("nothing valid must not create the file: %v", err)
+	}
+}
