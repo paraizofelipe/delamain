@@ -236,6 +236,10 @@ func (c *Client) account(e event) {
 	case "result":
 		if len(e.ModelUsage) > 0 {
 			c.total = sumModelUsage(e.ModelUsage)
+		} else { // e.g. an interrupted turn: keep what its assistant messages reported
+			for _, m := range c.inTurn {
+				c.total = c.total.Add(m)
+			}
 		}
 		c.inTurn = map[string]usage{}
 	}
@@ -282,6 +286,15 @@ func (c *Client) nextID(prefix string) string {
 // Prompt sends text and waits for the turn's result. On timeout or ctx cancellation the turn
 // is interrupted before returning.
 func (c *Client) Prompt(ctx context.Context, text string, timeout time.Duration) (agent.Turn, error) {
+	turn, err := c.prompt(ctx, text, timeout)
+	// Every way out records the usage: a turn that timed out or died may be the costliest.
+	if werr := c.writeUsage(); werr != nil && err == nil {
+		err = fmt.Errorf("claude: gravar usage: %w", werr)
+	}
+	return turn, err
+}
+
+func (c *Client) prompt(ctx context.Context, text string, timeout time.Duration) (agent.Turn, error) {
 	c.tmu.Lock()
 	defer c.tmu.Unlock()
 	sink, stop := make(chan event, 256), make(chan struct{})
@@ -307,9 +320,6 @@ func (c *Client) Prompt(ctx context.Context, text string, timeout time.Duration)
 	end := func(e event) (agent.Turn, error) {
 		turn := c.turn(e, before)
 		c.logf("■ fim do turno: %s · in %d out %d cacheW %d", turn.StopReason, turn.Usage.Input, turn.Usage.Output, turn.Usage.CacheWrite)
-		if err := c.writeUsage(); err != nil {
-			return turn, fmt.Errorf("claude: gravar usage: %w", err)
-		}
 		return turn, nil
 	}
 	for {
@@ -485,14 +495,13 @@ func (c *Client) exitError(what string) error {
 	return errors.Join(err, c.readErr)
 }
 
-// writeUsage replaces the usage file with the session's cumulative total.
+// writeUsage replaces the usage file with the session's cumulative usage, including a turn
+// that ended without a result.
 func (c *Client) writeUsage() error {
 	if c.usagePath == "" {
 		return nil
 	}
-	c.smu.Lock()
-	b, err := json.Marshal(c.total)
-	c.smu.Unlock()
+	b, err := json.Marshal(c.Spent())
 	if err != nil {
 		return err
 	}

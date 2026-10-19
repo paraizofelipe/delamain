@@ -66,7 +66,7 @@ func newPromptsCmd(load func() (config.Config, error)) *cobra.Command {
 		},
 		&cobra.Command{
 			Use:   "install",
-			Short: "Install agents and skills into omp and roles into the state dir",
+			Short: "Install agents, skills and roles for the configured harness (omp or claude)",
 			RunE: withSet(func(c *cobra.Command, cfg config.Config, set *prompts.Set, _ []string) error {
 				written, err := set.Install(promptsTarget(cfg))
 				for _, p := range written {

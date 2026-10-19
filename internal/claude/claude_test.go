@@ -248,6 +248,31 @@ func TestPromptShouldInterruptATurnThatOutlivesItsTimeoutAndKeepTheSession(t *te
 	}
 }
 
+func TestPromptShouldKeepAndRecordTheUsageOfATurnThatTimedOut(t *testing.T) {
+	s := start(t, "hang")
+	if _, err := s.c.Prompt(context.Background(), "go", 300*time.Millisecond); !errors.Is(err, agent.ErrTimeout) {
+		t.Fatalf("err = %v, want ErrTimeout", err)
+	}
+	// The interrupt's result carries no modelUsage: what the assistant reported must stay counted.
+	if got := s.c.Spent(); got.Input != 10 || got.CacheWrite != 7 {
+		t.Fatalf("the interrupted turn's usage was dropped: %+v", got)
+	}
+	u, err := ReadUsage(s.usage)
+	if err != nil || u.Input != 10 || u.CacheWrite != 7 {
+		t.Fatalf("the ledger must see a timed-out turn, often the costliest: %+v %v", u, err)
+	}
+}
+
+func TestPromptShouldRecordTheUsageOfATurnWhoseProcessDied(t *testing.T) {
+	s := start(t, "die")
+	if _, err := s.c.Prompt(context.Background(), "go", time.Minute); err == nil {
+		t.Fatal("want an error when claude exits mid-turn")
+	}
+	if u, err := ReadUsage(s.usage); err != nil || u.Input != 10 {
+		t.Fatalf("usage reported before claude died must reach the ledger: %+v %v", u, err)
+	}
+}
+
 func TestAbortShouldEndTheTurnAsAbortedAndCountLiveUsageOncePerMessage(t *testing.T) {
 	s := start(t, "hang")
 	type out struct {

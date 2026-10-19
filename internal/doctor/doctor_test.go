@@ -112,8 +112,9 @@ func TestRunShouldCheckClaudeInsteadOfOmpWhenItIsTheHarness(t *testing.T) {
 		}
 		return "/usr/bin/" + b, nil
 	}
-	checks := byName(Run(context.Background(), cfg, d))
-	if Failed(Run(context.Background(), cfg, d)) {
+	results := Run(context.Background(), cfg, d)
+	checks := byName(results)
+	if Failed(results) {
 		t.Fatalf("omp is not needed with harness=claude: %+v", checks)
 	}
 	if _, ok := checks["omp"]; ok {
@@ -137,6 +138,25 @@ func TestRunShouldFailWhenClaudeIsNotLoggedInAndWarnOnAnOldClaude(t *testing.T) 
 	d.Version = func(_ context.Context, b string) (string, error) { return "2.1.100 (Claude Code)", nil }
 	if c := byName(Run(context.Background(), cfg, d))["claude"]; c.Status != Warn {
 		t.Fatalf("a claude older than %s must be flagged: %+v", MinClaude, c)
+	}
+}
+
+func TestOlderThanShouldCompareXYZAndIgnoreAPreReleaseSuffix(t *testing.T) {
+	for _, tc := range []struct {
+		version string
+		want    bool
+	}{
+		{"2.1.100 (Claude Code)", true},
+		{"2.1.290 (Claude Code)", false},
+		{"2.1.303 (Claude Code)", false},
+		{"2.1.100-beta (Claude Code)", true},
+		{"2.1.303-rc.1 (Claude Code)", false},
+		{"", false},
+		{"not a version", false},
+	} {
+		if got := olderThan(tc.version, MinClaude); got != tc.want {
+			t.Errorf("olderThan(%q, %s) = %v, want %v", tc.version, MinClaude, got, tc.want)
+		}
 	}
 }
 

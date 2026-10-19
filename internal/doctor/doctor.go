@@ -205,15 +205,17 @@ func herdrServer(ctx context.Context, cfg config.Config, h Herdr) []Check {
 // MinClaude is the oldest Claude Code whose stream-json ends a cut-off turn properly.
 const MinClaude = "2.1.290"
 
-// olderThan compares the leading x.y.z of a --version output with min; unparsable is not older.
+// olderThan compares the leading x.y.z of a --version output with min, ignoring a pre-release
+// suffix; unparsable is not older.
 func olderThan(version, minimum string) bool {
 	parse := func(s string) []int {
 		f := strings.Fields(s)
 		if len(f) == 0 {
 			return nil
 		}
+		xyz, _, _ := strings.Cut(f[0], "-")
 		var n []int
-		for _, p := range strings.Split(f[0], ".") {
+		for _, p := range strings.Split(xyz, ".") {
 			v, err := strconv.Atoi(p)
 			if err != nil {
 				return nil
