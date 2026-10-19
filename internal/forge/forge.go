@@ -1,5 +1,13 @@
 // Package forge opens PRs (GitHub) and MRs (GitLab) through their REST APIs and manages issue
 // labels and comments. It deliberately has no merge operation: delamain stops at the PR/MR.
+//
+// It talks to the forges with their Go clients instead of running gh/glab: GitHub through
+// github.com/google/go-github (REST, plus a small GraphQL helper on the same client) and GitLab
+// through gitlab.com/gitlab-org/api/client-go, GitLab's official client. Both are typed and
+// maintained, derive the Enterprise (/api/v3) and self-hosted (/api/v4) base URLs from the host,
+// and free delamain from the CLIs' output formats, prompts and installation. The CLIs remain
+// only as a place to read a token from (see Token), so a machine already logged in to gh/glab
+// needs no extra setup.
 package forge
 
 import (

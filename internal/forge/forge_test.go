@@ -3,10 +3,16 @@ package forge
 import (
 	"context"
 	"encoding/json"
+	"go/scanner"
+	"go/token"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -155,5 +161,40 @@ func TestForgeShouldNeverIssueMergeCommands(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// Talking to the forge goes through its API: the CLIs are only a place to read a token from.
+func TestOnlyTokenGoShouldMentionTheForgeCLIs(t *testing.T) {
+	root := filepath.Join("..")
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return err
+		}
+		if filepath.ToSlash(path) == "../forge/token.go" {
+			return nil
+		}
+		src, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		fset := token.NewFileSet()
+		var s scanner.Scanner
+		s.Init(fset.AddFile(path, -1, len(src)), src, nil, 0)
+		for {
+			pos, tok, lit := s.Scan()
+			if tok == token.EOF {
+				return nil
+			}
+			if tok != token.STRING {
+				continue
+			}
+			if v, err := strconv.Unquote(lit); err == nil && (v == "gh" || v == "glab") {
+				t.Errorf("%s: %s literal outside internal/forge/token.go", fset.Position(pos), lit)
+			}
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }

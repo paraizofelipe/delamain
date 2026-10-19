@@ -46,7 +46,14 @@ func TokenHint(kind Kind, host string) string {
 }
 
 // TokenPermissions is the least a token needs for what delamain does: read issues, comment,
-// label and open PRs/MRs. It never needs to merge, push or administer the repository.
+// label and open PRs/MRs.
+//
+//   - GitHub: a fine-grained token with Issues and Pull requests read/write and Metadata read on
+//     the repositories delamain works on; a classic token needs the repo scope.
+//   - GitLab: a personal, project or group access token with the api scope and at least the
+//     Developer role on the project.
+//
+// It never needs to merge, push (git pushes with its own credentials) or administer the repository.
 func TokenPermissions(kind Kind) string {
 	if kind == GitLab {
 		return "needs the api scope and at least the Developer role"
