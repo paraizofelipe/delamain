@@ -87,3 +87,14 @@ func TestPromptsShouldFailWhenOverrideDirIsMissing(t *testing.T) {
 		t.Fatal("a typo in prompts_dir must not silently fall back to defaults")
 	}
 }
+
+func TestConfigShouldShowTheNotifySection(t *testing.T) {
+	t.Setenv("DELAMAIN_NOTIFY_EVENTS", "halted,budget")
+	out, err := execute(t, "--config", filepath.Join(t.TempDir(), "none.yaml"), "config")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "notify:\n    enabled: true\n    backend: auto\n    events:\n        - halted\n        - budget\n") {
+		t.Fatalf("config must show the effective notify section:\n%s", out)
+	}
+}

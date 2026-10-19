@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -33,6 +34,7 @@ type Config struct {
 	Forge    Forge    `yaml:"forge"`
 	Gates    Gates    `yaml:"gates"`
 	Daemon   Daemon   `yaml:"daemon"`
+	Notify   Notify   `yaml:"notify"`
 	Paths    Paths    `yaml:"paths"`
 }
 
@@ -131,6 +133,29 @@ type Daemon struct {
 	PollInterval time.Duration `yaml:"poll_interval"`
 }
 
+// Notify configures the desktop notifications. On by default; Events picks which ones are shown.
+type Notify struct {
+	Enabled bool `yaml:"enabled"`
+	// Backend is auto, dbus, macos or none; auto picks macos on darwin, else dbus when a
+	// notification server is on the session bus, else none.
+	Backend string   `yaml:"backend"`
+	Events  []string `yaml:"events"`
+}
+
+// Notification backends.
+const (
+	NotifyAuto  = "auto"
+	NotifyDBus  = "dbus"
+	NotifyMacOS = "macos"
+	NotifyNone  = "none"
+)
+
+// NotifyEvents are the events a notification can be about; "started" is the only one off by default.
+var NotifyEvents = []string{"started", "pr_opened", "needs_human", "halted", "needs_info", "budget", "recover"}
+
+// DefaultNotifyEvents is every event but "started".
+func DefaultNotifyEvents() []string { return slices.Clone(NotifyEvents[1:]) }
+
 type Paths struct {
 	StateDir string `yaml:"state_dir"`
 	// WorktreesDir holds every run's worktree, as <worktrees_dir>/<repo>/<branch>; `delamain
@@ -187,6 +212,7 @@ func defaults() Config {
 		Forge:    Forge{Kind: ForgeAuto, Labels: Labels{Prefix: DefaultLabelPrefix}},
 		Gates:    Gates{RedProof: "bug", RequireTests: true},
 		Daemon:   Daemon{PollInterval: 5 * time.Minute},
+		Notify:   Notify{Enabled: true, Backend: NotifyAuto, Events: DefaultNotifyEvents()},
 		Paths: Paths{
 			StateDir:     "~/.local/state/delamain",
 			WorktreesDir: "~/projects/.worktrees",
@@ -234,26 +260,43 @@ func Load(path string, getenv func(string) string) (Config, error) {
 
 func applyEnv(cfg *Config, getenv func(string) string) error {
 	strs := map[string]*string{
-		"DELAMAIN_AGENT_HARNESS": (*string)(&cfg.Agent.Harness),
-		"DELAMAIN_CLAUDE_MODEL":  &cfg.Claude.Model,
-		"DELAMAIN_HERDR_SESSION": &cfg.Herdr.Session,
-		"DELAMAIN_OMP_MODEL":     &cfg.Omp.Model,
-		"DELAMAIN_OMP_AGENT_DIR": &cfg.Omp.AgentDir,
-		"DELAMAIN_STATE_DIR":     &cfg.Paths.StateDir,
-		"DELAMAIN_PROMPTS_DIR":   &cfg.Paths.PromptsDir,
-		"DELAMAIN_LABEL_PREFIX":  &cfg.Forge.Labels.Prefix,
+		"DELAMAIN_AGENT_HARNESS":  (*string)(&cfg.Agent.Harness),
+		"DELAMAIN_CLAUDE_MODEL":   &cfg.Claude.Model,
+		"DELAMAIN_HERDR_SESSION":  &cfg.Herdr.Session,
+		"DELAMAIN_OMP_MODEL":      &cfg.Omp.Model,
+		"DELAMAIN_OMP_AGENT_DIR":  &cfg.Omp.AgentDir,
+		"DELAMAIN_STATE_DIR":      &cfg.Paths.StateDir,
+		"DELAMAIN_PROMPTS_DIR":    &cfg.Paths.PromptsDir,
+		"DELAMAIN_LABEL_PREFIX":   &cfg.Forge.Labels.Prefix,
+		"DELAMAIN_NOTIFY_BACKEND": &cfg.Notify.Backend,
 	}
 	for key, dst := range strs {
 		if v := getenv(key); v != "" {
 			*dst = v
 		}
 	}
-	if v := getenv("DELAMAIN_HERDR"); v != "" {
+	bools := map[string]*bool{
+		"DELAMAIN_HERDR":          &cfg.Herdr.Enabled,
+		"DELAMAIN_NOTIFY_ENABLED": &cfg.Notify.Enabled,
+	}
+	for key, dst := range bools {
+		v := getenv(key)
+		if v == "" {
+			continue
+		}
 		b, err := strconv.ParseBool(v)
 		if err != nil {
-			return fmt.Errorf("DELAMAIN_HERDR: %q is not a boolean", v)
+			return fmt.Errorf("%s: %q is not a boolean", key, v)
 		}
-		cfg.Herdr.Enabled = b
+		*dst = b
+	}
+	if v := getenv("DELAMAIN_NOTIFY_EVENTS"); v != "" {
+		cfg.Notify.Events = nil
+		for _, e := range strings.Split(v, ",") {
+			if e = strings.TrimSpace(e); e != "" {
+				cfg.Notify.Events = append(cfg.Notify.Events, e)
+			}
+		}
 	}
 	ints := map[string]*int{
 		"DELAMAIN_MAX_ITERATIONS": &cfg.Pipeline.MaxIterations,
@@ -321,6 +364,16 @@ func (c Config) Validate() error {
 	}
 	if c.Daemon.PollInterval < 30*time.Second {
 		errs = append(errs, errors.New("daemon.poll_interval must be >= 30s (forge API rate limits)"))
+	}
+	switch c.Notify.Backend {
+	case NotifyAuto, NotifyDBus, NotifyMacOS, NotifyNone:
+	default:
+		errs = append(errs, fmt.Errorf("notify.backend %q is not one of auto|dbus|macos|none", c.Notify.Backend))
+	}
+	for _, e := range c.Notify.Events {
+		if !slices.Contains(NotifyEvents, e) {
+			errs = append(errs, fmt.Errorf("notify.events: %q is not one of %s", e, strings.Join(NotifyEvents, "|")))
+		}
 	}
 	switch c.Gates.RedProof {
 	case "bug", "always", "never":

@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -217,5 +218,70 @@ func TestLabelsShouldRejectAPrefixThatCannotNameThem(t *testing.T) {
 	file := "forge:\n  labels:\n    prefix: \"\"\n    ready: r\n    in_progress: i\n    mr_opened: m\n    needs_human: h\n    needs_info: n\n"
 	if cfg, err := Load(writeFile(t, file), noEnv); err != nil || cfg.Forge.Labels.InProgress != "i" {
 		t.Errorf("no prefix is fine when every label is set: %+v %v", cfg.Forge.Labels, err)
+	}
+}
+
+func TestDefaultsShouldEnableNotificationsWithoutStarted(t *testing.T) {
+	cfg, err := Load(filepath.Join(t.TempDir(), "absent.yaml"), noEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"pr_opened", "needs_human", "halted", "needs_info", "budget", "recover"}
+	if !cfg.Notify.Enabled || cfg.Notify.Backend != "auto" || !slices.Equal(cfg.Notify.Events, want) {
+		t.Fatalf("notifications are on by default with every event but started, got %+v", cfg.Notify)
+	}
+}
+
+func TestEnvShouldOverrideNotifySettings(t *testing.T) {
+	p := writeFile(t, "notify:\n  backend: dbus\n  events: [halted]\n")
+	cfg, err := Load(p, envOf(map[string]string{
+		"DELAMAIN_NOTIFY_ENABLED": "false",
+		"DELAMAIN_NOTIFY_BACKEND": "none",
+		"DELAMAIN_NOTIFY_EVENTS":  "started, pr_opened,,budget",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Notify.Enabled || cfg.Notify.Backend != "none" || !slices.Equal(cfg.Notify.Events, []string{"started", "pr_opened", "budget"}) {
+		t.Fatalf("env must win over file and defaults: %+v", cfg.Notify)
+	}
+}
+
+func TestFileShouldReplaceTheDefaultNotifyEvents(t *testing.T) {
+	cfg, err := Load(writeFile(t, "notify:\n  events: [halted]\n"), noEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Notify.Enabled || !slices.Equal(cfg.Notify.Events, []string{"halted"}) {
+		t.Fatalf("a list in the file filters the events: %+v", cfg.Notify)
+	}
+}
+
+func TestEnvShouldRejectANonBooleanNotifyEnabled(t *testing.T) {
+	_, err := Load(filepath.Join(t.TempDir(), "absent.yaml"), envOf(map[string]string{"DELAMAIN_NOTIFY_ENABLED": "talvez"}))
+	if err == nil || !strings.Contains(err.Error(), "DELAMAIN_NOTIFY_ENABLED") {
+		t.Fatalf("want an error naming the variable, got %v", err)
+	}
+}
+
+func TestValidateShouldRejectUnknownNotifyBackend(t *testing.T) {
+	_, err := Load(writeFile(t, "notify:\n  backend: libnotify\n"), noEnv)
+	if err == nil || !strings.Contains(err.Error(), "notify.backend") {
+		t.Fatalf("want a notify.backend error, got %v", err)
+	}
+	for _, b := range []string{"auto", "dbus", "macos", "none"} {
+		if _, err := Load(writeFile(t, "notify:\n  backend: "+b+"\n"), noEnv); err != nil {
+			t.Fatalf("backend %s must be accepted: %v", b, err)
+		}
+	}
+}
+
+func TestValidateShouldRejectUnknownNotifyEvent(t *testing.T) {
+	_, err := Load(filepath.Join(t.TempDir(), "absent.yaml"), envOf(map[string]string{"DELAMAIN_NOTIFY_EVENTS": "halted,merged"}))
+	if err == nil || !strings.Contains(err.Error(), `"merged"`) {
+		t.Fatalf("want an error naming the unknown event, got %v", err)
+	}
+	if _, err := Load(writeFile(t, "notify:\n  events: []\n"), noEnv); err != nil {
+		t.Fatalf("an empty list silences every event and is valid: %v", err)
 	}
 }
