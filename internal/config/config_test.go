@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -217,5 +218,66 @@ func TestLabelsShouldRejectAPrefixThatCannotNameThem(t *testing.T) {
 	file := "forge:\n  labels:\n    prefix: \"\"\n    ready: r\n    in_progress: i\n    mr_opened: m\n    needs_human: h\n    needs_info: n\n"
 	if cfg, err := Load(writeFile(t, file), noEnv); err != nil || cfg.Forge.Labels.InProgress != "i" {
 		t.Errorf("no prefix is fine when every label is set: %+v %v", cfg.Forge.Labels, err)
+	}
+}
+
+func TestNotifyShouldDefaultToEnabledAutoWithoutStarted(t *testing.T) {
+	cfg, err := Load(filepath.Join(t.TempDir(), "absent.yaml"), noEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"pr_opened", "needs_human", "halted", "needs_info", "budget", "recover"}
+	if !cfg.Notify.Enabled || cfg.Notify.Backend != "auto" || !slices.Equal(cfg.Notify.Events, want) {
+		t.Fatalf("notifications are on by default with backend auto and every event but started: %+v", cfg.Notify)
+	}
+
+	cfg, err = Load(writeFile(t, "notify:\n  backend: none\n"), noEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Notify.Enabled || cfg.Notify.Backend != "none" || !slices.Equal(cfg.Notify.Events, want) {
+		t.Fatalf("a file setting only the backend keeps the other defaults: %+v", cfg.Notify)
+	}
+}
+
+func TestNotifyShouldBeOverriddenByEnv(t *testing.T) {
+	p := writeFile(t, "notify:\n  enabled: true\n  backend: dbus\n")
+	cfg, err := Load(p, envOf(map[string]string{
+		"DELAMAIN_NOTIFY_ENABLED": "false",
+		"DELAMAIN_NOTIFY_BACKEND": "macos",
+		"DELAMAIN_NOTIFY_EVENTS":  "halted, budget",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Notify.Enabled || cfg.Notify.Backend != "macos" || !slices.Equal(cfg.Notify.Events, []string{"halted", "budget"}) {
+		t.Fatalf("env must override the file: %+v", cfg.Notify)
+	}
+	if _, err := Load(p, envOf(map[string]string{"DELAMAIN_NOTIFY_ENABLED": "maybe"})); err == nil || !strings.Contains(err.Error(), "DELAMAIN_NOTIFY_ENABLED") {
+		t.Fatalf("a non-boolean DELAMAIN_NOTIFY_ENABLED must be rejected, got %v", err)
+	}
+}
+
+func TestValidateShouldRejectUnknownNotifyBackendOrEvent(t *testing.T) {
+	for _, tc := range []struct {
+		name, yaml, want string
+	}{
+		{"backend", "notify:\n  backend: kde\n", "notify.backend"},
+		{"event", "notify:\n  events: [pr_opened, deploy]\n", "notify.events"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Load(writeFile(t, tc.yaml), noEnv)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("want an error about %s, got %v", tc.want, err)
+			}
+		})
+	}
+	for _, b := range []string{"auto", "dbus", "macos", "none"} {
+		cfg := Default()
+		cfg.Notify.Backend = b
+		cfg.Notify.Events = []string{"started", "pr_opened", "needs_human", "halted", "needs_info", "budget", "recover"}
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("backend %s with every known event is valid: %v", b, err)
+		}
 	}
 }

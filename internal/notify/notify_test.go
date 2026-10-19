@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/paraizo/delamain/internal/config"
 )
 
 func TestIconShouldBeWrittenOnceToStateDirWithPermissions(t *testing.T) {
@@ -50,5 +52,37 @@ func TestIconShouldBeWrittenOnceToStateDirWithPermissions(t *testing.T) {
 	notifyOnce()
 	if got, _ := os.ReadFile(path); !bytes.Equal(got, logo) {
 		t.Fatal("a different icon must be overwritten with the embedded logo")
+	}
+}
+
+func TestDisabledEventsShouldNotNotify(t *testing.T) {
+	b := &fakeBus{}
+	c := newWith(config.Notify{Enabled: true, Backend: "dbus", Events: []string{"halted"}}, Options{StateDir: t.TempDir(), Log: discardLog()}, dbusSys(b))
+	ctx := context.Background()
+	for _, e := range []Event{EventStarted, EventPROpened, EventHalted, EventBudget} {
+		if err := c.Notify(ctx, Message{Event: e, RunID: 1, Title: string(e)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	calls := b.calls()
+	if len(calls) != 1 || calls[0].Summary != "halted" {
+		t.Fatalf("only the enabled event goes out, got %+v", calls)
+	}
+}
+
+func TestDisabledNotifyShouldSendNothing(t *testing.T) {
+	b := &fakeBus{}
+	dialed := false
+	s := dbusSys(b)
+	s.dial = func(string) (bus, error) { dialed = true; return b, nil }
+	c := newWith(config.Notify{Enabled: false, Backend: "dbus", Events: allEvents()}, Options{StateDir: t.TempDir(), Log: discardLog()}, s)
+	if err := c.Notify(context.Background(), Message{Event: EventHalted, RunID: 1, Title: "t"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if dialed || len(b.calls()) != 0 {
+		t.Fatalf("disabled notifications never touch the bus: dialed=%v sent=%d", dialed, len(b.calls()))
 	}
 }

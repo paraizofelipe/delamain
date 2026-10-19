@@ -73,17 +73,31 @@ type backend interface {
 	close() error
 }
 
+// noBackend drops every toast.
+type noBackend struct{}
+
+func (noBackend) send(context.Context, Message) error { return nil }
+func (noBackend) close() error                        { return nil }
+
 // Client is the Notifier New returns.
 type Client struct {
 	log     *slog.Logger
 	backend backend
+	events  map[Event]bool // nil when notifications are off
 
 	iconOnce sync.Once
 	iconPath string
 }
 
 func newWith(cfg config.Notify, opts Options, s sys) *Client {
-	c := &Client{log: opts.Log}
+	c := &Client{log: opts.Log, backend: noBackend{}}
+	if !cfg.Enabled {
+		return c
+	}
+	c.events = map[Event]bool{}
+	for _, e := range cfg.Events {
+		c.events[Event(e)] = true
+	}
 	icon := func() string { return c.icon(opts.StateDir) }
 	if b, err := s.dial(s.getenv("DBUS_SESSION_BUS_ADDRESS")); err == nil {
 		c.backend = newDBus(b, icon)
@@ -91,7 +105,11 @@ func newWith(cfg config.Notify, opts Options, s sys) *Client {
 	return c
 }
 
+// Notify sends the toast of an enabled event. It never fails: errors become warnings.
 func (c *Client) Notify(ctx context.Context, m Message) error {
+	if !c.events[m.Event] {
+		return nil
+	}
 	if err := c.backend.send(ctx, m); err != nil {
 		c.log.Warn("desktop notification failed", "event", m.Event, "err", err)
 	}

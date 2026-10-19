@@ -87,3 +87,15 @@ func TestPromptsShouldFailWhenOverrideDirIsMissing(t *testing.T) {
 		t.Fatal("a typo in prompts_dir must not silently fall back to defaults")
 	}
 }
+
+func TestConfigShouldShowTheNotifySection(t *testing.T) {
+	out, err := execute(t, "--config", filepath.Join(t.TempDir(), "none.yaml"), "config")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"notify:", "enabled: true", "backend: auto", "- pr_opened", "- recover"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("config output missing %q:\n%s", want, out)
+		}
+	}
+}
