@@ -34,6 +34,7 @@ type Config struct {
 	Gates    Gates    `yaml:"gates"`
 	Daemon   Daemon   `yaml:"daemon"`
 	Paths    Paths    `yaml:"paths"`
+	Notify   Notify   `yaml:"notify"`
 }
 
 // Herdr optionally shows runs in herdr workspaces. Off by default: the orchestrator drives
@@ -129,6 +130,15 @@ type Gates struct {
 type Daemon struct {
 	Repos        []string      `yaml:"repos"`
 	PollInterval time.Duration `yaml:"poll_interval"`
+}
+
+// Notify configures desktop notifications (D-Bus on Linux, Notification Center on macOS).
+type Notify struct {
+	Enabled bool `yaml:"enabled"`
+	// Backend is auto | dbus | macos | none.
+	Backend string `yaml:"backend"`
+	// Events lists the events that raise a toast.
+	Events []string `yaml:"events"`
 }
 
 type Paths struct {
