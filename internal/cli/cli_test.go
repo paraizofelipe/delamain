@@ -101,6 +101,13 @@ func TestCLIHelpAndDoctorShouldUseEnglish(t *testing.T) {
 			t.Errorf("help missing %q:\n%s", want, out)
 		}
 	}
+	doctorOut, err := execute(t, "doctor")
+	if err != nil {
+		t.Fatalf("doctor failed: %v\n%s", err, doctorOut)
+	}
+	if !strings.Contains(doctorOut, "✅") {
+		t.Errorf("doctor success output missing check result:\n%s", doctorOut)
+	}
 }
 
 func TestPromptsLintShouldReportValidPromptsInEnglish(t *testing.T) {

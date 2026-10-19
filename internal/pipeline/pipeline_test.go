@@ -320,7 +320,7 @@ func TestRunShouldRejectTaskWithoutAcceptanceCriteriaBeforeCreatingAnything(t *t
 	hs := newHarness(t, happy)
 	hs.task.Body = "Só uma frase vaga."
 	res := hs.run(t)
-	if res.Outcome != OutcomeNeedsInfo || !strings.Contains(res.Reason, "critérios de aceite") {
+	if res.Outcome != OutcomeNeedsInfo || !strings.Contains(res.Reason, "acceptance criteria") {
 		t.Fatalf("got %s: %s", res.Outcome, res.Reason)
 	}
 	if hs.g.worktreeOps != 0 || res.RunID != 0 {

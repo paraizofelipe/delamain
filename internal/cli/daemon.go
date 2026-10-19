@@ -21,11 +21,11 @@ import (
 func newDaemonCmd(load func() (config.Config, error)) *cobra.Command {
 	var repos []string
 	cmd := &cobra.Command{
-		Use:   "daemon [--repo <caminho>]...",
-		Short: "Processa continuamente as issues com a label ready dos repositórios configurados",
-		Long: `Busca issues abertas com forge.labels.ready a cada daemon.poll_interval e executa até
-pipeline.max_parallel ao mesmo tempo. Ao subir, finaliza runs deixadas por um processo que morreu.
-Só uma instância roda por state_dir. Ctrl+C encerra: runs em andamento terminam como interrompidas.`,
+		Use:   "daemon [--repo <path>]...",
+		Short: "Continuously process ready issues from configured repositories",
+		Long: `Fetches open issues with forge.labels.ready every daemon.poll_interval and runs up to
+pipeline.max_parallel at once. On startup, finalizes runs left by a process that died. Only one
+instance runs per state_dir. Ctrl+C stops it: in-progress runs finish as halted.`,
 		RunE: func(c *cobra.Command, _ []string) error {
 			cfg, err := load()
 			if err != nil {
@@ -36,7 +36,7 @@ Só uma instância roda por state_dir. Ctrl+C encerra: runs em andamento termina
 				repos = cfg.Daemon.Repos
 			}
 			if len(repos) == 0 {
-				return errors.New("nenhum repositório: use --repo ou daemon.repos no config")
+				return errors.New("no repositories: use --repo or daemon.repos in config")
 			}
 			ctx := c.Context()
 			unlock, err := lockDaemon(cfg.Paths.StateDir)
@@ -52,7 +52,7 @@ Só uma instância roda por state_dir. Ctrl+C encerra: runs em andamento termina
 					return fmt.Errorf("%s: %w", repo, err)
 				}
 				if fg == nil {
-					return fmt.Errorf("%s: o daemon exige um origin no GitHub ou GitLab", repo)
+					return fmt.Errorf("%s: daemon requires an origin on GitHub or GitLab", repo)
 				}
 				sources = append(sources, daemon.Source{Repo: repo, Forge: fg})
 			}
@@ -89,7 +89,7 @@ Só uma instância roda por state_dir. Ctrl+C encerra: runs em andamento termina
 			return d.Serve(ctx)
 		},
 	}
-	cmd.Flags().StringArrayVar(&repos, "repo", nil, "repositório a observar (repetível; padrão: daemon.repos)")
+	cmd.Flags().StringArrayVar(&repos, "repo", nil, "repository to watch (repeatable; default: daemon.repos)")
 	addHerdrFlag(cmd)
 	return cmd
 }

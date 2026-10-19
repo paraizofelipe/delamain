@@ -232,7 +232,7 @@ func TestIssueShouldGetNeedsInfoWhenPreflightFails(t *testing.T) {
 	hs.task.Body = "sem critérios"
 	res := hs.run(t)
 
-	if res.Outcome != OutcomeNeedsInfo || len(f.comments) != 1 || !strings.Contains(f.comments[0], "critérios de aceite") {
+	if res.Outcome != OutcomeNeedsInfo || len(f.comments) != 1 || !strings.Contains(f.comments[0], "acceptance criteria") {
 		t.Fatalf("issue must explain what is missing: %s %v", res.Outcome, f.comments)
 	}
 	if len(f.relabels) != 1 || !slices.Contains(f.relabels[0][0], hs.r.Cfg.Forge.Labels.NeedsInfo) {

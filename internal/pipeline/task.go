@@ -88,15 +88,15 @@ func InferKind(title string, labels []string) string {
 func (t Task) Preflight() []string {
 	var problems []string
 	if strings.TrimSpace(t.Title) == "" {
-		problems = append(problems, "a task não tem título")
+		problems = append(problems, "task has no title")
 	}
 	if strings.TrimSpace(t.Body) == "" {
-		problems = append(problems, "a task não tem descrição")
+		problems = append(problems, "task has no description")
 	} else if !HasAcceptanceCriteria(t.Body) {
-		problems = append(problems, "a task não tem critérios de aceite (use uma seção 'Critérios de aceite' ou um checklist '- [ ]')")
+		problems = append(problems, "task has no acceptance criteria (use an 'Acceptance criteria' section or a '- [ ]' checklist)")
 	}
 	if t.Kind != "feature" && t.Kind != "bug" {
-		problems = append(problems, fmt.Sprintf("tipo %q inválido (feature|bug)", t.Kind))
+		problems = append(problems, fmt.Sprintf("invalid kind %q (feature|bug)", t.Kind))
 	}
 	return problems
 }

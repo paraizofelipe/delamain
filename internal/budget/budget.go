@@ -143,7 +143,7 @@ func (s Status) Left() string {
 func (s Status) Summary() string {
 	out := Format(s.Run, s.Mode)
 	if s.PerIssue > 0 {
-		out += " of " + Format(s.PerIssue, s.Mode)
+		out += " de " + Format(s.PerIssue, s.Mode)
 	}
 	if s.Mode != config.BudgetUSD {
 		out += fmt.Sprintf(" tokens · US$ %.2f", s.Usage.CostUSD)

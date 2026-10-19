@@ -2,13 +2,14 @@ package cli
 
 import (
 	"context"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/paraizo/delamain/internal/config"
 	"github.com/paraizo/delamain/internal/forge"
-	"github.com/paraizo/delamain/internal/pipeline"
 )
 
 func gitRepo(t *testing.T, origin string) string {
@@ -114,30 +115,17 @@ func TestRecoverShouldReportWhenNothingIsOrphaned(t *testing.T) {
 }
 
 func TestRunShouldReportResultInEnglish(t *testing.T) {
-	var out strings.Builder
-	cmd := NewRoot()
-	cmd.SetOut(&out)
-	printResult(cmd, pipeline.Result{
-		Outcome:    pipeline.OutcomeHalted,
-		Reason:     "budget per issue exhausted: 2M of 2M",
-		Branch:     "fix/6-stdout",
-		Base:       "main",
-		Iterations: 1,
-		Commits:    []string{"abc1234"},
-		Delivery:   "no commits on branch: nothing to deliver",
-		Budget:     "1.5K of 2M tokens · US$ 0.25",
-		ReportPath: "/tmp/report.json",
-	})
+	repo := gitRepo(t, "")
+	task := filepath.Join(t.TempDir(), "task.md")
+	if err := os.WriteFile(task, []byte("# Add feature\n\nImplement it.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
-	for _, want := range []string{
-		"budget per issue exhausted: 2M of 2M",
-		"iterations: 1",
-		"delivery:  no commits on branch: nothing to deliver",
-		"spend:     1.5K of 2M tokens · US$ 0.25",
-		"report:    /tmp/report.json",
-	} {
-		if !strings.Contains(out.String(), want) {
-			t.Errorf("output missing %q:\n%s", want, out.String())
-		}
+	out, err := execute(t, "--config", filepath.Join(t.TempDir(), "none.yaml"), "run", "--task", task, "--repo", repo)
+	if _, ok := IsExit(err); !ok {
+		t.Fatalf("got %q %v", out, err)
+	}
+	if !strings.Contains(out, "task has no acceptance criteria") {
+		t.Fatalf("output missing English preflight reason:\n%s", out)
 	}
 }

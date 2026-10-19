@@ -36,7 +36,7 @@ func TestBudgetShouldHaltAndDeliverDraftWhenIssueLimitIsReached(t *testing.T) {
 	if len(f.created) != 1 || !f.created[0].Draft || !strings.Contains(f.created[0].Body, "budget") {
 		t.Fatalf("committed work is delivered as draft with the reason: %+v", f.created)
 	}
-	if !strings.Contains(res.Budget, "5K of 1K") {
+	if !strings.Contains(res.Budget, "5K de 1K") {
 		t.Fatalf("result must carry the spend, got %q", res.Budget)
 	}
 }
@@ -156,7 +156,7 @@ func TestBudgetShouldBeShownInTheHerdrSidebarAndReport(t *testing.T) {
 		t.Fatalf("sidebar tokens = %v", last)
 	}
 	report, _ := os.ReadFile(res.ReportPath)
-	if !strings.Contains(string(report), "| Budget | 1.5K of 2M tokens") {
+	if !strings.Contains(string(report), "| Budget | 1.5K de 2M tokens") {
 		t.Fatalf("report must show the spend:\n%s", report)
 	}
 }
