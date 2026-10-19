@@ -4,6 +4,7 @@ import (
 	"context"
 	"os/exec"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/paraizo/delamain/internal/config"
@@ -25,7 +26,34 @@ func gitRepo(t *testing.T, origin string) string {
 	return dir
 }
 
+// fakeTokens is a hermetic forge.TokenLookup: env is the environment and no forge CLI exists.
+type fakeTokens struct {
+	env   map[string]string
+	mu    sync.Mutex
+	execs []string
+}
+
+func (f *fakeTokens) Getenv(k string) string { return f.env[k] }
+
+func (f *fakeTokens) Exec(_ context.Context, name string, args ...string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.execs = append(f.execs, strings.Join(append([]string{name}, args...), " "))
+	return "", exec.ErrNotFound
+}
+
+// useTokens makes forgeFor resolve tokens from env only, for the duration of the test.
+func useTokens(t *testing.T, env map[string]string) *fakeTokens {
+	t.Helper()
+	f := &fakeTokens{env: env}
+	prev := tokenLookup
+	tokenLookup = f
+	t.Cleanup(func() { tokenLookup = prev })
+	return f
+}
+
 func TestForgeForShouldDetectForgeFromOrigin(t *testing.T) {
+	useTokens(t, map[string]string{"GITLAB_TOKEN": "glpat-test"})
 	cfg := config.Default()
 	f, err := forgeFor(context.Background(), cfg, gitRepo(t, "git@gitlab.com:grp/api.git"))
 	if err != nil || f == nil {
@@ -33,6 +61,20 @@ func TestForgeForShouldDetectForgeFromOrigin(t *testing.T) {
 	}
 	if got := f.Repo(); got != (forge.Repo{Kind: forge.GitLab, Host: "gitlab.com", Path: "grp/api"}) {
 		t.Fatalf("repo = %+v", got)
+	}
+}
+
+func TestForgeForShouldNotRunTheForgeCLIWhenTheTokenIsInTheEnv(t *testing.T) {
+	tokens := useTokens(t, map[string]string{"GH_TOKEN": "ghp-test"})
+	f, err := forgeFor(context.Background(), config.Default(), gitRepo(t, "https://github.com/acme/api.git"))
+	if err != nil || f == nil {
+		t.Fatalf("forge = %v, err = %v", f, err)
+	}
+	if got := f.Repo(); got != (forge.Repo{Kind: forge.GitHub, Host: "github.com", Path: "acme/api"}) {
+		t.Fatalf("repo = %+v", got)
+	}
+	if len(tokens.execs) != 0 {
+		t.Fatalf("a token in the env must not run the forge CLI: %v", tokens.execs)
 	}
 }
 

@@ -9,6 +9,9 @@ import (
 	"github.com/paraizo/delamain/internal/gitx"
 )
 
+// tokenLookup resolves forge tokens; the CLI fallback runs at most once per host and process.
+var tokenLookup forge.TokenLookup = forge.CachedLookup(forge.OSLookup{})
+
 // forgeFor picks the forge of the repository containing dir. A repository without origin has
 // none (work stays local) unless forge.kind names one explicitly, which is then an error.
 func forgeFor(ctx context.Context, cfg config.Config, dir string) (forge.Forge, error) {
@@ -34,5 +37,9 @@ func forgeFor(ctx context.Context, cfg config.Config, dir string) (forge.Forge, 
 	if err != nil {
 		return nil, err
 	}
-	return forge.New(repo, forge.ExecRunner{Binary: forge.Binary(repo.Kind), Dir: top}), nil
+	token, _, err := forge.Token(ctx, repo.Kind, repo.Host, tokenLookup)
+	if err != nil {
+		return nil, err
+	}
+	return forge.New(repo, token, forge.WithUserAgent("delamain/"+Version))
 }
