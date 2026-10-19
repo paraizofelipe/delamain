@@ -2,8 +2,11 @@ package forge
 
 import (
 	"context"
+	"errors"
+	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -24,10 +27,14 @@ func fresh() *http.Client { return &http.Client{Transport: &http.Transport{Disab
 // clients builds one client per forge against base, with a millisecond backoff.
 func clients(t *testing.T, base string, opts ...Option) map[Kind]Forge {
 	t.Helper()
+	return clientsWith(t, base, "tok", opts...)
+}
+
+func clientsWith(t *testing.T, base, token string, opts ...Option) map[Kind]Forge {
+	t.Helper()
 	out := map[Kind]Forge{}
 	for _, k := range []Kind{GitHub, GitLab} {
-		path := "acme/api"
-		f, err := New(Repo{k, "example.com", path}, "tok", append([]Option{WithBaseURL(base + "/"), WithHTTPClient(fresh()), WithBackoff(time.Millisecond)}, opts...)...)
+		f, err := New(Repo{k, "example.com", "acme/api"}, token, append([]Option{WithBaseURL(base + "/"), WithHTTPClient(fresh()), WithBackoff(time.Millisecond)}, opts...)...)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -177,6 +184,97 @@ func TestIssueShouldFailOnAnEmptyResponse(t *testing.T) {
 		base, _ := counted(t, func(_ int, w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
 		if is, err := clients(t, base)[kind].Issue(context.Background(), 1); err == nil {
 			t.Errorf("%s: an empty answer is not an issue: %+v", kind, is)
+		}
+	}
+}
+
+func TestErrorsShouldCarryForgeOperationAndStatus(t *testing.T) {
+	base, _ := counted(t, func(_ int, w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			writeStatus(w, http.StatusNotFound, `{"message":"Not Found"}`)
+			return
+		}
+		writeStatus(w, http.StatusForbidden, `{"message":"insufficient_scope"}`)
+	})
+	cs := clients(t, base)
+	cases := []struct {
+		err    error
+		want   string
+		status int
+	}{
+		{func() error { _, err := cs[GitHub].Issue(context.Background(), 1); return err }(), "github issue: 404 Not Found", 404},
+		{cs[GitHub].Comment(context.Background(), 1, "x"), "github comment: 403 insufficient_scope", 403},
+		{func() error { _, err := cs[GitLab].ListReady(context.Background(), "l"); return err }(), "gitlab listready: 404 Not Found", 404},
+		{cs[GitLab].Comment(context.Background(), 1, "x"), "gitlab comment: 403 insufficient_scope", 403},
+	}
+	for _, c := range cases {
+		var apiErr *APIError
+		if c.err == nil || c.err.Error() != c.want || !errors.As(c.err, &apiErr) || apiErr.Status != c.status {
+			t.Errorf("err = %v (%#v), want %q with status %d", c.err, c.err, c.want, c.status)
+		}
+	}
+
+	down, _ := counted(t, func(_ int, w http.ResponseWriter, r *http.Request) { hangUp(w) })
+	for kind, f := range clients(t, down) {
+		_, err := f.OpenPR(context.Background(), "feat/x")
+		var apiErr *APIError
+		if err == nil || !strings.HasPrefix(err.Error(), string(kind)+" openpr: ") || !errors.As(err, &apiErr) || apiErr.Status != 0 {
+			t.Errorf("%s: network error = %v", kind, err)
+		}
+	}
+}
+
+func TestErrorsShouldBeTruncatedAt500Characters(t *testing.T) {
+	long := strings.Repeat("x", 2000)
+	base, _ := counted(t, func(_ int, w http.ResponseWriter, r *http.Request) {
+		writeStatus(w, http.StatusUnprocessableEntity, `{"message":"`+long+`"}`)
+	})
+	for kind, f := range clients(t, base) {
+		_, err := f.Issue(context.Background(), 1)
+		var apiErr *APIError
+		if !errors.As(err, &apiErr) {
+			t.Errorf("%s: err = %v", kind, err)
+			continue
+		}
+		if len([]rune(apiErr.Message)) > 501 || !strings.HasPrefix(apiErr.Message, "xxxxx") {
+			t.Errorf("%s: message of %d chars: %v", kind, len(apiErr.Message), err)
+		}
+		if len(err.Error()) > 600 {
+			t.Errorf("%s: error of %d bytes", kind, len(err.Error()))
+		}
+	}
+}
+
+func TestErrorsShouldNeverContainTheToken(t *testing.T) {
+	const secret = "ghp_L3AKED0NLY1NTH1STEST"
+	// A closed port: following a redirect there fails with a url.Error that quotes the URL.
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed := l.Addr().String()
+	_ = l.Close()
+
+	base, _ := counted(t, func(_ int, w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Echo-Token", secret)
+		switch {
+		case strings.Contains(r.URL.Path, "/issues/1"):
+			writeStatus(w, http.StatusUnauthorized, `{"message":"bad credentials `+secret+` for https://oauth2:`+secret+`@example.com/x?private_token=`+secret+`"}`)
+		default:
+			w.Header().Set("Location", "http://"+closed+"/?access_token="+secret)
+			w.WriteHeader(http.StatusFound)
+		}
+	})
+	for kind, f := range clientsWith(t, base, secret) {
+		_, err1 := f.Issue(context.Background(), 1)
+		_, err2 := f.Issue(context.Background(), 2)
+		for _, err := range []error{err1, err2} {
+			if err == nil {
+				t.Fatalf("%s: must fail", kind)
+			}
+			if strings.Contains(err.Error(), secret) {
+				t.Errorf("%s: token leaked in %q", kind, err.Error())
+			}
 		}
 	}
 }

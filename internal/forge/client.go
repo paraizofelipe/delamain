@@ -3,12 +3,17 @@ package forge
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
+
+	gh "github.com/google/go-github/v92/github"
+	gl "gitlab.com/gitlab-org/api/client-go/v3"
 )
 
 // errEmpty is a successful status without the expected body.
@@ -120,4 +125,76 @@ func gitlabRetry(ctx context.Context, resp *http.Response, err error) (bool, err
 		return false, ctx.Err()
 	}
 	return err != nil || transientStatus(resp.StatusCode), nil
+}
+
+// maxMessage bounds the API message an error carries.
+const maxMessage = 500
+
+// apiError turns a client library error into an *APIError whose message never holds the token.
+func apiError(kind Kind, op string, scrub func(string) string, err error) error {
+	if err == nil {
+		return nil
+	}
+	e := &APIError{Forge: kind, Op: op, err: err}
+	var (
+		ghErr    *gh.ErrorResponse
+		ghAbuse  *gh.AbuseRateLimitError
+		ghRate   *gh.RateLimitError
+		glErr    *gl.ErrorResponse
+		response *http.Response
+	)
+	switch {
+	case errors.As(err, &ghErr):
+		response, e.Message = ghErr.Response, ghErr.Message
+	case errors.As(err, &ghAbuse):
+		response, e.Message = ghAbuse.Response, ghAbuse.Message
+	case errors.As(err, &ghRate):
+		response, e.Message = ghRate.Response, ghRate.Message
+	case errors.As(err, &glErr):
+		e.Status, e.Message = glErr.StatusCode, glMessage(glErr)
+	default:
+		e.Message = err.Error()
+	}
+	if response != nil {
+		e.Status = response.StatusCode
+	}
+	e.Message = truncate(scrub(e.Message), maxMessage)
+	return e
+}
+
+// glMessage prefers the API's own message over client-go's rendering of the whole body.
+func glMessage(e *gl.ErrorResponse) string {
+	var body struct {
+		Message any    `json:"message"`
+		Error   string `json:"error"`
+	}
+	if json.Unmarshal(e.Body, &body) == nil {
+		if m, ok := body.Message.(string); ok && m != "" {
+			return m
+		}
+		if body.Error != "" {
+			return body.Error
+		}
+	}
+	return e.Message
+}
+
+var userinfo = regexp.MustCompile(`([a-zA-Z][a-zA-Z0-9+.-]*://)[^/\s@]+@`)
+
+// scrubber returns a func that removes token and URL credentials from text bound for errors.
+func scrubber(token string) func(string) string {
+	return func(s string) string {
+		if token != "" {
+			s = strings.ReplaceAll(s, token, "[redacted]")
+		}
+		return userinfo.ReplaceAllString(s, "$1")
+	}
+}
+
+func truncate(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "…"
 }

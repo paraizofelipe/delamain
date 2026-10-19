@@ -15,6 +15,7 @@ type github struct {
 	repo        Repo
 	owner, name string
 	api         *gh.Client
+	scrub       func(string) string // removes the token from error text
 }
 
 func newGitHub(repo Repo, token string, hc *http.Client, o options) (Forge, error) {
@@ -36,10 +37,12 @@ func newGitHub(repo Repo, token string, hc *http.Client, o options) (Forge, erro
 		return nil, err
 	}
 	owner, name, _ := strings.Cut(repo.Path, "/")
-	return github{repo: repo, owner: owner, name: name, api: api}, nil
+	return github{repo: repo, owner: owner, name: name, api: api, scrub: scrubber(token)}, nil
 }
 
 func (g github) Repo() Repo { return g.repo }
+
+func (g github) fail(op string, err error) error { return apiError(GitHub, op, g.scrub, err) }
 
 func ghIssue(v *gh.Issue) Issue {
 	is := Issue{Number: v.GetNumber(), Title: v.GetTitle(), Body: v.GetBody(), URL: v.GetHTMLURL(), Open: v.GetState() == "open"}
@@ -52,10 +55,10 @@ func ghIssue(v *gh.Issue) Issue {
 func (g github) Issue(ctx context.Context, n int) (Issue, error) {
 	v, _, err := g.api.Issues.Get(ctx, g.owner, g.name, n)
 	if err != nil {
-		return Issue{}, err
+		return Issue{}, g.fail("issue", err)
 	}
 	if v == nil {
-		return Issue{}, errEmpty
+		return Issue{}, g.fail("issue", errEmpty)
 	}
 	return ghIssue(v), nil
 }
@@ -67,7 +70,7 @@ func (g github) ListReady(ctx context.Context, label string) ([]Issue, error) {
 		ListOptions: gh.ListOptions{PerPage: 100},
 	})
 	if err != nil {
-		return nil, err
+		return nil, g.fail("listready", err)
 	}
 	is := make([]Issue, 0, len(vs))
 	for _, v := range vs {
@@ -82,7 +85,7 @@ func (g github) ListReady(ctx context.Context, label string) ([]Issue, error) {
 func (g github) OpenPR(ctx context.Context, head string) (*PR, error) {
 	prs, _, err := g.api.PullRequests.List(ctx, g.owner, g.name, &gh.PullRequestListOptions{State: "open", Head: g.owner + ":" + head})
 	if err != nil || len(prs) == 0 {
-		return nil, err
+		return nil, g.fail("openpr", err)
 	}
 	return &PR{Number: prs[0].GetNumber(), URL: prs[0].GetHTMLURL(), Draft: prs[0].GetDraft()}, nil
 }
@@ -92,14 +95,14 @@ func (g github) CreatePR(ctx context.Context, o PROptions) (PR, error) {
 		Title: &o.Title, Head: o.Head, Base: o.Base, Body: &o.Body, Draft: &o.Draft,
 	})
 	if err != nil {
-		return PR{}, err
+		return PR{}, g.fail("createpr", err)
 	}
 	return PR{Number: v.GetNumber(), URL: v.GetHTMLURL(), Draft: v.GetDraft()}, nil
 }
 
 func (g github) Comment(ctx context.Context, n int, body string) error {
 	_, _, err := g.api.Issues.CreateComment(ctx, g.owner, g.name, n, gh.IssueCommentRequest{Body: body})
-	return err
+	return g.fail("comment", err)
 }
 
 // Relabel creates missing labels first: GitHub rejects unknown labels on edit. Existing labels
@@ -109,19 +112,19 @@ func (g github) Relabel(ctx context.Context, n int, add, remove []string) error 
 	for _, l := range append(append([]string{}, add...), remove...) {
 		_, _, err := g.api.Issues.CreateLabel(ctx, g.owner, g.name, gh.CreateIssueLabelRequest{Name: l, Color: &color, Description: &desc})
 		if err != nil && !alreadyExists(err) {
-			return err
+			return g.fail("relabel", err)
 		}
 	}
 	if len(add) > 0 {
 		if _, _, err := g.api.Issues.AddLabelsToIssue(ctx, g.owner, g.name, n, add); err != nil {
-			return err
+			return g.fail("relabel", err)
 		}
 	}
 	for _, l := range remove {
 		// A 404 means the issue did not carry the label: already the desired state.
 		resp, err := g.api.Issues.RemoveLabelForIssue(ctx, g.owner, g.name, n, url.PathEscape(l))
 		if err != nil && (resp == nil || resp.StatusCode != http.StatusNotFound) {
-			return err
+			return g.fail("relabel", err)
 		}
 	}
 	return nil

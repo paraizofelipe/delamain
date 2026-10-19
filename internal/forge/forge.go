@@ -64,6 +64,25 @@ type Forge interface {
 	Relabel(ctx context.Context, number int, add, remove []string) error
 }
 
+// APIError is a failed forge call. Message is redacted and truncated; Status is 0 when no
+// HTTP response came back.
+type APIError struct {
+	Forge   Kind
+	Op      string
+	Status  int
+	Message string
+	err     error
+}
+
+func (e *APIError) Error() string {
+	if e.Status == 0 {
+		return fmt.Sprintf("%s %s: %s", e.Forge, e.Op, e.Message)
+	}
+	return fmt.Sprintf("%s %s: %d %s", e.Forge, e.Op, e.Status, e.Message)
+}
+
+func (e *APIError) Unwrap() error { return e.err }
+
 // Option tunes the API client New builds.
 type Option func(*options)
 
