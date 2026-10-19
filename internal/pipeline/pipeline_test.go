@@ -164,6 +164,17 @@ func TestRunShouldDeliverApprovedWorkInOneIteration(t *testing.T) {
 	}
 }
 
+func TestRunShouldRecordTheHarnessAndMaxIterationsOnTheRun(t *testing.T) {
+	hs := newHarness(t, happy)
+	hs.r.Cfg.Agent.Harness = config.HarnessClaude
+	hs.r.Cfg.Pipeline.MaxIterations = 5
+	res := hs.run(t)
+
+	if rec := hs.finalRun(t, res.RunID); rec.Harness != "claude" || rec.MaxIterations != 5 {
+		t.Fatalf("the run must keep the harness and max iterations it started with: harness=%q max=%d", rec.Harness, rec.MaxIterations)
+	}
+}
+
 func TestRunShouldFeedFailingCheckOutputIntoNextIteration(t *testing.T) {
 	hs := newHarness(t, happy)
 	hs.h.checks = func(name string, n int) int {
@@ -389,7 +400,7 @@ func TestRunShouldHaltWhenACheckNeverFinishes(t *testing.T) {
 
 func TestRunShouldRefuseSecondConcurrentRunForSameTask(t *testing.T) {
 	hs := newHarness(t, happy)
-	if _, err := hs.st.CreateRun(context.Background(), hs.task.Repo, hs.task.Ref, "x"); err != nil {
+	if _, err := hs.st.CreateRun(context.Background(), hs.task.Repo, hs.task.Ref, "x", "omp", 3); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := hs.r.Run(context.Background(), hs.task); err == nil {

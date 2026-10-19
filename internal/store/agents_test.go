@@ -13,7 +13,7 @@ func TestAgentsShouldTrackEachRoleFromStartToEnd(t *testing.T) {
 	ctx := context.Background()
 	clock := time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC)
 	s.now = func() time.Time { return clock }
-	r, _ := s.CreateRun(ctx, "repo", "#1", "a")
+	r, _ := s.CreateRun(ctx, "repo", "#1", "a", "omp", 3)
 
 	if err := s.StartAgent(ctx, Agent{RunID: r.ID, Role: "planner", PID: 41, LogPath: "/l/planner.log", SessionDir: "/s/planner"}); err != nil {
 		t.Fatal(err)
@@ -47,7 +47,7 @@ func TestAgentsShouldTrackEachRoleFromStartToEnd(t *testing.T) {
 func TestStartAgentShouldReplaceAnEarlierSessionOfTheSameRole(t *testing.T) {
 	s := openTest(t)
 	ctx := context.Background()
-	r, _ := s.CreateRun(ctx, "repo", "#1", "a")
+	r, _ := s.CreateRun(ctx, "repo", "#1", "a", "omp", 3)
 	_ = s.StartAgent(ctx, Agent{RunID: r.ID, Role: "implementer", PID: 1})
 	_ = s.EndAgent(ctx, r.ID, "implementer", AgentFailed)
 	if err := s.StartAgent(ctx, Agent{RunID: r.ID, Role: "implementer", PID: 2}); err != nil {
@@ -61,7 +61,7 @@ func TestStartAgentShouldReplaceAnEarlierSessionOfTheSameRole(t *testing.T) {
 
 func TestEndAgentShouldReportAnAgentThatNeverStarted(t *testing.T) {
 	s := openTest(t)
-	r, _ := s.CreateRun(context.Background(), "repo", "#1", "a")
+	r, _ := s.CreateRun(context.Background(), "repo", "#1", "a", "omp", 3)
 	if err := s.EndAgent(context.Background(), r.ID, "reviewer", AgentDone); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("got %v", err)
 	}
@@ -70,8 +70,8 @@ func TestEndAgentShouldReportAnAgentThatNeverStarted(t *testing.T) {
 func TestFailRunningAgentsShouldOnlyTouchAgentsStillMarkedRunning(t *testing.T) {
 	s := openTest(t)
 	ctx := context.Background()
-	r, _ := s.CreateRun(ctx, "repo", "#1", "a")
-	other, _ := s.CreateRun(ctx, "repo", "#2", "b")
+	r, _ := s.CreateRun(ctx, "repo", "#1", "a", "omp", 3)
+	other, _ := s.CreateRun(ctx, "repo", "#2", "b", "omp", 3)
 	_ = s.StartAgent(ctx, Agent{RunID: r.ID, Role: "planner"})
 	_ = s.EndAgent(ctx, r.ID, "planner", AgentDone)
 	_ = s.StartAgent(ctx, Agent{RunID: r.ID, Role: "implementer"})
@@ -93,8 +93,8 @@ func TestFailRunningAgentsShouldOnlyTouchAgentsStillMarkedRunning(t *testing.T) 
 func TestRoleUsageShouldSumTheLedgerPerRole(t *testing.T) {
 	s := openTest(t)
 	ctx := context.Background()
-	r, _ := s.CreateRun(ctx, "repo", "#1", "a")
-	other, _ := s.CreateRun(ctx, "repo", "#2", "b")
+	r, _ := s.CreateRun(ctx, "repo", "#1", "a", "omp", 3)
+	other, _ := s.CreateRun(ctx, "repo", "#2", "b", "omp", 3)
 	_, _ = s.RecordUsage(ctx, r.ID, "implementer", "/a.jsonl", Usage{Input: 100})
 	_, _ = s.RecordUsage(ctx, r.ID, "implementer", "/a.jsonl", Usage{Input: 150, Output: 10})
 	_, _ = s.RecordUsage(ctx, r.ID, "implementer", "/a/Sub.jsonl", Usage{Input: 5})
@@ -117,7 +117,7 @@ func TestRecentRunsShouldListNewestFirstUpToTheLimit(t *testing.T) {
 	s := openTest(t)
 	ctx := context.Background()
 	for _, ref := range []string{"#1", "#2", "#3"} {
-		if _, err := s.CreateRun(ctx, "repo", ref, ref); err != nil {
+		if _, err := s.CreateRun(ctx, "repo", ref, ref, "omp", 3); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -137,7 +137,7 @@ func TestOpenShouldAddTheAgentsTableToAnExistingDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r, _ := s.CreateRun(ctx, "repo", "#1", "a")
+	r, _ := s.CreateRun(ctx, "repo", "#1", "a", "omp", 3)
 	_ = s.StartAgent(ctx, Agent{RunID: r.ID, Role: "planner", PID: 7})
 	s.Close()
 

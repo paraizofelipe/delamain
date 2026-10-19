@@ -53,7 +53,7 @@ func newFixture(t *testing.T) *fixture {
 func (f *fixture) run(t *testing.T, ref, branch string, state store.RunState) store.Run {
 	t.Helper()
 	ctx := context.Background()
-	rec, err := f.st.CreateRun(ctx, f.repo, ref, "Fix "+ref)
+	rec, err := f.st.CreateRun(ctx, f.repo, ref, "Fix "+ref, "omp", 3)
 	if err != nil {
 		t.Fatal(err)
 	}
