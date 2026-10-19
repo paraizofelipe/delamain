@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -50,17 +51,41 @@ func validComponent(c string) bool {
 	return c != "" && c != "." && c != ".." && !strings.ContainsAny(c, `/\`)
 }
 
-// Read returns the stored learnings of host/repoPath, or "" when there are none.
+// Read returns the stored learnings of host/repoPath, newest first, in at most
+// max bytes without splitting a line. It returns "" when there are none.
 func (s Store) Read(host, repoPath string, max int) (string, error) {
 	p := s.Path(host, repoPath)
 	if p == "" {
 		return "", ErrInvalidPath
 	}
+	if max <= 0 {
+		return "", nil
+	}
 	b, err := os.ReadFile(p) //nolint:gosec // path is validated to stay under Dir
 	if errors.Is(err, fs.ErrNotExist) {
 		return "", nil
 	}
-	return string(b), err
+	if err != nil {
+		return "", err
+	}
+	lines := strings.Split(string(b), "\n")
+	var out []string
+	size := 0
+	for _, l := range slices.Backward(lines) {
+		if strings.TrimSpace(l) == "" {
+			continue
+		}
+		next := size + len(l)
+		if len(out) > 0 {
+			next++ // the "\n" separator
+		}
+		if next > max {
+			break
+		}
+		out = append(out, l)
+		size = next
+	}
+	return strings.Join(out, "\n"), nil
 }
 
 // Append adds one dated line per learning to the memory of host/repoPath and

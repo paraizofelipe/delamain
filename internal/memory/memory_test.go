@@ -224,3 +224,40 @@ func TestAppendShouldFlattenNewlinesAndEscapeAngleBrackets(t *testing.T) {
 		t.Fatalf("Read must not expose raw delimiters: %q", got)
 	}
 }
+
+func TestReadShouldReturnNewestFirstWithinMaxBytesWithoutSplittingLines(t *testing.T) {
+	s := newStore(t)
+	for i, l := range []string{"oldest", "middle", "newest"} {
+		if _, err := s.Append("github.com", "acme/app", int64(i+1), 1, []string{l}, day); err != nil {
+			t.Fatal(err)
+		}
+	}
+	l1 := "- 2026-10-19 (run 1, pr #1): oldest"
+	l2 := "- 2026-10-19 (run 2, pr #1): middle"
+	l3 := "- 2026-10-19 (run 3, pr #1): newest"
+	cases := []struct {
+		max  int
+		want string
+	}{
+		{1000, l3 + "\n" + l2 + "\n" + l1},
+		{len(l3) + 1 + len(l2) + 1 + len(l1), l3 + "\n" + l2 + "\n" + l1},
+		{len(l3) + 1 + len(l2) + 1 + len(l1) - 1, l3 + "\n" + l2},
+		{len(l3) + 1 + len(l2), l3 + "\n" + l2},
+		{len(l3), l3},
+		{len(l3) - 1, ""},
+		{0, ""},
+		{-1, ""},
+	}
+	for _, c := range cases {
+		got, err := s.Read("github.com", "acme/app", c.max)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != c.want {
+			t.Errorf("Read(max=%d) = %q, want %q", c.max, got, c.want)
+		}
+		if len(got) > max(c.max, 0) {
+			t.Errorf("Read(max=%d) returned %d bytes", c.max, len(got))
+		}
+	}
+}
