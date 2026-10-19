@@ -2,9 +2,11 @@ package memory
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -130,5 +132,44 @@ func assertMode(t *testing.T, p string, want fs.FileMode) {
 	}
 	if got := fi.Mode().Perm(); got != want {
 		t.Errorf("%s mode = %o, want %o", p, got, want)
+	}
+}
+
+func TestAppendShouldDiscardLearningsOver300Chars(t *testing.T) {
+	s := newStore(t)
+	exact := strings.Repeat("é", 300) // 300 runes, 600 bytes: the limit counts characters
+	over := strings.Repeat("a", 301)
+	n, err := s.Append("github.com", "acme/app", 1, 1, []string{over, "  " + exact + "  ", "short"}, day)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("wrote %d, want 2", n)
+	}
+	want := "- 2026-10-19 (run 1, pr #1): " + exact + "\n- 2026-10-19 (run 1, pr #1): short\n"
+	if got := readFile(t, s.Path("github.com", "acme/app")); got != want {
+		t.Fatalf("over-limit learning must be dropped, not truncated:\n%s", got)
+	}
+}
+
+func TestAppendShouldKeepAtMost10PerCall(t *testing.T) {
+	s := newStore(t)
+	var in []string
+	for i := 1; i <= 11; i++ {
+		in = append(in, fmt.Sprintf("learning %d", i))
+	}
+	n, err := s.Append("github.com", "acme/app", 1, 1, in, day)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 10 {
+		t.Fatalf("wrote %d, want 10", n)
+	}
+	got := readFile(t, s.Path("github.com", "acme/app"))
+	if c := strings.Count(got, "\n"); c != 10 {
+		t.Fatalf("file has %d lines, want 10:\n%s", c, got)
+	}
+	if !strings.Contains(got, "learning 10\n") || strings.Contains(got, "learning 11") {
+		t.Fatalf("must keep the first 10 in order:\n%s", got)
 	}
 }

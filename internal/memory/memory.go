@@ -9,6 +9,12 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
+)
+
+const (
+	maxChars   = 300 // longer learnings are dropped, not truncated
+	maxPerCall = 10
 )
 
 // Store keeps one markdown file of learnings per repository under Dir.
@@ -73,13 +79,22 @@ func (s Store) Append(host, repoPath string, runID int64, pr int, learnings []st
 	}
 	var b strings.Builder
 	b.Write(cur)
+	n := 0
 	for _, l := range learnings {
+		if n == maxPerCall {
+			break
+		}
+		l = strings.TrimSpace(l)
+		if utf8.RuneCountInString(l) > maxChars {
+			continue
+		}
 		fmt.Fprintf(&b, "- %s (run %d, pr #%d): %s\n", now.Format("2006-01-02"), runID, pr, l)
+		n++
 	}
 	if err := writeAtomic(p, []byte(b.String())); err != nil {
 		return 0, err
 	}
-	return len(learnings), nil
+	return n, nil
 }
 
 func writeAtomic(dst string, data []byte) error {
