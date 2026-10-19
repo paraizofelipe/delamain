@@ -1,10 +1,10 @@
-# Publishes v$(cat VERSION) as a GitHub release when VERSION changes on main (see `make bump`).
+# Releases every push to main (a merged PR or a direct push): the next version comes from
+# .github/scripts/next-version.sh, VERSION is committed back to main and v<version> is published.
 name: release
 
 on:
   push:
     branches: [main]
-    paths: [VERSION]
   workflow_dispatch:
 
 permissions:
@@ -26,12 +26,18 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0 # the whole history and its tags, to find the last release
 
-      - name: Read VERSION
+      - name: Next version
         id: version
         run: |
-          v="$(cat VERSION)"
-          [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::VERSION '$v' is not X.Y.Z"; exit 1; }
+          v="$(.github/scripts/next-version.sh)"
+          if [ -z "$v" ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::HEAD is already released; nothing to do"
+            exit 0
+          fi
+          echo "$v" > VERSION
           echo "tag=v$v" >> "$GITHUB_OUTPUT"
           if ! rel="$(gh release view "v$v" --repo "$GITHUB_REPOSITORY" --json isDraft,assets 2>/dev/null)"; then
             echo "exists=false" >> "$GITHUB_OUTPUT"
@@ -60,12 +66,30 @@ jobs:
         if: steps.version.outputs.exists == 'false'
         run: make dist
 
+      - name: Commit VERSION
+        id: commit
+        if: steps.version.outputs.exists == 'false'
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        # Pushed with GITHUB_TOKEN, so this commit does not trigger another run.
+        run: |
+          if ! git diff --quiet VERSION; then
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git commit -q -m "chore: release $TAG" VERSION
+            auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+            echo "::add-mask::$auth"
+            git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $auth" push origin HEAD:main
+          fi
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
       - name: Publish
         if: steps.version.outputs.exists == 'false'
         env:
           TAG: ${{ steps.version.outputs.tag }}
+          SHA: ${{ steps.commit.outputs.sha }}
         # A draft is invisible to releases/latest until every asset is uploaded.
         run: |
           gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --draft \
-            --target "$GITHUB_SHA" --title "$TAG" --generate-notes
+            --target "$SHA" --title "$TAG" --generate-notes
           gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
