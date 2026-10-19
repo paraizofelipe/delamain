@@ -22,7 +22,7 @@ func forgeFor(ctx context.Context, cfg config.Config, dir string) (forge.Forge, 
 	}
 	if !g.HasRemote(ctx, top, "origin") {
 		if cfg.Forge.Kind != config.ForgeAuto {
-			return nil, fmt.Errorf("forge.kind=%s, mas %s não tem remote origin", cfg.Forge.Kind, top)
+			return nil, fmt.Errorf("forge.kind=%s, but %s has no origin remote", cfg.Forge.Kind, top)
 		}
 		return nil, nil
 	}
