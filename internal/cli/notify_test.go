@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -164,5 +165,52 @@ func TestDaemonShouldNotifyEachBudgetLevelOncePerDay(t *testing.T) {
 	newBudgetAlerts(off, fake).check(ctx, dayStatus(off, 10e6, 40), at(19, 10))
 	if len(fake.got) != 0 {
 		t.Fatalf("budget filtered out of notify.events: %+v", fake.got)
+	}
+}
+
+func TestNotifyTestShouldSendTheExampleToastWithoutActions(t *testing.T) {
+	t.Setenv("DELAMAIN_STATE_DIR", t.TempDir())
+	fake := stubNotifier(t, nil)
+	out, err := execute(t, "notify", "--config", "/nonexistent.yaml", "--test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.got) != 1 {
+		t.Fatalf("want one toast, got %+v", fake.got)
+	}
+	m := fake.got[0]
+	if m.Event != notify.EventPROpened || m.Title != "✅ PR opened · delamain #12" ||
+		m.Body != "Mostrar HARNESS e INTERACTIONS no status\nPR #31 · 2 iterations · 167K tokens · US$ 0.67" || m.Actions != nil {
+		t.Fatalf("pr_opened example without actions, got %#v", m)
+	}
+	if fake.opts.Interactive || !fake.closed || !strings.Contains(out, "pr_opened") || !strings.Contains(out, "dbus") {
+		t.Fatalf("opts=%+v closed=%v out=%q", fake.opts, fake.closed, out)
+	}
+
+	fake = stubNotifier(t, nil)
+	if _, err := execute(t, "notify", "--config", "/nonexistent.yaml", "--test", "--event", "halted"); err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.got) != 1 || fake.got[0].Title != "⛔ Halted · delamain #12" || fake.got[0].Urgency != notify.Critical {
+		t.Fatalf("--event picks the example, got %+v", fake.got)
+	}
+}
+
+func TestNotifyTestShouldFailWhenBackendIsNone(t *testing.T) {
+	t.Setenv("DELAMAIN_STATE_DIR", t.TempDir())
+	fake := stubNotifier(t, nil)
+	fake.backend = "none"
+	_, err := execute(t, "notify", "--config", "/nonexistent.yaml", "--test")
+	if err == nil || !strings.Contains(err.Error(), "none") || len(fake.got) != 0 {
+		t.Fatalf("a test toast nobody can see is an error: err=%v sent=%+v", err, fake.got)
+	}
+}
+
+func TestNotifyTestShouldRejectUnknownEvent(t *testing.T) {
+	t.Setenv("DELAMAIN_STATE_DIR", t.TempDir())
+	fake := stubNotifier(t, nil)
+	_, err := execute(t, "notify", "--config", "/nonexistent.yaml", "--test", "--event", "merged")
+	if err == nil || !strings.Contains(err.Error(), `"merged"`) || len(fake.got) != 0 {
+		t.Fatalf("err=%v sent=%+v", err, fake.got)
 	}
 }

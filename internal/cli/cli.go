@@ -92,6 +92,7 @@ func NewRoot() *cobra.Command {
 		newListCmd(load),
 		newStatusCmd(load),
 		newLogsCmd(load),
+		newNotifyCmd(load),
 		newUpgradeCmd(),
 	)
 	return root

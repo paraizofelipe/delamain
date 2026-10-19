@@ -228,3 +228,31 @@ func FormatRecover(runs []Recovered) Message {
 		Urgency: Normal, Expire: expire, Category: "x-delamain.recover",
 	}
 }
+
+// Example is the toast of event e with the data of the validated examples, for `notify --test`.
+func Example(e Event) (Message, bool) {
+	r := Run{
+		ID: 42, Repo: "delamain", Ref: "#12", Title: "Mostrar HARNESS e INTERACTIONS no status", Harness: "omp",
+		PRURL: "https://github.com/paraizofelipe/delamain/pull/31", Iterations: 2, MaxIterations: 3, Tokens: "167K", CostUSD: 0.67,
+	}
+	switch e {
+	case EventStarted:
+		return FormatStarted(r), true
+	case EventPROpened:
+		return FormatPROpened(r), true
+	case EventNeedsHuman:
+		r.Draft, r.Iterations, r.Tokens, r.Reason = true, 3, "1.2M", "3 iterações sem aprovação"
+		return FormatNeedsHuman(r), true
+	case EventHalted:
+		r.State, r.Reason = "implement", "reviewer alterou a worktree"
+		return FormatHalted(r), true
+	case EventNeedsInfo:
+		r.ID, r.Label = 0, "delamain:needs-info"
+		return FormatNeedsInfo(r), true
+	case EventBudget:
+		return FormatBudget(Budget{Pct: 80, Used: "8.1M", Limit: "10M", CostUSD: 32.4}), true
+	case EventRecover:
+		return FormatRecover([]Recovered{{Repo: "delamain", Ref: "#12", Result: "halted"}, {Repo: "api", Ref: "#7", Result: "draft PR"}}), true
+	}
+	return Message{}, false
+}
