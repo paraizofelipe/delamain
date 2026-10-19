@@ -183,3 +183,32 @@ func TestFormatShouldFallBackToPRWhenTheURLHasNoNumber(t *testing.T) {
 		t.Errorf("draft line 2 = %q", line2)
 	}
 }
+
+func TestFormatBudgetSoftShouldMatchContract(t *testing.T) {
+	assertMessage(t, FormatBudget(Budget{Pct: 80, Used: "8.1M", Limit: "10M", CostUSD: 32.4}), Message{
+		Event:   EventBudget,
+		Title:   "💸 Daily budget at 80%",
+		Body:    "8.1M of 10M tokens · US$ 32.40\nNew runs continue until the hard limit",
+		Urgency: Normal, Expire: 15000, Category: "x-delamain.budget",
+	})
+}
+
+func TestFormatBudgetHardShouldBeCriticalAndNeverExpire(t *testing.T) {
+	assertMessage(t, FormatBudget(Budget{Hard: true, Pct: 80, Used: "10M", Limit: "10M", CostUSD: 40.02}), Message{
+		Event:   EventBudget,
+		Title:   "🛑 Daily budget exhausted",
+		Body:    "10M of 10M tokens · US$ 40.02\nDaemon paused until 00:00",
+		Urgency: Critical, Expire: 0, Category: "x-delamain.budget",
+	})
+}
+
+func TestFormatBudgetInUSDModeShouldShowDollars(t *testing.T) {
+	m := FormatBudget(Budget{Pct: 80, Used: "US$ 8.10", Limit: "US$ 10.00", CostUSD: 8.1, USD: true})
+	if m.Body != "US$ 8.10 of US$ 10.00\nNew runs continue until the hard limit" {
+		t.Fatalf("usd mode shows dollars once: %q", m.Body)
+	}
+	m = FormatBudget(Budget{Pct: 80, Used: "8.1M", Limit: "10M"})
+	if m.Body != "8.1M of 10M tokens\nNew runs continue until the hard limit" {
+		t.Fatalf("a day without reported cost shows no US$: %q", m.Body)
+	}
+}

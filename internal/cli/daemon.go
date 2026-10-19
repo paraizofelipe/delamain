@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"os"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -15,6 +17,7 @@ import (
 	"github.com/paraizo/delamain/internal/config"
 	"github.com/paraizo/delamain/internal/daemon"
 	"github.com/paraizo/delamain/internal/forge"
+	"github.com/paraizo/delamain/internal/notify"
 	"github.com/paraizo/delamain/internal/pipeline"
 )
 
@@ -70,6 +73,7 @@ Only one instance runs per state_dir. Ctrl+C stops it: in-flight runs end as int
 				return err
 			}
 			meter := budget.Meter{Store: st, Cfg: cfg.Budget}
+			alerts := newBudgetAlerts(cfg, base.Notify)
 			d := daemon.New(daemon.Options{
 				Sources: sources, Label: cfg.Forge.Labels.Ready, MaxParallel: cfg.Pipeline.MaxParallel,
 				Interval: cfg.Daemon.PollInterval, Log: base.Log,
@@ -80,8 +84,12 @@ Only one instance runs per state_dir. Ctrl+C stops it: in-flight runs end as int
 				},
 				DayExhausted: func(ctx context.Context) (string, error) {
 					s, err := meter.Today(ctx)
-					if err != nil || s.Level != budget.Hard {
+					if err != nil {
 						return "", err
+					}
+					alerts.check(ctx, s, time.Now())
+					if s.Level != budget.Hard {
+						return "", nil
 					}
 					return s.Reason, nil
 				},
@@ -152,4 +160,33 @@ func lockDaemon(stateDir string) (func(), error) {
 	}
 	slog.Debug("daemon lock acquired", "path", path)
 	return func() { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN); f.Close() }, nil //nolint:gosec // fd fits in int
+}
+
+// budgetAlerts tells the desktop when the daily budget reaches its soft or hard limit, at most
+// once per level per day.
+type budgetAlerts struct {
+	cfg    config.Config
+	notify notify.Notifier
+	day    string
+	sent   map[budget.Level]bool
+}
+
+func newBudgetAlerts(cfg config.Config, n notify.Notifier) *budgetAlerts {
+	return &budgetAlerts{cfg: cfg, notify: n}
+}
+
+// check looks at the day's status s, evaluated at now.
+func (a *budgetAlerts) check(ctx context.Context, s budget.Status, now time.Time) {
+	if day := now.Format(time.DateOnly); day != a.day {
+		a.day, a.sent = day, map[budget.Level]bool{}
+	}
+	if s.Level == budget.OK || a.sent[s.Level] || !notify.Allowed(a.cfg.Notify, notify.EventBudget) {
+		return
+	}
+	a.sent[s.Level] = true
+	_ = a.notify.Notify(ctx, notify.FormatBudget(notify.Budget{
+		Hard: s.Level == budget.Hard, Pct: int(math.Round(a.cfg.Budget.SoftRatio * 100)),
+		Used: budget.Format(s.Day, s.Mode), Limit: budget.Format(s.Daily, s.Mode),
+		CostUSD: s.DayCostUSD, USD: s.Mode == config.BudgetUSD,
+	}))
 }

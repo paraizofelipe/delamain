@@ -167,3 +167,35 @@ func cut(s string, n int) string {
 	}
 	return string(r[:n-1]) + "…"
 }
+
+// Budget is the day's spend the budget toasts show.
+type Budget struct {
+	Hard bool
+	Pct  int // the soft threshold crossed, e.g. 80
+	// Used and Limit as budget.Format renders them: "8.1M" and "10M", or "US$ 8.10" in usd mode.
+	Used, Limit string
+	CostUSD     float64
+	USD         bool
+}
+
+// FormatBudget is the toast of the daily budget reaching its soft or hard limit.
+func FormatBudget(b Budget) Message {
+	spend := b.Used + " of " + b.Limit
+	if !b.USD {
+		spend += " tokens"
+		if b.CostUSD > 0 {
+			spend += fmt.Sprintf(" · US$ %.2f", b.CostUSD)
+		}
+	}
+	m := Message{
+		Event: EventBudget, Title: fmt.Sprintf("💸 Daily budget at %d%%", b.Pct),
+		Body:    lines(spend, "New runs continue until the hard limit"),
+		Urgency: Normal, Expire: expire, Category: "x-delamain.budget",
+	}
+	if b.Hard {
+		m.Title, m.Body, m.Urgency, m.Expire = "🛑 Daily budget exhausted", lines(spend, "Daemon paused until 00:00"), Critical, 0
+	}
+	return m
+}
+
+func lines(l ...string) string { return strings.Join(l, "\n") }

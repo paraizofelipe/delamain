@@ -5,10 +5,12 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/paraizo/delamain/internal/budget"
 	"github.com/paraizo/delamain/internal/config"
 	"github.com/paraizo/delamain/internal/notify"
 )
@@ -98,5 +100,69 @@ func TestDaemonShouldCreateInteractiveNotifier(t *testing.T) {
 	}
 	if !fake.closed {
 		t.Fatal("the notifier is closed when the daemon stops")
+	}
+}
+
+func dayStatus(cfg config.Config, spent, cost float64) budget.Status {
+	s := budget.Status{Mode: cfg.Budget.Mode, Day: spent, DayCostUSD: cost, Daily: cfg.Budget.Daily, Level: budget.OK}
+	switch {
+	case spent >= cfg.Budget.Daily:
+		s.Level = budget.Hard
+	case spent >= cfg.Budget.SoftRatio*cfg.Budget.Daily:
+		s.Level = budget.Soft
+	}
+	return s
+}
+
+func titles(n *fakeNotifier) []string {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	var out []string
+	for _, m := range n.got {
+		out = append(out, m.Title)
+	}
+	return out
+}
+
+func TestDaemonShouldNotifyEachBudgetLevelOncePerDay(t *testing.T) {
+	cfg := config.Default() // 10M tokens a day, soft at 80%
+	fake := &fakeNotifier{}
+	a := newBudgetAlerts(cfg, fake)
+	ctx := context.Background()
+	at := func(day, hour int) time.Time { return time.Date(2026, 10, day, hour, 0, 0, 0, time.Local) }
+
+	a.check(ctx, dayStatus(cfg, 2e6, 8), at(19, 9))
+	a.check(ctx, dayStatus(cfg, 8.1e6, 32.4), at(19, 10))
+	a.check(ctx, dayStatus(cfg, 9e6, 36), at(19, 11))
+	a.check(ctx, dayStatus(cfg, 10e6, 40.02), at(19, 12))
+	a.check(ctx, dayStatus(cfg, 10e6, 40.02), at(19, 13))
+	want := []string{"💸 Daily budget at 80%", "🛑 Daily budget exhausted"}
+	if got := titles(fake); !slices.Equal(got, want) {
+		t.Fatalf("one toast per level per day, got %q", got)
+	}
+	if fake.got[0].Body != "8.1M of 10M tokens · US$ 32.40\nNew runs continue until the hard limit" ||
+		fake.got[1].Body != "10M of 10M tokens · US$ 40.02\nDaemon paused until 00:00" {
+		t.Fatalf("bodies = %q / %q", fake.got[0].Body, fake.got[1].Body)
+	}
+
+	a.check(ctx, dayStatus(cfg, 8.5e6, 34), at(20, 0))
+	if got := titles(fake); len(got) != 3 || got[2] != "💸 Daily budget at 80%" {
+		t.Fatalf("a new day alerts again, got %q", got)
+	}
+
+	usd := config.Default()
+	usd.Budget = config.Budget{Mode: config.BudgetUSD, Daily: 10, SoftRatio: 0.8}
+	fake = &fakeNotifier{}
+	newBudgetAlerts(usd, fake).check(ctx, dayStatus(usd, 8.1, 8.1), at(19, 10))
+	if len(fake.got) != 1 || fake.got[0].Body != "US$ 8.10 of US$ 10.00\nNew runs continue until the hard limit" {
+		t.Fatalf("usd mode shows dollars: %+v", fake.got)
+	}
+
+	off := config.Default()
+	off.Notify.Events = []string{"halted"}
+	fake = &fakeNotifier{}
+	newBudgetAlerts(off, fake).check(ctx, dayStatus(off, 10e6, 40), at(19, 10))
+	if len(fake.got) != 0 {
+		t.Fatalf("budget filtered out of notify.events: %+v", fake.got)
 	}
 }

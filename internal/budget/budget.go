@@ -31,8 +31,10 @@ type Status struct {
 	Usage           store.Usage // the run's raw usage, cacheRead included
 	Run, Day        float64
 	PerIssue, Daily float64
-	Level           Level
-	Reason          string
+	// DayCostUSD is the day's provider cost over all runs, whatever the mode.
+	DayCostUSD float64
+	Level      Level
+	Reason     string
 }
 
 // SessionUsage is one session's cumulative usage so far, keyed by the file a harness keeps it in.
@@ -122,7 +124,7 @@ func (m Meter) Today(ctx context.Context) (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
-	s := Status{Mode: m.Cfg.Mode, Day: m.spent(day), PerIssue: m.Cfg.PerIssue, Daily: m.Cfg.Daily}
+	s := Status{Mode: m.Cfg.Mode, Day: m.spent(day), DayCostUSD: day.CostUSD, PerIssue: m.Cfg.PerIssue, Daily: m.Cfg.Daily}
 	s.evaluate(m.Cfg.SoftRatio)
 	return s, nil
 }

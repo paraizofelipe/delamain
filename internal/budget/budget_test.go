@@ -225,3 +225,24 @@ func TestCheckShouldKeepLiveUsageOutOfTheLedger(t *testing.T) {
 		t.Fatalf("the ledger holds only what session files say: %+v", s)
 	}
 }
+
+func TestTodayShouldReportTheDayCost(t *testing.T) {
+	f := newFixture(t, tokens(0, 1000))
+	first, second := f.newRun(t, "#1"), f.newRun(t, "#2")
+	turn(t, filepath.Join(f.dir, "a", "planner", "s.jsonl"), 300, 0, 0, 0, 1.25)
+	turn(t, filepath.Join(f.dir, "b", "planner", "s.jsonl"), 200, 0, 0, 0, 0.5)
+	for id, dir := range map[int64]string{first: "a", second: "b"} {
+		if _, err := f.m.Check(context.Background(), id, filepath.Join(f.dir, dir), nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	day, err := f.m.Today(context.Background())
+	if err != nil || day.Day != 500 || day.DayCostUSD != 1.75 {
+		t.Fatalf("the day's tokens and cost over all runs: %+v %v", day, err)
+	}
+
+	empty := newFixture(t, tokens(0, 1000))
+	if day, err := empty.m.Today(context.Background()); err != nil || day.DayCostUSD != 0 || day.Day != 0 {
+		t.Fatalf("a day without runs costs nothing: %+v %v", day, err)
+	}
+}
