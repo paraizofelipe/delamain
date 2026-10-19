@@ -362,6 +362,9 @@ func TestOpenShouldUpgradeExistingRunsToIssueKind(t *testing.T) {
 	if runs[0].Kind != KindIssue {
 		t.Fatalf("every run before v5 worked an issue, got kind %q", runs[0].Kind)
 	}
+	if _, err := s.Cursor(ctx, "repo", 3); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("v5 must create the review cursors table: %v", err)
+	}
 }
 
 func TestCreateRunShouldRefuseSecondActiveReviewForSamePR(t *testing.T) {
@@ -375,5 +378,45 @@ func TestCreateRunShouldRefuseSecondActiveReviewForSamePR(t *testing.T) {
 	}
 	if _, err := s.CreateRun(ctx, "repo", "#5", "a", "omp", 3, KindIssue); err != nil {
 		t.Fatalf("issue #5 is not PR 5: %v", err)
+	}
+}
+
+func TestCursorShouldReturnNotFoundBeforeFirstSave(t *testing.T) {
+	s := openTest(t)
+	if _, err := s.Cursor(context.Background(), "repo", 4); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("a PR never reviewed has no cursor, got %v", err)
+	}
+}
+
+func TestSaveCursorShouldUpsert(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	seen := time.Date(2026, 3, 4, 10, 30, 0, 0, time.FixedZone("BRT", -3*3600))
+	first := ReviewCursor{Repo: "repo", PR: 4, LastSeenAt: seen, Rounds: 1, LastHeadSHA: "abc123"}
+	if err := s.SaveCursor(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	other := ReviewCursor{Repo: "repo", PR: 5, LastSeenAt: seen, Rounds: 1, LastHeadSHA: "fff000"}
+	if err := s.SaveCursor(ctx, other); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Cursor(ctx, "repo", 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Repo != "repo" || got.PR != 4 || got.Rounds != 1 || got.LastHeadSHA != "abc123" || !got.LastSeenAt.Equal(seen) {
+		t.Fatalf("cursor = %+v, want %+v", got, first)
+	}
+
+	later := seen.Add(2 * time.Hour)
+	if err := s.SaveCursor(ctx, ReviewCursor{Repo: "repo", PR: 4, LastSeenAt: later, Rounds: 2, LastHeadSHA: "def456"}); err != nil {
+		t.Fatalf("saving the same PR again must overwrite: %v", err)
+	}
+	got, _ = s.Cursor(ctx, "repo", 4)
+	if got.Rounds != 2 || got.LastHeadSHA != "def456" || !got.LastSeenAt.Equal(later) {
+		t.Fatalf("cursor after second save = %+v", got)
+	}
+	if untouched, _ := s.Cursor(ctx, "repo", 5); untouched.Rounds != 1 || untouched.LastHeadSHA != "fff000" {
+		t.Fatalf("another PR's cursor must not change: %+v", untouched)
 	}
 }

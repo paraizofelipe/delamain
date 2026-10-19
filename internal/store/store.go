@@ -179,7 +179,15 @@ var migrations = []string{
 	);`,
 	`ALTER TABLE runs ADD COLUMN harness TEXT NOT NULL DEFAULT '';
 	ALTER TABLE runs ADD COLUMN max_iterations INTEGER NOT NULL DEFAULT 0;`,
-	`ALTER TABLE runs ADD COLUMN kind TEXT NOT NULL DEFAULT 'issue';`,
+	`ALTER TABLE runs ADD COLUMN kind TEXT NOT NULL DEFAULT 'issue';
+	CREATE TABLE review_cursors (
+		repo          TEXT NOT NULL,
+		pr            INTEGER NOT NULL,
+		last_seen_at  TIMESTAMP NOT NULL,
+		rounds        INTEGER NOT NULL DEFAULT 0,
+		last_head_sha TEXT NOT NULL DEFAULT '',
+		PRIMARY KEY (repo, pr)
+	);`,
 }
 
 func (s *Store) migrate(ctx context.Context) error {
@@ -357,4 +365,34 @@ func (s *Store) RunUsage(ctx context.Context, runID int64) (Usage, error) {
 // UsageSince is the total consumed by all runs since t (e.g. start of the UTC day).
 func (s *Store) UsageSince(ctx context.Context, t time.Time) (Usage, error) {
 	return s.sumLedger(ctx, "at >= ?", t.UTC())
+}
+
+// ReviewCursor is how far the reviewer got on a PR.
+type ReviewCursor struct {
+	Repo        string
+	PR          int
+	LastSeenAt  time.Time
+	Rounds      int
+	LastHeadSHA string
+}
+
+// Cursor returns the review cursor of a PR, or ErrNotFound before the first SaveCursor.
+func (s *Store) Cursor(ctx context.Context, repo string, pr int) (ReviewCursor, error) {
+	c := ReviewCursor{Repo: repo, PR: pr}
+	err := s.db.QueryRowContext(ctx,
+		`SELECT last_seen_at, rounds, last_head_sha FROM review_cursors WHERE repo = ? AND pr = ?`, repo, pr).
+		Scan(&c.LastSeenAt, &c.Rounds, &c.LastHeadSHA)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ReviewCursor{}, ErrNotFound
+	}
+	return c, err
+}
+
+// SaveCursor inserts or overwrites the review cursor of c.Repo and c.PR.
+func (s *Store) SaveCursor(ctx context.Context, c ReviewCursor) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO review_cursors (repo, pr, last_seen_at, rounds, last_head_sha) VALUES (?, ?, ?, ?, ?)
+		 ON CONFLICT(repo, pr) DO UPDATE SET last_seen_at=excluded.last_seen_at, rounds=excluded.rounds, last_head_sha=excluded.last_head_sha`,
+		c.Repo, c.PR, c.LastSeenAt.UTC(), c.Rounds, c.LastHeadSHA)
+	return err
 }
