@@ -107,7 +107,7 @@ func TestDaemonShouldRefuseRepositoriesWithoutForge(t *testing.T) {
 func TestRecoverShouldReportWhenNothingIsOrphaned(t *testing.T) {
 	t.Setenv("DELAMAIN_STATE_DIR", t.TempDir())
 	out, err := execute(t, "recover", "--config", "/nonexistent.yaml")
-	if err != nil || !strings.Contains(out, "nenhuma run órfã") {
+	if err != nil || !strings.Contains(out, "no orphaned run") {
 		t.Fatalf("out=%q err=%v", out, err)
 	}
 }
