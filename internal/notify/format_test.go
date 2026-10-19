@@ -212,3 +212,34 @@ func TestFormatBudgetInUSDModeShouldShowDollars(t *testing.T) {
 		t.Fatalf("a day without reported cost shows no US$: %q", m.Body)
 	}
 }
+
+func TestFormatRecoverShouldMatchContract(t *testing.T) {
+	assertMessage(t, FormatRecover([]Recovered{
+		{Repo: "/home/dev/projects/delamain", Ref: "#12", Result: "halted"},
+		{Repo: "/home/dev/projects/api", Ref: "#7", Result: "draft PR"},
+	}), Message{
+		Event:   EventRecover,
+		Title:   "♻️ Recovered 2 runs",
+		Body:    "delamain #12 (halted) · api #7 (draft PR)",
+		Urgency: Normal, Expire: 15000, Category: "x-delamain.recover",
+	})
+}
+
+func TestFormatRecoverShouldListAtMostThreeRuns(t *testing.T) {
+	runs := []Recovered{
+		{Repo: "/r/a", Ref: "#1", Result: "halted"},
+		{Repo: "/r/b", Ref: "task:notes", Result: "PR opened"},
+		{Repo: "/r/c", Ref: "#3", Result: "needs review"},
+		{Repo: "/r/d", Ref: "#4", Result: "halted"},
+		{Repo: "/r/e", Ref: "#5", Result: "halted"},
+	}
+	if m := FormatRecover(runs); m.Title != "♻️ Recovered 5 runs" || m.Body != "a #1 (halted) · b task:notes (PR opened) · c #3 (needs review) · +2 more" {
+		t.Fatalf("title=%q body=%q", m.Title, m.Body)
+	}
+	if m := FormatRecover(runs[:3]); m.Body != "a #1 (halted) · b task:notes (PR opened) · c #3 (needs review)" {
+		t.Fatalf("exactly three runs need no +more: %q", m.Body)
+	}
+	if m := FormatRecover(runs[:1]); m.Title != "♻️ Recovered 1 run" || m.Body != "a #1 (halted)" {
+		t.Fatalf("one run is singular: title=%q body=%q", m.Title, m.Body)
+	}
+}

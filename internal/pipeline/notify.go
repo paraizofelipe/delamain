@@ -25,6 +25,9 @@ func (r *Runner) notify(ctx context.Context, m notify.Message) {
 // notifyFinish tells the desktop how the run ended, once the issue already says so.
 // Halted wins over a draft PR; like announce, only a ready PR is "opened".
 func (r *Runner) notifyFinish(ctx context.Context, ru *run, t Task) {
+	if ru.recovered {
+		return // Recover shows one toast for all the runs it finalized
+	}
 	n := r.toast(ru, t)
 	switch {
 	case ru.res.Outcome == OutcomeHalted:

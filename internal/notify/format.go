@@ -199,3 +199,32 @@ func FormatBudget(b Budget) Message {
 }
 
 func lines(l ...string) string { return strings.Join(l, "\n") }
+
+// Recovered is one run Recover finalized: "<repo> <ref> (<result>)".
+type Recovered struct {
+	Repo, Ref string
+	Result    string // "halted", "draft PR", "PR opened" or "needs review"
+}
+
+// FormatRecover is the one toast for every run a recover finalized.
+func FormatRecover(runs []Recovered) Message {
+	const shown = 3
+	var items []string
+	for i, r := range runs {
+		if i == shown {
+			items = append(items, fmt.Sprintf("+%d more", len(runs)-shown))
+			break
+		}
+		items = append(items, fmt.Sprintf("%s %s (%s)", filepath.Base(r.Repo), r.Ref, r.Result))
+	}
+	noun := "runs"
+	if len(runs) == 1 {
+		noun = "run"
+	}
+	return Message{
+		Event:   EventRecover,
+		Title:   fmt.Sprintf("♻️ Recovered %d %s", len(runs), noun),
+		Body:    strings.Join(items, " · "),
+		Urgency: Normal, Expire: expire, Category: "x-delamain.recover",
+	}
+}

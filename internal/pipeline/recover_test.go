@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/paraizo/delamain/internal/forge"
+	"github.com/paraizo/delamain/internal/notify"
 	"github.com/paraizo/delamain/internal/store"
 )
 
@@ -217,5 +218,30 @@ func TestRecoverShouldLeaveARestoredWorkspaceAloneWithoutADisplay(t *testing.T) 
 	crashed(t, hs, store.StateImplement)
 	if out := recoverAll(t, hs); len(out) != 1 || len(hs.h.closed) != 0 {
 		t.Fatalf("herdr is never called when it is off: %+v closed=%v", out, hs.h.closed)
+	}
+}
+
+func TestRecoverShouldNotifyOnlyWhenRunsWereRecovered(t *testing.T) {
+	hs := newHarness(t, happy)
+	withForge(hs)
+	n := withNotifier(hs)
+	if out := recoverAll(t, hs); len(out) != 0 || len(n.messages()) != 0 {
+		t.Fatalf("nothing recovered, nothing shown: %+v %+v", out, n.messages())
+	}
+
+	crashed(t, hs, store.StateImplement)
+	fixAdd(hs.g)
+	recoverAll(t, hs)
+	m := onlyMessage(t, n) // one summary, no toast per recovered run
+	if m.Event != notify.EventRecover || m.RunID != 0 || m.Title != "♻️ Recovered 1 run" || m.Body != "repo #7 (draft PR)" {
+		t.Fatalf("toast = %#v", m)
+	}
+
+	hs = newHarness(t, happy)
+	n = withNotifier(hs)
+	crashed(t, hs, store.StateReview) // no commits: nothing to deliver
+	recoverAll(t, hs)
+	if m := onlyMessage(t, n); m.Body != "repo #7 (halted)" {
+		t.Fatalf("body = %q", m.Body)
 	}
 }

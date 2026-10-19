@@ -9,6 +9,7 @@ import (
 	"syscall"
 
 	"github.com/paraizo/delamain/internal/forge"
+	"github.com/paraizo/delamain/internal/notify"
 	"github.com/paraizo/delamain/internal/prompts"
 	"github.com/paraizo/delamain/internal/store"
 )
@@ -27,6 +28,12 @@ func (r *Runner) Recover(ctx context.Context, forgeFor func(repo string) (forge.
 		alive = ProcessAlive
 	}
 	var out []Result
+	var recovered []notify.Recovered
+	defer func() {
+		if len(recovered) > 0 {
+			r.notify(context.WithoutCancel(ctx), notify.FormatRecover(recovered))
+		}
+	}()
 	for _, rec := range runs {
 		if rec.OwnerPID == os.Getpid() || alive(rec.OwnerPID) {
 			continue // still being driven by a live process
@@ -53,6 +60,7 @@ func (r *Runner) Recover(ctx context.Context, forgeFor func(repo string) (forge.
 			return out, fmt.Errorf("recover run %d: %w", rec.ID, err)
 		}
 		out = append(out, res)
+		recovered = append(recovered, notify.Recovered{Repo: rec.Repo, Ref: rec.IssueRef, Result: recoveredResult(res)})
 	}
 	return out, nil
 }
@@ -93,6 +101,19 @@ func (r *Runner) recoverRun(ctx context.Context, rec store.Run) (Result, error) 
 		ru.log.Warn("could not record agents", "err", err)
 	}
 	return res, r.finish(ctx, ru, t)
+}
+
+// recoveredResult names how a recovered run ended, for the recover toast.
+func recoveredResult(res Result) string {
+	switch {
+	case res.PRURL != "" && res.Draft:
+		return "draft PR"
+	case res.PRURL != "":
+		return "PR opened"
+	case res.Outcome == OutcomeHalted:
+		return "halted"
+	}
+	return "needs review"
 }
 
 func kindFromBranch(branch string) string {
