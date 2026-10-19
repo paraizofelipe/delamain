@@ -45,6 +45,15 @@ func TokenHint(kind Kind, host string) string {
 	return fmt.Sprintf("set %s, or run %s", strings.Join(TokenVars(kind, host), " or "), login)
 }
 
+// TokenPermissions is the least a token needs for what delamain does: read issues, comment,
+// label and open PRs/MRs. It never needs to merge, push or administer the repository.
+func TokenPermissions(kind Kind) string {
+	if kind == GitLab {
+		return "needs the api scope and at least the Developer role"
+	}
+	return "needs Issues and Pull requests read/write plus Metadata read (fine-grained token), or the repo scope (classic token)"
+}
+
 // Token resolves the token for host as gh/glab do: the host's environment variables first, then
 // what the CLI itself stored on login. source names where the token came from, never its value.
 func Token(ctx context.Context, kind Kind, host string, lookup TokenLookup) (token, source string, err error) {

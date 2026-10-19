@@ -33,6 +33,17 @@ func (g gitlab) Repo() Repo { return g.repo }
 
 func (g gitlab) fail(op string, err error) error { return apiError(GitLab, op, g.scrub, err) }
 
+func (g gitlab) user(ctx context.Context) (string, error) {
+	u, _, err := g.api.Users.CurrentUser(gl.WithContext(ctx))
+	if err != nil {
+		return "", g.fail("user", err)
+	}
+	if u == nil {
+		return "", g.fail("user", errEmpty)
+	}
+	return u.Username, nil
+}
+
 func glIssue(v *gl.Issue) Issue {
 	return Issue{Number: int(v.IID), Title: v.Title, Body: v.Description, URL: v.WebURL, Labels: v.Labels, Open: v.State == "opened"}
 }

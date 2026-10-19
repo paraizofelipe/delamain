@@ -3,7 +3,9 @@ package doctor
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
@@ -11,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/paraizo/delamain/internal/config"
+	"github.com/paraizo/delamain/internal/forge"
 	"github.com/paraizo/delamain/internal/herdr"
 	"github.com/paraizo/delamain/internal/prompts"
 )
@@ -46,6 +49,10 @@ type Deps struct {
 	// Prompts is optional; when set, doctor lints it and checks the installation is current.
 	Prompts       *prompts.Set
 	PromptsTarget prompts.Target
+	// ForgeRepos lists the repositories whose forge auth is checked.
+	ForgeRepos func(ctx context.Context) ([]forge.Repo, error)
+	// ForgeUser resolves repo's token and returns who it authenticates as and where it came from.
+	ForgeUser func(ctx context.Context, repo forge.Repo) (login, source string, err error)
 }
 
 // Run executes every check; it never stops at the first failure so the report is complete.
@@ -106,16 +113,8 @@ func Run(ctx context.Context, cfg config.Config, d Deps) []Check {
 		checks = append(checks, herdrServer(ctx, cfg, d.Herdr)...)
 	}
 
-	forges := 0
-	for _, bin := range []string{"gh", "glab"} {
-		if _, err := d.LookPath(bin); err == nil {
-			forges++
-		}
-	}
-	if forges == 0 {
-		add("forge cli", Warn, "neither gh nor glab found: delamain cannot push PRs/MRs (work stays local)")
-	} else {
-		add("forge cli", OK, "%d of gh/glab available", forges)
+	if d.ForgeUser != nil {
+		checks = append(checks, forgeAuth(ctx, d)...)
 	}
 
 	if _, err := d.LookPath("gitleaks"); err != nil {
@@ -132,6 +131,36 @@ func Run(ctx context.Context, cfg config.Config, d Deps) []Check {
 		add("state dir", Fail, "%s: %v", cfg.Paths.StateDir, err)
 	} else {
 		add("state dir", OK, "%s", cfg.Paths.StateDir)
+	}
+	return checks
+}
+
+// forgeAuth asks each repository's forge who its token belongs to (GET /user). Only a token the
+// forge rejects fails: a missing token or an unreachable forge leaves local work possible.
+func forgeAuth(ctx context.Context, d Deps) []Check {
+	const name = "forge auth"
+	repos, err := d.ForgeRepos(ctx)
+	if err != nil {
+		return []Check{{name, Warn, fmt.Sprintf("cannot list repositories: %v", err)}}
+	}
+	if len(repos) == 0 {
+		return []Check{{name, Warn, "no repository with a forge remote to check"}}
+	}
+	var checks []Check
+	for _, r := range repos {
+		login, source, err := d.ForgeUser(ctx, r)
+		var apiErr *forge.APIError
+		switch {
+		case err == nil:
+			checks = append(checks, Check{name, OK, fmt.Sprintf("%s: %s on %s (token from %s)", r.Path, login, r.Host, source)})
+		case errors.Is(err, forge.ErrTokenNotFound):
+			checks = append(checks, Check{name, Warn, fmt.Sprintf("%s: no token for %s: %s; the token %s",
+				r.Path, r.Host, forge.TokenHint(r.Kind, r.Host), forge.TokenPermissions(r.Kind))})
+		case errors.As(err, &apiErr) && (apiErr.Status == http.StatusUnauthorized || apiErr.Status == http.StatusForbidden):
+			checks = append(checks, Check{name, Fail, fmt.Sprintf("%s: token from %s rejected: %v", r.Path, source, err)})
+		default:
+			checks = append(checks, Check{name, Warn, fmt.Sprintf("%s: cannot reach %s: %v", r.Path, r.Host, err)})
+		}
 	}
 	return checks
 }

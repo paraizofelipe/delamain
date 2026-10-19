@@ -3,12 +3,15 @@ package doctor
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"testing/fstest"
 
 	"github.com/paraizo/delamain/internal/config"
+	"github.com/paraizo/delamain/internal/forge"
 	"github.com/paraizo/delamain/internal/herdr"
 	"github.com/paraizo/delamain/internal/prompts"
 )
@@ -202,8 +205,8 @@ func TestRunShouldReportEveryProblemInsteadOfStoppingAtFirst(t *testing.T) {
 			t.Errorf("%s should fail: %+v", name, m[name])
 		}
 	}
-	if m["forge cli"].Status != Warn || m["gitleaks"].Status != Warn {
-		t.Errorf("optional tools are warnings, not failures: %+v %+v", m["forge cli"], m["gitleaks"])
+	if m["gitleaks"].Status != Warn {
+		t.Errorf("optional tools are warnings, not failures: %+v", m["gitleaks"])
 	}
 }
 
@@ -274,5 +277,131 @@ func TestRunShouldWarnWhenInstalledPromptsAreOutdated(t *testing.T) {
 	}
 	if c := byName(Run(context.Background(), cfg, d))["prompts"]; c.Status != Warn {
 		t.Fatalf("outdated install is a warning: %+v", c)
+	}
+}
+
+var (
+	ghRepo = forge.Repo{Kind: forge.GitHub, Host: "github.com", Path: "acme/api"}
+	glRepo = forge.Repo{Kind: forge.GitLab, Host: "gitlab.corp.example", Path: "grp/sub/api"}
+)
+
+// withForge makes doctor check repos, answering each with user.
+func withForge(d Deps, repos []forge.Repo, user func(forge.Repo) (string, string, error)) Deps {
+	d.ForgeRepos = func(context.Context) ([]forge.Repo, error) { return repos, nil }
+	d.ForgeUser = func(_ context.Context, r forge.Repo) (string, string, error) { return user(r) }
+	return d
+}
+
+// authChecks returns the "forge auth" checks, one per repository.
+func authChecks(checks []Check) []Check {
+	var out []Check
+	for _, c := range checks {
+		if c.Name == "forge auth" {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+func TestRunShouldShowForgeLoginHostAndTokenSourceWhenAuthenticated(t *testing.T) {
+	cfg, d := healthy(t)
+	d = withForge(d, []forge.Repo{ghRepo}, func(forge.Repo) (string, string, error) { return "octocat", "GH_TOKEN", nil })
+	checks := Run(context.Background(), cfg, d)
+	got := authChecks(checks)
+	if len(got) != 1 || got[0].Status != OK || !strings.Contains(got[0].Detail, "octocat on github.com (token from GH_TOKEN)") {
+		t.Fatalf("forge auth = %+v", got)
+	}
+	if Failed(checks) {
+		t.Fatalf("checks = %+v", checks)
+	}
+}
+
+func TestRunShouldWarnWithLoginHintWhenForgeHasNoToken(t *testing.T) {
+	cfg, d := healthy(t)
+	d = withForge(d, []forge.Repo{ghRepo, glRepo}, func(r forge.Repo) (string, string, error) {
+		return "", "", fmt.Errorf("%w for %s", forge.ErrTokenNotFound, r.Host)
+	})
+	checks := Run(context.Background(), cfg, d)
+	got := authChecks(checks)
+	if len(got) != 2 || Failed(checks) {
+		t.Fatalf("no token is a warning: %+v", checks)
+	}
+	for i, wants := range [][]string{
+		{"acme/api", "GH_TOKEN", "GITHUB_TOKEN", "gh auth login", "Issues", "Pull requests"},
+		{"grp/sub/api", "GITLAB_TOKEN", "glab auth login --hostname gitlab.corp.example", "api scope"},
+	} {
+		if got[i].Status != Warn {
+			t.Errorf("status = %+v", got[i])
+		}
+		for _, w := range wants {
+			if !strings.Contains(got[i].Detail, w) {
+				t.Errorf("detail %q must mention %q", got[i].Detail, w)
+			}
+		}
+	}
+}
+
+func TestRunShouldFailWhenForgeRejectsTheToken(t *testing.T) {
+	for _, status := range []int{401, 403} {
+		cfg, d := healthy(t)
+		d = withForge(d, []forge.Repo{ghRepo}, func(forge.Repo) (string, string, error) {
+			return "", "GH_TOKEN", &forge.APIError{Forge: forge.GitHub, Op: "user", Status: status, Message: "Bad credentials"}
+		})
+		checks := Run(context.Background(), cfg, d)
+		got := authChecks(checks)
+		if len(got) != 1 || got[0].Status != Fail || !Failed(checks) || !strings.Contains(got[0].Detail, "GH_TOKEN") || !strings.Contains(got[0].Detail, "Bad credentials") {
+			t.Fatalf("%d: a rejected token fails doctor: %+v", status, got)
+		}
+	}
+}
+
+func TestRunShouldWarnWhenForgeIsUnreachable(t *testing.T) {
+	cfg, d := healthy(t)
+	d = withForge(d, []forge.Repo{ghRepo}, func(forge.Repo) (string, string, error) {
+		return "", "GH_TOKEN", &forge.APIError{Forge: forge.GitHub, Op: "user", Message: "dial tcp: no such host"}
+	})
+	checks := Run(context.Background(), cfg, d)
+	got := authChecks(checks)
+	if len(got) != 1 || got[0].Status != Warn || Failed(checks) || !strings.Contains(got[0].Detail, "no such host") {
+		t.Fatalf("an offline machine is a warning: %+v", got)
+	}
+}
+
+func TestRunShouldCheckForgeAuthForEveryDaemonRepo(t *testing.T) {
+	cfg, d := healthy(t)
+	var asked []string
+	d = withForge(d, []forge.Repo{ghRepo, glRepo}, func(r forge.Repo) (string, string, error) {
+		asked = append(asked, r.String())
+		return "bot", "GITLAB_TOKEN", nil
+	})
+	got := authChecks(Run(context.Background(), cfg, d))
+	if len(got) != 2 || len(asked) != 2 || !strings.Contains(got[0].Detail, "acme/api") || !strings.Contains(got[1].Detail, "grp/sub/api") {
+		t.Fatalf("one check per repository: %+v asked=%v", got, asked)
+	}
+
+	d = withForge(d, nil, nil)
+	got = authChecks(Run(context.Background(), cfg, d))
+	if len(got) != 1 || got[0].Status != Warn || !strings.Contains(got[0].Detail, "no repository with a forge remote") {
+		t.Fatalf("nothing to check is said, not hidden: %+v", got)
+	}
+}
+
+func TestRunShouldNotFailWithoutGhOrGlabInstalled(t *testing.T) {
+	cfg, d := healthy(t)
+	d.LookPath = func(b string) (string, error) {
+		if b == "gh" || b == "glab" {
+			return "", errors.New("not found")
+		}
+		return "/usr/bin/" + b, nil
+	}
+	d = withForge(d, []forge.Repo{ghRepo}, func(forge.Repo) (string, string, error) { return "octocat", "GH_TOKEN", nil })
+	checks := Run(context.Background(), cfg, d)
+	if Failed(checks) {
+		t.Fatalf("the forge CLIs are optional: %+v", checks)
+	}
+	for _, c := range checks {
+		if c.Status != OK && (strings.Contains(c.Detail, "gh ") || strings.Contains(c.Detail, "glab")) {
+			t.Errorf("gh/glab are not requirements: %+v", c)
+		}
 	}
 }

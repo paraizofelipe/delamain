@@ -278,3 +278,43 @@ func TestErrorsShouldNeverContainTheToken(t *testing.T) {
 		}
 	}
 }
+
+func TestCurrentUserShouldReturnTheLoginFromGetUser(t *testing.T) {
+	rc := &recorder{}
+	var auth []string
+	srv := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		req := rc.add(r)
+		auth = append(auth, r.Header.Get("Authorization")+r.Header.Get("PRIVATE-TOKEN"))
+		switch req.Path {
+		case "/user":
+			writeJSON(w, `{"login":"octocat","id":1}`)
+		case "/api/v4/user":
+			writeJSON(w, `{"username":"tanuki","id":2}`)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	for kind, want := range map[Kind]string{GitHub: "octocat", GitLab: "tanuki"} {
+		login, err := CurrentUser(context.Background(), Repo{kind, "example.com", "acme/api"}, "tok-"+string(kind), WithBaseURL(srv.URL+"/"))
+		if err != nil || login != want {
+			t.Errorf("%s: login = %q, err = %v", kind, login, err)
+		}
+	}
+	if len(rc.find(http.MethodGet, "/user")) != 1 || len(rc.find(http.MethodGet, "/api/v4/user")) != 1 {
+		t.Fatalf("requests = %+v", rc.reqs)
+	}
+	if auth[0]+auth[1] != "Bearer tok-github"+"tok-gitlab" && auth[0]+auth[1] != "tok-gitlab"+"Bearer tok-github" {
+		t.Fatalf("auth = %q", auth)
+	}
+
+	rejected := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		writeStatus(w, http.StatusUnauthorized, `{"message":"Bad credentials"}`)
+	})
+	for _, kind := range []Kind{GitHub, GitLab} {
+		_, err := CurrentUser(context.Background(), Repo{kind, "example.com", "acme/api"}, "bad", WithBaseURL(rejected.URL+"/"))
+		var apiErr *APIError
+		if !errors.As(err, &apiErr) || apiErr.Status != http.StatusUnauthorized || apiErr.Op != "user" {
+			t.Errorf("%s: err = %v, want a 401 APIError", kind, err)
+		}
+	}
+}

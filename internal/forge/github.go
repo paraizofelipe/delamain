@@ -44,6 +44,14 @@ func (g github) Repo() Repo { return g.repo }
 
 func (g github) fail(op string, err error) error { return apiError(GitHub, op, g.scrub, err) }
 
+func (g github) user(ctx context.Context) (string, error) {
+	u, _, err := g.api.Users.Get(ctx, "")
+	if err != nil {
+		return "", g.fail("user", err)
+	}
+	return u.GetLogin(), nil
+}
+
 func ghIssue(v *gh.Issue) Issue {
 	is := Issue{Number: v.GetNumber(), Title: v.GetTitle(), Body: v.GetBody(), URL: v.GetHTMLURL(), Open: v.GetState() == "open"}
 	for _, l := range v.Labels {

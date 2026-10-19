@@ -19,6 +19,7 @@ import (
 
 	"github.com/paraizo/delamain/internal/config"
 	"github.com/paraizo/delamain/internal/doctor"
+	"github.com/paraizo/delamain/internal/forge"
 	"github.com/paraizo/delamain/internal/herdr"
 	"github.com/paraizo/delamain/internal/omp/rpc"
 )
@@ -75,6 +76,8 @@ func NewRoot() *cobra.Command {
 				checks := doctor.Run(ctx, cfg, doctor.Deps{
 					LookPath: exec.LookPath, Version: binVersion, OmpRPC: ompRPCReady, ClaudeAuth: claudeAuth, Herdr: h,
 					Prompts: set, PromptsTarget: promptsTarget(cfg),
+					ForgeRepos: func(ctx context.Context) ([]forge.Repo, error) { return forgeRepos(ctx, cfg) },
+					ForgeUser:  forgeUser,
 				})
 				if err := printChecks(cmd.OutOrStdout(), checks); err != nil {
 					return err

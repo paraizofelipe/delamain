@@ -126,6 +126,17 @@ func New(repo Repo, token string, opts ...Option) (Forge, error) {
 	return newGitHub(repo, token, hc, o)
 }
 
+// CurrentUser returns the login token authenticates as on repo's forge (GET /user).
+func CurrentUser(ctx context.Context, repo Repo, token string, opts ...Option) (string, error) {
+	f, err := New(repo, token, opts...)
+	if err != nil {
+		return "", err
+	}
+	return f.(interface {
+		user(context.Context) (string, error)
+	}).user(ctx)
+}
+
 var scpLike = regexp.MustCompile(`^[\w.-]+@([\w.-]+):(.+)$`)
 
 // Detect parses the origin URL and picks the forge: kind "auto" recognizes github.com and hosts

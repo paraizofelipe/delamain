@@ -3,7 +3,10 @@ package cli
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os/exec"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -142,6 +145,46 @@ func TestForgeForShouldHonorForgeNone(t *testing.T) {
 	cfg.Forge.Kind = config.ForgeNone
 	if f, err := forgeFor(context.Background(), cfg, gitRepo(t, "https://github.com/acme/api.git")); err != nil || f != nil {
 		t.Fatalf("forge.kind=none must opt out: %v %v", f, err)
+	}
+}
+
+func TestForgeUserShouldReturnLoginAndSourceWithoutTheToken(t *testing.T) {
+	const secret = "ghe_S3CR3T_FOR_DOCTOR"
+	useTokens(t, map[string]string{"GH_ENTERPRISE_TOKEN": secret})
+	var path, auth string
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path, auth = r.URL.Path, r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"login":"octocat"}`))
+	}))
+	t.Cleanup(srv.Close)
+	prev := forgeOptions
+	forgeOptions = []forge.Option{forge.WithHTTPClient(srv.Client())}
+	t.Cleanup(func() { forgeOptions = prev })
+
+	login, source, err := forgeUser(context.Background(), forge.Repo{Kind: forge.GitHub, Host: srv.Listener.Addr().String(), Path: "team/api"})
+	if err != nil || login != "octocat" || source != "GH_ENTERPRISE_TOKEN" {
+		t.Fatalf("login=%q source=%q err=%v", login, source, err)
+	}
+	if strings.Contains(login+source, secret) {
+		t.Fatal("the token value must never be reported")
+	}
+	if path != "/api/v3/user" || auth != "Bearer "+secret {
+		t.Fatalf("GET %s with %q", path, auth)
+	}
+}
+
+func TestForgeReposShouldListDaemonReposWithAForgeRemote(t *testing.T) {
+	cfg := config.Default()
+	cfg.Daemon.Repos = []string{gitRepo(t, "git@github.com:acme/api.git"), gitRepo(t, ""), gitRepo(t, "https://gitlab.com/grp/sub/web.git")}
+	repos, err := forgeRepos(context.Background(), cfg)
+	want := []forge.Repo{{Kind: forge.GitHub, Host: "github.com", Path: "acme/api"}, {Kind: forge.GitLab, Host: "gitlab.com", Path: "grp/sub/web"}}
+	if err != nil || !slices.Equal(repos, want) {
+		t.Fatalf("repos = %+v, err = %v; repos without origin are skipped", repos, err)
+	}
+	cfg.Forge.Kind = config.ForgeNone
+	if repos, err := forgeRepos(context.Background(), cfg); err != nil || len(repos) != 0 {
+		t.Fatalf("forge.kind=none checks nothing: %+v %v", repos, err)
 	}
 }
 
