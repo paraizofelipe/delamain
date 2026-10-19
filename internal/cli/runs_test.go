@@ -96,7 +96,7 @@ func TestListShouldShowOnlyActiveRunsWithTheirRunningAgents(t *testing.T) {
 			t.Fatalf("%s: header + one active run:\n%s", cmd, out)
 		}
 		row := strings.Fields(lines[1])
-		if row[0] != "1" || row[1] != "app" || row[2] != "#1" || row[3] != "implement" || row[4] != "1/3" || row[5] != "fix/1-a" || row[6] != "implementer" || !strings.Contains(lines[1], "(alive)") {
+		if row[0] != "1" || row[1] != "issue" || row[2] != "app" || row[3] != "#1" || row[4] != "implement" || row[5] != "1/3" || row[6] != "fix/1-a" || row[7] != "implementer" || !strings.Contains(lines[1], "(alive)") {
 			t.Fatalf("%s: row = %q", cmd, lines[1])
 		}
 	}
@@ -117,7 +117,7 @@ func TestListShouldFlagAnActiveRunWhoseOwnerDied(t *testing.T) {
 	if !strings.Contains(out, "dead: run delamain recover") {
 		t.Fatalf("a dead owner must be visible:\n%s", out)
 	}
-	if row := strings.Fields(strings.Split(strings.TrimSpace(out), "\n")[1]); row[6] != "-" {
+	if row := strings.Fields(strings.Split(strings.TrimSpace(out), "\n")[1]); row[7] != "-" {
 		t.Fatalf("an agent recorded as running died with its owner; none is running: %v", row)
 	}
 }
@@ -157,7 +157,7 @@ func TestStatusShouldShowTheRunItsWorktreesAndAgents(t *testing.T) {
 	if strings.Contains(out, "feat/mine") {
 		t.Errorf("only worktrees under worktrees_dir/<repo> are listed:\n%s", out)
 	}
-	if got := statusLabels(out)[:5]; strings.Join(got, " ") != "RUN REPO HARNESS STATE INTERACTIONS" {
+	if got := statusLabels(out)[:6]; strings.Join(got, " ") != "RUN KIND REPO HARNESS STATE INTERACTIONS" {
 		t.Errorf("HARNESS follows REPO and INTERACTIONS follows STATE, got %v:\n%s", got, out)
 	}
 	for label, want := range map[string]string{"HARNESS": "omp", "STATE": "implement", "INTERACTIONS": "1/3"} {
@@ -218,7 +218,7 @@ func TestStatusShouldFallBackForRunsWithoutHarness(t *testing.T) {
 	if got := statusField(out, "INTERACTIONS"); got != "1/3" {
 		t.Errorf("INTERACTIONS = %q, want the config's maximum as fallback:\n%s", got, out)
 	}
-	if row := strings.Fields(strings.Split(strings.TrimSpace(f.exec(t, "ls")), "\n")[1]); row[4] != "1/3" {
+	if row := strings.Fields(strings.Split(strings.TrimSpace(f.exec(t, "ls")), "\n")[1]); row[5] != "1/3" {
 		t.Errorf("ls keeps showing x/N for old runs: %v", row)
 	}
 }
@@ -348,5 +348,83 @@ func TestWithinShouldOnlyAcceptPathsStrictlyInsideTheDir(t *testing.T) {
 		if got := within("/wt/app", path); got != want {
 			t.Errorf("within(/wt/app, %s) = %v", path, got)
 		}
+	}
+}
+
+// review seeds an active review run of the fixture's repo for PR n.
+func (f *fixture) review(t *testing.T, n int) store.Run {
+	t.Helper()
+	ctx := context.Background()
+	rec, err := f.st.CreateRun(ctx, f.repo, fmt.Sprintf("pr:%d", n), fmt.Sprintf("Review PR %d", n), "omp", 3, store.KindReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec.State, rec.Iteration = store.StateReview, 1
+	if err := f.st.UpdateRun(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+	return rec
+}
+
+func TestListShouldShowTheKindOfEachRun(t *testing.T) {
+	f := newFixture(t)
+	f.run(t, "#1", "fix/1-a", store.StateImplement)
+	f.review(t, 3)
+
+	lines := strings.Split(strings.TrimSpace(f.exec(t, "ls")), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("header + two active runs:\n%s", strings.Join(lines, "\n"))
+	}
+	if header := strings.Fields(lines[0]); header[0] != "RUN" || header[1] != "KIND" || header[2] != "REPO" {
+		t.Fatalf("KIND follows RUN: %v", header)
+	}
+	kinds := map[string]string{}
+	for _, l := range lines[1:] {
+		row := strings.Fields(l)
+		kinds[row[3]] = row[1]
+	}
+	if kinds["#1"] != "issue" || kinds["pr:3"] != "review" {
+		t.Fatalf("kind by issue ref = %v:\n%s", kinds, strings.Join(lines, "\n"))
+	}
+}
+
+func TestStatusShouldShowTheKindOfTheRun(t *testing.T) {
+	f := newFixture(t)
+	f.run(t, "#1", "fix/1-a", store.StateImplement)
+	f.review(t, 3)
+
+	issue := f.exec(t, "status", "1")
+	if got := statusLabels(issue)[:2]; strings.Join(got, " ") != "RUN KIND" {
+		t.Errorf("KIND follows RUN, got %v:\n%s", got, issue)
+	}
+	if got := statusField(issue, "KIND"); got != "issue" {
+		t.Errorf("KIND = %q, want issue:\n%s", got, issue)
+	}
+	if got := statusField(f.exec(t, "status", "2"), "KIND"); got != "review" {
+		t.Errorf("KIND = %q, want review", got)
+	}
+}
+
+func TestStatusShouldIncludeTheKindInJSONAndYAML(t *testing.T) {
+	f := newFixture(t)
+	f.review(t, 3)
+
+	var rawJSON, rawYAML struct {
+		Run map[string]any `json:"run" yaml:"run"`
+	}
+	if err := json.Unmarshal([]byte(f.exec(t, "status", "1", "-o", "json")), &rawJSON); err != nil {
+		t.Fatal(err)
+	}
+	if err := yaml.Unmarshal([]byte(f.exec(t, "status", "1", "-o", "yaml")), &rawYAML); err != nil {
+		t.Fatal(err)
+	}
+	for name, run := range map[string]map[string]any{"json": rawJSON.Run, "yaml": rawYAML.Run} {
+		if run["kind"] != "review" {
+			t.Errorf("%s run kind = %v, want review", name, run["kind"])
+		}
+	}
+	var runs []map[string]any
+	if err := json.Unmarshal([]byte(f.exec(t, "ls", "-o", "json")), &runs); err != nil || len(runs) != 1 || runs[0]["kind"] != "review" {
+		t.Errorf("ls json carries the kind too: %v %v", runs, err)
 	}
 }

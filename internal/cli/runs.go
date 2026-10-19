@@ -51,6 +51,7 @@ func printAs(w io.Writer, format string, v any, table func(io.Writer) error) err
 // RunView is a run as `ls` and `status` show it.
 type RunView struct {
 	ID            int64       `json:"id" yaml:"id"`
+	Kind          string      `json:"kind" yaml:"kind"`
 	Repo          string      `json:"repo" yaml:"repo"`
 	Issue         string      `json:"issue" yaml:"issue"`
 	Title         string      `json:"title" yaml:"title"`
@@ -138,7 +139,7 @@ func openInspector(ctx context.Context, load func() (config.Config, error)) (*in
 
 func (in *inspector) view(ctx context.Context, rec store.Run) (RunView, error) {
 	v := RunView{
-		ID: rec.ID, Repo: rec.Repo, Issue: rec.IssueRef, Title: rec.Title, State: string(rec.State),
+		ID: rec.ID, Kind: string(rec.Kind), Repo: rec.Repo, Issue: rec.IssueRef, Title: rec.Title, State: string(rec.State),
 		Iteration: rec.Iteration, Branch: rec.Branch, Base: rec.Base, Worktree: rec.Worktree, Workspace: rec.Workspace,
 		PR: rec.MRURL, Owner: Process{PID: rec.OwnerPID, Alive: in.alive(rec.OwnerPID)},
 		RunDir:    pipeline.RunDir(in.cfg.Paths.StateDir, rec.Repo, rec.ID),
@@ -271,10 +272,10 @@ func listTable(w io.Writer, views []RunView, all bool) error {
 		return err
 	}
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "RUN\tREPO\tISSUE\tSTATE\tITER\tBRANCH\tAGENTS\tOWNER\tUPDATED")
+	fmt.Fprintln(tw, "RUN\tKIND\tREPO\tISSUE\tSTATE\tITER\tBRANCH\tAGENTS\tOWNER\tUPDATED")
 	for _, v := range views {
-		fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			v.ID, filepath.Base(v.Repo), v.Issue, v.State, v.iter(), orDash(v.Branch), runningAgents(v.Agents), v.owner(), ago(v.UpdatedAt))
+		fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			v.ID, v.Kind, filepath.Base(v.Repo), v.Issue, v.State, v.iter(), orDash(v.Branch), runningAgents(v.Agents), v.owner(), ago(v.UpdatedAt))
 	}
 	return tw.Flush()
 }
@@ -319,6 +320,7 @@ func statusTable(w io.Writer, s RunStatus) error {
 	v := s.Run
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	fmt.Fprintf(tw, "RUN\t%d · %s %s\n", v.ID, v.Issue, v.Title)
+	fmt.Fprintf(tw, "KIND\t%s\n", v.Kind)
 	fmt.Fprintf(tw, "REPO\t%s\n", v.Repo)
 	fmt.Fprintf(tw, "HARNESS\t%s\n", orDash(v.Harness))
 	fmt.Fprintf(tw, "STATE\t%s\n", v.State)
