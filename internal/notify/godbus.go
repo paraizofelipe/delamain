@@ -2,6 +2,7 @@ package notify
 
 import (
 	"context"
+	"sync"
 
 	"github.com/godbus/dbus/v5"
 )
@@ -13,7 +14,9 @@ const (
 
 // godbusConn is the real session bus, in pure Go (no CGO).
 type godbusConn struct {
-	conn *dbus.Conn
+	conn   *dbus.Conn
+	closed chan struct{}
+	once   sync.Once
 }
 
 func dialBus(addr string) (bus, error) {
@@ -21,7 +24,7 @@ func dialBus(addr string) (bus, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &godbusConn{conn: c}, nil
+	return &godbusConn{conn: c, closed: make(chan struct{})}, nil
 }
 
 func (g *godbusConn) obj() dbus.BusObject { return g.conn.Object(busName, busPath) }
@@ -47,4 +50,55 @@ func (g *godbusConn) Notify(ctx context.Context, n notification) (uint32, error)
 	return id, err
 }
 
-func (g *godbusConn) Close() error { return g.conn.Close() }
+func (g *godbusConn) Capabilities(ctx context.Context) ([]string, error) {
+	var caps []string
+	err := g.obj().CallWithContext(ctx, busName+".GetCapabilities", 0).Store(&caps)
+	return caps, err
+}
+
+func (g *godbusConn) Subscribe() (<-chan busSignal, error) {
+	if err := g.conn.AddMatchSignal(dbus.WithMatchObjectPath(busPath), dbus.WithMatchInterface(busName)); err != nil {
+		return nil, err
+	}
+	in, out := make(chan *dbus.Signal, 16), make(chan busSignal)
+	g.conn.Signal(in)
+	go func() {
+		defer close(out)
+		for s := range in { // closed when the connection closes
+			b, ok := toBusSignal(s)
+			if !ok {
+				continue
+			}
+			select {
+			case out <- b:
+			case <-g.closed:
+				return
+			}
+		}
+	}()
+	return out, nil
+}
+
+// toBusSignal reads ActionInvoked(id, key) and NotificationClosed(id, reason).
+func toBusSignal(s *dbus.Signal) (busSignal, bool) {
+	if s.Path != busPath || len(s.Body) < 2 {
+		return busSignal{}, false
+	}
+	id, ok := s.Body[0].(uint32)
+	if !ok {
+		return busSignal{}, false
+	}
+	switch s.Name {
+	case busName + "." + actionInvoked:
+		key, ok := s.Body[1].(string)
+		return busSignal{Name: actionInvoked, ID: id, Key: key}, ok
+	case busName + "." + notificationClosed:
+		return busSignal{Name: notificationClosed, ID: id}, true
+	}
+	return busSignal{}, false
+}
+
+func (g *godbusConn) Close() error {
+	g.once.Do(func() { close(g.closed) })
+	return g.conn.Close()
+}

@@ -75,6 +75,8 @@ type Options struct {
 	getenv  func(string) string
 	dial    func(addr string) (bus, error)
 	timeout time.Duration
+	open    func(ctx context.Context, target string) error
+	now     func() time.Time
 }
 
 // Allowed reports whether cfg lets event e be shown.
@@ -149,6 +151,12 @@ func (o Options) withDefaults() Options {
 	}
 	if o.timeout <= 0 {
 		o.timeout = timeout
+	}
+	if o.open == nil {
+		o.open = xdgOpen
+	}
+	if o.now == nil {
+		o.now = time.Now
 	}
 	return o
 }
