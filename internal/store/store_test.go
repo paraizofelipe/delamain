@@ -261,6 +261,35 @@ func TestOpenShouldUpgradeV1DatabaseKeepingRuns(t *testing.T) {
 	}
 }
 
+func TestOpenShouldUpgradeDatabaseKeepingRunsWithEmptyHarness(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "d.db")
+	ctx := context.Background()
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{migrations[0], migrations[1], migrations[2], "PRAGMA user_version = 3",
+		`INSERT INTO runs (repo, issue_ref, state, iteration, created_at, updated_at) VALUES ('repo', '#3', 'implement', 2, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`} {
+		if _, err := db.ExecContext(ctx, q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db.Close()
+
+	s, err := Open(ctx, path)
+	if err != nil {
+		t.Fatalf("v3 → v4 must migrate: %v", err)
+	}
+	defer s.Close()
+	runs, err := s.UnfinishedRuns(ctx)
+	if err != nil || len(runs) != 1 || runs[0].IssueRef != "#3" || runs[0].Iteration != 2 {
+		t.Fatalf("runs from before v4 must survive the upgrade: %+v %v", runs, err)
+	}
+	if runs[0].Harness != "" || runs[0].MaxIterations != 0 {
+		t.Fatalf("an old run never recorded its harness, so status must fall back: %+v", runs[0])
+	}
+}
+
 func TestClaimRunShouldTransferOwnershipOnlyFromTheExpectedOwner(t *testing.T) {
 	s := openTest(t)
 	ctx := context.Background()

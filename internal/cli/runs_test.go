@@ -197,6 +197,45 @@ func TestStatusShouldShowTheHarnessAndMaxIterationsRecordedOnTheRun(t *testing.T
 	}
 }
 
+func TestStatusShouldFallBackForRunsWithoutHarness(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	// Runs created before the harness was recorded read back as "" and 0.
+	rec, err := f.st.CreateRun(ctx, f.repo, "#1", "Fix #1", "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec.State, rec.Iteration = store.StateImplement, 1
+	if err := f.st.UpdateRun(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+
+	out := f.exec(t, "status", "1")
+	if got := statusField(out, "HARNESS"); got != "-" {
+		t.Errorf("HARNESS = %q, want - for a run that never recorded it:\n%s", got, out)
+	}
+	if got := statusField(out, "INTERACTIONS"); got != "1/3" {
+		t.Errorf("INTERACTIONS = %q, want the config's maximum as fallback:\n%s", got, out)
+	}
+	if row := strings.Fields(strings.Split(strings.TrimSpace(f.exec(t, "ls")), "\n")[1]); row[4] != "1/3" {
+		t.Errorf("ls keeps showing x/N for old runs: %v", row)
+	}
+}
+
+func TestStatusShouldShowNoInteractionBeforeTheFirstIteration(t *testing.T) {
+	f := newFixture(t)
+	if _, err := f.st.CreateRun(context.Background(), f.repo, "#1", "Fix #1", "claude", 5); err != nil {
+		t.Fatal(err)
+	}
+	out := f.exec(t, "status", "1")
+	if got := statusField(out, "INTERACTIONS"); got != "-" {
+		t.Errorf("INTERACTIONS = %q, want - before the first iteration:\n%s", got, out)
+	}
+	if got := statusField(out, "HARNESS"); got != "claude" {
+		t.Errorf("HARNESS = %q, want claude:\n%s", got, out)
+	}
+}
+
 func TestStatusShouldPrintTheSameDataAsYAMLAndJSON(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()

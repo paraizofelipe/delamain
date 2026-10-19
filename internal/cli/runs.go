@@ -144,6 +144,9 @@ func (in *inspector) view(ctx context.Context, rec store.Run) (RunView, error) {
 		CreatedAt: rec.CreatedAt, UpdatedAt: rec.UpdatedAt, terminal: rec.State.Terminal(),
 		harness: rec.Harness, iterations: rec.MaxIterations, Agents: []AgentView{},
 	}
+	if v.iterations == 0 { // runs from before the maximum was recorded
+		v.iterations = in.cfg.Pipeline.MaxIterations
+	}
 	if v.terminal {
 		v.Result = rec.Reason
 	}
@@ -316,7 +319,7 @@ func statusTable(w io.Writer, s RunStatus) error {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	fmt.Fprintf(tw, "RUN\t%d · %s %s\n", v.ID, v.Issue, v.Title)
 	fmt.Fprintf(tw, "REPO\t%s\n", v.Repo)
-	fmt.Fprintf(tw, "HARNESS\t%s\n", v.harness)
+	fmt.Fprintf(tw, "HARNESS\t%s\n", orDash(v.harness))
 	fmt.Fprintf(tw, "STATE\t%s\n", v.State)
 	fmt.Fprintf(tw, "INTERACTIONS\t%s\n", v.iter())
 	if v.Branch != "" {
