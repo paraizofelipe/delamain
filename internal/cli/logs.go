@@ -29,10 +29,10 @@ func newLogsCmd(load func() (config.Config, error)) *cobra.Command {
 	var tail int
 	cmd := &cobra.Command{
 		Use:   "logs RUN_ID",
-		Short: "Mostra os logs de uma run: orquestrador, gates e cada agente omp",
-		Long: `Intercala, pela hora de cada linha, o log do orquestrador (delamain), a saída dos gates
-(checks) e o log de cada agente omp (planner, implementer, reviewer). Com -f segue a run ao vivo
-e termina sozinho quando ela é finalizada.`,
+		Short: "Show run logs: orchestrator, gates, and each omp agent",
+		Long: `Interleaves, by each line's time, the orchestrator log (delamain), gate output
+(checks), and each omp agent log (planner, implementer, reviewer). With -f it follows the run live
+and stops automatically when it finishes.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(c *cobra.Command, args []string) error {
 			id, err := runID(args[0])
@@ -57,9 +57,9 @@ e termina sozinho quando ela é finalizada.`,
 			return fl.run(ctx, c.OutOrStdout(), follow, tail, finished)
 		},
 	}
-	cmd.Flags().BoolVarP(&follow, "follow", "f", false, "segue a run ao vivo até ela terminar (Ctrl+C sai antes)")
-	cmd.Flags().StringSliceVar(&roles, "role", nil, "só estas fontes: delamain, checks, planner, implementer, reviewer")
-	cmd.Flags().IntVar(&tail, "tail", 0, "só as últimas N linhas já escritas (0: todas)")
+	cmd.Flags().BoolVarP(&follow, "follow", "f", false, "follow the run live until it finishes (Ctrl+C exits first)")
+	cmd.Flags().StringSliceVar(&roles, "role", nil, "only these sources: delamain, checks, planner, implementer, reviewer")
+	cmd.Flags().IntVar(&tail, "tail", 0, "only the last N lines already written (0: all)")
 	return cmd
 }
 
@@ -86,7 +86,7 @@ func (fl *logFollower) run(ctx context.Context, w io.Writer, follow bool, tail i
 		lines = lines[len(lines)-tail:]
 	}
 	if len(lines) == 0 && !follow {
-		_, err := fmt.Fprintf(w, "nenhum log em %s\n", fl.dir)
+		_, err := fmt.Fprintf(w, "no logs in %s\n", fl.dir)
 		return err
 	}
 	if err := emit(w, lines); err != nil || !follow {

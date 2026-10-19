@@ -90,11 +90,19 @@ func TestLogsShouldFilterByRoleAndKeepOnlyTheTail(t *testing.T) {
 func TestLogsShouldSayWhenARunHasNoLogs(t *testing.T) {
 	f := newFixture(t)
 	f.run(t, "#1", "", store.StateRecorded)
-	if out := f.exec(t, "logs", "1"); !strings.HasPrefix(out, "nenhum log em ") {
+	if out := f.exec(t, "logs", "1"); !strings.HasPrefix(out, "no logs in ") {
 		t.Fatalf("got %q", out)
 	}
 	if out, err := execute(t, "--config", f.cfgFile, "logs", "7"); err == nil {
 		t.Fatalf("an unknown run is an error: %s", out)
+	}
+}
+
+func TestLogsShouldReportNoLogsInEnglish(t *testing.T) {
+	f := newFixture(t)
+	f.run(t, "#1", "", store.StateRecorded)
+	if out := f.exec(t, "logs", "1"); !strings.HasPrefix(out, "no logs in ") {
+		t.Fatalf("got %q", out)
 	}
 }
 
