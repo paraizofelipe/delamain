@@ -77,3 +77,44 @@ func TestDBusShouldSendAppIconImagePathUrgencyAndCategory(t *testing.T) {
 		t.Fatalf("hints = %#v, want %#v", n.Hints, want)
 	}
 }
+
+func TestDBusShouldEscapeMarkupCharacters(t *testing.T) {
+	b := &fakeBus{}
+	d := newDBus(b, Options{StateDir: t.TempDir(), Log: discard()})
+	m := Message{Title: "PR <b>&</b> · api", Body: "a < b && c > d\n<script>"}
+	if err := d.Notify(context.Background(), m); err != nil {
+		t.Fatal(err)
+	}
+	n := b.last(t)
+	if n.Summary != "PR &lt;b&gt;&amp;&lt;/b&gt; · api" || n.Body != "a &lt; b &amp;&amp; c &gt; d\n&lt;script&gt;" {
+		t.Fatalf("servers that read markup must see plain text: summary=%q body=%q", n.Summary, n.Body)
+	}
+}
+
+func TestDBusShouldReplaceTheToastOfTheSameRun(t *testing.T) {
+	b := &fakeBus{nextID: 40}
+	d := newDBus(b, Options{StateDir: t.TempDir(), Log: discard()})
+	ctx := context.Background()
+	send := func(m Message) uint32 {
+		t.Helper()
+		if err := d.Notify(ctx, m); err != nil {
+			t.Fatal(err)
+		}
+		return b.last(t).ReplacesID
+	}
+	if id := send(Message{RunID: 7, Title: "started"}); id != 0 {
+		t.Fatalf("a run's first toast is new, replaces_id=%d", id)
+	}
+	if id := send(Message{RunID: 9, Title: "other run"}); id != 0 {
+		t.Fatalf("another run gets its own toast, replaces_id=%d", id)
+	}
+	if id := send(Message{RunID: 7, Title: "pr opened"}); id != 41 {
+		t.Fatalf("the same run replaces its toast (id 41), replaces_id=%d", id)
+	}
+	if id := send(Message{RunID: 0, Title: "budget"}); id != 0 {
+		t.Fatalf("toasts without a run never replace one, replaces_id=%d", id)
+	}
+	if id := send(Message{RunID: 0, Title: "recover"}); id != 0 {
+		t.Fatalf("toasts without a run never replace one, replaces_id=%d", id)
+	}
+}
