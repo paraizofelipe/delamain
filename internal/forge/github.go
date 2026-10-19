@@ -18,13 +18,18 @@ type github struct {
 }
 
 func newGitHub(repo Repo, token string, hc *http.Client, o options) (Forge, error) {
-	opts := []gh.ClientOptionsFunc{gh.WithHTTPClient(hc), gh.WithAuthToken(token), gh.WithUserAgent(o.userAgent)}
+	base := hc.Transport
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	retry := retryTransport{base: base, backoff: o.backoff, timeout: o.timeout}
+	opts := []gh.ClientOptionsFunc{gh.WithHTTPClient(hc), gh.WithTransport(retry), gh.WithAuthToken(token), gh.WithUserAgent(o.userAgent)}
 	switch {
 	case o.baseURL != "":
 		opts = append(opts, gh.WithURLs(&o.baseURL, &o.baseURL))
 	case !strings.EqualFold(repo.Host, "github.com"):
-		base := "https://" + repo.Host + "/"
-		opts = append(opts, gh.WithEnterpriseURLs(base, base)) // appends api/v3/ and api/uploads/
+		host := "https://" + repo.Host + "/"
+		opts = append(opts, gh.WithEnterpriseURLs(host, host)) // appends api/v3/ and api/uploads/
 	}
 	api, err := gh.NewClient(opts...)
 	if err != nil {
@@ -48,6 +53,9 @@ func (g github) Issue(ctx context.Context, n int) (Issue, error) {
 	v, _, err := g.api.Issues.Get(ctx, g.owner, g.name, n)
 	if err != nil {
 		return Issue{}, err
+	}
+	if v == nil {
+		return Issue{}, errEmpty
 	}
 	return ghIssue(v), nil
 }

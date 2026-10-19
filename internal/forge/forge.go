@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 )
 
 type Kind string
@@ -70,6 +71,8 @@ type options struct {
 	httpClient *http.Client
 	baseURL    string
 	userAgent  string
+	backoff    time.Duration
+	timeout    time.Duration
 }
 
 // WithHTTPClient sets the HTTP client the API calls go through.
@@ -78,12 +81,18 @@ func WithHTTPClient(c *http.Client) Option { return func(o *options) { o.httpCli
 // WithBaseURL overrides the API base URL derived from the repository host.
 func WithBaseURL(u string) Option { return func(o *options) { o.baseURL = u } }
 
+// WithBackoff sets the wait before the first retry of a transient failure; it doubles after.
+func WithBackoff(d time.Duration) Option { return func(o *options) { o.backoff = d } }
+
+// WithTimeout bounds each HTTP attempt, 30s by default.
+func WithTimeout(d time.Duration) Option { return func(o *options) { o.timeout = d } }
+
 // WithUserAgent sets the User-Agent sent to the forge, "delamain/dev" by default.
 func WithUserAgent(ua string) Option { return func(o *options) { o.userAgent = ua } }
 
 // New returns the API client of repo's forge, authenticated with token.
 func New(repo Repo, token string, opts ...Option) (Forge, error) {
-	o := options{userAgent: "delamain/dev"}
+	o := options{userAgent: "delamain/dev", backoff: 2 * time.Second, timeout: 30 * time.Second}
 	for _, opt := range opts {
 		opt(&o)
 	}

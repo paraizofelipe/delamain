@@ -3,6 +3,7 @@ package forge
 import (
 	"context"
 	"net/http"
+	"time"
 
 	gl "gitlab.com/gitlab-org/api/client-go/v3"
 )
@@ -17,7 +18,10 @@ func newGitLab(repo Repo, token string, hc *http.Client, o options) (Forge, erro
 	if base == "" {
 		base = "https://" + repo.Host // the client appends api/v4/
 	}
-	api, err := gl.NewClient(token, gl.WithBaseURL(base), gl.WithHTTPClient(hc), gl.WithUserAgent(o.userAgent))
+	hc.Timeout = o.timeout // client-go retries above the HTTP client: this bounds each attempt
+	backoff := func(_, _ time.Duration, retry int, _ *http.Response) time.Duration { return o.backoff << retry }
+	api, err := gl.NewClient(token, gl.WithBaseURL(base), gl.WithHTTPClient(hc), gl.WithUserAgent(o.userAgent),
+		gl.WithCustomRetryMax(attempts-1), gl.WithCustomBackoff(backoff), gl.WithCustomRetry(gitlabRetry))
 	if err != nil {
 		return nil, err
 	}
@@ -35,6 +39,9 @@ func (g gitlab) Issue(ctx context.Context, n int) (Issue, error) {
 	v, _, err := g.api.Issues.GetIssue(g.repo.Path, int64(n), gl.WithContext(ctx))
 	if err != nil {
 		return Issue{}, err
+	}
+	if v == nil {
+		return Issue{}, errEmpty
 	}
 	return glIssue(v), nil
 }
