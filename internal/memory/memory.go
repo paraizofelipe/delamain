@@ -1,0 +1,177 @@
+// Package memory keeps per-repository review learnings under the state dir.
+package memory
+
+import (
+	"errors"
+	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"syscall"
+	"time"
+	"unicode/utf8"
+)
+
+const (
+	maxChars   = 300 // longer learnings are dropped, not truncated
+	maxPerCall = 10
+)
+
+var (
+	flatten = strings.NewReplacer("\r", " ", "\n", " ")
+	escape  = strings.NewReplacer("<", "&lt;", ">", "&gt;")
+)
+
+// Store keeps one markdown file of learnings per repository under Dir.
+type Store struct {
+	Dir string
+}
+
+// Path is the memory file of host/repoPath: <Dir>/<host>/<owner...>/<repo>.md.
+// It returns "" when Dir is empty or host/repoPath could escape Dir.
+func (s Store) Path(host, repoPath string) string {
+	if s.Dir == "" || !validComponent(host) || filepath.IsAbs(repoPath) {
+		return ""
+	}
+	parts := strings.Split(repoPath, "/")
+	for _, c := range parts {
+		if !validComponent(c) {
+			return ""
+		}
+	}
+	p := filepath.Join(append([]string{s.Dir, host}, parts...)...) + ".md"
+	if rel, err := filepath.Rel(s.Dir, p); err != nil || !filepath.IsLocal(rel) {
+		return ""
+	}
+	return p
+}
+
+func validComponent(c string) bool {
+	return c != "" && c != "." && c != ".." && !strings.ContainsAny(c, `/\`)
+}
+
+// Read returns the stored learnings of host/repoPath, newest first, in at most
+// max bytes without splitting a line. It returns "" when there are none.
+func (s Store) Read(host, repoPath string, max int) (string, error) {
+	p := s.Path(host, repoPath)
+	if p == "" {
+		return "", ErrInvalidPath
+	}
+	if max <= 0 {
+		return "", nil
+	}
+	b, err := os.ReadFile(p) //nolint:gosec // path is validated to stay under Dir
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	lines := strings.Split(string(b), "\n")
+	var out []string
+	size := 0
+	for _, l := range slices.Backward(lines) {
+		if strings.TrimSpace(l) == "" {
+			continue
+		}
+		next := size + len(l)
+		if len(out) > 0 {
+			next++ // the "\n" separator
+		}
+		if next > max {
+			break
+		}
+		out = append(out, l)
+		size = next
+	}
+	return strings.Join(out, "\n"), nil
+}
+
+// Append adds one dated line per learning to the memory of host/repoPath and
+// returns how many were written.
+func (s Store) Append(host, repoPath string, runID int64, pr int, learnings []string, now time.Time) (int, error) {
+	p := s.Path(host, repoPath)
+	if p == "" {
+		return 0, ErrInvalidPath
+	}
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		return 0, err
+	}
+	unlock, err := lock(p + ".lock")
+	if err != nil {
+		return 0, err
+	}
+	defer unlock()
+	cur, err := os.ReadFile(p) //nolint:gosec // path is validated to stay under Dir
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return 0, err
+	}
+	seen := map[string]bool{}
+	for line := range strings.Lines(string(cur)) {
+		if _, text, ok := strings.Cut(strings.TrimSuffix(line, "\n"), "): "); ok {
+			seen[text] = true
+		}
+	}
+	var b strings.Builder
+	b.Write(cur)
+	n := 0
+	for _, l := range learnings {
+		if n == maxPerCall {
+			break
+		}
+		l = strings.TrimSpace(flatten.Replace(l))
+		if l == "" || utf8.RuneCountInString(l) > maxChars {
+			continue
+		}
+		// Escaped so a learning cannot close the <memory> delimiter it is quoted in.
+		l = escape.Replace(l)
+		if seen[l] {
+			continue
+		}
+		seen[l] = true
+		fmt.Fprintf(&b, "- %s (run %d, pr #%d): %s\n", now.Format("2006-01-02"), runID, pr, l)
+		n++
+	}
+	if n == 0 {
+		return 0, nil
+	}
+	if err := writeAtomic(p, []byte(b.String())); err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
+func writeAtomic(dst string, data []byte) error {
+	tmp, err := os.CreateTemp(filepath.Dir(dst), ".memory-*")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.Remove(tmp.Name()) }() // no-op after a successful rename
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), dst)
+}
+
+// ErrInvalidPath reports a host or repository path that would escape Dir.
+var ErrInvalidPath = errors.New("invalid memory path")
+
+// lock holds <memory file>.lock while the memory file is rewritten.
+func lock(path string) (func(), error) {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600) //nolint:gosec // path is validated to stay under Dir
+	if err != nil {
+		return nil, err
+	}
+	// Blocking: a concurrent writer waits its turn instead of failing.
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil { //nolint:gosec // fd fits in int
+		f.Close()
+		return nil, err
+	}
+	return func() { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN); f.Close() }, nil //nolint:gosec // fd fits in int
+}
