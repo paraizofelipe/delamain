@@ -19,6 +19,9 @@ type Run struct {
 	MaxIterations int
 	Tokens        string // the run's tokens as budget.Format renders them, e.g. "167K"
 	CostUSD       float64
+	State         string // the stage the run was in, e.g. "implement"
+	Reason        string
+	Report        string // absolute path of the run's report.md
 }
 
 const expire = 15000 // ms a non-critical toast stays up
@@ -52,3 +55,35 @@ func prLabel(url string) string {
 }
 
 func lines(l ...string) string { return strings.Join(l, "\n") }
+
+// FormatNeedsHuman is the toast of a run that ended with a draft PR or no PR at all.
+func FormatNeedsHuman(r Run) Message {
+	pr := "Draft " + prLabel(r.PRURL)
+	facts := []string{pr, iterations(r), r.Tokens + " tokens"}
+	return Message{
+		Event: EventNeedsHuman, RunID: r.ID,
+		Title:   "⚠️ Needs review · " + subject(r),
+		Body:    lines(r.Title, strings.Join(facts, " · "), r.Reason),
+		Urgency: Normal, Expire: expire, Category: "x-delamain.needs-human",
+		Actions: []Action{{"default", "Open PR", r.PRURL}, {"open-pr", "Open PR", r.PRURL}, {"open-report", "Open report", r.Report}},
+	}
+}
+
+// FormatHalted is the toast of a run stopped by a guardrail or a failure.
+func FormatHalted(r Run) Message {
+	facts := []string{fmt.Sprintf("run %d", r.ID), r.State, iterations(r)}
+	actions := []Action{{"default", "Open report", r.Report}, {"open-report", "Open report", r.Report}}
+	if r.IssueURL != "" {
+		actions = append(actions, Action{"open-issue", "Open issue", r.IssueURL})
+	}
+	return Message{
+		Event: EventHalted, RunID: r.ID,
+		Title:   "⛔ Halted · " + subject(r),
+		Body:    lines(r.Title, strings.Join(facts, " · "), r.Reason),
+		Urgency: Critical, Category: "x-delamain.halted",
+		Actions: actions,
+	}
+}
+
+// iterations is "<i>/<max> iterations".
+func iterations(r Run) string { return fmt.Sprintf("%d/%d iterations", r.Iterations, r.MaxIterations) }

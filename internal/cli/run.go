@@ -15,6 +15,7 @@ import (
 	"github.com/paraizo/delamain/internal/forge"
 	"github.com/paraizo/delamain/internal/gitx"
 	"github.com/paraizo/delamain/internal/herdr"
+	"github.com/paraizo/delamain/internal/notify"
 	"github.com/paraizo/delamain/internal/pipeline"
 	"github.com/paraizo/delamain/internal/prompts"
 	"github.com/paraizo/delamain/internal/store"
@@ -136,16 +137,22 @@ func runTask(ctx context.Context, cfg config.Config, task pipeline.Task, fg forg
 		return pipeline.Result{}, err
 	}
 	defer func() { _ = st.Close() }()
-	r, err := newRunner(cfg, st)
+	r, err := newRunner(cfg, st, false)
 	if err != nil {
 		return pipeline.Result{}, err
 	}
+	defer func() { _ = r.Notify.Close() }()
 	r.Forge = fg
 	return r.Run(ctx, task)
 }
 
-// newRunner wires the configured agent harness, git, prompts and, when enabled, herdr; the caller sets Forge per repository.
-func newRunner(cfg config.Config, st *store.Store) (*pipeline.Runner, error) {
+// newNotifier is the seam tests use to see how the commands create their notifier.
+var newNotifier = notify.New
+
+// newRunner wires the configured agent harness, git, prompts, notifier and, when enabled, herdr;
+// the caller sets Forge per repository and closes Notify. Only the daemon is interactive: there a
+// click on a toast opens what it points to.
+func newRunner(cfg config.Config, st *store.Store, interactive bool) (*pipeline.Runner, error) {
 	set, err := loadPrompts(cfg)
 	if err != nil {
 		return nil, err
@@ -158,6 +165,7 @@ func newRunner(cfg config.Config, st *store.Store) (*pipeline.Runner, error) {
 		}
 	}
 	target := promptsTarget(cfg)
+	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	return &pipeline.Runner{
 		Cfg:           cfg,
 		Display:       display,
@@ -167,7 +175,8 @@ func newRunner(cfg config.Config, st *store.Store) (*pipeline.Runner, error) {
 		Store:         st,
 		Prompts:       set,
 		PromptsTarget: target,
-		Log:           slog.New(slog.NewTextHandler(os.Stderr, nil)),
+		Log:           log,
+		Notify:        newNotifier(cfg.Notify, notify.Options{Interactive: interactive, StateDir: cfg.Paths.StateDir, Log: log}),
 	}, nil
 }
 

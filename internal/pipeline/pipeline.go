@@ -23,6 +23,7 @@ import (
 	"github.com/paraizo/delamain/internal/forge"
 	"github.com/paraizo/delamain/internal/gates"
 	"github.com/paraizo/delamain/internal/gitx"
+	"github.com/paraizo/delamain/internal/notify"
 	"github.com/paraizo/delamain/internal/omp"
 	"github.com/paraizo/delamain/internal/prompts"
 	"github.com/paraizo/delamain/internal/store"
@@ -112,6 +113,8 @@ type Runner struct {
 	Alive func(pid int) bool
 	// BudgetInterval paces the budget watcher during agent turns (default 10s).
 	BudgetInterval time.Duration
+	// Notify shows desktop notifications; nil sends none.
+	Notify notify.Notifier
 }
 
 // halt is a guardrail stop: the run is recorded with this reason instead of failing the process.
@@ -224,6 +227,7 @@ func (r *Runner) finish(ctx context.Context, ru *run, t Task) error {
 	r.deliver(ctx, ru)
 	r.discardEmpty(ctx, ru)
 	r.announce(ctx, ru, t)
+	r.notifyFinish(ctx, ru, t)
 	return r.record(ctx, ru)
 }
 

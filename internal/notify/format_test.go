@@ -38,3 +38,37 @@ func TestFormatPROpenedShouldMatchContract(t *testing.T) {
 		},
 	})
 }
+
+const exampleReport = "/home/dev/.local/state/delamain/runs/delamain/42/report.md"
+
+func TestFormatNeedsHumanShouldMatchContract(t *testing.T) {
+	r := example()
+	r.Draft, r.Iterations, r.Tokens, r.Reason, r.Report = true, 3, "1.2M", "3 iterações sem aprovação", exampleReport
+	assertMessage(t, FormatNeedsHuman(r), Message{
+		Event: EventNeedsHuman, RunID: 42,
+		Title:   "⚠️ Needs review · delamain #12",
+		Body:    "Mostrar HARNESS e INTERACTIONS no status\nDraft PR #31 · 3/3 iterations · 1.2M tokens\n3 iterações sem aprovação",
+		Urgency: Normal, Expire: 15000, Category: "x-delamain.needs-human",
+		Actions: []Action{
+			{Key: "default", Label: "Open PR", Target: examplePR},
+			{Key: "open-pr", Label: "Open PR", Target: examplePR},
+			{Key: "open-report", Label: "Open report", Target: exampleReport},
+		},
+	})
+}
+
+func TestFormatHaltedShouldBeCriticalAndNeverExpire(t *testing.T) {
+	r := example()
+	r.PRURL, r.State, r.Reason, r.Report = "", "implement", "reviewer alterou a worktree", exampleReport
+	assertMessage(t, FormatHalted(r), Message{
+		Event: EventHalted, RunID: 42,
+		Title:   "⛔ Halted · delamain #12",
+		Body:    "Mostrar HARNESS e INTERACTIONS no status\nrun 42 · implement · 2/3 iterations\nreviewer alterou a worktree",
+		Urgency: Critical, Expire: 0, Category: "x-delamain.halted",
+		Actions: []Action{
+			{Key: "default", Label: "Open report", Target: exampleReport},
+			{Key: "open-report", Label: "Open report", Target: exampleReport},
+			{Key: "open-issue", Label: "Open issue", Target: exampleIssue},
+		},
+	})
+}

@@ -61,10 +61,11 @@ Only one instance runs per state_dir. Ctrl+C stops it: in-flight runs end as int
 				return err
 			}
 			defer func() { _ = st.Close() }()
-			base, err := newRunner(cfg, st)
+			base, err := newRunner(cfg, st, true)
 			if err != nil {
 				return err
 			}
+			defer func() { _ = base.Notify.Close() }()
 			if err := recoverRuns(c, cfg, base); err != nil {
 				return err
 			}
@@ -108,10 +109,11 @@ func newRecoverCmd(load func() (config.Config, error)) *cobra.Command {
 				return err
 			}
 			defer func() { _ = st.Close() }()
-			base, err := newRunner(cfg, st)
+			base, err := newRunner(cfg, st, false)
 			if err != nil {
 				return err
 			}
+			defer func() { _ = base.Notify.Close() }()
 			return recoverRuns(c, cfg, base)
 		},
 	}

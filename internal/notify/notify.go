@@ -6,6 +6,9 @@ package notify
 import (
 	"context"
 	"log/slog"
+	"slices"
+
+	"github.com/paraizo/delamain/internal/config"
 )
 
 type Event string
@@ -62,3 +65,19 @@ type Options struct {
 	StateDir    string
 	Log         *slog.Logger
 }
+
+// Allowed reports whether cfg lets event e be shown.
+func Allowed(cfg config.Notify, e Event) bool {
+	return cfg.Enabled && slices.Contains(cfg.Events, string(e))
+}
+
+// New resolves the configured backend.
+func New(cfg config.Notify, o Options) Notifier {
+	return none{}
+}
+
+// none sends nothing: notifications are off or no server can show them.
+type none struct{}
+
+func (none) Notify(context.Context, Message) error { return nil }
+func (none) Close() error                          { return nil }
