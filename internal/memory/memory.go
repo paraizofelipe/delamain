@@ -62,6 +62,11 @@ func (s Store) Append(host, repoPath string, runID int64, pr int, learnings []st
 	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
 		return 0, err
 	}
+	unlock, err := lock(p + ".lock")
+	if err != nil {
+		return 0, err
+	}
+	defer unlock()
 	cur, err := os.ReadFile(p) //nolint:gosec // path is validated to stay under Dir
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return 0, err
@@ -95,3 +100,12 @@ func writeAtomic(dst string, data []byte) error {
 
 // ErrInvalidPath reports a host or repository path that would escape Dir.
 var ErrInvalidPath = errors.New("invalid memory path")
+
+// lock holds <memory file>.lock while the memory file is rewritten.
+func lock(path string) (func(), error) {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600) //nolint:gosec // path is validated to stay under Dir
+	if err != nil {
+		return nil, err
+	}
+	return func() { f.Close() }, nil
+}

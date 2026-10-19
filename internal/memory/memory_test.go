@@ -108,3 +108,27 @@ func TestPathShouldRejectTraversalAndAbsolutePaths(t *testing.T) {
 		t.Fatalf("valid path %q must stay under %q", p, s.Dir)
 	}
 }
+
+func TestFilesShouldBeCreatedWithPrivatePermissions(t *testing.T) {
+	s := newStore(t)
+	if _, err := s.Append("github.com", "acme/app", 1, 1, []string{"keep it private"}, day); err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range []string{s.Dir, filepath.Join(s.Dir, "github.com"), filepath.Join(s.Dir, "github.com", "acme")} {
+		assertMode(t, d, 0o700)
+	}
+	p := s.Path("github.com", "acme/app")
+	assertMode(t, p, 0o600)
+	assertMode(t, p+".lock", 0o600)
+}
+
+func assertMode(t *testing.T, p string, want fs.FileMode) {
+	t.Helper()
+	fi, err := os.Stat(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fi.Mode().Perm(); got != want {
+		t.Errorf("%s mode = %o, want %o", p, got, want)
+	}
+}
