@@ -5,8 +5,23 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+// TestMain drops git config injected through the environment: run as a delamain gate or inside
+// an agent, AgentEnv's pushInsteadOf would block the real pushes these tests make. The tests that
+// check the blocking pass AgentEnv explicitly.
+func TestMain(m *testing.M) {
+	for _, kv := range os.Environ() {
+		k, _, _ := strings.Cut(kv, "=")
+		if k == "GIT_CONFIG_COUNT" || k == "GIT_CONFIG_PARAMETERS" ||
+			strings.HasPrefix(k, "GIT_CONFIG_KEY_") || strings.HasPrefix(k, "GIT_CONFIG_VALUE_") {
+			_ = os.Unsetenv(k)
+		}
+	}
+	os.Exit(m.Run())
+}
 
 func TestSlugShouldProduceAsciiKebabCaseWithinLimit(t *testing.T) {
 	cases := map[string]string{
