@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -53,7 +54,7 @@ func newFixture(t *testing.T) *fixture {
 func (f *fixture) run(t *testing.T, ref, branch string, state store.RunState) store.Run {
 	t.Helper()
 	ctx := context.Background()
-	rec, err := f.st.CreateRun(ctx, f.repo, ref, "Fix "+ref)
+	rec, err := f.st.CreateRun(ctx, f.repo, ref, "Fix "+ref, "omp", 3)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +147,7 @@ func TestStatusShouldShowTheRunItsWorktreesAndAgents(t *testing.T) {
 
 	out := f.exec(t, "status", "1")
 	for _, want := range []string{
-		"#1 Fix #1", "implement (iteration 1/3)", "fix/1-a (base main)", "(alive)", "1.5K de 2M tokens · US$ 0.25",
+		"#1 Fix #1", "fix/1-a (base main)", "(alive)", "1.5K de 2M tokens · US$ 0.25",
 		"delamain logs 1 -f", "fix/2-b", "implementer  running",
 	} {
 		if !strings.Contains(out, want) {
@@ -156,6 +157,14 @@ func TestStatusShouldShowTheRunItsWorktreesAndAgents(t *testing.T) {
 	if strings.Contains(out, "feat/mine") {
 		t.Errorf("only worktrees under worktrees_dir/<repo> are listed:\n%s", out)
 	}
+	if got := statusLabels(out)[:5]; strings.Join(got, " ") != "RUN REPO HARNESS STATE INTERACTIONS" {
+		t.Errorf("HARNESS follows REPO and INTERACTIONS follows STATE, got %v:\n%s", got, out)
+	}
+	for label, want := range map[string]string{"HARNESS": "omp", "STATE": "implement", "INTERACTIONS": "1/3"} {
+		if got := statusField(out, label); got != want {
+			t.Errorf("%s = %q, want %q: STATE no longer repeats the iteration:\n%s", label, got, want, out)
+		}
+	}
 	var marked []string
 	for _, l := range strings.Split(out, "\n") {
 		if strings.HasPrefix(l, "*") {
@@ -164,6 +173,67 @@ func TestStatusShouldShowTheRunItsWorktreesAndAgents(t *testing.T) {
 	}
 	if len(marked) != 1 || !strings.Contains(marked[0], "fix/1-a") {
 		t.Errorf("exactly the run's own worktree is marked: %q", marked)
+	}
+}
+
+func TestStatusShouldShowTheHarnessAndMaxIterationsRecordedOnTheRun(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	// The fixture's config says omp and 3 iterations; the run was started under claude with 5.
+	rec, err := f.st.CreateRun(ctx, f.repo, "#1", "Fix #1", "claude", 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec.State, rec.Iteration = store.StateImplement, 1
+	if err := f.st.UpdateRun(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+
+	out := f.exec(t, "status", "1")
+	if got := statusField(out, "HARNESS"); got != "claude" {
+		t.Errorf("HARNESS = %q, want what the run was started with:\n%s", got, out)
+	}
+	if got := statusField(out, "INTERACTIONS"); got != "1/5" {
+		t.Errorf("INTERACTIONS = %q, want the run's own maximum:\n%s", got, out)
+	}
+}
+
+func TestStatusShouldFallBackForRunsWithoutHarness(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	// Runs created before the harness was recorded read back as "" and 0.
+	rec, err := f.st.CreateRun(ctx, f.repo, "#1", "Fix #1", "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec.State, rec.Iteration = store.StateImplement, 1
+	if err := f.st.UpdateRun(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+
+	out := f.exec(t, "status", "1")
+	if got := statusField(out, "HARNESS"); got != "-" {
+		t.Errorf("HARNESS = %q, want - for a run that never recorded it:\n%s", got, out)
+	}
+	if got := statusField(out, "INTERACTIONS"); got != "1/3" {
+		t.Errorf("INTERACTIONS = %q, want the config's maximum as fallback:\n%s", got, out)
+	}
+	if row := strings.Fields(strings.Split(strings.TrimSpace(f.exec(t, "ls")), "\n")[1]); row[4] != "1/3" {
+		t.Errorf("ls keeps showing x/N for old runs: %v", row)
+	}
+}
+
+func TestStatusShouldShowNoInteractionBeforeTheFirstIteration(t *testing.T) {
+	f := newFixture(t)
+	if _, err := f.st.CreateRun(context.Background(), f.repo, "#1", "Fix #1", "claude", 5); err != nil {
+		t.Fatal(err)
+	}
+	out := f.exec(t, "status", "1")
+	if got := statusField(out, "INTERACTIONS"); got != "-" {
+		t.Errorf("INTERACTIONS = %q, want - before the first iteration:\n%s", got, out)
+	}
+	if got := statusField(out, "HARNESS"); got != "claude" {
+		t.Errorf("HARNESS = %q, want claude:\n%s", got, out)
 	}
 }
 
@@ -196,6 +266,44 @@ func TestStatusShouldPrintTheSameDataAsYAMLAndJSON(t *testing.T) {
 			t.Errorf("%s budget/dir = %+v %s", name, s.Budget, s.WorktreesDir)
 		}
 	}
+
+	// Scripts read the keys by name: harness and max_iterations are added, iteration stays.
+	var rawJSON, rawYAML struct {
+		Run map[string]any `json:"run" yaml:"run"`
+	}
+	if err := json.Unmarshal([]byte(f.exec(t, "status", "1", "-o", "json")), &rawJSON); err != nil {
+		t.Fatal(err)
+	}
+	if err := yaml.Unmarshal([]byte(f.exec(t, "status", "1", "-o", "yaml")), &rawYAML); err != nil {
+		t.Fatal(err)
+	}
+	for name, run := range map[string]map[string]any{"json": rawJSON.Run, "yaml": rawYAML.Run} {
+		if fmt.Sprint(run["harness"]) != "omp" || fmt.Sprint(run["max_iterations"]) != "3" || fmt.Sprint(run["iteration"]) != "1" {
+			t.Errorf("%s run keys: harness=%v max_iterations=%v iteration=%v", name, run["harness"], run["max_iterations"], run["iteration"])
+		}
+	}
+}
+
+// statusLabels lists the labels of the status table's first block, in order.
+func statusLabels(out string) []string {
+	var labels []string
+	for _, l := range strings.Split(out, "\n") {
+		if l == "" {
+			break
+		}
+		labels = append(labels, strings.Fields(l)[0])
+	}
+	return labels
+}
+
+// statusField is the value of a label in the status table; the tabwriter pads with spaces.
+func statusField(out, label string) string {
+	for _, l := range strings.Split(out, "\n") {
+		if f := strings.Fields(l); len(f) > 0 && f[0] == label {
+			return strings.TrimSpace(strings.TrimPrefix(l, label))
+		}
+	}
+	return ""
 }
 
 func TestStatusShouldExplainWhenTheRepositoryIsGone(t *testing.T) {

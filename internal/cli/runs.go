@@ -50,25 +50,27 @@ func printAs(w io.Writer, format string, v any, table func(io.Writer) error) err
 
 // RunView is a run as `ls` and `status` show it.
 type RunView struct {
-	ID         int64       `json:"id" yaml:"id"`
-	Repo       string      `json:"repo" yaml:"repo"`
-	Issue      string      `json:"issue" yaml:"issue"`
-	Title      string      `json:"title" yaml:"title"`
-	State      string      `json:"state" yaml:"state"`
-	Iteration  int         `json:"iteration" yaml:"iteration"`
-	Branch     string      `json:"branch,omitempty" yaml:"branch,omitempty"`
-	Base       string      `json:"base,omitempty" yaml:"base,omitempty"`
-	Worktree   string      `json:"worktree,omitempty" yaml:"worktree,omitempty"`
-	Workspace  string      `json:"herdr_workspace,omitempty" yaml:"herdr_workspace,omitempty"`
-	PR         string      `json:"pr,omitempty" yaml:"pr,omitempty"`
-	Result     string      `json:"result,omitempty" yaml:"result,omitempty"`
-	Owner      Process     `json:"owner" yaml:"owner"`
-	Agents     []AgentView `json:"agents" yaml:"agents"`
-	RunDir     string      `json:"run_dir" yaml:"run_dir"`
-	CreatedAt  time.Time   `json:"created_at" yaml:"created_at"`
-	UpdatedAt  time.Time   `json:"updated_at" yaml:"updated_at"`
-	terminal   bool
-	iterations int
+	ID            int64       `json:"id" yaml:"id"`
+	Repo          string      `json:"repo" yaml:"repo"`
+	Issue         string      `json:"issue" yaml:"issue"`
+	Title         string      `json:"title" yaml:"title"`
+	State         string      `json:"state" yaml:"state"`
+	Iteration     int         `json:"iteration" yaml:"iteration"`
+	Harness       string      `json:"harness" yaml:"harness"`
+	MaxIterations int         `json:"max_iterations" yaml:"max_iterations"` // as recorded: 0 for runs from before it was
+	Branch        string      `json:"branch,omitempty" yaml:"branch,omitempty"`
+	Base          string      `json:"base,omitempty" yaml:"base,omitempty"`
+	Worktree      string      `json:"worktree,omitempty" yaml:"worktree,omitempty"`
+	Workspace     string      `json:"herdr_workspace,omitempty" yaml:"herdr_workspace,omitempty"`
+	PR            string      `json:"pr,omitempty" yaml:"pr,omitempty"`
+	Result        string      `json:"result,omitempty" yaml:"result,omitempty"`
+	Owner         Process     `json:"owner" yaml:"owner"`
+	Agents        []AgentView `json:"agents" yaml:"agents"`
+	RunDir        string      `json:"run_dir" yaml:"run_dir"`
+	CreatedAt     time.Time   `json:"created_at" yaml:"created_at"`
+	UpdatedAt     time.Time   `json:"updated_at" yaml:"updated_at"`
+	terminal      bool
+	iterations    int // effective maximum: the recorded one, or the config's for older runs
 }
 
 type Process struct {
@@ -141,7 +143,10 @@ func (in *inspector) view(ctx context.Context, rec store.Run) (RunView, error) {
 		PR: rec.MRURL, Owner: Process{PID: rec.OwnerPID, Alive: in.alive(rec.OwnerPID)},
 		RunDir:    pipeline.RunDir(in.cfg.Paths.StateDir, rec.Repo, rec.ID),
 		CreatedAt: rec.CreatedAt, UpdatedAt: rec.UpdatedAt, terminal: rec.State.Terminal(),
-		iterations: in.cfg.Pipeline.MaxIterations, Agents: []AgentView{},
+		Harness: rec.Harness, MaxIterations: rec.MaxIterations, iterations: rec.MaxIterations, Agents: []AgentView{},
+	}
+	if v.iterations == 0 { // runs from before the maximum was recorded
+		v.iterations = in.cfg.Pipeline.MaxIterations
 	}
 	if v.terminal {
 		v.Result = rec.Reason
@@ -315,7 +320,9 @@ func statusTable(w io.Writer, s RunStatus) error {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	fmt.Fprintf(tw, "RUN\t%d · %s %s\n", v.ID, v.Issue, v.Title)
 	fmt.Fprintf(tw, "REPO\t%s\n", v.Repo)
-	fmt.Fprintf(tw, "STATE\t%s (iteration %s)\n", v.State, v.iter())
+	fmt.Fprintf(tw, "HARNESS\t%s\n", orDash(v.Harness))
+	fmt.Fprintf(tw, "STATE\t%s\n", v.State)
+	fmt.Fprintf(tw, "INTERACTIONS\t%s\n", v.iter())
 	if v.Branch != "" {
 		fmt.Fprintf(tw, "BRANCH\t%s (base %s)\n", v.Branch, v.Base)
 		fmt.Fprintf(tw, "WORKTREE\t%s\n", v.Worktree)

@@ -124,7 +124,7 @@ func TestBudgetShouldRefuseToStartWhenTheDailyCapIsSpent(t *testing.T) {
 	hs := newHarness(t, happy)
 	f := withForge(hs)
 	ctx := context.Background()
-	old, err := hs.st.CreateRun(ctx, "/other", "#99", "earlier work")
+	old, err := hs.st.CreateRun(ctx, "/other", "#99", "earlier work", "omp", 3)
 	if err != nil {
 		t.Fatal(err)
 	}
