@@ -189,7 +189,7 @@ func TestInstallShouldRejectAnOversizedAsset(t *testing.T) {
 	f.files["delamain_linux_amd64"] = fakeBinary("v0.2.0") // longer than 8 bytes
 	rel, _ := u.Latest(context.Background())
 	target := installed(t)
-	if err := u.Install(context.Background(), rel, target); err == nil || !strings.Contains(err.Error(), "limite") {
+	if err := u.Install(context.Background(), rel, target); err == nil || !strings.Contains(err.Error(), "larger than the 8-byte limit") {
 		t.Fatalf("got %v", err)
 	}
 	assertUntouched(t, target)

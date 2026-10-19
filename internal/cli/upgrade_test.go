@@ -93,7 +93,7 @@ func TestUpgradeShouldDoNothingWhenAlreadyOnTheLatestRelease(t *testing.T) {
 	releaseServer(t, "v0.1.0")
 	target := installedAt(t, "v0.1.0")
 	out, err := execute(t, "upgrade")
-	if err != nil || !strings.Contains(out, "já está na última versão (v0.1.0)") || content(t, target) != oldBinary {
+	if err != nil || !strings.Contains(out, "already on the latest version (v0.1.0)") || content(t, target) != oldBinary {
 		t.Fatalf("%v %q", err, out)
 	}
 }
@@ -124,7 +124,7 @@ func TestUpgradeShouldFailWhenNoReleaseWasPublished(t *testing.T) {
 	prev := upgradeAPI
 	upgradeAPI = srv.URL
 	t.Cleanup(func() { upgradeAPI = prev })
-	if _, err := execute(t, "upgrade"); err == nil || !strings.Contains(err.Error(), "nenhuma release publicada") {
+	if _, err := execute(t, "upgrade"); err == nil || !strings.Contains(err.Error(), "no release published") {
 		t.Fatalf("got %v", err)
 	}
 }

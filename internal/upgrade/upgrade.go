@@ -28,7 +28,7 @@ const ChecksumsAsset = "checksums.txt"
 const defaultMaxSize = 200 << 20
 
 // ErrNoRelease means the repository has not published any release yet.
-var ErrNoRelease = errors.New("nenhuma release publicada")
+var ErrNoRelease = errors.New("no release published")
 
 // Release is a published version and its downloadable assets (name -> URL).
 type Release struct {
@@ -68,7 +68,7 @@ func (u Upgrader) Latest(ctx context.Context) (Release, error) {
 	case resp.StatusCode == http.StatusNotFound:
 		return Release{}, ErrNoRelease
 	case resp.StatusCode != http.StatusOK:
-		return Release{}, fmt.Errorf("última release: HTTP %d", resp.StatusCode)
+		return Release{}, fmt.Errorf("latest release: HTTP %d", resp.StatusCode)
 	}
 	var v struct {
 		Tag    string `json:"tag_name"`
@@ -78,10 +78,10 @@ func (u Upgrader) Latest(ctx context.Context) (Release, error) {
 		} `json:"assets"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&v); err != nil {
-		return Release{}, fmt.Errorf("última release: %w", err)
+		return Release{}, fmt.Errorf("latest release: %w", err)
 	}
 	if v.Tag == "" {
-		return Release{}, errors.New("última release sem tag")
+		return Release{}, errors.New("latest release has no tag")
 	}
 	rel := Release{Tag: v.Tag, Assets: map[string]string{}}
 	for _, a := range v.Assets {
@@ -96,11 +96,11 @@ func (u Upgrader) Install(ctx context.Context, rel Release, target string) error
 	name := u.AssetName()
 	binURL, ok := rel.Assets[name]
 	if !ok {
-		return fmt.Errorf("a release %s não tem binário para %s/%s (%s)", rel.Tag, u.OS, u.Arch, name)
+		return fmt.Errorf("release %s has no binary for %s/%s (%s)", rel.Tag, u.OS, u.Arch, name)
 	}
 	sumsURL, ok := rel.Assets[ChecksumsAsset]
 	if !ok {
-		return fmt.Errorf("a release %s não tem %s", rel.Tag, ChecksumsAsset)
+		return fmt.Errorf("release %s has no %s", rel.Tag, ChecksumsAsset)
 	}
 	bin, err := u.download(ctx, binURL)
 	if err != nil {
@@ -115,7 +115,7 @@ func (u Upgrader) Install(ctx context.Context, rel Release, target string) error
 		return err
 	}
 	if got := sha256.Sum256(bin); hex.EncodeToString(got[:]) != want {
-		return fmt.Errorf("%s: sha256 não confere com %s", name, ChecksumsAsset)
+		return fmt.Errorf("%s: sha256 does not match %s", name, ChecksumsAsset)
 	}
 
 	tmp, err := os.CreateTemp(filepath.Dir(target), ".delamain-upgrade-*")
@@ -161,7 +161,7 @@ func (u Upgrader) download(ctx context.Context, url string) ([]byte, error) {
 		return nil, fmt.Errorf("download %s: %w", url, err)
 	}
 	if int64(len(b)) > limit {
-		return nil, fmt.Errorf("download %s: maior que o limite de %d bytes", url, limit)
+		return nil, fmt.Errorf("download %s: larger than the %d-byte limit", url, limit)
 	}
 	return b, nil
 }
@@ -175,7 +175,7 @@ func checksumOf(sums []byte, name string) (string, error) {
 			return strings.ToLower(f[0]), nil
 		}
 	}
-	return "", fmt.Errorf("%s não lista %s", ChecksumsAsset, name)
+	return "", fmt.Errorf("%s does not list %s", ChecksumsAsset, name)
 }
 
 // reportsVersion runs `<bin> version`: it catches a binary for the wrong platform or release.
@@ -184,10 +184,10 @@ func reportsVersion(ctx context.Context, bin, tag string) error {
 	defer cancel()
 	out, err := exec.CommandContext(ctx, bin, "version").Output() //nolint:gosec // the verified download
 	if err != nil {
-		return fmt.Errorf("o binário baixado não executa: %w", err)
+		return fmt.Errorf("the downloaded binary does not run: %w", err)
 	}
 	if got := strings.TrimSpace(string(out)); got != tag {
-		return fmt.Errorf("o binário baixado informa %q, esperado %q", got, tag)
+		return fmt.Errorf("the downloaded binary reports %q, expected %q", got, tag)
 	}
 	return nil
 }
