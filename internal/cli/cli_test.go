@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"go.yaml.in/yaml/v3"
 )
 
 func execute(t *testing.T, args ...string) (string, error) {
@@ -85,5 +87,43 @@ func TestPromptsShouldFailWhenOverrideDirIsMissing(t *testing.T) {
 	t.Setenv("DELAMAIN_PROMPTS_DIR", filepath.Join(t.TempDir(), "absent"))
 	if _, err := execute(t, "--config", filepath.Join(t.TempDir(), "none.yaml"), "prompts", "lint"); err == nil {
 		t.Fatal("a typo in prompts_dir must not silently fall back to defaults")
+	}
+}
+
+func TestConfigShouldPrintTheReviewSection(t *testing.T) {
+	cfgFile := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(cfgFile, []byte("review:\n  max_comments: 9\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, err := execute(t, "--config", cfgFile, "config")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var printed struct {
+		Review struct {
+			Enabled     bool    `yaml:"enabled"`
+			MaxComments int     `yaml:"max_comments"`
+			MaxRounds   int     `yaml:"max_rounds"`
+			PerReview   float64 `yaml:"per_review"`
+			Address     struct {
+				Enabled bool `yaml:"enabled"`
+				Push    bool `yaml:"push"`
+			} `yaml:"address"`
+		} `yaml:"review"`
+		Forge struct {
+			Labels struct {
+				Review string `yaml:"review"`
+			} `yaml:"labels"`
+		} `yaml:"forge"`
+	}
+	if err := yaml.Unmarshal([]byte(out), &printed); err != nil {
+		t.Fatalf("%v:\n%s", err, out)
+	}
+	r := printed.Review
+	if r.Enabled || r.MaxComments != 9 || r.MaxRounds != 3 || r.PerReview != 500_000 || r.Address.Enabled || r.Address.Push {
+		t.Errorf("review section = %+v:\n%s", r, out)
+	}
+	if printed.Forge.Labels.Review != "delamain:review" {
+		t.Errorf("review label = %q:\n%s", printed.Forge.Labels.Review, out)
 	}
 }

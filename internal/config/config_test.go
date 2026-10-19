@@ -183,13 +183,13 @@ func TestLabelsShouldBeNamedAfterThePrefix(t *testing.T) {
 		want Labels
 	}{
 		"default prefix": {want: Labels{Prefix: "delamain", Ready: "delamain:ready", InProgress: "delamain:in-progress",
-			MROpened: "delamain:mr-opened", NeedsHuman: "delamain:needs-human", NeedsInfo: "delamain:needs-info"}},
+			MROpened: "delamain:mr-opened", NeedsHuman: "delamain:needs-human", NeedsInfo: "delamain:needs-info", Review: "delamain:review"}},
 		"prefix from file": {file: "forge:\n  labels:\n    prefix: paraizo\n", want: Labels{Prefix: "paraizo", Ready: "paraizo:ready",
-			InProgress: "paraizo:in-progress", MROpened: "paraizo:mr-opened", NeedsHuman: "paraizo:needs-human", NeedsInfo: "paraizo:needs-info"}},
+			InProgress: "paraizo:in-progress", MROpened: "paraizo:mr-opened", NeedsHuman: "paraizo:needs-human", NeedsInfo: "paraizo:needs-info", Review: "paraizo:review"}},
 		"an explicit label wins over the prefix": {file: "forge:\n  labels:\n    prefix: paraizo\n    in_progress: wip\n", want: Labels{Prefix: "paraizo",
-			Ready: "paraizo:ready", InProgress: "wip", MROpened: "paraizo:mr-opened", NeedsHuman: "paraizo:needs-human", NeedsInfo: "paraizo:needs-info"}},
+			Ready: "paraizo:ready", InProgress: "wip", MROpened: "paraizo:mr-opened", NeedsHuman: "paraizo:needs-human", NeedsInfo: "paraizo:needs-info", Review: "paraizo:review"}},
 		"env wins over file": {file: "forge:\n  labels:\n    prefix: paraizo\n", env: map[string]string{"DELAMAIN_LABEL_PREFIX": "bot"},
-			want: Labels{Prefix: "bot", Ready: "bot:ready", InProgress: "bot:in-progress", MROpened: "bot:mr-opened", NeedsHuman: "bot:needs-human", NeedsInfo: "bot:needs-info"}},
+			want: Labels{Prefix: "bot", Ready: "bot:ready", InProgress: "bot:in-progress", MROpened: "bot:mr-opened", NeedsHuman: "bot:needs-human", NeedsInfo: "bot:needs-info", Review: "bot:review"}},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -214,7 +214,7 @@ func TestLabelsShouldRejectAPrefixThatCannotNameThem(t *testing.T) {
 			t.Errorf("%s: want a forge.labels error, got %v", name, err)
 		}
 	}
-	file := "forge:\n  labels:\n    prefix: \"\"\n    ready: r\n    in_progress: i\n    mr_opened: m\n    needs_human: h\n    needs_info: n\n"
+	file := "forge:\n  labels:\n    prefix: \"\"\n    ready: r\n    in_progress: i\n    mr_opened: m\n    needs_human: h\n    needs_info: n\n    review: v\n"
 	if cfg, err := Load(writeFile(t, file), noEnv); err != nil || cfg.Forge.Labels.InProgress != "i" {
 		t.Errorf("no prefix is fine when every label is set: %+v %v", cfg.Forge.Labels, err)
 	}
@@ -224,5 +224,97 @@ func TestPathsShouldPlaceMemoryDirUnderStateDir(t *testing.T) {
 	p := Paths{StateDir: "/home/u/.local/state/delamain"}
 	if got := p.MemoryDir(); got != "/home/u/.local/state/delamain/memory" {
 		t.Fatalf("MemoryDir = %q", got)
+	}
+}
+
+func TestReviewShouldDefaultToDisabledWithItsLimits(t *testing.T) {
+	want := Review{Enabled: false, MaxComments: 15, MaxRounds: 3, PerReview: 500_000, Address: ReviewAddress{Enabled: false, Push: false}}
+	cfg, err := Load(filepath.Join(t.TempDir(), "absent.yaml"), noEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Review != want {
+		t.Fatalf("review = %+v, want %+v", cfg.Review, want)
+	}
+	if Default().Review != want {
+		t.Fatalf("Default().Review = %+v, want %+v", Default().Review, want)
+	}
+}
+
+func TestLoadShouldReadTheReviewSectionFromTheFile(t *testing.T) {
+	p := writeFile(t, "review:\n  enabled: true\n  max_comments: 7\n  per_review: 2.5\n  address:\n    enabled: true\n    push: true\n")
+	cfg, err := Load(p, noEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Review{Enabled: true, MaxComments: 7, MaxRounds: 3, PerReview: 2.5, Address: ReviewAddress{Enabled: true, Push: true}}
+	if cfg.Review != want {
+		t.Fatalf("review = %+v, want %+v (unset max_rounds keeps its default)", cfg.Review, want)
+	}
+}
+
+func TestReviewShouldBeOverriddenByEnv(t *testing.T) {
+	p := writeFile(t, "review:\n  enabled: true\n  max_comments: 7\n  address:\n    push: true\n")
+	cfg, err := Load(p, envOf(map[string]string{
+		"DELAMAIN_REVIEW_ENABLED":         "false",
+		"DELAMAIN_REVIEW_MAX_COMMENTS":    "20",
+		"DELAMAIN_REVIEW_MAX_ROUNDS":      "5",
+		"DELAMAIN_REVIEW_PER_REVIEW":      "0.75",
+		"DELAMAIN_REVIEW_ADDRESS_ENABLED": "true",
+		"DELAMAIN_REVIEW_ADDRESS_PUSH":    "false",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Review{Enabled: false, MaxComments: 20, MaxRounds: 5, PerReview: 0.75, Address: ReviewAddress{Enabled: true, Push: false}}
+	if cfg.Review != want {
+		t.Fatalf("env must win over file: review = %+v, want %+v", cfg.Review, want)
+	}
+}
+
+func TestReviewShouldRejectMalformedEnvOverrides(t *testing.T) {
+	for key, v := range map[string]string{
+		"DELAMAIN_REVIEW_ENABLED":         "talvez",
+		"DELAMAIN_REVIEW_ADDRESS_ENABLED": "yes please",
+		"DELAMAIN_REVIEW_ADDRESS_PUSH":    "nope",
+		"DELAMAIN_REVIEW_MAX_COMMENTS":    "many",
+		"DELAMAIN_REVIEW_MAX_ROUNDS":      "1.5",
+		"DELAMAIN_REVIEW_PER_REVIEW":      "half",
+	} {
+		if _, err := Load(filepath.Join(t.TempDir(), "x.yaml"), envOf(map[string]string{key: v})); err == nil || !strings.Contains(err.Error(), key) {
+			t.Errorf("%s=%q: want error naming the bad variable, got %v", key, v, err)
+		}
+	}
+}
+
+func TestValidateShouldRejectMeaninglessReviewLimits(t *testing.T) {
+	for name, tc := range map[string]struct {
+		mutate func(*Config)
+		field  string
+	}{
+		"zero comments":     {func(c *Config) { c.Review.MaxComments = 0 }, "review.max_comments"},
+		"zero rounds":       {func(c *Config) { c.Review.MaxRounds = 0 }, "review.max_rounds"},
+		"zero budget":       {func(c *Config) { c.Review.PerReview = 0 }, "review.per_review"},
+		"negative budget":   {func(c *Config) { c.Review.PerReview = -1 }, "review.per_review"},
+		"enabled, zero cap": {func(c *Config) { c.Review.Enabled = true; c.Review.MaxComments = 0 }, "review.max_comments"},
+		"negative rounds":   {func(c *Config) { c.Review.MaxRounds = -2 }, "review.max_rounds"},
+	} {
+		cfg := Default()
+		tc.mutate(&cfg)
+		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), tc.field) {
+			t.Errorf("%s: want an error naming %s, got %v", name, tc.field, err)
+		}
+	}
+	cfg := Default()
+	cfg.Review.MaxComments, cfg.Review.MaxRounds, cfg.Review.PerReview = 1, 1, 0.01
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("one comment, one round and any positive budget are meaningful: %v", err)
+	}
+}
+
+func TestReviewLabelShouldRejectAComma(t *testing.T) {
+	_, err := Load(writeFile(t, "forge:\n  labels:\n    review: a,b\n"), noEnv)
+	if err == nil || !strings.Contains(err.Error(), "forge.labels") || !strings.Contains(err.Error(), "a,b") {
+		t.Fatalf("glab splits labels on commas: want a forge.labels error, got %v", err)
 	}
 }
