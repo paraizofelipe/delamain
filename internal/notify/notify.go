@@ -58,6 +58,8 @@ type Options struct {
 	Interactive bool
 	StateDir    string
 	Log         *slog.Logger
+	// ForgeHosts are the hosts whose https URLs a click may open.
+	ForgeHosts []string
 }
 
 // sys is what the notifier touches outside the process; tests replace it.
@@ -65,6 +67,9 @@ type sys struct {
 	goos   string
 	getenv func(string) string
 	dial   func(addr string) (bus, error)
+	// lookPath and run execute a program directly, without a shell.
+	lookPath func(string) (string, error)
+	run      func(ctx context.Context, name string, args ...string) error
 }
 
 // backend delivers a toast on one platform.
@@ -99,8 +104,13 @@ func newWith(cfg config.Notify, opts Options, s sys) *Client {
 		c.events[Event(e)] = true
 	}
 	icon := func() string { return c.icon(opts.StateDir) }
-	if b, err := s.dial(s.getenv("DBUS_SESSION_BUS_ADDRESS")); err == nil {
-		c.backend = newDBus(b, icon)
+	switch cfg.Backend {
+	case config.NotifyMacOS:
+		c.backend = newMacOS(s, icon, opts)
+	case config.NotifyDBus:
+		if b, err := s.dial(s.getenv("DBUS_SESSION_BUS_ADDRESS")); err == nil {
+			c.backend = newDBus(b, icon)
+		}
 	}
 	return c
 }
