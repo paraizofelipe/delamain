@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"sync"
 	"testing"
+	"time"
 )
 
 // fakeBus records what a notification server would receive.
@@ -15,11 +16,27 @@ type fakeBus struct {
 	mu     sync.Mutex
 	sent   []notification
 	nextID uint32
+	owned  bool  // a server owns org.freedesktop.Notifications
+	err    error // returned by Notify
+	// hang makes Notify ignore its context until the channel closes.
+	hang     chan struct{}
+	deadline time.Time // of the last Notify context
 }
 
-func (b *fakeBus) Notify(_ context.Context, n notification) (uint32, error) {
+func (b *fakeBus) NameHasOwner(_ context.Context, name string) (bool, error) {
+	return b.owned && name == "org.freedesktop.Notifications", nil
+}
+
+func (b *fakeBus) Notify(ctx context.Context, n notification) (uint32, error) {
+	if b.hang != nil {
+		<-b.hang
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	b.deadline, _ = ctx.Deadline()
+	if b.err != nil {
+		return 0, b.err
+	}
 	b.sent = append(b.sent, n)
 	b.nextID++
 	return b.nextID, nil

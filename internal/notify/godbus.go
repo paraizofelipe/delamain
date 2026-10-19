@@ -26,6 +26,12 @@ func dialBus(addr string) (bus, error) {
 
 func (g *godbusConn) obj() dbus.BusObject { return g.conn.Object(busName, busPath) }
 
+func (g *godbusConn) NameHasOwner(ctx context.Context, name string) (bool, error) {
+	var owned bool
+	err := g.conn.BusObject().CallWithContext(ctx, "org.freedesktop.DBus.NameHasOwner", 0, name).Store(&owned)
+	return owned, err
+}
+
 func (g *godbusConn) Notify(ctx context.Context, n notification) (uint32, error) {
 	hints := make(map[string]dbus.Variant, len(n.Hints))
 	for k, v := range n.Hints {

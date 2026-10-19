@@ -4,6 +4,7 @@ import "context"
 
 // bus is the part of the session bus the D-Bus backend talks to (org.freedesktop.Notifications).
 type bus interface {
+	NameHasOwner(ctx context.Context, name string) (bool, error)
 	Notify(ctx context.Context, n notification) (uint32, error)
 	Close() error
 }
