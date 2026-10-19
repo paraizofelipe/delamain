@@ -146,6 +146,9 @@ func (p Paths) RolesDir() string { return filepath.Join(p.StateDir, "prompts", "
 // ClaudeDir holds the subagents (agents.json) and skills plugin installed for the claude harness.
 func (p Paths) ClaudeDir() string { return filepath.Join(p.StateDir, "prompts", "claude") }
 
+// MemoryDir holds the per-repository review learnings, as <memory_dir>/<host>/<owner...>/<repo>.md.
+func (p Paths) MemoryDir() string { return filepath.Join(p.StateDir, "memory") }
+
 // DefaultLabelPrefix names the lifecycle labels when forge.labels.prefix is unset.
 const DefaultLabelPrefix = "delamain"
 

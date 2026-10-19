@@ -219,3 +219,10 @@ func TestLabelsShouldRejectAPrefixThatCannotNameThem(t *testing.T) {
 		t.Errorf("no prefix is fine when every label is set: %+v %v", cfg.Forge.Labels, err)
 	}
 }
+
+func TestPathsShouldPlaceMemoryDirUnderStateDir(t *testing.T) {
+	p := Paths{StateDir: "/home/u/.local/state/delamain"}
+	if got := p.MemoryDir(); got != "/home/u/.local/state/delamain/memory" {
+		t.Fatalf("MemoryDir = %q", got)
+	}
+}
