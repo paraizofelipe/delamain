@@ -78,6 +78,7 @@ func New(cfg config.Notify, opts Options) Notifier {
 	}
 	return newWith(cfg, opts, sys{
 		goos: runtime.GOOS, getenv: os.Getenv, dial: dialBus, lookPath: exec.LookPath, run: runCommand,
+		open: xdgOpen, now: time.Now,
 	})
 }
 
@@ -98,6 +99,9 @@ type sys struct {
 	// lookPath and run execute a program directly, without a shell.
 	lookPath func(string) (string, error)
 	run      func(ctx context.Context, name string, args ...string) error
+	// open shows a clicked target (xdg-open); now dates the actions it may still open.
+	open func(ctx context.Context, target string) error
+	now  func() time.Time
 }
 
 // backend delivers a toast on one platform.
@@ -138,7 +142,7 @@ func newWith(cfg config.Notify, opts Options, s sys) *Client {
 	case config.NotifyMacOS:
 		c.backend = newMacOS(s, icon, opts)
 	case config.NotifyDBus:
-		c.backend = newDBus(b, icon)
+		c.backend = newDBus(b, icon, s, opts)
 	}
 	c.kind = kind
 	if err != nil {

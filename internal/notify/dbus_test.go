@@ -3,11 +3,16 @@ package notify
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/godbus/dbus/v5"
 
@@ -23,6 +28,36 @@ type fakeBus struct {
 	closed   bool
 	noOwner  bool                        // org.freedesktop.Notifications has no owner
 	onNotify func(context.Context) error // inspects the call's context
+	caps     []string
+	signals  chan signal // nil until subscribed
+}
+
+func (b *fakeBus) Capabilities(context.Context) ([]string, error) { return b.caps, nil }
+
+func (b *fakeBus) Subscribe() (<-chan signal, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.signals = make(chan signal)
+	return b.signals, nil
+}
+
+func (b *fakeBus) subscribed() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.signals != nil
+}
+
+// emit delivers a signal and returns once the notifier took it.
+func (b *fakeBus) emit(t *testing.T, s signal) {
+	t.Helper()
+	b.mu.Lock()
+	ch := b.signals
+	b.mu.Unlock()
+	select {
+	case ch <- s:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("nobody listens for %s signals", s.name)
+	}
 }
 
 func (b *fakeBus) NameHasOwner(name string) (bool, error) {
@@ -51,6 +86,9 @@ func (b *fakeBus) Notify(ctx context.Context, n notification) (uint32, error) {
 func (b *fakeBus) Close() error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.signals != nil && !b.closed {
+		close(b.signals) // as a closed connection does
+	}
 	b.closed = true
 	return nil
 }
@@ -186,4 +224,211 @@ func TestDBusShouldReplaceTheToastOfTheSameRun(t *testing.T) {
 		t.Fatalf("run 42 must replace its toast 7 and run 43 open a new one: replaces=%d,%d,%d",
 			calls[0].ReplacesID, calls[1].ReplacesID, calls[2].ReplacesID)
 	}
+}
+
+// clickBus is a notification server that supports actions and emits signals.
+func clickBus() *fakeBus { return &fakeBus{caps: []string{"body", "actions"}} }
+
+// opener records the targets a click opens.
+type opener chan string
+
+func (o opener) open(_ context.Context, target string) error {
+	o <- target
+	return nil
+}
+
+// expect fails unless the next opened target is want.
+func (o opener) expect(t *testing.T, want string) {
+	t.Helper()
+	select {
+	case got := <-o:
+		if got != want {
+			t.Fatalf("opened %q, want %q", got, want)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("nothing was opened, want %q", want)
+	}
+}
+
+// fakeClock is a settable clock shared with the signal goroutine.
+type fakeClock struct {
+	mu sync.Mutex
+	t  time.Time
+}
+
+func (c *fakeClock) now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.t
+}
+
+func (c *fakeClock) add(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.t = c.t.Add(d)
+}
+
+type daemonEnv struct {
+	c     *Client
+	b     *fakeBus
+	open  opener
+	clock *fakeClock
+	log   *syncBuffer
+	state string
+}
+
+// newDaemonClient is the daemon's notifier: interactive, allowed to open github.com URLs.
+func newDaemonClient(t *testing.T, b *fakeBus) daemonEnv {
+	t.Helper()
+	e := daemonEnv{b: b, open: make(opener, 8), clock: &fakeClock{t: time.Date(2026, 10, 19, 9, 0, 0, 0, time.UTC)},
+		log: &syncBuffer{}, state: t.TempDir()}
+	s := dbusSys(b)
+	s.open, s.now = e.open.open, e.clock.now
+	e.c = newWith(config.Notify{Enabled: true, Backend: "dbus", Events: allEvents()},
+		Options{Interactive: true, StateDir: e.state, Log: slogTo(e.log), ForgeHosts: []string{"github.com"}}, s)
+	t.Cleanup(func() { _ = e.c.Close() })
+	return e
+}
+
+// toast sends m and returns the notification id the server gave it.
+func (e daemonEnv) toast(t *testing.T, m Message) uint32 {
+	t.Helper()
+	if err := e.c.Notify(context.Background(), m); err != nil {
+		t.Fatal(err)
+	}
+	e.b.mu.Lock()
+	defer e.b.mu.Unlock()
+	return e.b.nextID + 6
+}
+
+func withActions(runID int64, actions ...Action) Message {
+	return Message{Event: EventPROpened, RunID: runID, Title: "t", Urgency: Normal, Expire: 15000, Actions: actions}
+}
+
+func TestDBusShouldOmitActionsWhenNotInteractive(t *testing.T) {
+	b := clickBus()
+	c := newDBusClient(t, b, Options{ForgeHosts: []string{"github.com"}})
+	if err := c.Notify(context.Background(), FormatPROpened(sampleRun())); err != nil {
+		t.Fatal(err)
+	}
+	if got := b.lastCall(t).Actions; len(got) != 0 {
+		t.Fatalf("outside the daemon a toast has no actions, got %q", got)
+	}
+
+	e := newDaemonClient(t, clickBus())
+	e.toast(t, FormatPROpened(sampleRun()))
+	want := []string{"default", "Open PR", "open-pr", "Open PR", "open-issue", "Open issue"}
+	if got := e.b.lastCall(t).Actions; !slices.Equal(got, want) {
+		t.Fatalf("in the daemon the actions go flat as in the spec: %q, want %q", got, want)
+	}
+}
+
+func TestDBusShouldOmitActionsWhenServerLacksActionsCapability(t *testing.T) {
+	e := newDaemonClient(t, &fakeBus{caps: []string{"body", "body-markup"}})
+	e.toast(t, FormatPROpened(sampleRun()))
+	if got := e.b.lastCall(t).Actions; len(got) != 0 {
+		t.Fatalf("a server without the actions capability gets none: %q", got)
+	}
+	if e.b.subscribed() {
+		t.Fatal("without actions there is no click to listen for")
+	}
+}
+
+func TestActionInvokedShouldOpenValidatedHTTPSURL(t *testing.T) {
+	e := newDaemonClient(t, clickBus())
+	id := e.toast(t, FormatPROpened(sampleRun()))
+	e.b.emit(t, signal{name: actionInvoked, id: id, key: "open-pr"})
+	e.open.expect(t, samplePR)
+	e.b.emit(t, signal{name: actionInvoked, id: id, key: "default"})
+	e.open.expect(t, samplePR)
+	e.b.emit(t, signal{name: actionInvoked, id: id, key: "open-issue"})
+	e.open.expect(t, sampleIssue)
+}
+
+func TestActionInvokedShouldRejectNonHTTPSOrForeignHostURL(t *testing.T) {
+	e := newDaemonClient(t, clickBus())
+	bad := []string{
+		"http://github.com/acme/api/pull/1",
+		"https://evil.example/acme/api/pull/1",
+		"https://github.com.evil.example/acme/api/pull/1",
+		"file:///etc/passwd",
+		"javascript:alert(1)",
+		"github.com/acme/api/pull/1",
+	}
+	var actions []Action
+	for i, target := range bad {
+		actions = append(actions, Action{Key: fmt.Sprintf("bad-%d", i), Label: "x", Target: target})
+	}
+	id := e.toast(t, withActions(1, append(actions, Action{Key: "open-pr", Label: "Open PR", Target: samplePR})...))
+	for _, a := range actions {
+		e.b.emit(t, signal{name: actionInvoked, id: id, key: a.Key})
+	}
+	e.b.emit(t, signal{name: actionInvoked, id: id, key: "open-pr"})
+	e.open.expect(t, samplePR) // the rejected targets, invoked first, opened nothing
+	if n := strings.Count(e.log.String(), "level=WARN"); n != len(bad) {
+		t.Fatalf("each rejected target is a warning, got %d:\n%s", n, e.log.String())
+	}
+}
+
+func TestActionInvokedShouldRejectReportPathOutsideStateDir(t *testing.T) {
+	e := newDaemonClient(t, clickBus())
+	report := filepath.Join(e.state, "runs", "api", "7", "report.md")
+	outside := filepath.Join(t.TempDir(), "report.md")
+	link := filepath.Join(e.state, "runs", "api", "7", "link.md")
+	for _, p := range []string{report, outside} {
+		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("# report"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(outside, link); err != nil {
+		t.Fatal(err)
+	}
+	bad := []string{
+		outside,
+		filepath.Join(e.state, "runs", "..", "..", filepath.Base(filepath.Dir(outside)), "report.md"),
+		link,
+		filepath.Join("runs", "api", "7", "report.md"),
+		filepath.Join(e.state, "runs", "api", "8", "report.md"), // does not exist
+		e.state + "-other/report.md",
+	}
+	var actions []Action
+	for i, target := range bad {
+		actions = append(actions, Action{Key: fmt.Sprintf("bad-%d", i), Label: "x", Target: target})
+	}
+	id := e.toast(t, withActions(1, append(actions, Action{Key: "open-report", Label: "Open report", Target: report})...))
+	for _, a := range actions {
+		e.b.emit(t, signal{name: actionInvoked, id: id, key: a.Key})
+	}
+	e.b.emit(t, signal{name: actionInvoked, id: id, key: "open-report"})
+	e.open.expect(t, report)
+	if n := strings.Count(e.log.String(), "level=WARN"); n != len(bad) {
+		t.Fatalf("each rejected path is a warning, got %d:\n%s", n, e.log.String())
+	}
+}
+
+func TestNotificationClosedShouldForgetActions(t *testing.T) {
+	e := newDaemonClient(t, clickBus())
+	first := e.toast(t, withActions(1, Action{Key: "default", Label: "Open PR", Target: samplePR}))
+	e.b.emit(t, signal{name: notificationClosed, id: first})
+	e.b.emit(t, signal{name: actionInvoked, id: first, key: "default"})
+	second := e.toast(t, withActions(2, Action{Key: "default", Label: "Open issue", Target: sampleIssue}))
+	e.b.emit(t, signal{name: actionInvoked, id: second, key: "default"})
+	e.open.expect(t, sampleIssue) // the closed toast's action opened nothing
+}
+
+func TestActionsShouldBeForgottenAfter24Hours(t *testing.T) {
+	e := newDaemonClient(t, clickBus())
+	old := e.toast(t, withActions(1, Action{Key: "default", Label: "Open PR", Target: samplePR}))
+	e.clock.add(24*time.Hour + time.Second)
+	e.b.emit(t, signal{name: actionInvoked, id: old, key: "default"})
+	fresh := e.toast(t, withActions(2, Action{Key: "default", Label: "Open issue", Target: sampleIssue}))
+	e.b.emit(t, signal{name: actionInvoked, id: fresh, key: "default"})
+	e.open.expect(t, sampleIssue) // the day-old toast's action opened nothing
+
+	e.clock.add(23 * time.Hour)
+	e.b.emit(t, signal{name: actionInvoked, id: fresh, key: "default"})
+	e.open.expect(t, sampleIssue) // under 24h it still opens
 }
