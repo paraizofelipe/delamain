@@ -15,6 +15,7 @@ import (
 	"github.com/paraizo/delamain/internal/forge"
 	"github.com/paraizo/delamain/internal/gitx"
 	"github.com/paraizo/delamain/internal/herdr"
+	"github.com/paraizo/delamain/internal/notify"
 	"github.com/paraizo/delamain/internal/pipeline"
 	"github.com/paraizo/delamain/internal/prompts"
 	"github.com/paraizo/delamain/internal/store"
@@ -136,16 +137,22 @@ func runTask(ctx context.Context, cfg config.Config, task pipeline.Task, fg forg
 		return pipeline.Result{}, err
 	}
 	defer func() { _ = st.Close() }()
-	r, err := newRunner(cfg, st)
+	r, err := newRunner(cfg, st, notify.Options{})
 	if err != nil {
 		return pipeline.Result{}, err
 	}
+	defer func() { _ = r.Notify.Close() }()
 	r.Forge = fg
 	return r.Run(ctx, task)
 }
 
-// newRunner wires the configured agent harness, git, prompts and, when enabled, herdr; the caller sets Forge per repository.
-func newRunner(cfg config.Config, st *store.Store) (*pipeline.Runner, error) {
+// newNotifier creates the desktop notifier; tests replace it.
+var newNotifier = notify.New
+
+// newRunner wires the configured agent harness, git, prompts, the desktop notifier (no says whether
+// it is interactive) and, when enabled, herdr; the caller sets Forge per repository and closes
+// the notifier.
+func newRunner(cfg config.Config, st *store.Store, no notify.Options) (*pipeline.Runner, error) {
 	set, err := loadPrompts(cfg)
 	if err != nil {
 		return nil, err
@@ -158,6 +165,8 @@ func newRunner(cfg config.Config, st *store.Store) (*pipeline.Runner, error) {
 		}
 	}
 	target := promptsTarget(cfg)
+	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	no.StateDir, no.Log = cfg.Paths.StateDir, log
 	return &pipeline.Runner{
 		Cfg:           cfg,
 		Display:       display,
@@ -167,7 +176,8 @@ func newRunner(cfg config.Config, st *store.Store) (*pipeline.Runner, error) {
 		Store:         st,
 		Prompts:       set,
 		PromptsTarget: target,
-		Log:           slog.New(slog.NewTextHandler(os.Stderr, nil)),
+		Log:           log,
+		Notify:        newNotifier(cfg.Notify, no),
 	}, nil
 }
 

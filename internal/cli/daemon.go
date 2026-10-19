@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"syscall"
 
 	"github.com/spf13/cobra"
@@ -15,6 +16,7 @@ import (
 	"github.com/paraizo/delamain/internal/config"
 	"github.com/paraizo/delamain/internal/daemon"
 	"github.com/paraizo/delamain/internal/forge"
+	"github.com/paraizo/delamain/internal/notify"
 	"github.com/paraizo/delamain/internal/pipeline"
 )
 
@@ -46,6 +48,7 @@ Only one instance runs per state_dir. Ctrl+C stops it: in-flight runs end as int
 			defer unlock()
 
 			var sources []daemon.Source
+			var hosts []string
 			for _, repo := range repos {
 				fg, err := forgeFor(ctx, cfg, repo)
 				if err != nil {
@@ -55,16 +58,21 @@ Only one instance runs per state_dir. Ctrl+C stops it: in-flight runs end as int
 					return fmt.Errorf("%s: the daemon requires a GitHub or GitLab origin", repo)
 				}
 				sources = append(sources, daemon.Source{Repo: repo, Forge: fg})
+				if h := fg.Repo().Host; !slices.Contains(hosts, h) {
+					hosts = append(hosts, h)
+				}
 			}
 			st, err := openStore(ctx, cfg)
 			if err != nil {
 				return err
 			}
 			defer func() { _ = st.Close() }()
-			base, err := newRunner(cfg, st)
+			// Only the daemon is interactive: its toasts open the PR, issue or report on click.
+			base, err := newRunner(cfg, st, notify.Options{Interactive: true, ForgeHosts: hosts})
 			if err != nil {
 				return err
 			}
+			defer func() { _ = base.Notify.Close() }()
 			if err := recoverRuns(c, cfg, base); err != nil {
 				return err
 			}
@@ -108,10 +116,11 @@ func newRecoverCmd(load func() (config.Config, error)) *cobra.Command {
 				return err
 			}
 			defer func() { _ = st.Close() }()
-			base, err := newRunner(cfg, st)
+			base, err := newRunner(cfg, st, notify.Options{})
 			if err != nil {
 				return err
 			}
+			defer func() { _ = base.Notify.Close() }()
 			return recoverRuns(c, cfg, base)
 		},
 	}
