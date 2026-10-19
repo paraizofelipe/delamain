@@ -352,7 +352,7 @@ func TestWithinShouldOnlyAcceptPathsStrictlyInsideTheDir(t *testing.T) {
 }
 
 // review seeds an active review run of the fixture's repo for PR n.
-func (f *fixture) review(t *testing.T, n int) store.Run {
+func (f *fixture) review(t *testing.T, n int) {
 	t.Helper()
 	ctx := context.Background()
 	rec, err := f.st.CreateRun(ctx, f.repo, fmt.Sprintf("pr:%d", n), fmt.Sprintf("Review PR %d", n), "omp", 3, store.KindReview)
@@ -363,7 +363,6 @@ func (f *fixture) review(t *testing.T, n int) store.Run {
 	if err := f.st.UpdateRun(ctx, rec); err != nil {
 		t.Fatal(err)
 	}
-	return rec
 }
 
 func TestListShouldShowTheKindOfEachRun(t *testing.T) {
