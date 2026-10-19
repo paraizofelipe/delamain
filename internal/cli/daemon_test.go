@@ -2,6 +2,8 @@ package cli
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"slices"
 	"testing"
 	"time"
@@ -62,5 +64,43 @@ func TestDaemonShouldNotifyEachBudgetLevelOncePerDay(t *testing.T) {
 	poll(day(8_000_000, budget.Soft, "budget diário em 80%"))
 	if got := titles(); len(got) != 3 || got[2] != "💸 Daily budget at 80%" {
 		t.Fatalf("a new day notifies again: %q", got)
+	}
+}
+
+func TestRecoverShouldNotifyOnlyWhenRunsWereRecovered(t *testing.T) {
+	n := &fakeNotifier{}
+	useFakeNotifier(t, n, nil)
+	cfgFile, state := isolatedConfig(t, "forge:\n  kind: none\n")
+
+	if _, err := execute(t, "--config", cfgFile, "recover"); err != nil {
+		t.Fatal(err)
+	}
+	if len(n.sent) != 0 {
+		t.Fatalf("nothing recovered, nothing to say: %+v", n.sent)
+	}
+
+	ctx := context.Background()
+	st, err := store.Open(ctx, filepath.Join(state, "delamain.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec, err := st.CreateRun(ctx, filepath.Join(t.TempDir(), "api"), "#7", "Fix add", "omp", 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := st.ClaimRun(ctx, rec.ID, os.Getpid(), 999_999); err != nil || !ok {
+		t.Fatal("seed a run whose process died", err)
+	}
+	_ = st.Close()
+
+	out, err := execute(t, "--config", cfgFile, "recover")
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if len(n.sent) != 1 {
+		t.Fatalf("one recover toast sums the recovered runs up, got %+v", n.sent)
+	}
+	if m := n.sent[0]; m.Event != notify.EventRecover || m.Title != "♻️ Recovered 1 run" || m.Body != "api #7 (halted)" {
+		t.Fatalf("toast = %+v", m)
 	}
 }

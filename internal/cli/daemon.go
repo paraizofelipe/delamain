@@ -132,11 +132,36 @@ func recoverRuns(c *cobra.Command, cfg config.Config, base *pipeline.Runner) err
 		fmt.Fprintln(c.OutOrStdout(), "no orphaned run to recover")
 		return nil
 	}
+	var recovered []notify.Recovered
 	for _, res := range results {
 		fmt.Fprintf(c.OutOrStdout(), "run %d recovered:\n", res.RunID)
 		printResult(c, res)
+		rec, err := base.Store.GetRun(ctx, res.RunID)
+		if err != nil { // the toast is a courtesy: it never fails the recovery
+			base.Log.Warn("recover toast: run not found", "run", res.RunID, "err", err)
+			continue
+		}
+		recovered = append(recovered, notify.Recovered{Repo: rec.Repo, Ref: rec.IssueRef, Result: recoveredResult(res)})
+	}
+	if base.Notify != nil && len(recovered) > 0 {
+		_ = base.Notify.Notify(ctx, notify.FormatRecover(recovered))
 	}
 	return nil
+}
+
+// recoveredResult says how a recovered run ended, in the recover toast's words.
+func recoveredResult(res pipeline.Result) string {
+	switch {
+	case res.PRURL != "" && !res.Draft:
+		return "PR opened"
+	case res.PRURL != "":
+		return "draft PR"
+	case res.Outcome == pipeline.OutcomeExhausted:
+		return "needs review"
+	case res.Outcome == pipeline.OutcomeNeedsInfo:
+		return "needs info"
+	}
+	return "halted"
 }
 
 // lockDaemon allows one daemon per state dir: two schedulers would race for the same issues.

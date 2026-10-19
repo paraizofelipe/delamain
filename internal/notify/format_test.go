@@ -1,6 +1,7 @@
 package notify
 
 import (
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -194,5 +195,37 @@ func TestFormatBudgetInUSDModeShouldShowDollars(t *testing.T) {
 	m := FormatBudget(Budget{USD: true, Percent: 80, Used: "US$ 32.40", Limit: "US$ 40.00", CostUSD: 32.40})
 	if m.Body != "US$ 32.40 of US$ 40.00\nNew runs continue until the hard limit" {
 		t.Fatalf("usd mode shows dollars instead of tokens: %q", m.Body)
+	}
+}
+
+func TestFormatRecoverShouldMatchContract(t *testing.T) {
+	assertMessage(t, FormatRecover([]Recovered{
+		{Repo: "/home/dev/projects/delamain", Ref: "#12", Result: "halted"},
+		{Repo: "/srv/api", Ref: "#7", Result: "draft PR"},
+	}), Message{
+		Event:   EventRecover,
+		Title:   "♻️ Recovered 2 runs",
+		Body:    "delamain #12 (halted) · api #7 (draft PR)",
+		Urgency: Normal, Expire: 15000, Category: "x-delamain.recover",
+	})
+	if m := FormatRecover([]Recovered{{Repo: "/srv/api", Ref: "task:login", Result: "needs review"}}); m.Title != "♻️ Recovered 1 run" || m.Body != "api task:login (needs review)" {
+		t.Fatalf("one run: %q / %q", m.Title, m.Body)
+	}
+}
+
+func TestFormatRecoverShouldListAtMostThreeRuns(t *testing.T) {
+	var runs []Recovered
+	for i := 1; i <= 5; i++ {
+		runs = append(runs, Recovered{Repo: "/srv/api", Ref: fmt.Sprintf("#%d", i), Result: "halted"})
+	}
+	for n, want := range map[int]string{
+		3: "api #1 (halted) · api #2 (halted) · api #3 (halted)",
+		4: "api #1 (halted) · api #2 (halted) · api #3 (halted) · +1 more",
+		5: "api #1 (halted) · api #2 (halted) · api #3 (halted) · +2 more",
+	} {
+		m := FormatRecover(runs[:n])
+		if m.Body != want || m.Title != fmt.Sprintf("♻️ Recovered %d runs", n) {
+			t.Errorf("%d runs: %q / %q, want body %q", n, m.Title, m.Body, want)
+		}
 	}
 }

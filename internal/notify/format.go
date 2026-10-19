@@ -187,3 +187,31 @@ func FormatBudget(b Budget) Message {
 		Urgency: Normal, Expire: expire, Category: "x-delamain.budget",
 	}
 }
+
+// Recovered is one run finalized by recover, e.g. api #7 (draft PR).
+type Recovered struct {
+	Repo, Ref, Result string
+}
+
+// maxRecovered is how many recovered runs the toast lists before "+<k> more".
+const maxRecovered = 3
+
+// FormatRecover is the toast of the runs recover finalized after their process died.
+func FormatRecover(runs []Recovered) Message {
+	var items []string
+	for i, r := range runs {
+		if i == maxRecovered {
+			items = append(items, fmt.Sprintf("+%d more", len(runs)-maxRecovered))
+			break
+		}
+		items = append(items, fmt.Sprintf("%s %s (%s)", filepath.Base(r.Repo), r.Ref, r.Result))
+	}
+	noun := "runs"
+	if len(runs) == 1 {
+		noun = "run"
+	}
+	return Message{
+		Event: EventRecover, Title: fmt.Sprintf("♻️ Recovered %d %s", len(runs), noun), Body: strings.Join(items, " · "),
+		Urgency: Normal, Expire: expire, Category: "x-delamain.recover",
+	}
+}
