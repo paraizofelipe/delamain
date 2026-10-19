@@ -22,7 +22,7 @@ func openTest(t *testing.T) *Store {
 
 func TestCreateRunShouldStartClaimedAndBeRetrievable(t *testing.T) {
 	s := openTest(t)
-	r, err := s.CreateRun(context.Background(), "gh:me/app", "#12", "fix login", "omp", 3)
+	r, err := s.CreateRun(context.Background(), "gh:me/app", "#12", "fix login", "omp", 3, KindIssue)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,7 +38,7 @@ func TestCreateRunShouldStartClaimedAndBeRetrievable(t *testing.T) {
 func TestCreateRunShouldPersistHarnessAndMaxIterations(t *testing.T) {
 	s := openTest(t)
 	ctx := context.Background()
-	r, err := s.CreateRun(ctx, "repo", "#1", "a", "claude", 5)
+	r, err := s.CreateRun(ctx, "repo", "#1", "a", "claude", 5, KindIssue)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,13 +58,13 @@ func TestCreateRunShouldPersistHarnessAndMaxIterations(t *testing.T) {
 func TestCreateRunShouldRefuseSecondActiveRunForSameIssue(t *testing.T) {
 	s := openTest(t)
 	ctx := context.Background()
-	if _, err := s.CreateRun(ctx, "repo", "#1", "a", "omp", 3); err != nil {
+	if _, err := s.CreateRun(ctx, "repo", "#1", "a", "omp", 3, KindIssue); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.CreateRun(ctx, "repo", "#1", "a", "omp", 3); err == nil {
+	if _, err := s.CreateRun(ctx, "repo", "#1", "a", "omp", 3, KindIssue); err == nil {
 		t.Fatal("two workers on the same issue would race on one branch")
 	}
-	if _, err := s.CreateRun(ctx, "other-repo", "#1", "a", "omp", 3); err != nil {
+	if _, err := s.CreateRun(ctx, "other-repo", "#1", "a", "omp", 3, KindIssue); err != nil {
 		t.Fatalf("same issue number in another repo is independent: %v", err)
 	}
 }
@@ -72,12 +72,12 @@ func TestCreateRunShouldRefuseSecondActiveRunForSameIssue(t *testing.T) {
 func TestCreateRunShouldAllowNewRunAfterPreviousIsRecorded(t *testing.T) {
 	s := openTest(t)
 	ctx := context.Background()
-	r, _ := s.CreateRun(ctx, "repo", "#1", "a", "omp", 3)
+	r, _ := s.CreateRun(ctx, "repo", "#1", "a", "omp", 3, KindIssue)
 	r.State = StateRecorded
 	if err := s.UpdateRun(ctx, r); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.CreateRun(ctx, "repo", "#1", "a", "omp", 3); err != nil {
+	if _, err := s.CreateRun(ctx, "repo", "#1", "a", "omp", 3, KindIssue); err != nil {
 		t.Fatalf("a finished issue may be re-run: %v", err)
 	}
 }
@@ -85,9 +85,9 @@ func TestCreateRunShouldAllowNewRunAfterPreviousIsRecorded(t *testing.T) {
 func TestUnfinishedRunsShouldListOnlyResumableRunsInOrder(t *testing.T) {
 	s := openTest(t)
 	ctx := context.Background()
-	a, _ := s.CreateRun(ctx, "repo", "#1", "a", "omp", 3)
-	b, _ := s.CreateRun(ctx, "repo", "#2", "b", "omp", 3)
-	c, _ := s.CreateRun(ctx, "repo", "#3", "c", "omp", 3)
+	a, _ := s.CreateRun(ctx, "repo", "#1", "a", "omp", 3, KindIssue)
+	b, _ := s.CreateRun(ctx, "repo", "#2", "b", "omp", 3, KindIssue)
+	c, _ := s.CreateRun(ctx, "repo", "#3", "c", "omp", 3, KindIssue)
 	b.State = StateNeedsInfo
 	c.State, c.Iteration = StateImplement, 2
 	_ = s.UpdateRun(ctx, b)
@@ -112,7 +112,7 @@ func TestUpdateRunShouldReportMissingRun(t *testing.T) {
 func TestRecordUsageShouldLedgerOnlyTheDeltaBetweenSnapshots(t *testing.T) {
 	s := openTest(t)
 	ctx := context.Background()
-	r, _ := s.CreateRun(ctx, "repo", "#1", "a", "omp", 3)
+	r, _ := s.CreateRun(ctx, "repo", "#1", "a", "omp", 3, KindIssue)
 	f := "/sessions/implementer/s.jsonl"
 
 	d1, err := s.RecordUsage(ctx, r.ID, "implementer", f, Usage{Input: 100, Output: 10, CacheRead: 1000, CostUSD: 0.1})
@@ -140,7 +140,7 @@ func TestRecordUsageShouldLedgerOnlyTheDeltaBetweenSnapshots(t *testing.T) {
 func TestRecordUsageShouldNotCreateNegativeEntriesWhenSnapshotShrinks(t *testing.T) {
 	s := openTest(t)
 	ctx := context.Background()
-	r, _ := s.CreateRun(ctx, "repo", "#1", "a", "omp", 3)
+	r, _ := s.CreateRun(ctx, "repo", "#1", "a", "omp", 3, KindIssue)
 	f := "/s.jsonl"
 	_, _ = s.RecordUsage(ctx, r.ID, "planner", f, Usage{Input: 500})
 	d, _ := s.RecordUsage(ctx, r.ID, "planner", f, Usage{Input: 100}) // file rewritten
@@ -163,8 +163,8 @@ func TestUsageSinceShouldAggregateAcrossRunsWithinWindow(t *testing.T) {
 	clock := time.Date(2026, 10, 16, 23, 0, 0, 0, time.UTC)
 	s.now = func() time.Time { return clock }
 
-	a, _ := s.CreateRun(ctx, "repo", "#1", "a", "omp", 3)
-	b, _ := s.CreateRun(ctx, "repo", "#2", "b", "omp", 3)
+	a, _ := s.CreateRun(ctx, "repo", "#1", "a", "omp", 3, KindIssue)
+	b, _ := s.CreateRun(ctx, "repo", "#2", "b", "omp", 3, KindIssue)
 	_, _ = s.RecordUsage(ctx, a.ID, "implementer", "/a.jsonl", Usage{Input: 1000}) // yesterday
 	clock = time.Date(2026, 10, 17, 1, 0, 0, 0, time.UTC)
 	_, _ = s.RecordUsage(ctx, a.ID, "implementer", "/a.jsonl", Usage{Input: 1200}) // +200 today
@@ -186,7 +186,7 @@ func TestOpenShouldBeIdempotentAcrossRestarts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r, _ := s1.CreateRun(ctx, "repo", "#9", "x", "omp", 3)
+	r, _ := s1.CreateRun(ctx, "repo", "#9", "x", "omp", 3, KindIssue)
 	s1.Close()
 
 	s2, err := Open(ctx, path)
@@ -212,7 +212,7 @@ func TestOpenShouldRefuseDatabaseFromNewerBinary(t *testing.T) {
 
 func TestCreateRunShouldRecordTheOwningProcess(t *testing.T) {
 	s := openTest(t)
-	r, err := s.CreateRun(context.Background(), "repo", "#1", "x", "omp", 3)
+	r, err := s.CreateRun(context.Background(), "repo", "#1", "x", "omp", 3, KindIssue)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -224,7 +224,7 @@ func TestCreateRunShouldRecordTheOwningProcess(t *testing.T) {
 func TestUpdateRunShouldPersistBaseAndWorkspace(t *testing.T) {
 	s := openTest(t)
 	ctx := context.Background()
-	r, _ := s.CreateRun(ctx, "repo", "#1", "x", "omp", 3)
+	r, _ := s.CreateRun(ctx, "repo", "#1", "x", "omp", 3, KindIssue)
 	r.Base, r.Workspace = "origin/main", "w9"
 	if err := s.UpdateRun(ctx, r); err != nil {
 		t.Fatal(err)
@@ -293,7 +293,7 @@ func TestOpenShouldUpgradeDatabaseKeepingRunsWithEmptyHarness(t *testing.T) {
 func TestClaimRunShouldTransferOwnershipOnlyFromTheExpectedOwner(t *testing.T) {
 	s := openTest(t)
 	ctx := context.Background()
-	r, _ := s.CreateRun(ctx, "repo", "#1", "x", "omp", 3)
+	r, _ := s.CreateRun(ctx, "repo", "#1", "x", "omp", 3, KindIssue)
 	if ok, err := s.ClaimRun(ctx, r.ID, 4242, 7); err != nil || ok {
 		t.Fatalf("wrong expected owner must not claim: %v %v", ok, err)
 	}
@@ -305,5 +305,75 @@ func TestClaimRunShouldTransferOwnershipOnlyFromTheExpectedOwner(t *testing.T) {
 	}
 	if got, _ := s.GetRun(ctx, r.ID); got.OwnerPID != 4242 {
 		t.Fatalf("owner = %d", got.OwnerPID)
+	}
+}
+
+func TestCreateRunShouldPersistKind(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	issue, err := s.CreateRun(ctx, "repo", "#1", "a", "omp", 3, KindIssue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	review, err := s.CreateRun(ctx, "repo", "pr:2", "b", "omp", 3, KindReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.GetRun(ctx, issue.ID); got.Kind != "issue" {
+		t.Fatalf("issue run kind = %q, want issue", got.Kind)
+	}
+	got, _ := s.GetRun(ctx, review.ID)
+	if got.Kind != "review" {
+		t.Fatalf("review run kind = %q, want review", got.Kind)
+	}
+	got.State = StateImplement
+	if err := s.UpdateRun(ctx, got); err != nil {
+		t.Fatal(err)
+	}
+	if after, _ := s.GetRun(ctx, review.ID); after.Kind != "review" {
+		t.Fatalf("updating a run must keep the kind it was created with: %q", after.Kind)
+	}
+}
+
+func TestOpenShouldUpgradeExistingRunsToIssueKind(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "d.db")
+	ctx := context.Background()
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{migrations[0], migrations[1], migrations[2], migrations[3], "PRAGMA user_version = 4",
+		`INSERT INTO runs (repo, issue_ref, state, iteration, created_at, updated_at) VALUES ('repo', '#3', 'implement', 2, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`} {
+		if _, err := db.ExecContext(ctx, q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db.Close()
+
+	s, err := Open(ctx, path)
+	if err != nil {
+		t.Fatalf("v4 → v5 must migrate: %v", err)
+	}
+	defer s.Close()
+	runs, err := s.UnfinishedRuns(ctx)
+	if err != nil || len(runs) != 1 || runs[0].IssueRef != "#3" || runs[0].Iteration != 2 {
+		t.Fatalf("runs from before v5 must survive the upgrade: %+v %v", runs, err)
+	}
+	if runs[0].Kind != KindIssue {
+		t.Fatalf("every run before v5 worked an issue, got kind %q", runs[0].Kind)
+	}
+}
+
+func TestCreateRunShouldRefuseSecondActiveReviewForSamePR(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	if _, err := s.CreateRun(ctx, "repo", "pr:5", "a", "omp", 3, KindReview); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateRun(ctx, "repo", "pr:5", "a", "omp", 3, KindReview); err == nil {
+		t.Fatal("two reviews of the same PR would post duplicate comments")
+	}
+	if _, err := s.CreateRun(ctx, "repo", "#5", "a", "omp", 3, KindIssue); err != nil {
+		t.Fatalf("issue #5 is not PR 5: %v", err)
 	}
 }

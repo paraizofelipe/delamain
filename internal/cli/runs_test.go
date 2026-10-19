@@ -54,7 +54,7 @@ func newFixture(t *testing.T) *fixture {
 func (f *fixture) run(t *testing.T, ref, branch string, state store.RunState) store.Run {
 	t.Helper()
 	ctx := context.Background()
-	rec, err := f.st.CreateRun(ctx, f.repo, ref, "Fix "+ref, "omp", 3)
+	rec, err := f.st.CreateRun(ctx, f.repo, ref, "Fix "+ref, "omp", 3, store.KindIssue)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,7 +180,7 @@ func TestStatusShouldShowTheHarnessAndMaxIterationsRecordedOnTheRun(t *testing.T
 	f := newFixture(t)
 	ctx := context.Background()
 	// The fixture's config says omp and 3 iterations; the run was started under claude with 5.
-	rec, err := f.st.CreateRun(ctx, f.repo, "#1", "Fix #1", "claude", 5)
+	rec, err := f.st.CreateRun(ctx, f.repo, "#1", "Fix #1", "claude", 5, store.KindIssue)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,7 +202,7 @@ func TestStatusShouldFallBackForRunsWithoutHarness(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
 	// Runs created before the harness was recorded read back as "" and 0.
-	rec, err := f.st.CreateRun(ctx, f.repo, "#1", "Fix #1", "", 0)
+	rec, err := f.st.CreateRun(ctx, f.repo, "#1", "Fix #1", "", 0, store.KindIssue)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -225,7 +225,7 @@ func TestStatusShouldFallBackForRunsWithoutHarness(t *testing.T) {
 
 func TestStatusShouldShowNoInteractionBeforeTheFirstIteration(t *testing.T) {
 	f := newFixture(t)
-	if _, err := f.st.CreateRun(context.Background(), f.repo, "#1", "Fix #1", "claude", 5); err != nil {
+	if _, err := f.st.CreateRun(context.Background(), f.repo, "#1", "Fix #1", "claude", 5, store.KindIssue); err != nil {
 		t.Fatal(err)
 	}
 	out := f.exec(t, "status", "1")

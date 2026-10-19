@@ -400,7 +400,7 @@ func TestRunShouldHaltWhenACheckNeverFinishes(t *testing.T) {
 
 func TestRunShouldRefuseSecondConcurrentRunForSameTask(t *testing.T) {
 	hs := newHarness(t, happy)
-	if _, err := hs.st.CreateRun(context.Background(), hs.task.Repo, hs.task.Ref, "x", "omp", 3); err != nil {
+	if _, err := hs.st.CreateRun(context.Background(), hs.task.Repo, hs.task.Ref, "x", "omp", 3, store.KindIssue); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := hs.r.Run(context.Background(), hs.task); err == nil {

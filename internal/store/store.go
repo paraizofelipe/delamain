@@ -36,6 +36,15 @@ func (s RunState) Terminal() bool {
 	return s == StateRecorded || s == StateNeedsInfo
 }
 
+// RunKind is what a run works on: an issue, a PR review, or addressing a PR's review comments.
+type RunKind string
+
+const (
+	KindIssue   RunKind = "issue"
+	KindReview  RunKind = "review"
+	KindAddress RunKind = "address"
+)
+
 type Run struct {
 	ID        int64
 	Repo      string
@@ -54,8 +63,10 @@ type Run struct {
 	// Harness and MaxIterations are fixed when the run is created; runs older than v4 have "" and 0.
 	Harness       string
 	MaxIterations int
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
+	// Kind is fixed when the run is created; runs older than v5 are KindIssue.
+	Kind      RunKind
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 // Usage is a cumulative token/cost snapshot of one omp session file.
@@ -168,6 +179,7 @@ var migrations = []string{
 	);`,
 	`ALTER TABLE runs ADD COLUMN harness TEXT NOT NULL DEFAULT '';
 	ALTER TABLE runs ADD COLUMN max_iterations INTEGER NOT NULL DEFAULT 0;`,
+	`ALTER TABLE runs ADD COLUMN kind TEXT NOT NULL DEFAULT 'issue';`,
 }
 
 func (s *Store) migrate(ctx context.Context) error {
@@ -199,7 +211,7 @@ func (s *Store) migrate(ctx context.Context) error {
 }
 
 // CreateRun inserts a claimed run, refusing a second active run for the same issue.
-func (s *Store) CreateRun(ctx context.Context, repo, issueRef, title, harness string, maxIterations int) (Run, error) {
+func (s *Store) CreateRun(ctx context.Context, repo, issueRef, title, harness string, maxIterations int, kind RunKind) (Run, error) {
 	if r, err := s.ActiveRun(ctx, repo, issueRef); err == nil {
 		return Run{}, fmt.Errorf("issue %s already has active run %d in state %s", issueRef, r.ID, r.State)
 	} else if !errors.Is(err, ErrNotFound) {
@@ -207,8 +219,8 @@ func (s *Store) CreateRun(ctx context.Context, repo, issueRef, title, harness st
 	}
 	now := s.now()
 	res, err := s.db.ExecContext(ctx,
-		`INSERT INTO runs (repo, issue_ref, title, state, owner_pid, harness, max_iterations, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		repo, issueRef, title, StateClaimed, os.Getpid(), harness, maxIterations, now, now)
+		`INSERT INTO runs (repo, issue_ref, title, state, owner_pid, harness, max_iterations, kind, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		repo, issueRef, title, StateClaimed, os.Getpid(), harness, maxIterations, kind, now, now)
 	if err != nil {
 		return Run{}, err
 	}
@@ -216,11 +228,11 @@ func (s *Store) CreateRun(ctx context.Context, repo, issueRef, title, harness st
 	return s.GetRun(ctx, id)
 }
 
-const runCols = `id, repo, issue_ref, title, branch, worktree, state, iteration, mr_url, reason, owner_pid, base, workspace, harness, max_iterations, created_at, updated_at`
+const runCols = `id, repo, issue_ref, title, branch, worktree, state, iteration, mr_url, reason, owner_pid, base, workspace, harness, max_iterations, kind, created_at, updated_at`
 
 func scanRun(row interface{ Scan(...any) error }) (Run, error) {
 	var r Run
-	err := row.Scan(&r.ID, &r.Repo, &r.IssueRef, &r.Title, &r.Branch, &r.Worktree, &r.State, &r.Iteration, &r.MRURL, &r.Reason, &r.OwnerPID, &r.Base, &r.Workspace, &r.Harness, &r.MaxIterations, &r.CreatedAt, &r.UpdatedAt)
+	err := row.Scan(&r.ID, &r.Repo, &r.IssueRef, &r.Title, &r.Branch, &r.Worktree, &r.State, &r.Iteration, &r.MRURL, &r.Reason, &r.OwnerPID, &r.Base, &r.Workspace, &r.Harness, &r.MaxIterations, &r.Kind, &r.CreatedAt, &r.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Run{}, ErrNotFound
 	}

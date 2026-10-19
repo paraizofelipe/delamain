@@ -30,7 +30,7 @@ func newFixture(t *testing.T, cfg config.Budget) *fixture {
 
 func (f *fixture) newRun(t *testing.T, ref string) int64 {
 	t.Helper()
-	r, err := f.st.CreateRun(context.Background(), "/repo", ref, "t", "omp", 3)
+	r, err := f.st.CreateRun(context.Background(), "/repo", ref, "t", "omp", 3, store.KindIssue)
 	if err != nil {
 		t.Fatal(err)
 	}
