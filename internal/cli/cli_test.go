@@ -2,6 +2,8 @@ package cli
 
 import (
 	"bytes"
+	"context"
+	"github.com/paraizo/delamain/internal/store"
 	"os"
 	"path/filepath"
 	"strings"
@@ -112,5 +114,18 @@ func TestRecoverShouldReportNoOrphanedRunsInEnglish(t *testing.T) {
 	out, err := execute(t, "recover", "--config", "/nonexistent.yaml")
 	if err != nil || !strings.Contains(out, "no orphaned runs to recover") {
 		t.Fatalf("got %q %v", out, err)
+	}
+}
+
+func TestRecoverShouldReportRecoveredRunInEnglish(t *testing.T) {
+	f := newFixture(t)
+	f.run(t, "#1", "", store.StateSetup)
+	if ok, err := f.st.ClaimRun(context.Background(), 1, os.Getpid(), 999_999); err != nil || !ok {
+		t.Fatalf("claim run: ok=%v err=%v", ok, err)
+	}
+
+	out := f.exec(t, "recover")
+	if !strings.Contains(out, "recovered run 1:") {
+		t.Fatalf("got %q", out)
 	}
 }

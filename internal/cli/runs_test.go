@@ -174,7 +174,21 @@ func TestStatusShouldShowTheRunItsWorktreesAndAgents(t *testing.T) {
 	}
 }
 
-func TestStatusShouldPrintTheSameDataAsYAMLAndJSON(t *testing.T) {
+func TestStatusShouldUseEnglishLabelsAndValues(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	rec := f.run(t, "#1", "fix/1-a", store.StateImplement)
+	_ = f.st.StartAgent(ctx, store.Agent{RunID: rec.ID, Role: "implementer", PID: os.Getpid()})
+
+	out := f.exec(t, "status", "1")
+	for _, want := range []string{"STATE", "implement (iteration 1/3)", "WORKTREES in ", "AGENTS", "ALIVE", "yes"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("status missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestStatusShouldPreserveYAMLAndJSONOutput(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
 	rec := f.run(t, "#1", "fix/1-a", store.StateImplement)
