@@ -39,7 +39,7 @@ func forgeFor(ctx context.Context, cfg config.Config, dir string) (forge.Forge, 
 	}
 	token, _, err := forge.Token(ctx, repo.Kind, repo.Host, tokenLookup)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %s", err, forge.TokenHint(repo.Kind, repo.Host))
 	}
 	return forge.New(repo, token, forge.WithUserAgent("delamain/"+Version))
 }

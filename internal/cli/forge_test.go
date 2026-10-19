@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"os/exec"
 	"strings"
 	"sync"
@@ -78,7 +79,43 @@ func TestForgeForShouldNotRunTheForgeCLIWhenTheTokenIsInTheEnv(t *testing.T) {
 	}
 }
 
+func TestForgeForShouldExplainTheTokenVariablesWhenGitHubHasNoToken(t *testing.T) {
+	useTokens(t, nil)
+	_, err := forgeFor(context.Background(), config.Default(), gitRepo(t, "git@github.com:acme/api.git"))
+	if !errors.Is(err, forge.ErrTokenNotFound) {
+		t.Fatalf("err = %v, want ErrTokenNotFound", err)
+	}
+	for _, want := range []string{"github.com", "GH_TOKEN", "GITHUB_TOKEN", "gh auth login"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q must mention %q", err, want)
+		}
+	}
+
+	cfg := config.Default()
+	cfg.Forge.Kind = config.ForgeGitHub
+	_, err = forgeFor(context.Background(), cfg, gitRepo(t, "https://ghe.corp.example/team/api.git"))
+	for _, want := range []string{"GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "gh auth login --hostname ghe.corp.example"} {
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("enterprise error %v must mention %q", err, want)
+		}
+	}
+}
+
+func TestForgeForShouldExplainTheTokenVariablesWhenGitLabHasNoToken(t *testing.T) {
+	useTokens(t, map[string]string{"GH_TOKEN": "not-for-gitlab"})
+	_, err := forgeFor(context.Background(), config.Default(), gitRepo(t, "git@gitlab.com:grp/api.git"))
+	if !errors.Is(err, forge.ErrTokenNotFound) {
+		t.Fatalf("err = %v, want ErrTokenNotFound", err)
+	}
+	for _, want := range []string{"gitlab.com", "GITLAB_TOKEN", "GITLAB_ACCESS_TOKEN", "OAUTH_TOKEN", "glab auth login"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q must mention %q", err, want)
+		}
+	}
+}
+
 func TestForgeForShouldKeepWorkLocalWithoutOrigin(t *testing.T) {
+	useTokens(t, nil)
 	f, err := forgeFor(context.Background(), config.Default(), gitRepo(t, ""))
 	if err != nil || f != nil {
 		t.Fatalf("no origin means local delivery, got %v %v", f, err)
@@ -100,6 +137,7 @@ func TestForgeForShouldFailOnUnknownForgeHost(t *testing.T) {
 }
 
 func TestForgeForShouldHonorForgeNone(t *testing.T) {
+	useTokens(t, nil)
 	cfg := config.Default()
 	cfg.Forge.Kind = config.ForgeNone
 	if f, err := forgeFor(context.Background(), cfg, gitRepo(t, "https://github.com/acme/api.git")); err != nil || f != nil {

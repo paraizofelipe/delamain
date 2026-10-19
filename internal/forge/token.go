@@ -33,6 +33,18 @@ func TokenVars(kind Kind, host string) []string {
 	}
 }
 
+// TokenHint tells how to give delamain a token for host: its variables or the CLI's login.
+func TokenHint(kind Kind, host string) string {
+	login := "gh auth login"
+	if kind == GitLab {
+		login = "glab auth login"
+	}
+	if !strings.EqualFold(host, "github.com") && !strings.EqualFold(host, "gitlab.com") {
+		login += " --hostname " + host
+	}
+	return fmt.Sprintf("set %s, or run %s", strings.Join(TokenVars(kind, host), " or "), login)
+}
+
 // Token resolves the token for host as gh/glab do: the host's environment variables first, then
 // what the CLI itself stored on login. source names where the token came from, never its value.
 func Token(ctx context.Context, kind Kind, host string, lookup TokenLookup) (token, source string, err error) {
