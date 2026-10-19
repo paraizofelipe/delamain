@@ -1,6 +1,8 @@
 package memory
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
@@ -62,5 +64,47 @@ func TestAppendShouldWriteDatedLinesWithRunAndPR(t *testing.T) {
 		if b := filepath.Base(e); b != "app.md" && b != "app.md.lock" {
 			t.Fatalf("leftover temp file %s", e)
 		}
+	}
+}
+
+func TestPathShouldRejectTraversalAndAbsolutePaths(t *testing.T) {
+	s := newStore(t)
+	cases := []struct{ host, repo string }{
+		{"github.com", "../../etc/passwd"},
+		{"github.com", "acme/../../x"},
+		{"github.com", "acme/.."},
+		{"github.com", "./app"},
+		{"github.com", "/etc/passwd"},
+		{"github.com", "acme//app"},
+		{"github.com", "acme/app/"},
+		{"github.com", ""},
+		{"github.com", `acme\..\app`},
+		{"..", "acme/app"},
+		{".", "acme/app"},
+		{"", "acme/app"},
+		{"github.com/../..", "acme/app"},
+		{`github.com\x`, "acme/app"},
+	}
+	for _, c := range cases {
+		if p := s.Path(c.host, c.repo); p != "" {
+			t.Errorf("Path(%q, %q) = %q, want rejection", c.host, c.repo, p)
+		}
+		if _, err := s.Read(c.host, c.repo, 1000); !errors.Is(err, ErrInvalidPath) {
+			t.Errorf("Read(%q, %q) err = %v, want ErrInvalidPath", c.host, c.repo, err)
+		}
+		if n, err := s.Append(c.host, c.repo, 1, 1, []string{"x"}, day); !errors.Is(err, ErrInvalidPath) || n != 0 {
+			t.Errorf("Append(%q, %q) = %d, %v, want 0, ErrInvalidPath", c.host, c.repo, n, err)
+		}
+	}
+	if _, err := os.Stat(s.Dir); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("rejected paths must not touch the disk, stat %s: %v", s.Dir, err)
+	}
+
+	if p := (Store{}).Path("github.com", "acme/app"); p != "" {
+		t.Errorf("empty Dir must be rejected, got %q", p)
+	}
+	p := s.Path("github.com", "acme/app")
+	if rel, err := filepath.Rel(s.Dir, p); err != nil || !filepath.IsLocal(rel) {
+		t.Fatalf("valid path %q must stay under %q", p, s.Dir)
 	}
 }

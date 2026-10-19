@@ -17,14 +17,35 @@ type Store struct {
 }
 
 // Path is the memory file of host/repoPath: <Dir>/<host>/<owner...>/<repo>.md.
+// It returns "" when Dir is empty or host/repoPath could escape Dir.
 func (s Store) Path(host, repoPath string) string {
-	parts := append([]string{s.Dir, host}, strings.Split(repoPath, "/")...)
-	return filepath.Join(parts...) + ".md"
+	if s.Dir == "" || !validComponent(host) || filepath.IsAbs(repoPath) {
+		return ""
+	}
+	parts := strings.Split(repoPath, "/")
+	for _, c := range parts {
+		if !validComponent(c) {
+			return ""
+		}
+	}
+	p := filepath.Join(append([]string{s.Dir, host}, parts...)...) + ".md"
+	if rel, err := filepath.Rel(s.Dir, p); err != nil || !filepath.IsLocal(rel) {
+		return ""
+	}
+	return p
+}
+
+func validComponent(c string) bool {
+	return c != "" && c != "." && c != ".." && !strings.ContainsAny(c, `/\`)
 }
 
 // Read returns the stored learnings of host/repoPath, or "" when there are none.
 func (s Store) Read(host, repoPath string, max int) (string, error) {
-	b, err := os.ReadFile(s.Path(host, repoPath)) //nolint:gosec // path is validated to stay under Dir
+	p := s.Path(host, repoPath)
+	if p == "" {
+		return "", ErrInvalidPath
+	}
+	b, err := os.ReadFile(p) //nolint:gosec // path is validated to stay under Dir
 	if errors.Is(err, fs.ErrNotExist) {
 		return "", nil
 	}
@@ -35,6 +56,9 @@ func (s Store) Read(host, repoPath string, max int) (string, error) {
 // returns how many were written.
 func (s Store) Append(host, repoPath string, runID int64, pr int, learnings []string, now time.Time) (int, error) {
 	p := s.Path(host, repoPath)
+	if p == "" {
+		return 0, ErrInvalidPath
+	}
 	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
 		return 0, err
 	}
@@ -68,3 +92,6 @@ func writeAtomic(dst string, data []byte) error {
 	}
 	return os.Rename(tmp.Name(), dst)
 }
+
+// ErrInvalidPath reports a host or repository path that would escape Dir.
+var ErrInvalidPath = errors.New("invalid memory path")
