@@ -146,7 +146,7 @@ func TestStatusShouldShowTheRunItsWorktreesAndAgents(t *testing.T) {
 
 	out := f.exec(t, "status", "1")
 	for _, want := range []string{
-		"#1 Fix #1", "implement (iteration 1/3)", "fix/1-a (base main)", "(alive)", "1.5K de 2M tokens · US$ 0.25",
+		"#1 Fix #1", "fix/1-a (base main)", "(alive)", "1.5K de 2M tokens · US$ 0.25",
 		"delamain logs 1 -f", "fix/2-b", "implementer  running",
 	} {
 		if !strings.Contains(out, want) {
@@ -156,6 +156,14 @@ func TestStatusShouldShowTheRunItsWorktreesAndAgents(t *testing.T) {
 	if strings.Contains(out, "feat/mine") {
 		t.Errorf("only worktrees under worktrees_dir/<repo> are listed:\n%s", out)
 	}
+	if got := statusLabels(out)[:5]; strings.Join(got, " ") != "RUN REPO HARNESS STATE INTERACTIONS" {
+		t.Errorf("HARNESS follows REPO and INTERACTIONS follows STATE, got %v:\n%s", got, out)
+	}
+	for label, want := range map[string]string{"HARNESS": "omp", "STATE": "implement", "INTERACTIONS": "1/3"} {
+		if got := statusField(out, label); got != want {
+			t.Errorf("%s = %q, want %q: STATE no longer repeats the iteration:\n%s", label, got, want, out)
+		}
+	}
 	var marked []string
 	for _, l := range strings.Split(out, "\n") {
 		if strings.HasPrefix(l, "*") {
@@ -164,6 +172,28 @@ func TestStatusShouldShowTheRunItsWorktreesAndAgents(t *testing.T) {
 	}
 	if len(marked) != 1 || !strings.Contains(marked[0], "fix/1-a") {
 		t.Errorf("exactly the run's own worktree is marked: %q", marked)
+	}
+}
+
+func TestStatusShouldShowTheHarnessAndMaxIterationsRecordedOnTheRun(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	// The fixture's config says omp and 3 iterations; the run was started under claude with 5.
+	rec, err := f.st.CreateRun(ctx, f.repo, "#1", "Fix #1", "claude", 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec.State, rec.Iteration = store.StateImplement, 1
+	if err := f.st.UpdateRun(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+
+	out := f.exec(t, "status", "1")
+	if got := statusField(out, "HARNESS"); got != "claude" {
+		t.Errorf("HARNESS = %q, want what the run was started with:\n%s", got, out)
+	}
+	if got := statusField(out, "INTERACTIONS"); got != "1/5" {
+		t.Errorf("INTERACTIONS = %q, want the run's own maximum:\n%s", got, out)
 	}
 }
 
@@ -196,6 +226,28 @@ func TestStatusShouldPrintTheSameDataAsYAMLAndJSON(t *testing.T) {
 			t.Errorf("%s budget/dir = %+v %s", name, s.Budget, s.WorktreesDir)
 		}
 	}
+}
+
+// statusLabels lists the labels of the status table's first block, in order.
+func statusLabels(out string) []string {
+	var labels []string
+	for _, l := range strings.Split(out, "\n") {
+		if l == "" {
+			break
+		}
+		labels = append(labels, strings.Fields(l)[0])
+	}
+	return labels
+}
+
+// statusField is the value of a label in the status table; the tabwriter pads with spaces.
+func statusField(out, label string) string {
+	for _, l := range strings.Split(out, "\n") {
+		if f := strings.Fields(l); len(f) > 0 && f[0] == label {
+			return strings.TrimSpace(strings.TrimPrefix(l, label))
+		}
+	}
+	return ""
 }
 
 func TestStatusShouldExplainWhenTheRepositoryIsGone(t *testing.T) {

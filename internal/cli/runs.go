@@ -68,6 +68,7 @@ type RunView struct {
 	CreatedAt  time.Time   `json:"created_at" yaml:"created_at"`
 	UpdatedAt  time.Time   `json:"updated_at" yaml:"updated_at"`
 	terminal   bool
+	harness    string
 	iterations int
 }
 
@@ -141,7 +142,7 @@ func (in *inspector) view(ctx context.Context, rec store.Run) (RunView, error) {
 		PR: rec.MRURL, Owner: Process{PID: rec.OwnerPID, Alive: in.alive(rec.OwnerPID)},
 		RunDir:    pipeline.RunDir(in.cfg.Paths.StateDir, rec.Repo, rec.ID),
 		CreatedAt: rec.CreatedAt, UpdatedAt: rec.UpdatedAt, terminal: rec.State.Terminal(),
-		iterations: in.cfg.Pipeline.MaxIterations, Agents: []AgentView{},
+		harness: rec.Harness, iterations: rec.MaxIterations, Agents: []AgentView{},
 	}
 	if v.terminal {
 		v.Result = rec.Reason
@@ -315,7 +316,9 @@ func statusTable(w io.Writer, s RunStatus) error {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	fmt.Fprintf(tw, "RUN\t%d · %s %s\n", v.ID, v.Issue, v.Title)
 	fmt.Fprintf(tw, "REPO\t%s\n", v.Repo)
-	fmt.Fprintf(tw, "STATE\t%s (iteration %s)\n", v.State, v.iter())
+	fmt.Fprintf(tw, "HARNESS\t%s\n", v.harness)
+	fmt.Fprintf(tw, "STATE\t%s\n", v.State)
+	fmt.Fprintf(tw, "INTERACTIONS\t%s\n", v.iter())
 	if v.Branch != "" {
 		fmt.Fprintf(tw, "BRANCH\t%s (base %s)\n", v.Branch, v.Base)
 		fmt.Fprintf(tw, "WORKTREE\t%s\n", v.Worktree)
