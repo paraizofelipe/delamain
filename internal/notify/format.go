@@ -49,13 +49,78 @@ func FormatPROpened(r Run) Message {
 	}
 }
 
+// FormatStarted is the toast of a run that just got its record.
+func FormatStarted(r Run) Message {
+	return Message{
+		Event: EventStarted, RunID: r.ID,
+		Title:   title("▶️ Started", r),
+		Body:    body(r.Title, fmt.Sprintf("run %d · %s", r.ID, r.Harness), ""),
+		Urgency: Low, Expire: expire, Category: "x-delamain.started",
+		Actions: open("default", "Open issue", r.IssueURL),
+	}
+}
+
+// FormatNeedsHuman is the toast of work a human must finish: a draft PR, or no PR at all.
+func FormatNeedsHuman(r Run) Message {
+	pr := "No PR"
+	if r.PRURL != "" {
+		pr = prLabel(r.PRURL)
+		if r.Draft {
+			pr = "Draft " + pr
+		}
+	}
+	facts := fmt.Sprintf("%s · %d/%d iterations · %s tokens", pr, r.Iterations, r.MaxIterations, r.Tokens)
+	m := Message{
+		Event: EventNeedsHuman, RunID: r.ID,
+		Title:   title("⚠️ Needs review", r),
+		Body:    body(r.Title, facts, r.Reason),
+		Urgency: Normal, Expire: expire, Category: "x-delamain.needs-human",
+	}
+	if r.PRURL != "" {
+		m.Actions = actions(open("default", "Open PR", r.PRURL), open("open-pr", "Open PR", r.PRURL), open("open-report", "Open report", r.ReportPath))
+	} else {
+		m.Actions = actions(open("default", "Open report", r.ReportPath), open("open-report", "Open report", r.ReportPath), open("open-issue", "Open issue", r.IssueURL))
+	}
+	return m
+}
+
+// FormatHalted is the toast of a run stopped by a guardrail or a failure.
+func FormatHalted(r Run) Message {
+	facts := fmt.Sprintf("run %d · %s · %d/%d iterations", r.ID, r.State, r.Iterations, r.MaxIterations)
+	return Message{
+		Event: EventHalted, RunID: r.ID,
+		Title:   title("⛔ Halted", r),
+		Body:    body(r.Title, facts, r.Reason),
+		Urgency: Critical, Expire: 0, Category: "x-delamain.halted",
+		Actions: actions(open("default", "Open report", r.ReportPath), open("open-report", "Open report", r.ReportPath), open("open-issue", "Open issue", r.IssueURL)),
+	}
+}
+
+// FormatNeedsInfo is the toast of a task preflight rejected; a local task has no issue to relabel.
+func FormatNeedsInfo(r Run) Message {
+	facts := ""
+	if r.IssueURL != "" {
+		facts = "Issue relabeled " + r.NeedsInfoLabel
+	}
+	return Message{
+		Event: EventNeedsInfo, RunID: r.ID,
+		Title:   title("ℹ️ Needs info", r),
+		Body:    body(r.Title, facts, ""),
+		Urgency: Low, Expire: expire, Category: "x-delamain.needs-info",
+		Actions: actions(open("default", "Open issue", r.IssueURL), open("open-issue", "Open issue", r.IssueURL)),
+	}
+}
+
 func title(prefix string, r Run) string {
 	return truncate(fmt.Sprintf("%s · %s %s", prefix, filepath.Base(r.Repo), r.Ref), maxTitle)
 }
 
 // body joins the task title, the facts line and the reason, dropping empty lines.
 func body(taskTitle, facts, reason string) string {
-	lines := []string{truncate(taskTitle, maxLine), facts}
+	lines := []string{truncate(taskTitle, maxLine)}
+	if facts != "" {
+		lines = append(lines, facts)
+	}
 	if reason != "" {
 		lines = append(lines, truncate(reason, maxReason))
 	}
