@@ -16,12 +16,12 @@ import (
 const issueURL = "https://github.com/acme/api/issues/7"
 
 // withNotifier wires a fake notifier and gives the task its issue URL on the fake forge.
-func withNotifier(hs *harness) (*fakeNotifier, *fakeForge) {
+func withNotifier(hs *harness) *fakeNotifier {
 	f := withForge(hs)
 	hs.task.URL = issueURL
 	n := &fakeNotifier{forge: f}
 	hs.r.Notify = n
-	return n, f
+	return n
 }
 
 // spends167K makes the implementer's turn cost 167K tokens.
@@ -46,7 +46,7 @@ func only(t *testing.T, n *fakeNotifier, e notify.Event) (notify.Message, int) {
 
 func TestFinishShouldNotifyPROpenedAfterAnnounce(t *testing.T) {
 	hs := newHarness(t, spends167K(happy))
-	n, _ := withNotifier(hs)
+	n := withNotifier(hs)
 	res := hs.run(t)
 
 	m, comments := only(t, n, notify.EventPROpened)
@@ -64,7 +64,7 @@ func TestFinishShouldNotifyPROpenedAfterAnnounce(t *testing.T) {
 
 func TestFinishShouldNotifyNeedsHumanForDraft(t *testing.T) {
 	hs := newHarness(t, spends167K(blockingReview))
-	n, _ := withNotifier(hs)
+	n := withNotifier(hs)
 	res := hs.run(t)
 
 	m, comments := only(t, n, notify.EventNeedsHuman)
@@ -91,7 +91,7 @@ func TestFinishShouldNotifyHaltedWithReason(t *testing.T) {
 		}
 		return happy(role, n, text)
 	})
-	n, _ := withNotifier(hs)
+	n := withNotifier(hs)
 	res := hs.run(t)
 
 	m, _ := only(t, n, notify.EventHalted)
@@ -106,7 +106,7 @@ func TestFinishShouldNotifyHaltedWithReason(t *testing.T) {
 
 func TestNeedsInfoShouldNotify(t *testing.T) {
 	hs := newHarness(t, happy)
-	n, _ := withNotifier(hs)
+	n := withNotifier(hs)
 	hs.task.Body = "Só uma frase vaga."
 	hs.run(t)
 
@@ -121,7 +121,7 @@ func TestNeedsInfoShouldNotify(t *testing.T) {
 
 func TestRunShouldNotifyStartedAfterCreatingTheRun(t *testing.T) {
 	hs := newHarness(t, happy)
-	n, _ := withNotifier(hs)
+	n := withNotifier(hs)
 	res := hs.run(t)
 
 	if len(n.sent) == 0 || n.sent[0].Event != notify.EventStarted {
@@ -144,7 +144,7 @@ func TestNilNotifierShouldBeANoOp(t *testing.T) {
 
 func TestFinishShouldKeepTheResultWhenNotifyFails(t *testing.T) {
 	hs := newHarness(t, happy)
-	n, _ := withNotifier(hs)
+	n := withNotifier(hs)
 	n.err = errors.New("org.freedesktop.Notifications: timeout")
 	var log bytes.Buffer
 	hs.r.Log = slog.New(slog.NewTextHandler(&log, nil))
@@ -166,7 +166,7 @@ func TestFinishShouldKeepTheResultWhenNotifyFails(t *testing.T) {
 
 func TestRecoveredRunsShouldNotNotifyIndividually(t *testing.T) {
 	hs := newHarness(t, happy)
-	n, _ := withNotifier(hs)
+	n := withNotifier(hs)
 	crashed(t, hs, store.StateImplement)
 	fixAdd(hs.g)
 	if out := recoverAll(t, hs); len(out) != 1 {
