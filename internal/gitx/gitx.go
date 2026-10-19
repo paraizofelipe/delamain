@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"slices"
 	"strings"
 	"unicode"
 
@@ -223,6 +224,34 @@ func AgentEnv() []string {
 		env = append(env, fmt.Sprintf("GIT_CONFIG_KEY_%d=url.%s.pushInsteadOf", i, pushBlocked), fmt.Sprintf("GIT_CONFIG_VALUE_%d=%s", i, p))
 	}
 	return append(env, "GH_TOKEN="+pushBlocked, "GITLAB_TOKEN="+pushBlocked)
+}
+
+// agentAllowed are credentials an agent harness needs even though they look like tokens.
+var agentAllowed = []string{
+	"CLAUDE_CODE_OAUTH_TOKEN", // Claude Code's subscription login
+}
+
+// forgeTokenVars are the forge credentials gh, glab and GitLab CI read.
+var forgeTokenVars = []string{"GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "OAUTH_TOKEN", "CI_JOB_TOKEN"}
+
+// AgentEnviron is base, typically os.Environ(), as agents see it: no forge credential nor any
+// *_TOKEN, *_PAT or *_SECRET outside agentAllowed (provider *_API_KEY stays), plus AgentEnv.
+// Matching is case-sensitive, as POSIX environment names are.
+func AgentEnviron(base []string) []string {
+	env := make([]string, 0, len(base))
+	for _, kv := range base {
+		k, _, _ := strings.Cut(kv, "=")
+		if !slices.Contains(agentAllowed, k) && secretEnv(k) {
+			continue
+		}
+		env = append(env, kv)
+	}
+	return append(env, AgentEnv()...)
+}
+
+func secretEnv(k string) bool {
+	return slices.Contains(forgeTokenVars, k) || strings.HasPrefix(k, "GITLAB_") ||
+		strings.HasSuffix(k, "_TOKEN") || strings.HasSuffix(k, "_PAT") || strings.HasSuffix(k, "_SECRET")
 }
 
 // GuardWorkBranch refuses protected or base branches as the place agents write to.

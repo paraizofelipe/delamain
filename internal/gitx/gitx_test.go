@@ -194,6 +194,74 @@ func TestAgentEnvShouldBlockEveryPushButKeepFetch(t *testing.T) {
 	}
 }
 
+// envMap keeps the last value of each key, as exec does.
+func envMap(env []string) map[string]string {
+	m := map[string]string{}
+	for _, kv := range env {
+		k, v, _ := strings.Cut(kv, "=")
+		m[k] = v
+	}
+	return m
+}
+
+func TestAgentEnvironShouldStripForgeAndGenericTokens(t *testing.T) {
+	base := []string{
+		"PATH=/usr/bin", "HOME=/home/dev", "LANG=C.UTF-8",
+		"GH_TOKEN=ghp_real", "GITHUB_TOKEN=ghs_real", "GH_ENTERPRISE_TOKEN=ghe_real", "GITHUB_ENTERPRISE_TOKEN=ghe_real2",
+		"GITLAB_TOKEN=glpat_real", "GITLAB_ACCESS_TOKEN=glpat_real2", "GITLAB_PRIVATE_KEY=glkey", "OAUTH_TOKEN=oauth_real", "CI_JOB_TOKEN=job_real",
+		"NPM_TOKEN=npm_real", "AWS_SESSION_TOKEN=aws_real", "MY_PAT=pat_real", "DB_SECRET=db_real",
+		"my_lower_token=kept",
+	}
+	got := envMap(AgentEnviron(base))
+	for _, k := range []string{"GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GITLAB_ACCESS_TOKEN", "GITLAB_PRIVATE_KEY",
+		"OAUTH_TOKEN", "CI_JOB_TOKEN", "NPM_TOKEN", "AWS_SESSION_TOKEN", "MY_PAT", "DB_SECRET"} {
+		if v, ok := got[k]; ok {
+			t.Errorf("%s=%s must not reach agents", k, v)
+		}
+	}
+	if got["GH_TOKEN"] != pushBlocked || got["GITLAB_TOKEN"] != pushBlocked {
+		t.Errorf("the forge CLIs only see the blocked token: GH_TOKEN=%q GITLAB_TOKEN=%q", got["GH_TOKEN"], got["GITLAB_TOKEN"])
+	}
+	for k, v := range map[string]string{"PATH": "/usr/bin", "HOME": "/home/dev", "LANG": "C.UTF-8", "my_lower_token": "kept"} {
+		if got[k] != v {
+			t.Errorf("%s = %q, want %q: everything else is kept", k, got[k], v)
+		}
+	}
+	for _, kv := range AgentEnviron(base) {
+		if strings.Contains(kv, "_real") {
+			t.Errorf("leaked %q", kv)
+		}
+	}
+}
+
+func TestAgentEnvironShouldKeepHarnessAllowlistedKeys(t *testing.T) {
+	got := envMap(AgentEnviron([]string{"CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat-x"}))
+	if got["CLAUDE_CODE_OAUTH_TOKEN"] != "sk-ant-oat-x" {
+		t.Fatalf("the harness credential must reach claude: %v", got)
+	}
+}
+
+func TestAgentEnvironShouldKeepProviderAPIKeys(t *testing.T) {
+	got := envMap(AgentEnviron([]string{"ANTHROPIC_API_KEY=a", "OPENAI_API_KEY=o", "GEMINI_API_KEY=g"}))
+	if got["ANTHROPIC_API_KEY"] != "a" || got["OPENAI_API_KEY"] != "o" || got["GEMINI_API_KEY"] != "g" {
+		t.Fatalf("model providers authenticate agents: %v", got)
+	}
+}
+
+func TestAgentEnvironShouldStillBlockPushes(t *testing.T) {
+	ctx := context.Background()
+	r := repo(t)
+	bare := withOrigin(t, r)
+	push := exec.CommandContext(ctx, "git", "-C", r, "push", "origin", "main")
+	push.Env = append(AgentEnviron(os.Environ()), "GIT_TERMINAL_PROMPT=0")
+	if out, err := push.CombinedOutput(); err == nil {
+		t.Fatalf("agent push must fail: %s", out)
+	}
+	if out, err := exec.Command("git", "--git-dir", bare, "for-each-ref").Output(); err != nil || len(out) != 0 {
+		t.Fatalf("origin must stay empty, refs: %s %v", out, err)
+	}
+}
+
 func TestRedProofWorktreeShouldCarryOnlyTheBranchTestsOntoBase(t *testing.T) {
 	g, ctx := New(), context.Background()
 	r := repo(t)

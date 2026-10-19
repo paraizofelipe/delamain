@@ -57,6 +57,7 @@ func result(turn int, extra map[string]any) map[string]any {
 func fakeClaude(scenario string) {
 	trace, _ := os.OpenFile(os.Getenv("CLAUDE_FAKE_TRACE"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	fmt.Fprintf(trace, "env GH_TOKEN=%s\nargs %s\n", os.Getenv("GH_TOKEN"), strings.Join(os.Args[1:], " "))
+	fmt.Fprintf(trace, "env GITHUB_TOKEN=%s NPM_TOKEN=%s ANTHROPIC_API_KEY=%s\n", os.Getenv("GITHUB_TOKEN"), os.Getenv("NPM_TOKEN"), os.Getenv("ANTHROPIC_API_KEY"))
 	if scenario == "die" {
 		fmt.Fprintln(os.Stderr, "Error: not logged in · run claude auth login")
 	}
@@ -336,6 +337,19 @@ func TestStartShouldPassTheEnvSoAgentsCannotPush(t *testing.T) {
 	}
 	if tr := s.traced(t); !strings.Contains(tr, "env GH_TOKEN=delamain-push-blocked://") {
 		t.Fatalf("the push-blocking env must reach claude:\n%s", tr)
+	}
+}
+
+func TestStartShouldStripForgeTokensFromTheInheritedEnv(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "ghs_real")
+	t.Setenv("NPM_TOKEN", "npm_real")
+	t.Setenv("ANTHROPIC_API_KEY", "provider-key")
+	s := start(t, "ok")
+	if _, err := s.c.Prompt(context.Background(), "go", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if tr := s.traced(t); !strings.Contains(tr, "env GITHUB_TOKEN= NPM_TOKEN= ANTHROPIC_API_KEY=provider-key\n") {
+		t.Fatalf("claude must start without forge tokens but with its provider key:\n%s", tr)
 	}
 }
 

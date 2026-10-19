@@ -45,6 +45,7 @@ func assistant(stop, errMsg string, input int64) map[string]any {
 func fakeOmp(scenario string) {
 	trace, _ := os.OpenFile(os.Getenv("OMP_FAKE_TRACE"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	fmt.Fprintf(trace, "env GH_TOKEN=%s\n", os.Getenv("GH_TOKEN"))
+	fmt.Fprintf(trace, "env GITHUB_TOKEN=%s NPM_TOKEN=%s ANTHROPIC_API_KEY=%s\n", os.Getenv("GITHUB_TOKEN"), os.Getenv("NPM_TOKEN"), os.Getenv("ANTHROPIC_API_KEY"))
 	if scenario == "noready" {
 		time.Sleep(time.Hour)
 	}
@@ -320,6 +321,16 @@ func TestStartShouldLetOptionsEnvOverrideTheInheritedOne(t *testing.T) {
 	_, h := start(t, "ok", func(o *Options) { o.Env = append(o.Env, "GH_TOKEN=blocked://") })
 	if got := h.lines(t)[0]; got != "env GH_TOKEN=blocked://" {
 		t.Fatalf("the push-blocking env must win over the user's token, got %q", got)
+	}
+}
+
+func TestStartShouldStripForgeTokensFromTheInheritedEnv(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "ghs_real")
+	t.Setenv("NPM_TOKEN", "npm_real")
+	t.Setenv("ANTHROPIC_API_KEY", "provider-key")
+	_, h := start(t, "ok")
+	if got := h.lines(t)[1]; got != "env GITHUB_TOKEN= NPM_TOKEN= ANTHROPIC_API_KEY=provider-key" {
+		t.Fatalf("omp must start without forge tokens but with its provider key, got %q", got)
 	}
 }
 

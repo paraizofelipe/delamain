@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/paraizo/delamain/internal/agent"
+	"github.com/paraizo/delamain/internal/gitx"
 )
 
 // ErrTimeout means a turn did not end in time; it was aborted.
@@ -124,7 +125,8 @@ type Client struct {
 func Start(ctx context.Context, o Options) (*Client, error) {
 	cmd := exec.Command(o.Binary, append([]string{"--mode", "rpc"}, o.Args...)...) //nolint:gosec // configured binary
 	cmd.Dir = o.Dir
-	cmd.Env = append(os.Environ(), o.Env...) // exec keeps the last value of a duplicated key
+	// No forge credential reaches the agent; exec keeps the last value of a duplicated key.
+	cmd.Env = append(gitx.AgentEnviron(os.Environ()), o.Env...)
 	cmd.Stderr = o.Stderr
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true} // Close kills omp and its tools together
 	stdin, err := cmd.StdinPipe()

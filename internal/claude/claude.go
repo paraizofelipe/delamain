@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/paraizo/delamain/internal/agent"
+	"github.com/paraizo/delamain/internal/gitx"
 )
 
 const (
@@ -145,7 +146,8 @@ func Start(_ context.Context, o Options) (*Client, error) {
 	args := append(append([]string{}, StreamArgs...), o.Args...)
 	cmd := exec.Command(o.Binary, args...) //nolint:gosec // configured binary
 	cmd.Dir = o.Dir
-	cmd.Env = append(os.Environ(), o.Env...) // exec keeps the last value of a duplicated key
+	// No forge credential reaches the agent; exec keeps the last value of a duplicated key.
+	cmd.Env = append(gitx.AgentEnviron(os.Environ()), o.Env...)
 	stderr := &lastLine{w: o.Stderr}
 	cmd.Stderr = stderr
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true} // Close kills claude and its tools together
