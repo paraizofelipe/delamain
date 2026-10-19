@@ -95,12 +95,12 @@ func TestListShouldShowOnlyActiveRunsWithTheirRunningAgents(t *testing.T) {
 			t.Fatalf("%s: header + one active run:\n%s", cmd, out)
 		}
 		row := strings.Fields(lines[1])
-		if row[0] != "1" || row[1] != "app" || row[2] != "#1" || row[3] != "implement" || row[4] != "1/3" || row[5] != "fix/1-a" || row[6] != "implementer" || !strings.Contains(lines[1], "(vivo)") {
+		if row[0] != "1" || row[1] != "app" || row[2] != "#1" || row[3] != "implement" || row[4] != "1/3" || row[5] != "fix/1-a" || row[6] != "implementer" || !strings.Contains(lines[1], "(alive)") {
 			t.Fatalf("%s: row = %q", cmd, lines[1])
 		}
 	}
 	all := f.exec(t, "ls", "--all")
-	if !strings.Contains(all, "fix/2-b") || !strings.Contains(all, "(finalizada)") || strings.Index(all, "fix/2-b") > strings.Index(all, "fix/1-a") {
+	if !strings.Contains(all, "fix/2-b") || !strings.Contains(all, "(finished)") || strings.Index(all, "fix/2-b") > strings.Index(all, "fix/1-a") {
 		t.Fatalf("--all includes finished runs, newest first:\n%s", all)
 	}
 }
@@ -113,7 +113,7 @@ func TestListShouldFlagAnActiveRunWhoseOwnerDied(t *testing.T) {
 	}
 	_ = f.st.StartAgent(context.Background(), store.Agent{RunID: rec.ID, Role: "implementer", PID: os.Getpid()})
 	out := f.exec(t, "ls")
-	if !strings.Contains(out, "morto: rode delamain recover") {
+	if !strings.Contains(out, "dead: run delamain recover") {
 		t.Fatalf("a dead owner must be visible:\n%s", out)
 	}
 	if row := strings.Fields(strings.Split(strings.TrimSpace(out), "\n")[1]); row[6] != "-" {
@@ -123,7 +123,7 @@ func TestListShouldFlagAnActiveRunWhoseOwnerDied(t *testing.T) {
 
 func TestListShouldSayWhenNothingIsRunning(t *testing.T) {
 	f := newFixture(t)
-	if out := f.exec(t, "ls"); strings.TrimSpace(out) != "nenhuma run ativa" {
+	if out := f.exec(t, "ls"); strings.TrimSpace(out) != "no active run" {
 		t.Fatalf("got %q", out)
 	}
 	var runs []RunView
@@ -146,7 +146,7 @@ func TestStatusShouldShowTheRunItsWorktreesAndAgents(t *testing.T) {
 
 	out := f.exec(t, "status", "1")
 	for _, want := range []string{
-		"#1 Fix #1", "implement (iteração 1/3)", "fix/1-a (base main)", "(vivo)", "1.5K de 2M tokens · US$ 0.25",
+		"#1 Fix #1", "implement (iteration 1/3)", "fix/1-a (base main)", "(alive)", "1.5K de 2M tokens · US$ 0.25",
 		"delamain logs 1 -f", "fix/2-b", "implementer  running",
 	} {
 		if !strings.Contains(out, want) {
@@ -204,7 +204,7 @@ func TestStatusShouldExplainWhenTheRepositoryIsGone(t *testing.T) {
 	if err := os.RemoveAll(f.repo); err != nil {
 		t.Fatal(err)
 	}
-	if out := f.exec(t, "status", "1"); !strings.Contains(out, "não listadas:") || !strings.Contains(out, "nenhum iniciado") {
+	if out := f.exec(t, "status", "1"); !strings.Contains(out, "not listed:") || !strings.Contains(out, "none started") {
 		t.Fatalf("a moved repository is reported, not fatal:\n%s", out)
 	}
 }
