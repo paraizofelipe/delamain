@@ -200,6 +200,7 @@ func (r *Runner) Run(ctx context.Context, t Task) (Result, error) {
 	r.openLog(ru)
 	defer ru.closeLog()
 	r.issueUpdate(ctx, t, &res, []string{r.Cfg.Forge.Labels.InProgress}, []string{r.Cfg.Forge.Labels.Ready}, "")
+	r.notify(ctx, notify.FormatStarted(notify.Run{ID: rec.ID, Repo: repo, Ref: t.Ref, Title: t.Title, IssueURL: t.URL, Harness: rec.Harness}))
 
 	defer r.cleanup(context.WithoutCancel(ctx), ru) // safety net; finish normally stops agents first
 	err = r.execute(ctx, ru, repo, t)

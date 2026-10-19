@@ -72,3 +72,30 @@ func TestFormatHaltedShouldBeCriticalAndNeverExpire(t *testing.T) {
 		},
 	})
 }
+
+func TestFormatNeedsInfoShouldMatchContract(t *testing.T) {
+	r := example()
+	r.ID, r.PRURL, r.Label = 0, "", "delamain:needs-info"
+	assertMessage(t, FormatNeedsInfo(r), Message{
+		Event:   EventNeedsInfo,
+		Title:   "ℹ️ Needs info · delamain #12",
+		Body:    "Mostrar HARNESS e INTERACTIONS no status\nIssue relabeled delamain:needs-info",
+		Urgency: Low, Expire: 15000, Category: "x-delamain.needs-info",
+		Actions: []Action{
+			{Key: "default", Label: "Open issue", Target: exampleIssue},
+			{Key: "open-issue", Label: "Open issue", Target: exampleIssue},
+		},
+	})
+}
+
+func TestFormatStartedShouldBeLowUrgencyWithRunAndHarness(t *testing.T) {
+	r := example()
+	r.PRURL, r.Harness = "", "claude"
+	assertMessage(t, FormatStarted(r), Message{
+		Event: EventStarted, RunID: 42,
+		Title:   "▶️ Started · delamain #12",
+		Body:    "Mostrar HARNESS e INTERACTIONS no status\nrun 42 · claude",
+		Urgency: Low, Expire: 15000, Category: "x-delamain.started",
+		Actions: []Action{{Key: "default", Label: "Open issue", Target: exampleIssue}},
+	})
+}

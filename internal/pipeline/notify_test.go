@@ -199,3 +199,59 @@ func TestDisabledEventsShouldNotNotify(t *testing.T) {
 		t.Fatalf("notify.enabled=false silences every event, got %+v", got)
 	}
 }
+
+func TestNeedsInfoShouldNotify(t *testing.T) {
+	hs := newHarness(t, happy)
+	withForge(hs)
+	n := withNotifier(hs)
+	hs.task.Body = "sem critérios"
+	if res := hs.run(t); res.Outcome != OutcomeNeedsInfo {
+		t.Fatalf("setup: want needs_info, got %s", res.Outcome)
+	}
+
+	want := notify.Message{
+		Event:   notify.EventNeedsInfo,
+		Title:   "ℹ️ Needs info · repo #7",
+		Body:    "Fix add\nIssue relabeled delamain:needs-info",
+		Urgency: notify.Low, Expire: 15000, Category: "x-delamain.needs-info",
+		Actions: []notify.Action{
+			{Key: "default", Label: "Open issue", Target: hs.task.URL},
+			{Key: "open-issue", Label: "Open issue", Target: hs.task.URL},
+		},
+		ForgeHost: "github.com",
+	}
+	if m := onlyMessage(t, n); !equalMessage(m, want) {
+		t.Fatalf("toast\n got: %#v\nwant: %#v", m, want)
+	}
+}
+
+func TestRunShouldNotifyStartedOnlyWhenEnabled(t *testing.T) {
+	hs := newHarness(t, happy)
+	withForge(hs)
+	n := withNotifier(hs)
+	hs.run(t)
+	if m := onlyMessage(t, n); m.Event != notify.EventPROpened {
+		t.Fatalf("started is off by default, got %s", m.Event)
+	}
+
+	hs = newHarness(t, happy)
+	withForge(hs)
+	n = withNotifier(hs)
+	hs.r.Cfg.Notify.Events = append(hs.r.Cfg.Notify.Events, "started")
+	res := hs.run(t)
+	got := n.messages()
+	if len(got) != 2 || got[1].Event != notify.EventPROpened {
+		t.Fatalf("want started then pr_opened, got %+v", got)
+	}
+	want := notify.Message{
+		Event: notify.EventStarted, RunID: res.RunID,
+		Title:   "▶️ Started · repo #7",
+		Body:    fmt.Sprintf("Fix add\nrun %d · omp", res.RunID),
+		Urgency: notify.Low, Expire: 15000, Category: "x-delamain.started",
+		Actions:   []notify.Action{{Key: "default", Label: "Open issue", Target: hs.task.URL}},
+		ForgeHost: "github.com",
+	}
+	if !equalMessage(got[0], want) {
+		t.Fatalf("toast\n got: %#v\nwant: %#v", got[0], want)
+	}
+}

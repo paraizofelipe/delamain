@@ -22,6 +22,8 @@ type Run struct {
 	State         string // the stage the run was in, e.g. "implement"
 	Reason        string
 	Report        string // absolute path of the run's report.md
+	Harness       string
+	Label         string // the needs_info label the issue got; empty when no issue was relabeled
 }
 
 const expire = 15000 // ms a non-critical toast stays up
@@ -87,3 +89,37 @@ func FormatHalted(r Run) Message {
 
 // iterations is "<i>/<max> iterations".
 func iterations(r Run) string { return fmt.Sprintf("%d/%d iterations", r.Iterations, r.MaxIterations) }
+
+// FormatStarted is the toast of a run that just started (off by default).
+func FormatStarted(r Run) Message {
+	var actions []Action
+	if r.IssueURL != "" {
+		actions = []Action{{"default", "Open issue", r.IssueURL}}
+	}
+	return Message{
+		Event: EventStarted, RunID: r.ID,
+		Title:   "▶️ Started · " + subject(r),
+		Body:    lines(r.Title, fmt.Sprintf("run %d · %s", r.ID, r.Harness)),
+		Urgency: Low, Expire: expire, Category: "x-delamain.started",
+		Actions: actions,
+	}
+}
+
+// FormatNeedsInfo is the toast of a task the preflight rejected; there is no run.
+func FormatNeedsInfo(r Run) Message {
+	body := []string{r.Title}
+	if r.Label != "" {
+		body = append(body, "Issue relabeled "+r.Label)
+	}
+	var actions []Action
+	if r.IssueURL != "" {
+		actions = []Action{{"default", "Open issue", r.IssueURL}, {"open-issue", "Open issue", r.IssueURL}}
+	}
+	return Message{
+		Event:   EventNeedsInfo,
+		Title:   "ℹ️ Needs info · " + subject(r),
+		Body:    lines(body...),
+		Urgency: Low, Expire: expire, Category: "x-delamain.needs-info",
+		Actions: actions,
+	}
+}

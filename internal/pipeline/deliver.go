@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/paraizo/delamain/internal/gates"
+	"github.com/paraizo/delamain/internal/notify"
 	"github.com/paraizo/delamain/internal/store"
 )
 
@@ -137,6 +138,11 @@ func (r *Runner) needsInfo(ctx context.Context, t Task, problems []string, res *
 	}
 	fmt.Fprintf(&b, "\nAjuste a issue e recoloque a label `%s`.", l.Ready)
 	r.issueUpdate(ctx, t, res, []string{l.NeedsInfo}, []string{l.Ready, l.InProgress}, b.String())
+	n := notify.Run{Repo: t.Repo, Ref: t.Ref, Title: t.Title, IssueURL: t.URL}
+	if r.Forge != nil && t.Issue != 0 {
+		n.Label = l.NeedsInfo
+	}
+	r.notify(ctx, notify.FormatNeedsInfo(n))
 }
 
 // issueUpdate relabels and comments on the task's issue. Forge hiccups here never fail the run:
