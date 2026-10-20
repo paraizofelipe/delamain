@@ -36,6 +36,8 @@ Prefira LSP (definição, referências, símbolos, hierarquia de chamadas). Use 
 ## Testes (framework, convenções, helpers, seams existentes)
 ## Áreas impactadas (arquivo/símbolo — motivo — [parcial]?)
 ## Prior art
+## Dependências externas tocadas (api | database | queue | integration)
+## Tipos de teste necessários
 ```
 Abaixo de 600 palavras.
 </output_format>

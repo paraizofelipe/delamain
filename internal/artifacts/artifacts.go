@@ -34,6 +34,55 @@ type Acceptance struct {
 	Flow      bool     `json:"flow"`
 }
 
+// Complexity holds the criteria the planner reports about the issue; the orchestrator derives
+// the complexity level from them, never from the agent.
+type Complexity struct {
+	Components   string   `json:"components"`   // single_module | multiple_modules | multiple_services
+	Change       string   `json:"change"`       // localized | cross_cutting | architectural
+	Dependencies []string `json:"dependencies"` // subset of api, database, queue, integration
+	Tests        []string `json:"tests"`        // non-empty subset of unit, integration, migration, regression
+	Rationale    string   `json:"rationale"`
+}
+
+var (
+	validComponents   = map[string]bool{"single_module": true, "multiple_modules": true, "multiple_services": true}
+	validChanges      = map[string]bool{"localized": true, "cross_cutting": true, "architectural": true}
+	validDependencies = map[string]bool{"api": true, "database": true, "queue": true, "integration": true}
+	validTestKinds    = map[string]bool{"unit": true, "integration": true, "migration": true, "regression": true}
+)
+
+// validateSet checks that every item is in the allowed set and none repeats.
+func validateSet(field string, items []string, allowed map[string]bool) []error {
+	var errs []error
+	seen := map[string]bool{}
+	for _, it := range items {
+		if !allowed[it] {
+			errs = append(errs, fmt.Errorf("%s: unknown value %q", field, it))
+		}
+		if seen[it] {
+			errs = append(errs, fmt.Errorf("%s: %q repeated", field, it))
+		}
+		seen[it] = true
+	}
+	return errs
+}
+
+func (c Complexity) validate() []error {
+	var errs []error
+	if !validComponents[c.Components] {
+		errs = append(errs, fmt.Errorf("complexity.components must be single_module, multiple_modules or multiple_services, got %q", c.Components))
+	}
+	if !validChanges[c.Change] {
+		errs = append(errs, fmt.Errorf("complexity.change must be localized, cross_cutting or architectural, got %q", c.Change))
+	}
+	errs = append(errs, validateSet("complexity.dependencies", c.Dependencies, validDependencies)...)
+	if len(c.Tests) == 0 {
+		errs = append(errs, errors.New("complexity.tests must list at least one of unit, integration, migration, regression"))
+	}
+	errs = append(errs, validateSet("complexity.tests", c.Tests, validTestKinds)...)
+	return errs
+}
+
 type Plan struct {
 	Summary         string       `json:"summary"`
 	Kind            string       `json:"kind"`
@@ -42,6 +91,7 @@ type Plan struct {
 	Acceptance      []Acceptance `json:"acceptance"`
 	RegressionTests []string     `json:"regression_tests"`
 	Commands        Commands     `json:"commands"`
+	Complexity      Complexity   `json:"complexity"`
 	Risks           []string     `json:"risks"`
 }
 
@@ -84,6 +134,7 @@ func (p Plan) Validate() error {
 	if strings.TrimSpace(p.Commands.Test) == "" {
 		errs = append(errs, errors.New("commands.test is empty: nothing would verify the change"))
 	}
+	errs = append(errs, p.Complexity.validate()...)
 	return errors.Join(errs...)
 }
 

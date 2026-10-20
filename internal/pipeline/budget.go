@@ -17,10 +17,17 @@ func (r *Runner) meter() budget.Meter {
 	return budget.Meter{Store: r.Store, Cfg: r.Cfg.Budget, Sessions: r.Agents.Sessions}
 }
 
+// meterFor meters a run against its own per-issue budget, which its complexity may have changed.
+func (r *Runner) meterFor(ru *run) budget.Meter {
+	m := r.meter()
+	m.Cfg.PerIssue = ru.perIssue
+	return m
+}
+
 // checkBudget records the run's usage after a turn and stops the run at the hard limit.
 // Accounting failures halt too: an unmeasured run would spend without a ceiling.
 func (r *Runner) checkBudget(ctx context.Context, ru *run) error {
-	s, err := r.meter().Check(ctx, ru.rec.ID, filepath.Join(ru.dir, "sessions"), liveUsage(ru.agents))
+	s, err := r.meterFor(ru).Check(ctx, ru.rec.ID, filepath.Join(ru.dir, "sessions"), liveUsage(ru.agents))
 	if err != nil {
 		return haltf("contabilidade de tokens falhou: %v", err)
 	}
@@ -64,7 +71,7 @@ func (r *Runner) watchBudget(ctx context.Context, ru *run, agent Agent) func() w
 				return
 			case <-t.C:
 			}
-			s, err := r.meter().Check(ctx, ru.rec.ID, filepath.Join(ru.dir, "sessions"), liveUsage(agents))
+			s, err := r.meterFor(ru).Check(ctx, ru.rec.ID, filepath.Join(ru.dir, "sessions"), liveUsage(agents))
 			if err != nil || s.Level != budget.Hard {
 				continue
 			}
