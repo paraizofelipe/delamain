@@ -20,14 +20,14 @@ const validPlan = `{"summary":"fix add","kind":"bug","assumptions":[],
 "slices":[{"id":"S1","behavior":"Add sums","seam":"calc.Add","files":["calc.go"],"tests":["calc_test.go::TestAdd"]}],
 "acceptance":[{"criterion":"Add(2,3)=5","tests":["calc_test.go::TestAdd"],"flow":true}],
 "regression_tests":["calc_test.go::TestAdd"],
-"commands":{"test":"go test ./...","test_file":"","lint":"go vet ./...","typecheck":"","format_check":""},"risks":[]}`
+"commands":{"test":"go test ./...","test_file":"","lint":"go vet ./...","typecheck":"","format_check":""},"complexity":{"components":"single_module","change":"localized","dependencies":[],"tests":["unit"],"rationale":"um arquivo"},"risks":[]}`
 
 func TestReadPlanShouldAcceptContractCompliantPlan(t *testing.T) {
 	p, err := Read[Plan](write(t, validPlan))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p.Commands.Test != "go test ./..." || len(p.Acceptance) != 1 {
+	if p.Commands.Test != "go test ./..." || len(p.Acceptance) != 1 || p.Complexity.Change != "localized" {
 		t.Fatalf("decoded wrong: %+v", p)
 	}
 }
@@ -40,6 +40,11 @@ func TestReadPlanShouldRejectContractBreaks(t *testing.T) {
 		"unknown kind":           {`"kind":"bug"`, `"kind":"chore"`, "kind must be"},
 		"typo in field name":     {`"risks":[]`, `"riskz":[]`, "unknown field"},
 		"duplicate slice":        {`"slices":[{"id":"S1"`, `"slices":[{"id":"S1","behavior":"x"},{"id":"S1"`, "repeated"},
+		"unknown components":     {`"single_module"`, `"monolith"`, "complexity.components"},
+		"unknown change":         {`"localized"`, `"tiny"`, "complexity.change"},
+		"unknown dependency":     {`"dependencies":[]`, `"dependencies":["cache"]`, "complexity.dependencies"},
+		"no test kind":           {`"tests":["unit"],"rationale"`, `"tests":[],"rationale"`, "complexity.tests"},
+		"missing complexity":     {`"complexity":{"components":"single_module","change":"localized","dependencies":[],"tests":["unit"],"rationale":"um arquivo"},`, ``, "complexity.components"},
 		"no acceptance":          {`"acceptance":[{"criterion":"Add(2,3)=5","tests":["calc_test.go::TestAdd"],"flow":true}]`, `"acceptance":[]`, "no acceptance"},
 	}
 	for name, tc := range cases {

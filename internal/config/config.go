@@ -34,6 +34,43 @@ type Config struct {
 	Gates    Gates    `yaml:"gates"`
 	Daemon   Daemon   `yaml:"daemon"`
 	Paths    Paths    `yaml:"paths"`
+	// Complexity holds optional per-level limits applied once the plan is classified.
+	Complexity Complexity `yaml:"complexity"`
+}
+
+// Profile overrides the run's limits once the plan is classified. Zero inherits the global value.
+type Profile struct {
+	MaxIterations int     `yaml:"max_iterations"`
+	PerIssue      float64 `yaml:"per_issue"`
+}
+
+// Complexity maps each complexity level to its Profile.
+type Complexity struct {
+	Low    Profile `yaml:"low"`
+	Medium Profile `yaml:"medium"`
+	High   Profile `yaml:"high"`
+}
+
+// Limits returns the effective limits for level ("low"|"medium"|"high"); unknown levels and
+// zero fields fall back to the global pipeline.max_iterations and budget.per_issue.
+func (c Config) Limits(level string) (maxIterations int, perIssue float64) {
+	maxIterations, perIssue = c.Pipeline.MaxIterations, c.Budget.PerIssue
+	var p Profile
+	switch level {
+	case "low":
+		p = c.Complexity.Low
+	case "medium":
+		p = c.Complexity.Medium
+	case "high":
+		p = c.Complexity.High
+	}
+	if p.MaxIterations != 0 {
+		maxIterations = p.MaxIterations
+	}
+	if p.PerIssue != 0 {
+		perIssue = p.PerIssue
+	}
+	return maxIterations, perIssue
 }
 
 // Herdr optionally shows runs in herdr workspaces. Off by default: the orchestrator drives
@@ -299,6 +336,14 @@ func (c Config) Validate() error {
 	}
 	if c.Budget.SoftRatio <= 0 || c.Budget.SoftRatio > 1 {
 		errs = append(errs, errors.New("budget.soft_ratio must be in (0, 1]"))
+	}
+	for _, lp := range []struct {
+		level string
+		p     Profile
+	}{{"low", c.Complexity.Low}, {"medium", c.Complexity.Medium}, {"high", c.Complexity.High}} {
+		if lp.p.MaxIterations < 0 || lp.p.PerIssue < 0 {
+			errs = append(errs, fmt.Errorf("complexity.%s: max_iterations and per_issue must be >= 0", lp.level))
+		}
 	}
 	switch c.Agent.Harness {
 	case HarnessOmp:

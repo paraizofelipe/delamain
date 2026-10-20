@@ -65,17 +65,19 @@ func (r *Runner) recoverRun(ctx context.Context, rec store.Run) (Result, error) 
 	res := Result{
 		RunID: rec.ID, Outcome: OutcomeHalted, Branch: rec.Branch, Base: rec.Base, Worktree: rec.Worktree,
 		WorkspaceID: rec.Workspace, Iterations: rec.Iteration, PRURL: rec.MRURL,
-		Reason: fmt.Sprintf("run interrompida: o processo do delamain (%s) parou no estado %s", who, rec.State),
+		Complexity: rec.Complexity,
+		Reason:     fmt.Sprintf("run interrompida: o processo do delamain (%s) parou no estado %s", who, rec.State),
 	}
 	t := Task{Ref: rec.IssueRef, Title: rec.Title, Kind: kindFromBranch(rec.Branch), Repo: rec.Repo, Issue: issueNumber(rec.IssueRef)}
 	day, err := r.meter().Today(ctx)
 	if err != nil {
 		return res, err
 	}
+	maxIter, perIssue := rec.Limits(r.Cfg.Pipeline.MaxIterations, r.Cfg.Budget.PerIssue)
 	ru := &run{
 		rec: rec, task: prompts.Issue{Ref: t.Ref, Title: t.Title, Kind: t.Kind},
 		dir: r.runDir(rec.Repo, rec.ID), agents: map[string]Agent{},
-		res: &res, issue: t.Issue, maxIter: r.Cfg.Pipeline.MaxIterations, budget: day,
+		res: &res, issue: t.Issue, maxIter: maxIter, perIssue: perIssue, budget: day,
 		recovered: true,
 	}
 	res.RunDir = ru.dir
