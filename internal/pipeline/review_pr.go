@@ -15,6 +15,7 @@ import (
 
 	"github.com/paraizo/delamain/internal/artifacts"
 	"github.com/paraizo/delamain/internal/budget"
+	"github.com/paraizo/delamain/internal/config"
 	"github.com/paraizo/delamain/internal/forge"
 	"github.com/paraizo/delamain/internal/gates"
 	"github.com/paraizo/delamain/internal/gitx"
@@ -50,6 +51,10 @@ func (r *Runner) RunReview(ctx context.Context, repo string, n int) (Result, err
 	res := Result{}
 	if r.Forge == nil {
 		return res, errors.New("review requires a GitHub or GitLab origin")
+	}
+	// The reviewer reads third-party code: only Claude Code can confine it (see confined).
+	if r.Cfg.Agent.Harness != config.HarnessClaude {
+		return res, fmt.Errorf("review requires agent.harness: claude, the only harness that confines the reviewer to reading the PR (got %q)", r.Cfg.Agent.Harness)
 	}
 	repo, err := r.Git.Toplevel(ctx, repo)
 	if err != nil {

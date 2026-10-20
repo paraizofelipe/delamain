@@ -53,6 +53,7 @@ type AgentOptions struct {
 // only Artifact: the code it reads is untrusted, so its harness must not hand it a free shell.
 type Confinement struct {
 	Checkout string
+	Base     string // the commit the PR is diffed against
 	Artifact string
 }
 
@@ -63,16 +64,10 @@ type RPCAgents struct {
 }
 
 func (a RPCAgents) args(o AgentOptions) []string {
-	args := []string{
+	return []string{
 		"--model", a.Model, "--thinking", a.Thinking, "--approval-mode", a.ApprovalMode,
 		"--session-dir", o.SessionDir, "--append-system-prompt", o.SystemPrompt,
 	}
-	if o.Confine != nil {
-		// omp has no per-command allowlist: a confined session only loses LSP, which could run
-		// the checkout's build scripts.
-		args = append(args, "--no-lsp")
-	}
-	return args
 }
 
 func (RPCAgents) Sessions(sessionsDir string) ([]budget.SessionUsage, error) {
@@ -80,6 +75,9 @@ func (RPCAgents) Sessions(sessionsDir string) ([]budget.SessionUsage, error) {
 }
 
 func (a RPCAgents) Start(ctx context.Context, o AgentOptions) (Agent, error) {
+	if o.Confine != nil {
+		return nil, errors.New("omp cannot confine a session: it has no per-command allowlist, so the agent would get a free shell")
+	}
 	logf, err := os.OpenFile(o.LogPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return nil, err

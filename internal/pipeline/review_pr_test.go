@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/paraizo/delamain/internal/config"
 	"github.com/paraizo/delamain/internal/forge"
 	"github.com/paraizo/delamain/internal/gitx"
 	"github.com/paraizo/delamain/internal/memory"
@@ -59,6 +60,7 @@ func newReviewHarness(t *testing.T, b behavior) *reviewHarness {
 		threads: []forge.Thread{{ID: "t1", Path: "a.go", Line: 1, Comments: []forge.Comment{{ID: "c1", Author: "bob", Body: "por que um novo pacote?"}}}},
 	}
 	hs.r.Forge, hs.r.ForgeUser = f, "delamain-bot"
+	hs.r.Cfg.Agent.Harness = config.HarnessClaude // the only harness that confines the reviewer
 	hs.g.lines = map[string][]gitx.LineRange{"a.go": {{Start: 1, End: 10}}}
 	return &reviewHarness{harness: hs, f: f, repo: hs.task.Repo}
 }
@@ -645,5 +647,20 @@ func TestRunReviewShouldHaltWithoutPostingWhenTheReviewLeaksASecret(t *testing.T
 				t.Fatalf("the reason must not repeat the secret: %s", res.Reason)
 			}
 		})
+	}
+}
+
+func TestRunReviewShouldRefuseAHarnessThatCannotConfineTheReviewer(t *testing.T) {
+	rh := newReviewHarness(t, reviewsPR(prReviewJSON("")))
+	rh.r.Cfg.Agent.Harness = config.HarnessOmp // no per-command allowlist: the reviewer would get a free shell
+	_, err := rh.r.RunReview(context.Background(), rh.repo, 5)
+	if err == nil || !strings.Contains(err.Error(), "agent.harness: claude") {
+		t.Fatalf("a review on omp must be refused before any work: %v", err)
+	}
+	if runs, _ := rh.st.RecentRuns(context.Background(), 10); len(runs) != 0 {
+		t.Fatalf("no run is recorded: %+v", runs)
+	}
+	if len(rh.g.fetchedPR)+len(rh.h.starts)+len(rh.f.posted) != 0 {
+		t.Fatal("nothing is fetched, started or posted")
 	}
 }

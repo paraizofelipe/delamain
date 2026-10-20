@@ -1,10 +1,10 @@
 package pipeline
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strings"
 	"testing"
 
@@ -117,10 +117,14 @@ func TestClaudeAgentsShouldConfineASessionToReadingItsCheckout(t *testing.T) {
 	}
 }
 
-func TestRPCAgentsShouldDisableLSPForConfinedSessions(t *testing.T) {
-	a := RPCAgents{Binary: "omp", Model: "m", Thinking: "medium", ApprovalMode: "yolo"}
-	got := a.args(AgentOptions{SessionDir: "/s", SystemPrompt: "/r.md", Confine: &Confinement{Checkout: "/wt", Artifact: "/a.json"}})
-	if !slices.Contains(got, "--no-lsp") {
-		t.Fatalf("a language server over a PR's code can run its build scripts: %v", got)
+func TestRPCAgentsShouldRefuseAConfinedSession(t *testing.T) {
+	dir := t.TempDir()
+	a := RPCAgents{Binary: filepath.Join(dir, "omp-not-installed"), Model: "m", Thinking: "medium", ApprovalMode: "yolo"}
+	_, err := a.Start(context.Background(), AgentOptions{
+		SessionDir: dir, SystemPrompt: filepath.Join(dir, "r.md"), LogPath: filepath.Join(dir, "a.log"), ErrPath: filepath.Join(dir, "a.err"),
+		Confine: &Confinement{Checkout: "/wt", Base: "b", Artifact: "/a.json"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "cannot confine") {
+		t.Fatalf("omp has no per-command allowlist: a confined session must be refused, not started with a free shell: %v", err)
 	}
 }
