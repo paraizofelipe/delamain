@@ -121,3 +121,109 @@ func TestReadReviewShouldRejectMissingAxisOrUnknownSeverity(t *testing.T) {
 		t.Fatal("unknown severity must be rejected, not silently treated as minor")
 	}
 }
+
+const validPRReview = `{"verdict":"concerns","adherence":"partial","summary":"Falta tratar o erro do parse.",
+"axes":[{"axis":"spec","executed":true,"findings":[{"severity":"major","category":"faltando","file":"a.go","line":3,"evidence":"x","rule":"r","message":"m"}]},
+{"axis":"standards","executed":true,"findings":[]},{"axis":"security","executed":true,"findings":[]}],
+"dropped":[{"file":"b.go","line":9,"message":"talvez nil","reason":"verificado via grep=nil: já tratado"}],
+"learnings":["Os testes usam fakes em fakes_test.go"]}`
+
+func TestPRReviewShouldAcceptAValidReview(t *testing.T) {
+	r, err := Read[PRReview](write(t, validPRReview))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Adherence != "partial" || len(r.Dropped) != 1 || r.Dropped[0].Reason == "" || len(r.Learnings) != 1 {
+		t.Fatalf("decoded wrong: %+v", r)
+	}
+	if err := r.ValidateLimit(1); err != nil {
+		t.Fatalf("one blocking finding fits a limit of one: %v", err)
+	}
+}
+
+func TestPRReviewShouldRequireEveryAxisExecuted(t *testing.T) {
+	for name, body := range map[string]string{
+		"missing axis": strings.Replace(validPRReview, `{"axis":"standards","executed":true,"findings":[]},`, ``, 1),
+		"not executed": strings.Replace(validPRReview, `{"axis":"security","executed":true`, `{"axis":"security","executed":false`, 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if body == validPRReview {
+				t.Fatal("fixture replacement did not apply")
+			}
+			if _, err := Read[PRReview](write(t, body)); err == nil {
+				t.Fatal("a review that skipped an axis must not be posted")
+			}
+		})
+	}
+}
+
+func TestPRReviewShouldRejectUnknownVerdictOrAdherence(t *testing.T) {
+	cases := map[string]struct{ from, to, want string }{
+		"approve is not a PR review verdict": {`"verdict":"concerns"`, `"verdict":"approve"`, "verdict"},
+		"empty verdict":                      {`"verdict":"concerns"`, `"verdict":""`, "verdict"},
+		"unknown adherence":                  {`"adherence":"partial"`, `"adherence":"mostly"`, "adherence"},
+		"unknown severity":                   {`"severity":"major"`, `"severity":"blocker"`, "severity"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			body := strings.Replace(validPRReview, tc.from, tc.to, 1)
+			if body == validPRReview {
+				t.Fatal("fixture replacement did not apply")
+			}
+			if _, err := Read[PRReview](write(t, body)); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("want error containing %q, got %v", tc.want, err)
+			}
+		})
+	}
+}
+
+func TestPRReviewShouldRequireASummary(t *testing.T) {
+	body := strings.Replace(validPRReview, `"summary":"Falta tratar o erro do parse."`, `"summary":"  "`, 1)
+	if _, err := Read[PRReview](write(t, body)); err == nil || !strings.Contains(err.Error(), "summary") {
+		t.Fatalf("a review without a summary has nothing to post at PR level: %v", err)
+	}
+}
+
+func TestPRReviewShouldRequirePositiveLineWhenFileIsSet(t *testing.T) {
+	for name, tc := range map[string]struct{ from, to string }{
+		"finding at line zero":  {`"file":"a.go","line":3`, `"file":"a.go","line":0`},
+		"negative finding line": {`"file":"a.go","line":3`, `"file":"a.go","line":-2`},
+		"dropped at line zero":  {`"file":"b.go","line":9`, `"file":"b.go","line":0`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			body := strings.Replace(validPRReview, tc.from, tc.to, 1)
+			if body == validPRReview {
+				t.Fatal("fixture replacement did not apply")
+			}
+			if _, err := Read[PRReview](write(t, body)); err == nil || !strings.Contains(err.Error(), "line") {
+				t.Fatalf("a file without a valid line cannot be commented on: %v", err)
+			}
+		})
+	}
+	general := strings.Replace(validPRReview, `"file":"a.go","line":3`, `"file":"","line":0`, 1)
+	if _, err := Read[PRReview](write(t, general)); err != nil {
+		t.Fatalf("a finding without a file is PR-level and needs no line: %v", err)
+	}
+}
+
+func TestPRReviewShouldRejectMoreBlockingFindingsThanMaxComments(t *testing.T) {
+	two := strings.Replace(validPRReview, `{"axis":"security","executed":true,"findings":[]}`,
+		`{"axis":"security","executed":true,"findings":[{"severity":"critical","category":"injecao","file":"c.go","line":1,"evidence":"x","rule":"A03","message":"m"},{"severity":"minor","category":"x","file":"c.go","line":2,"evidence":"","rule":"","message":"n"}]}`, 1)
+	r, err := Read[PRReview](write(t, two))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.ValidateLimit(2); err != nil {
+		t.Fatalf("minor findings do not count against max_comments: %v", err)
+	}
+	if err := r.ValidateLimit(1); err == nil || !strings.Contains(err.Error(), "max_comments") {
+		t.Fatalf("two blocking findings exceed a limit of one: %v", err)
+	}
+}
+
+func TestPRReviewShouldRejectUnknownJSONFields(t *testing.T) {
+	body := strings.Replace(validPRReview, `"learnings":`, `"approve":true,"learnings":`, 1)
+	if _, err := Read[PRReview](write(t, body)); err == nil || !strings.Contains(err.Error(), "unknown field") {
+		t.Fatalf("an extra field means the agent wrote another format: %v", err)
+	}
+}
