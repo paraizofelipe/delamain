@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"time"
 
 	gogitlab "gitlab.com/gitlab-org/api/client-go/v3"
@@ -239,4 +240,44 @@ func (g *gitlabClient) LinkedIssues(ctx context.Context, n int) ([]Issue, error)
 		ns = closedInBody(pr.Body)
 	}
 	return readIssues(ctx, g, ns)
+}
+
+// Threads reads the first 100 discussions without GitLab's system notes, dropping discussions
+// made only of them. Path and line come from the first remaining note, Resolved from the first
+// resolvable one.
+func (g *gitlabClient) Threads(ctx context.Context, n int) ([]Thread, error) {
+	var ds []*gogitlab.Discussion
+	err := g.do(ctx, "threads", func() (resp *gogitlab.Response, err error) {
+		ds, resp, err = g.api.Discussions.ListMergeRequestDiscussions(g.repo.Path, int64(n), &gogitlab.ListMergeRequestDiscussionsOptions{
+			ListOptions: gogitlab.ListOptions{PerPage: 100},
+		}, gogitlab.WithContext(ctx))
+		return resp, err
+	})
+	if err != nil {
+		return nil, err
+	}
+	ts := make([]Thread, 0, len(ds))
+	for _, d := range ds {
+		t, resolvable := Thread{ID: d.ID}, false
+		for _, v := range d.Notes {
+			if v.System {
+				continue
+			}
+			if len(t.Comments) == 0 && v.Position != nil {
+				t.Path, t.Line = v.Position.NewPath, int(v.Position.NewLine)
+			}
+			if !resolvable && v.Resolvable {
+				resolvable, t.Resolved = true, v.Resolved
+			}
+			c := Comment{ID: strconv.FormatInt(v.ID, 10), Author: v.Author.Username, Body: v.Body}
+			if v.CreatedAt != nil {
+				c.CreatedAt = *v.CreatedAt
+			}
+			t.Comments = append(t.Comments, c)
+		}
+		if len(t.Comments) > 0 {
+			ts = append(ts, t)
+		}
+	}
+	return byFirstComment(ts), nil
 }

@@ -107,6 +107,8 @@ type Forge interface {
 	ListPRs(ctx context.Context, label string) ([]PRDetail, error)
 	// LinkedIssues returns up to 5 issues the PR/MR closes.
 	LinkedIssues(ctx context.Context, number int) ([]Issue, error)
+	// Threads returns the review threads and PR-level comments, by their first comment.
+	Threads(ctx context.Context, number int) ([]Thread, error)
 }
 
 var scpLike = regexp.MustCompile(`^[\w.-]+@([\w.-]+):(.+)$`)
@@ -203,6 +205,19 @@ func readIssues(ctx context.Context, f interface {
 		is = append(is, v)
 	}
 	return is, nil
+}
+
+// byFirstComment orders threads by when their first comment was made, keeping the forge's
+// order on ties.
+func byFirstComment(ts []Thread) []Thread {
+	first := func(t Thread) time.Time {
+		if len(t.Comments) == 0 {
+			return time.Time{}
+		}
+		return t.Comments[0].CreatedAt
+	}
+	slices.SortStableFunc(ts, func(a, b Thread) int { return first(a).Compare(first(b)) })
+	return ts
 }
 
 func oldestPRsFirst(prs []PRDetail) []PRDetail {

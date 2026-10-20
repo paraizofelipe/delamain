@@ -280,7 +280,11 @@ func TestForgeShouldNeverCallMergeEndpoints(t *testing.T) {
 		_, _ = f.CreatePR(ctx, PROptions{Head: "feat/x", Base: "main", Title: "t"})
 		_ = f.Comment(ctx, 1, "c")
 		_ = f.Relabel(ctx, 1, []string{"a"}, []string{"b"})
-		if len(paths) < 6 {
+		_, _ = f.PRView(ctx, 1)
+		_, _ = f.ListPRs(ctx, "review")
+		_, _ = f.LinkedIssues(ctx, 1)
+		_, _ = f.Threads(ctx, 1)
+		if len(paths) < 10 {
 			t.Fatalf("%s: only %d requests reached the fake: %v", repo.Kind, len(paths), paths)
 		}
 		for _, p := range paths {
@@ -349,6 +353,7 @@ func TestReadMethodsShouldNeverWriteToTheForge(t *testing.T) {
 				"PRView":       func() error { _, err := f.PRView(ctx, 1); return err },
 				"ListPRs":      func() error { _, err := f.ListPRs(ctx, "review"); return err },
 				"LinkedIssues": func() error { _, err := f.LinkedIssues(ctx, 1); return err },
+				"Threads":      func() error { _, err := f.Threads(ctx, 1); return err },
 			}
 			for name, read := range reads {
 				before := len(requests())
@@ -519,6 +524,32 @@ func TestLinkedIssuesShouldFallBackToClosesKeywordsInBody(t *testing.T) {
 			if !slices.Equal(got, []int{3, 4, 5, 6, 7}) {
 				t.Fatalf("want the first 5 distinct closed issues of the body, in order, got %v", got)
 			}
+		})
+	}
+}
+
+func TestThreadsShouldReturnEmptyForPRWithoutComments(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		at     func(*testing.T, map[string]func(http.ResponseWriter, *http.Request), ...Option) (Forge, *fakeAPI)
+		routes map[string]func(http.ResponseWriter, *http.Request)
+		read   string // an endpoint the threads must come from
+	}{
+		{"github", githubAt, map[string]func(http.ResponseWriter, *http.Request){
+			"POST /graphql":                          reply(200, `{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}`),
+			"GET /repos/acme/api/issues/12/comments": reply(200, `[]`),
+		}, "/repos/acme/api/issues/12/comments"},
+		{"gitlab", gitlabAt, map[string]func(http.ResponseWriter, *http.Request){
+			"GET " + glProject + "/merge_requests/12/discussions": reply(200, `[]`),
+		}, glProject + "/merge_requests/12/discussions"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, api := tc.at(t, tc.routes)
+			ts, err := f.Threads(context.Background(), 12)
+			if err != nil || len(ts) != 0 {
+				t.Fatalf("threads = %+v, err = %v", ts, err)
+			}
+			api.find(t, "GET", tc.read)
 		})
 	}
 }

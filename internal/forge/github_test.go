@@ -8,9 +8,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // request is one call a fake forge server received.
@@ -358,5 +360,55 @@ func TestGitHubPRViewShouldParseRefsShasAndFork(t *testing.T) {
 	pr, err = f.PRView(ctx, 7)
 	if err != nil || !pr.Fork {
 		t.Fatalf("a head whose repository was deleted is a fork: %+v %v", pr, err)
+	}
+}
+
+// at parses an RFC 3339 time for expectations.
+func at(t *testing.T, s string) time.Time {
+	t.Helper()
+	v, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return v
+}
+
+func TestGitHubThreadsShouldMergeReviewThreadsAndIssueComments(t *testing.T) {
+	f, api := githubAt(t, map[string]func(http.ResponseWriter, *http.Request){
+		"POST /graphql": reply(200, `{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[
+			{"id":"RT_2","isResolved":true,"path":"a.go","line":10,"comments":{"nodes":[
+				{"databaseId":201,"author":{"login":"ana"},"body":"fix this","createdAt":"2026-01-01T10:00:00Z"},
+				{"databaseId":202,"author":null,"body":"done","createdAt":"2026-01-01T12:00:00Z"}]}},
+			{"id":"RT_1","isResolved":false,"path":"b.go","line":null,"comments":{"nodes":[
+				{"databaseId":101,"author":{"login":"bob"},"body":"why?","createdAt":"2026-01-01T08:00:00Z"}]}}]}}}}}`),
+		"GET /repos/acme/api/issues/12/comments": reply(200, `[
+			{"id":301,"user":{"login":"carol"},"body":"lgtm","created_at":"2026-01-01T09:00:00Z"}]`),
+	})
+	ts, err := f.Threads(context.Background(), 12)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Thread{
+		{ID: "RT_1", Path: "b.go", Comments: []Comment{{ID: "101", Author: "bob", Body: "why?", CreatedAt: at(t, "2026-01-01T08:00:00Z")}}},
+		{ID: "issue-comment:301", Comments: []Comment{{ID: "301", Author: "carol", Body: "lgtm", CreatedAt: at(t, "2026-01-01T09:00:00Z")}}},
+		{ID: "RT_2", Path: "a.go", Line: 10, Resolved: true, Comments: []Comment{
+			{ID: "201", Author: "ana", Body: "fix this", CreatedAt: at(t, "2026-01-01T10:00:00Z")},
+			{ID: "202", Body: "done", CreatedAt: at(t, "2026-01-01T12:00:00Z")},
+		}},
+	}
+	if !reflect.DeepEqual(ts, want) {
+		t.Fatalf("threads =\n%+v\nwant, by first comment,\n%+v", ts, want)
+	}
+	var sent struct {
+		Query     string         `json:"query"`
+		Variables map[string]any `json:"variables"`
+	}
+	r := api.find(t, "POST", "/graphql")
+	if err := json.Unmarshal([]byte(r.body), &sent); err != nil || !strings.Contains(sent.Query, "reviewThreads(first:100)") ||
+		sent.Variables["owner"] != "acme" || sent.Variables["name"] != "api" || sent.Variables["number"] != float64(12) {
+		t.Fatalf("graphql request = %s (%v)", r.body, err)
+	}
+	if q, _ := url.ParseQuery(api.find(t, "GET", "/repos/acme/api/issues/12/comments").query); q.Get("per_page") != "100" {
+		t.Fatalf("must read up to 100 PR comments: %v", q)
 	}
 }

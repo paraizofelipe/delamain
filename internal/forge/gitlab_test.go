@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -201,5 +202,40 @@ func TestGitLabPRViewShouldUseDiffRefsAndDetectFork(t *testing.T) {
 	pr, err = f.PRView(ctx, 6)
 	if err != nil || !pr.Fork || pr.Open || pr.HeadRef != "patch-1" || pr.BaseSHA != "b2" || pr.StartSHA != "s2" {
 		t.Fatalf("a source project other than the target is a fork: %+v %v", pr, err)
+	}
+}
+
+func TestGitLabThreadsShouldSkipSystemNotes(t *testing.T) {
+	f, api := gitlabAt(t, map[string]func(http.ResponseWriter, *http.Request){
+		"GET " + glProject + "/merge_requests/12/discussions": reply(200, `[
+			{"id":"d1","notes":[{"id":1,"system":true,"body":"added 1 commit","created_at":"2026-01-01T07:00:00Z"}]},
+			{"id":"d2","notes":[
+				{"id":2,"author":{"username":"ana"},"body":"fix this","created_at":"2026-01-01T10:00:00Z",
+					"position":{"new_path":"a.go","new_line":10},"resolvable":true,"resolved":true},
+				{"id":3,"author":{"username":"bob"},"body":"done","created_at":"2026-01-01T11:00:00Z","resolvable":true,"resolved":true}]},
+			{"id":"d3","individual_note":true,"notes":[
+				{"id":4,"author":{"username":"carol"},"body":"lgtm","created_at":"2026-01-01T09:00:00Z"}]},
+			{"id":"d4","notes":[
+				{"id":5,"system":true,"body":"changed line","created_at":"2026-01-01T06:00:00Z"},
+				{"id":6,"author":{"username":"dan"},"body":"why?","created_at":"2026-01-01T08:00:00Z",
+					"position":{"new_path":"c.go","new_line":3},"resolvable":true,"resolved":false}]}]`),
+	})
+	ts, err := f.Threads(context.Background(), 12)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Thread{
+		{ID: "d4", Path: "c.go", Line: 3, Comments: []Comment{{ID: "6", Author: "dan", Body: "why?", CreatedAt: at(t, "2026-01-01T08:00:00Z")}}},
+		{ID: "d3", Comments: []Comment{{ID: "4", Author: "carol", Body: "lgtm", CreatedAt: at(t, "2026-01-01T09:00:00Z")}}},
+		{ID: "d2", Path: "a.go", Line: 10, Resolved: true, Comments: []Comment{
+			{ID: "2", Author: "ana", Body: "fix this", CreatedAt: at(t, "2026-01-01T10:00:00Z")},
+			{ID: "3", Author: "bob", Body: "done", CreatedAt: at(t, "2026-01-01T11:00:00Z")},
+		}},
+	}
+	if !reflect.DeepEqual(ts, want) {
+		t.Fatalf("threads =\n%+v\nwant, without system notes and by first comment,\n%+v", ts, want)
+	}
+	if q, _ := url.ParseQuery(api.find(t, "GET", glProject+"/merge_requests/12/discussions").query); q.Get("per_page") != "100" {
+		t.Fatalf("must read up to 100 discussions: %v", q)
 	}
 }

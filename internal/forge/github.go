@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -282,4 +283,68 @@ func (g *githubClient) LinkedIssues(ctx context.Context, n int) ([]Issue, error)
 		ns = closedInBody(pr.Body)
 	}
 	return readIssues(ctx, g, ns)
+}
+
+const reviewThreadsQuery = `query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100){nodes{id isResolved path line comments(first:100){nodes{databaseId author{login} body createdAt}}}}}}}`
+
+// Threads joins the inline review threads, which only GraphQL has, with the PR-level comments
+// of the issues endpoint. Only the first 100 of each are read; line is null on outdated threads
+// and author on deleted accounts.
+func (g *githubClient) Threads(ctx context.Context, n int) ([]Thread, error) {
+	var out struct {
+		Repository struct {
+			PullRequest struct {
+				ReviewThreads struct {
+					Nodes []struct {
+						ID         string
+						IsResolved bool
+						Path       string
+						Line       *int
+						Comments   struct {
+							Nodes []struct {
+								DatabaseID int64
+								Author     *struct{ Login string }
+								Body       string
+								CreatedAt  time.Time
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	if err := g.graphql(ctx, reviewThreadsQuery, map[string]any{"owner": g.owner, "name": g.name, "number": n}, &out); err != nil {
+		return nil, err
+	}
+	var cs []*gogithub.IssueComment
+	err := g.do(ctx, "threads", func() (resp *gogithub.Response, err error) {
+		cs, resp, err = g.api.Issues.ListComments(ctx, g.owner, g.name, n, &gogithub.IssueListCommentsOptions{ListOptions: gogithub.ListOptions{PerPage: 100}})
+		return resp, err
+	})
+	if err != nil {
+		return nil, err
+	}
+	nodes := out.Repository.PullRequest.ReviewThreads.Nodes
+	ts := make([]Thread, 0, len(nodes)+len(cs))
+	for _, v := range nodes {
+		t := Thread{ID: v.ID, Path: v.Path, Resolved: v.IsResolved}
+		if v.Line != nil {
+			t.Line = *v.Line
+		}
+		for _, c := range v.Comments.Nodes {
+			cm := Comment{ID: strconv.FormatInt(c.DatabaseID, 10), Body: c.Body, CreatedAt: c.CreatedAt}
+			if c.Author != nil {
+				cm.Author = c.Author.Login
+			}
+			t.Comments = append(t.Comments, cm)
+		}
+		ts = append(ts, t)
+	}
+	for _, c := range cs {
+		id := strconv.FormatInt(c.GetID(), 10)
+		ts = append(ts, Thread{ID: "issue-comment:" + id, Comments: []Comment{
+			{ID: id, Author: c.GetUser().GetLogin(), Body: c.GetBody(), CreatedAt: c.GetCreatedAt().Time},
+		}})
+	}
+	return byFirstComment(ts), nil
 }
