@@ -321,3 +321,10 @@ func (g *gitlabClient) PRComment(ctx context.Context, n int, body string) error 
 		return resp, err
 	})
 }
+
+func (g *gitlabClient) Reply(ctx context.Context, n int, threadID, body string) error {
+	return g.do(ctx, "reply", func() (*gogitlab.Response, error) {
+		_, resp, err := g.api.Discussions.AddMergeRequestDiscussionNote(g.repo.Path, int64(n), threadID, &gogitlab.AddMergeRequestDiscussionNoteOptions{Body: &body}, gogitlab.WithContext(ctx))
+		return resp, err
+	})
+}

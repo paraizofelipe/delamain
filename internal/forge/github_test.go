@@ -488,3 +488,21 @@ func TestGitHubPostReviewShouldNeverSendApproveOrRequestChanges(t *testing.T) {
 		}
 	}
 }
+
+func TestGitHubReplyShouldFailWhenTheThreadHasNoComments(t *testing.T) {
+	for name, data := range map[string]string{
+		"no comments":    `{"data":{"node":{"comments":{"nodes":[]}}}}`,
+		"missing thread": `{"data":{"node":null}}`,
+	} {
+		f, api := githubAt(t, map[string]func(http.ResponseWriter, *http.Request){
+			"POST /graphql":                         reply(200, data),
+			"POST /repos/acme/api/pulls/9/comments": reply(201, `{"id":1}`),
+		})
+		if err := f.Reply(context.Background(), 9, "RT_gone", "thanks"); err == nil {
+			t.Errorf("%s: a thread with no comment to reply to must be an error", name)
+		}
+		if n := posts(api, "/repos/acme/api/pulls/9/comments"); n != 0 {
+			t.Errorf("%s: nothing may be posted, got %d", name, n)
+		}
+	}
+}

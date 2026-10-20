@@ -128,6 +128,8 @@ type Forge interface {
 	PostReview(ctx context.Context, number int, o ReviewOptions) error
 	// PRComment posts a PR/MR-level comment.
 	PRComment(ctx context.Context, number int, body string) error
+	// Reply answers inside a thread Threads returned.
+	Reply(ctx context.Context, number int, threadID, body string) error
 }
 
 var scpLike = regexp.MustCompile(`^[\w.-]+@([\w.-]+):(.+)$`)

@@ -291,6 +291,9 @@ func (g *githubClient) LinkedIssues(ctx context.Context, n int) ([]Issue, error)
 	return readIssues(ctx, g, ns)
 }
 
+// issueCommentThread prefixes the thread id of a PR-level comment.
+const issueCommentThread = "issue-comment:"
+
 const reviewThreadsQuery = `query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100){nodes{id isResolved path line comments(first:100){nodes{databaseId author{login} body createdAt}}}}}}}`
 
 // Threads joins the inline review threads, which only GraphQL has, with the PR-level comments
@@ -348,7 +351,7 @@ func (g *githubClient) Threads(ctx context.Context, n int) ([]Thread, error) {
 	}
 	for _, c := range cs {
 		id := strconv.FormatInt(c.GetID(), 10)
-		ts = append(ts, Thread{ID: "issue-comment:" + id, Comments: []Comment{
+		ts = append(ts, Thread{ID: issueCommentThread + id, Comments: []Comment{
 			{ID: id, Author: c.GetUser().GetLogin(), Body: c.GetBody(), CreatedAt: c.GetCreatedAt().Time},
 		}})
 	}
@@ -375,6 +378,31 @@ func (g *githubClient) PostReview(ctx context.Context, n int, o ReviewOptions) e
 func (g *githubClient) PRComment(ctx context.Context, n int, body string) error {
 	return g.do(ctx, "pr comment", func() (*gogithub.Response, error) {
 		_, resp, err := g.api.Issues.CreateComment(ctx, g.owner, g.name, n, gogithub.IssueCommentRequest{Body: body})
+		return resp, err
+	})
+}
+
+const firstThreadCommentQuery = `query($id:ID!){node(id:$id){... on PullRequestReviewThread{comments(first:1){nodes{databaseId}}}}}`
+
+// Reply answers a review thread by replying to its first comment, whose REST id only GraphQL
+// knows. A PR-level comment has no thread on GitHub: the answer is a new PR comment.
+func (g *githubClient) Reply(ctx context.Context, n int, threadID, body string) error {
+	if strings.HasPrefix(threadID, issueCommentThread) {
+		return g.PRComment(ctx, n, body)
+	}
+	var out struct {
+		Node *struct {
+			Comments struct{ Nodes []struct{ DatabaseID int64 } }
+		}
+	}
+	if err := g.graphql(ctx, firstThreadCommentQuery, map[string]any{"id": threadID}, &out); err != nil {
+		return err
+	}
+	if out.Node == nil || len(out.Node.Comments.Nodes) == 0 {
+		return fmt.Errorf("github reply: thread %q has no comment to reply to", threadID)
+	}
+	return g.do(ctx, "reply", func() (*gogithub.Response, error) {
+		_, resp, err := g.api.PullRequests.CreateCommentInReplyTo(ctx, g.owner, g.name, n, body, out.Node.Comments.Nodes[0].DatabaseID)
 		return resp, err
 	})
 }

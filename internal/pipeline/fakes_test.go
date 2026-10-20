@@ -418,6 +418,7 @@ func (f *fakeForge) LinkedIssues(context.Context, int) ([]forge.Issue, error)   
 func (f *fakeForge) Threads(context.Context, int) ([]forge.Thread, error)       { return nil, nil }
 func (f *fakeForge) PostReview(context.Context, int, forge.ReviewOptions) error { return nil }
 func (f *fakeForge) PRComment(context.Context, int, string) error               { return nil }
+func (f *fakeForge) Reply(context.Context, int, string, string) error           { return nil }
 
 // fakeNotifier records every toast and how many issue comments existed when it was sent.
 type fakeNotifier struct {

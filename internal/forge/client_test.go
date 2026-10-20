@@ -717,3 +717,49 @@ func TestPostReviewWithoutInlineCommentsShouldPostOnlyTheSummary(t *testing.T) {
 		})
 	}
 }
+
+func TestReplyShouldPostIntoTheThread(t *testing.T) {
+	t.Run("github review thread", func(t *testing.T) {
+		f, api := githubAt(t, map[string]func(http.ResponseWriter, *http.Request){
+			"POST /graphql":                         reply(200, `{"data":{"node":{"comments":{"nodes":[{"databaseId":555}]}}}}`),
+			"POST /repos/acme/api/pulls/9/comments": reply(201, `{"id":556}`),
+		})
+		if err := f.Reply(context.Background(), 9, "RT_abc", "thanks"); err != nil {
+			t.Fatal(err)
+		}
+		q := jsonBody(t, api.find(t, "POST", "/graphql"))
+		if vars, _ := q["variables"].(map[string]any); vars["id"] != "RT_abc" {
+			t.Fatalf("the thread is looked up by its node id: %v", q)
+		}
+		b := jsonBody(t, api.find(t, "POST", "/repos/acme/api/pulls/9/comments"))
+		if b["body"] != "thanks" || b["in_reply_to"] != float64(555) {
+			t.Fatalf("reply = %v, want a reply to the thread's first comment", b)
+		}
+	})
+	t.Run("github issue comment", func(t *testing.T) {
+		f, api := githubAt(t, map[string]func(http.ResponseWriter, *http.Request){
+			"POST /repos/acme/api/issues/9/comments": reply(201, `{"id":1}`),
+		})
+		if err := f.Reply(context.Background(), 9, "issue-comment:77", "thanks"); err != nil {
+			t.Fatal(err)
+		}
+		if rs := api.requests(); len(rs) != 1 {
+			t.Fatalf("requests = %+v, want one PR comment", rs)
+		}
+		if b := jsonBody(t, api.find(t, "POST", "/repos/acme/api/issues/9/comments"))["body"]; b != "thanks" {
+			t.Fatalf("body = %v", b)
+		}
+	})
+	t.Run("gitlab", func(t *testing.T) {
+		path := glProject + "/merge_requests/9/discussions/d1/notes"
+		f, api := gitlabAt(t, map[string]func(http.ResponseWriter, *http.Request){
+			"POST " + path: reply(201, `{"id":1}`),
+		})
+		if err := f.Reply(context.Background(), 9, "d1", "thanks"); err != nil {
+			t.Fatal(err)
+		}
+		if b := jsonBody(t, api.find(t, "POST", path))["body"]; b != "thanks" {
+			t.Fatalf("body = %v", b)
+		}
+	})
+}
