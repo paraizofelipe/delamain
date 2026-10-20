@@ -104,24 +104,26 @@ func parseRemote(raw string) (host, path string, err error) {
 	} else {
 		u, perr := url.Parse(raw)
 		if perr != nil || u.Host == "" {
-			return "", "", fmt.Errorf("remote sem host de forge: %q", redact(raw))
+			return "", "", fmt.Errorf("remote sem host de forge: %q", redact(raw, ""))
 		}
 		host, path = u.Hostname(), u.Path // Hostname drops userinfo and port
 	}
 	path = strings.TrimSuffix(strings.Trim(path, "/"), ".git")
 	if !strings.Contains(path, "/") {
-		return "", "", fmt.Errorf("remote sem caminho owner/repo: %q", redact(raw))
+		return "", "", fmt.Errorf("remote sem caminho owner/repo: %q", redact(raw, ""))
 	}
 	return host, path, nil
 }
 
-// redact drops userinfo so tokens embedded in remote URLs never reach logs.
-func redact(raw string) string {
-	if u, err := url.Parse(raw); err == nil && u.User != nil {
-		u.User = nil
-		return u.String()
+// userinfo matches the credentials part of any URL inside a text.
+var userinfo = regexp.MustCompile(`(\w+://)[^/@\s"]+@`)
+
+// redact drops URL userinfo and every occurrence of token so credentials never reach logs.
+func redact(raw, token string) string {
+	if token != "" {
+		raw = strings.ReplaceAll(raw, token, "***")
 	}
-	return raw
+	return userinfo.ReplaceAllString(raw, "$1")
 }
 
 func oldestFirst(is []Issue) []Issue {

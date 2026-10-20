@@ -43,10 +43,8 @@ type ExecRunner struct {
 	Backoff time.Duration
 }
 
-const attempts = 3
-
 // transient matches network blips and gateway errors worth retrying; API rejections are not.
-var transient = regexp.MustCompile(`(?i)timeout|timed out|connection (reset|refused)|unexpected EOF|no such host|temporary failure|HTTP 50[234]`)
+var execTransient = regexp.MustCompile(`(?i)timeout|timed out|connection (reset|refused)|unexpected EOF|no such host|temporary failure|HTTP 50[234]`)
 
 func (e ExecRunner) Run(ctx context.Context, stdin string, args ...string) (string, error) {
 	wait := e.Backoff
@@ -55,7 +53,7 @@ func (e ExecRunner) Run(ctx context.Context, stdin string, args ...string) (stri
 	}
 	for i := 1; ; i++ {
 		out, err := e.run(ctx, stdin, args)
-		if err == nil || i == attempts || ctx.Err() != nil || !transient.MatchString(err.Error()) {
+		if err == nil || i == attempts || ctx.Err() != nil || !execTransient.MatchString(err.Error()) {
 			return out, err
 		}
 		select {
@@ -79,13 +77,6 @@ func (e ExecRunner) run(ctx context.Context, stdin string, args []string) (strin
 		return "", fmt.Errorf("%s %s: %w: %s", e.Binary, label, err, truncate(strings.TrimSpace(errb.String()), 500))
 	}
 	return out.String(), nil
-}
-
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "…"
 }
 
 // prFromOutput extracts the PR/MR URL the CLIs print on creation.

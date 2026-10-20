@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	gogitlab "gitlab.com/gitlab-org/api/client-go/v3"
 )
 
 type gitlabClient struct {
+	caller
 	repo Repo
 	api  *gogitlab.Client
 }
@@ -28,24 +30,28 @@ func newGitLab(repo Repo, token string, o options) (*gitlabClient, error) {
 	if err != nil {
 		return nil, fmt.Errorf("gitlab client: %w", err)
 	}
-	return &gitlabClient{repo: repo, api: api}, nil
+	return &gitlabClient{caller: caller{GitLab, token, o.backoff}, repo: repo, api: api}, nil
 }
 
-// check turns a client-go failure into an error naming the operation and the HTTP status.
-func (g *gitlabClient) check(op string, resp *gogitlab.Response, err error) error {
-	if err == nil {
-		return nil
-	}
-	if resp != nil && resp.StatusCode >= 400 {
-		msg := ""
+// do runs one API call with retries on gateway and network errors. client-go's own retries
+// are off so both forges follow the same rules.
+func (g *gitlabClient) do(ctx context.Context, op string, call func() (*gogitlab.Response, error)) error {
+	return g.retry(ctx, func() (bool, time.Duration, error) {
+		resp, err := call()
+		if err == nil {
+			return false, 0, nil
+		}
+		status, msg := 0, ""
+		if resp != nil {
+			status = resp.StatusCode
+		}
 		if er, ok := errors.AsType[*gogitlab.ErrorResponse](err); ok {
 			msg = er.Message
 		} else if errors.Is(err, gogitlab.ErrNotFound) {
 			msg = "Not Found"
 		}
-		return &APIError{Forge: GitLab, Op: op, Status: resp.StatusCode, Message: msg}
-	}
-	return fmt.Errorf("gitlab %s: %w", op, err)
+		return transient(ctx, status, err), 0, g.fail(op, status, msg, err)
+	})
 }
 
 func (g *gitlabClient) Repo() Repo { return g.repo }
@@ -55,18 +61,26 @@ func fromGitLab(v *gogitlab.Issue) Issue {
 }
 
 func (g *gitlabClient) Issue(ctx context.Context, n int) (Issue, error) {
-	v, resp, err := g.api.Issues.GetIssue(g.repo.Path, int64(n), gogitlab.WithContext(ctx))
-	if err := g.check("issue", resp, err); err != nil {
+	var v *gogitlab.Issue
+	err := g.do(ctx, "issue", func() (resp *gogitlab.Response, err error) {
+		v, resp, err = g.api.Issues.GetIssue(g.repo.Path, int64(n), gogitlab.WithContext(ctx))
+		return resp, err
+	})
+	if err != nil {
 		return Issue{}, err
 	}
 	return fromGitLab(v), nil
 }
 
 func (g *gitlabClient) ListReady(ctx context.Context, label string) ([]Issue, error) {
-	vs, resp, err := g.api.Issues.ListProjectIssues(g.repo.Path, &gogitlab.ListProjectIssuesOptions{
-		State: gogitlab.Ptr("opened"), Labels: &gogitlab.LabelOptions{label}, ListOptions: gogitlab.ListOptions{PerPage: 100},
-	}, gogitlab.WithContext(ctx))
-	if err := g.check("list ready", resp, err); err != nil {
+	var vs []*gogitlab.Issue
+	err := g.do(ctx, "list ready", func() (resp *gogitlab.Response, err error) {
+		vs, resp, err = g.api.Issues.ListProjectIssues(g.repo.Path, &gogitlab.ListProjectIssuesOptions{
+			State: gogitlab.Ptr("opened"), Labels: &gogitlab.LabelOptions{label}, ListOptions: gogitlab.ListOptions{PerPage: 100},
+		}, gogitlab.WithContext(ctx))
+		return resp, err
+	})
+	if err != nil {
 		return nil, err
 	}
 	is := make([]Issue, 0, len(vs))
@@ -77,10 +91,14 @@ func (g *gitlabClient) ListReady(ctx context.Context, label string) ([]Issue, er
 }
 
 func (g *gitlabClient) OpenPR(ctx context.Context, head string) (*PR, error) {
-	mrs, resp, err := g.api.MergeRequests.ListProjectMergeRequests(g.repo.Path, &gogitlab.ListProjectMergeRequestsOptions{
-		State: gogitlab.Ptr("opened"), SourceBranch: &head,
-	}, gogitlab.WithContext(ctx))
-	if err := g.check("open pr", resp, err); err != nil || len(mrs) == 0 {
+	var mrs []*gogitlab.BasicMergeRequest
+	err := g.do(ctx, "open pr", func() (resp *gogitlab.Response, err error) {
+		mrs, resp, err = g.api.MergeRequests.ListProjectMergeRequests(g.repo.Path, &gogitlab.ListProjectMergeRequestsOptions{
+			State: gogitlab.Ptr("opened"), SourceBranch: &head,
+		}, gogitlab.WithContext(ctx))
+		return resp, err
+	})
+	if err != nil || len(mrs) == 0 {
 		return nil, err
 	}
 	return &PR{Number: int(mrs[0].IID), URL: mrs[0].WebURL, Draft: mrs[0].Draft}, nil
@@ -92,18 +110,24 @@ func (g *gitlabClient) CreatePR(ctx context.Context, o PROptions) (PR, error) {
 	if o.Draft {
 		title = "Draft: " + title
 	}
-	v, resp, err := g.api.MergeRequests.CreateMergeRequest(g.repo.Path, &gogitlab.CreateMergeRequestOptions{
-		Title: &title, Description: &o.Body, SourceBranch: &o.Head, TargetBranch: &o.Base,
-	}, gogitlab.WithContext(ctx))
-	if err := g.check("create pr", resp, err); err != nil {
+	var v *gogitlab.MergeRequest
+	err := g.do(ctx, "create pr", func() (resp *gogitlab.Response, err error) {
+		v, resp, err = g.api.MergeRequests.CreateMergeRequest(g.repo.Path, &gogitlab.CreateMergeRequestOptions{
+			Title: &title, Description: &o.Body, SourceBranch: &o.Head, TargetBranch: &o.Base,
+		}, gogitlab.WithContext(ctx))
+		return resp, err
+	})
+	if err != nil {
 		return PR{}, err
 	}
 	return PR{Number: int(v.IID), URL: v.WebURL, Draft: v.Draft}, nil
 }
 
 func (g *gitlabClient) Comment(ctx context.Context, n int, body string) error {
-	_, resp, err := g.api.Notes.CreateIssueNote(g.repo.Path, int64(n), &gogitlab.CreateIssueNoteOptions{Body: &body}, gogitlab.WithContext(ctx))
-	return g.check("comment", resp, err)
+	return g.do(ctx, "comment", func() (*gogitlab.Response, error) {
+		_, resp, err := g.api.Notes.CreateIssueNote(g.repo.Path, int64(n), &gogitlab.CreateIssueNoteOptions{Body: &body}, gogitlab.WithContext(ctx))
+		return resp, err
+	})
 }
 
 // Relabel relies on GitLab creating unknown labels when they are assigned.
@@ -115,6 +139,8 @@ func (g *gitlabClient) Relabel(ctx context.Context, n int, add, remove []string)
 	if len(remove) > 0 {
 		opt.RemoveLabels = (*gogitlab.LabelOptions)(&remove)
 	}
-	_, resp, err := g.api.Issues.UpdateIssue(g.repo.Path, int64(n), opt, gogitlab.WithContext(ctx))
-	return g.check("relabel", resp, err)
+	return g.do(ctx, "relabel", func() (*gogitlab.Response, error) {
+		_, resp, err := g.api.Issues.UpdateIssue(g.repo.Path, int64(n), opt, gogitlab.WithContext(ctx))
+		return resp, err
+	})
 }

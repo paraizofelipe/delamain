@@ -1,10 +1,14 @@
 package forge
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // Option configures the HTTP client New builds.
@@ -35,12 +39,13 @@ func newOptions(opts []Option) options {
 		opt(&o)
 	}
 	if o.httpClient == nil {
-		o.httpClient = &http.Client{}
+		o.httpClient = &http.Client{Timeout: 30 * time.Second}
 	}
 	return o
 }
 
-// APIError is a request the forge answered with an error status.
+// APIError is a request the forge answered with an error status. Message is already
+// truncated and stripped of credentials.
 type APIError struct {
 	Forge   Kind
 	Op      string
@@ -49,7 +54,80 @@ type APIError struct {
 }
 
 func (e *APIError) Error() string {
-	return fmt.Sprintf("%s %s: %d %s", e.Forge, e.Op, e.Status, strings.TrimSpace(e.Message))
+	return fmt.Sprintf("%s %s: %d %s", e.Forge, e.Op, e.Status, e.Message)
+}
+
+// opError is a request that got no answer from the forge (network, timeout, decoding).
+type opError struct {
+	msg string
+	err error
+}
+
+func (e *opError) Error() string { return e.msg }
+func (e *opError) Unwrap() error { return e.err }
+
+// caller holds what every request of a client shares.
+type caller struct {
+	kind    Kind
+	token   string // scrubbed from every error
+	backoff time.Duration
+}
+
+const maxErrorLen = 500
+
+// fail builds the error of a failed attempt: an *APIError when the forge answered.
+func (c caller) fail(op string, status int, msg string, err error) error {
+	if status >= 400 {
+		return &APIError{Forge: c.kind, Op: op, Status: status, Message: truncate(redact(strings.TrimSpace(msg), c.token), maxErrorLen)}
+	}
+	return &opError{msg: fmt.Sprintf("%s %s: %s", c.kind, op, truncate(redact(err.Error(), c.token), maxErrorLen)), err: err}
+}
+
+const attempts = 3
+
+// retry runs try up to attempts times while it reports a transient failure. It waits the
+// backoff, doubling it each time, or the server's Retry-After when given, and never past ctx.
+func (c caller) retry(ctx context.Context, try func() (transient bool, after time.Duration, err error)) error {
+	wait := c.backoff
+	for i := 1; ; i++ {
+		transient, after, err := try()
+		if err == nil || !transient || i == attempts || ctx.Err() != nil {
+			return err
+		}
+		d := wait
+		if after > 0 {
+			d = after
+		}
+		timer := time.NewTimer(d)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return err
+		case <-timer.C:
+		}
+		wait *= 2
+	}
+}
+
+// transient says whether a failed attempt is worth repeating: a gateway error, or no answer
+// at all because of the network. API rejections (4xx, 500) are final.
+func transient(ctx context.Context, status int, err error) bool {
+	switch status {
+	case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	case 0:
+		_, network := errors.AsType[*url.Error](err)
+		return network && ctx.Err() == nil
+	}
+	return false
+}
+
+// truncate cuts s to n characters, never inside a UTF-8 sequence.
+func truncate(s string, n int) string {
+	if utf8.RuneCountInString(s) <= n {
+		return s
+	}
+	return string([]rune(s)[:n]) + "…"
 }
 
 // New returns the forge client for repo, authenticated with token.

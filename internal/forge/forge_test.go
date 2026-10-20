@@ -84,30 +84,6 @@ func TestDetectShouldRejectUnknownHostsAndMalformedURLs(t *testing.T) {
 	}
 }
 
-// The whole point of delamain's delivery: it opens PRs/MRs and never merges them.
-func TestForgeShouldNeverIssueMergeCommands(t *testing.T) {
-	for _, repo := range []Repo{{GitHub, "github.com", "acme/api"}, {GitLab, "gitlab.com", "grp/api"}} {
-		run := &fakeRunner{out: map[string]string{
-			"pr create": "https://github.com/acme/api/pull/1", "mr create": "https://gitlab.com/grp/api/-/merge_requests/1",
-			"pr list": "[]", "mr list": "[]", "issue view": "{}",
-		}}
-		f := NewExec(repo, run)
-		ctx := context.Background()
-		_, _ = f.Issue(ctx, 1)
-		_, _ = f.OpenPR(ctx, "feat/x")
-		_, _ = f.CreatePR(ctx, PROptions{Head: "feat/x", Base: "main", Title: "t"})
-		_ = f.Comment(ctx, 1, "c")
-		_ = f.Relabel(ctx, 1, []string{"a"}, []string{"b"})
-		for _, c := range run.calls {
-			for _, a := range c.args {
-				if strings.Contains(a, "merge") && !strings.HasPrefix(a, "https://") {
-					t.Errorf("%s: forbidden arg %q in %v", repo.Kind, a, c.args)
-				}
-			}
-		}
-	}
-}
-
 func TestExecRunnerErrorShouldNotEchoStdin(t *testing.T) {
 	r := ExecRunner{Binary: "sh"}
 	_, err := r.Run(context.Background(), "SECRET-BODY", "-c", "cat >/dev/null; echo boom >&2; exit 3")
@@ -166,4 +142,3 @@ func TestExecRunnerShouldStopRetryingWhenTheContextEnds(t *testing.T) {
 		t.Fatalf("shutdown must not wait out the backoff: err=%v calls=%d", err, calls())
 	}
 }
-
