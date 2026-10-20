@@ -40,7 +40,7 @@ Por que o passo 3 não bloqueia: endurecer um sistema é trabalho sem fim natura
 </checklist>
 
 <rules>
-- Todo achado cita arquivo, linha, trecho e a categoria do checklist, ou a ameaça do plano que ele contraria.
+- Todo achado cita arquivo, linha e trecho, sempre. O `rule` traz a categoria do checklist, a ameaça do plano que o achado contraria (`plano security[N]`) ou, no caso do passo 3, `ameaça fora do plano`.
 - Não revise arquivo fora da diff, mas siga o fluxo do dado até a origem quando for necessário provar a injeção.
 - Sem evidência, não há achado.
 </rules>
@@ -48,6 +48,6 @@ Por que o passo 3 não bloqueia: endurecer um sistema é trabalho sem fim natura
 <output_format>
 JSON, sem texto em volta:
 ```json
-{"axis":"security","executed":true,"findings":[{"severity":"critical|major|minor","category":"vulnerabilidade|segredo|dado_sensivel|robustez","file":"path","line":0,"evidence":"trecho","rule":"OWASP: <categoria> | <item do checklist> | plano security[N]","message":"o que se observa"}]}
+{"axis":"security","executed":true,"findings":[{"severity":"critical|major|minor","category":"vulnerabilidade|segredo|dado_sensivel|robustez","file":"path","line":0,"evidence":"trecho","rule":"OWASP: <categoria> | <item do checklist> | plano security[N] | ameaça fora do plano","message":"o que se observa"}]}
 ```
 </output_format>
