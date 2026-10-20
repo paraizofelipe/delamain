@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -284,7 +285,13 @@ func TestForgeShouldNeverCallMergeEndpoints(t *testing.T) {
 		_, _ = f.ListPRs(ctx, "review")
 		_, _ = f.LinkedIssues(ctx, 1)
 		_, _ = f.Threads(ctx, 1)
-		if len(paths) < 10 {
+		_ = f.PostReview(ctx, 1, ReviewOptions{HeadSHA: "h", Summary: "s", Comments: []InlineComment{{Path: "a.go", Line: 1, Body: "c"}}})
+		_ = f.PRComment(ctx, 1, "c")
+		_ = f.Reply(ctx, 1, "RT_1", "c")
+		_ = f.Reply(ctx, 1, "issue-comment:1", "c")
+		_ = f.ResolveThread(ctx, 1, "RT_1")
+		_ = f.RelabelPR(ctx, 1, []string{"a"}, []string{"b"})
+		if len(paths) < 17 {
 			t.Fatalf("%s: only %d requests reached the fake: %v", repo.Kind, len(paths), paths)
 		}
 		for _, p := range paths {
@@ -659,5 +666,229 @@ func TestLinkedIssuesShouldFailWhenTheFallbackCannotReadThePR(t *testing.T) {
 			is, err := f.LinkedIssues(context.Background(), 12)
 			wantForbidden(t, is, err)
 		})
+	}
+}
+
+// writeCase is a PR/MR write on one forge: the endpoints the fake serves.
+type writeCase struct {
+	name    string
+	at      func(*testing.T, map[string]func(http.ResponseWriter, *http.Request), ...Option) (Forge, *fakeAPI)
+	comment string // where a PR-level comment goes
+	review  string // where a review with no inline comments goes
+}
+
+var writeCases = []writeCase{
+	{"github", githubAt, "/repos/acme/api/issues/9/comments", "/repos/acme/api/pulls/9/reviews"},
+	{"gitlab", gitlabAt, glProject + "/merge_requests/9/notes", glProject + "/merge_requests/9/notes"},
+}
+
+func TestPRCommentShouldPostOnThePullRequest(t *testing.T) {
+	for _, wc := range writeCases {
+		t.Run(wc.name, func(t *testing.T) {
+			f, api := wc.at(t, map[string]func(http.ResponseWriter, *http.Request){
+				"POST " + wc.comment: reply(201, `{"id":1}`),
+			})
+			if err := f.PRComment(context.Background(), 9, "olá <!-- delamain:run=1 kind=summary key=ab -->"); err != nil {
+				t.Fatal(err)
+			}
+			if n := len(api.requests()); n != 1 {
+				t.Fatalf("requests = %+v, want one comment", api.requests())
+			}
+			if b := jsonBody(t, api.find(t, "POST", wc.comment))["body"]; b != "olá <!-- delamain:run=1 kind=summary key=ab -->" {
+				t.Fatalf("body = %v", b)
+			}
+		})
+	}
+}
+
+func TestPostReviewWithoutInlineCommentsShouldPostOnlyTheSummary(t *testing.T) {
+	for _, wc := range writeCases {
+		t.Run(wc.name, func(t *testing.T) {
+			f, api := wc.at(t, map[string]func(http.ResponseWriter, *http.Request){
+				"POST " + wc.review: reply(201, `{"id":1}`),
+			})
+			if err := f.PostReview(context.Background(), 9, ReviewOptions{HeadSHA: "h", BaseSHA: "b", StartSHA: "b", Summary: "all good"}); err != nil {
+				t.Fatal(err)
+			}
+			rs := api.requests()
+			if len(rs) != 1 {
+				t.Fatalf("requests = %+v, want only the summary", rs)
+			}
+			b := jsonBody(t, api.find(t, "POST", wc.review))
+			if b["body"] != "all good" {
+				t.Fatalf("summary body = %v", b)
+			}
+			if cs, ok := b["comments"].([]any); ok && len(cs) > 0 {
+				t.Fatalf("no inline comment was asked for: %v", cs)
+			}
+		})
+	}
+}
+
+func TestReplyShouldPostIntoTheThread(t *testing.T) {
+	t.Run("github review thread", func(t *testing.T) {
+		f, api := githubAt(t, map[string]func(http.ResponseWriter, *http.Request){
+			"POST /graphql":                         reply(200, `{"data":{"node":{"comments":{"nodes":[{"databaseId":555}]}}}}`),
+			"POST /repos/acme/api/pulls/9/comments": reply(201, `{"id":556}`),
+		})
+		if err := f.Reply(context.Background(), 9, "RT_abc", "thanks"); err != nil {
+			t.Fatal(err)
+		}
+		q := jsonBody(t, api.find(t, "POST", "/graphql"))
+		if vars, _ := q["variables"].(map[string]any); vars["id"] != "RT_abc" {
+			t.Fatalf("the thread is looked up by its node id: %v", q)
+		}
+		b := jsonBody(t, api.find(t, "POST", "/repos/acme/api/pulls/9/comments"))
+		if b["body"] != "thanks" || b["in_reply_to"] != float64(555) {
+			t.Fatalf("reply = %v, want a reply to the thread's first comment", b)
+		}
+	})
+	t.Run("github issue comment", func(t *testing.T) {
+		f, api := githubAt(t, map[string]func(http.ResponseWriter, *http.Request){
+			"POST /repos/acme/api/issues/9/comments": reply(201, `{"id":1}`),
+		})
+		if err := f.Reply(context.Background(), 9, "issue-comment:77", "thanks"); err != nil {
+			t.Fatal(err)
+		}
+		if rs := api.requests(); len(rs) != 1 {
+			t.Fatalf("requests = %+v, want one PR comment", rs)
+		}
+		if b := jsonBody(t, api.find(t, "POST", "/repos/acme/api/issues/9/comments"))["body"]; b != "thanks" {
+			t.Fatalf("body = %v", b)
+		}
+	})
+	t.Run("gitlab", func(t *testing.T) {
+		path := glProject + "/merge_requests/9/discussions/d1/notes"
+		f, api := gitlabAt(t, map[string]func(http.ResponseWriter, *http.Request){
+			"POST " + path: reply(201, `{"id":1}`),
+		})
+		if err := f.Reply(context.Background(), 9, "d1", "thanks"); err != nil {
+			t.Fatal(err)
+		}
+		if b := jsonBody(t, api.find(t, "POST", path))["body"]; b != "thanks" {
+			t.Fatalf("body = %v", b)
+		}
+	})
+}
+
+func TestRelabelPRShouldAddAndRemoveLabels(t *testing.T) {
+	t.Run("github", func(t *testing.T) {
+		f, api := githubAt(t, map[string]func(http.ResponseWriter, *http.Request){
+			"POST /repos/acme/api/labels":                            reply(422, ghLabelExists),
+			"POST /repos/acme/api/issues/9/labels":                   reply(200, `[]`),
+			"DELETE /repos/acme/api/issues/9/labels/delamain:review": reply(200, `[]`),
+		})
+		if err := f.RelabelPR(context.Background(), 9, []string{"delamain:reviewed"}, []string{"delamain:review"}); err != nil {
+			t.Fatal(err)
+		}
+		if n := posts(api, "/repos/acme/api/labels"); n != 2 {
+			t.Fatalf("labels ensured = %d, want the added and the removed one", n)
+		}
+		var added []string
+		if err := json.Unmarshal([]byte(api.find(t, "POST", "/repos/acme/api/issues/9/labels").body), &added); err != nil || !slices.Equal(added, []string{"delamain:reviewed"}) {
+			t.Fatalf("added = %v %v", added, err)
+		}
+		api.find(t, "DELETE", "/repos/acme/api/issues/9/labels/delamain:review")
+	})
+	t.Run("gitlab", func(t *testing.T) {
+		path := glProject + "/merge_requests/9"
+		f, api := gitlabAt(t, map[string]func(http.ResponseWriter, *http.Request){
+			"PUT " + path: reply(200, `{"iid":9}`),
+		})
+		if err := f.RelabelPR(context.Background(), 9, []string{"delamain:reviewed", "x"}, []string{"delamain:review"}); err != nil {
+			t.Fatal(err)
+		}
+		if b := jsonBody(t, api.find(t, "PUT", path)); b["add_labels"] != "delamain:reviewed,x" || b["remove_labels"] != "delamain:review" {
+			t.Fatalf("update body = %v", b)
+		}
+
+		f, api = gitlabAt(t, map[string]func(http.ResponseWriter, *http.Request){
+			"PUT " + path: reply(200, `{"iid":9}`),
+		})
+		if err := f.RelabelPR(context.Background(), 9, nil, []string{"delamain:review"}); err != nil {
+			t.Fatal(err)
+		}
+		if b := jsonBody(t, api.find(t, "PUT", path)); b["remove_labels"] != "delamain:review" {
+			t.Fatalf("update body = %v", b)
+		} else if _, ok := b["add_labels"]; ok {
+			t.Fatalf("an empty addition must not be sent: %v", b)
+		}
+	})
+}
+
+// A forge may quote what it rejected; the bodies delamain posts must still stay out of errors,
+// even when they are longer than the error message itself.
+func TestWriteMethodsShouldNeverPutBodiesInErrors(t *testing.T) {
+	sizes := map[string]string{"short": "", "long": strings.Repeat(" and more", maxErrorLen)}
+	for _, repo := range []Repo{{GitHub, "github.com", "acme/api"}, {GitLab, "gitlab.com", "grp/api"}} {
+		for size, pad := range sizes {
+			for _, status := range []int{http.StatusBadRequest, http.StatusUnprocessableEntity} {
+				t.Run(string(repo.Kind)+"/"+size+"/"+strconv.Itoa(status), func(t *testing.T) {
+					srv := newServer(t, func(w http.ResponseWriter, r *http.Request) {
+						b, _ := io.ReadAll(r.Body)
+						if r.URL.Path == "/graphql" {
+							reply(200, `{"data":{"node":{"comments":{"nodes":[{"databaseId":5}]}}}}`)(w, r)
+							return
+						}
+						msg, _ := json.Marshal(map[string]string{"message": "rejected " + string(b)})
+						reply(status, string(msg))(w, r)
+					})
+					f, err := New(repo, "tok", WithBaseURL(srv+"/"), WithBackoff(1))
+					if err != nil {
+						t.Fatal(err)
+					}
+					ctx := context.Background()
+					writes := map[string]func() error{
+						"PostReview": func() error {
+							return f.PostReview(ctx, 9, ReviewOptions{HeadSHA: "h", BaseSHA: "b", StartSHA: "b", Summary: "BODY-summary" + pad,
+								Comments: []InlineComment{{Path: "a.go", Line: 1, Body: "BODY-inline" + pad}}})
+						},
+						"PRComment":           func() error { return f.PRComment(ctx, 9, "BODY-comment"+pad) },
+						"Reply":               func() error { return f.Reply(ctx, 9, "RT_1", "BODY-reply"+pad) },
+						"Reply issue comment": func() error { return f.Reply(ctx, 9, "issue-comment:1", "BODY-reply"+pad) },
+					}
+					for name, write := range writes {
+						err := write()
+						if err == nil {
+							t.Errorf("%s: the forge rejected it, want an error", name)
+							continue
+						}
+						if strings.Contains(err.Error(), "BODY-") {
+							t.Errorf("%s: error leaks a body: %v", name, err)
+						}
+						if !strings.Contains(err.Error(), strconv.Itoa(status)) {
+							t.Errorf("%s: error must keep the status: %v", name, err)
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
+// roundTripFunc is a transport that never reaches a server.
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestWriteMethodsShouldKeepTheErrorChainWhenHidingBodies(t *testing.T) {
+	// A transport that quotes the body it failed to send, like some proxies do.
+	quoting := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		b, _ := io.ReadAll(r.Body)
+		r.Body.Close()
+		return nil, fmt.Errorf("proxy refused %s: %w", b, context.DeadlineExceeded)
+	})}
+	for _, repo := range []Repo{{GitHub, "github.com", "acme/api"}, {GitLab, "gitlab.com", "grp/api"}} {
+		f, err := New(repo, "tok", WithBaseURL("http://forge.invalid/"), WithBackoff(1), WithHTTPClient(quoting))
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = f.PRComment(context.Background(), 9, "BODY-comment")
+		if err == nil || strings.Contains(err.Error(), "BODY-") {
+			t.Errorf("%s: error = %v, want one without the body", repo.Kind, err)
+		}
+		if _, ok := errors.AsType[*url.Error](err); !ok || !errors.Is(err, context.DeadlineExceeded) {
+			t.Errorf("%s: hiding the body must keep the wrapped error: %v", repo.Kind, err)
+		}
 	}
 }

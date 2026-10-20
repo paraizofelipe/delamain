@@ -434,3 +434,109 @@ func TestGitHubThreadsShouldFailWhenPRCommentsCannotBeRead(t *testing.T) {
 	ts, err := f.Threads(context.Background(), 12)
 	wantForbidden(t, ts, err)
 }
+
+func TestGitHubPostReviewShouldSendOneCommentEventWithInlineComments(t *testing.T) {
+	f, api := githubAt(t, map[string]func(http.ResponseWriter, *http.Request){
+		"POST /repos/acme/api/pulls/9/reviews": reply(200, `{"id":1}`),
+	})
+	err := f.PostReview(context.Background(), 9, ReviewOptions{
+		HeadSHA: "head1", BaseSHA: "base1", StartSHA: "base1", Summary: "summary <!-- m -->",
+		Comments: []InlineComment{{Path: "a.go", Line: 12, Body: "nil deref"}, {Path: "b/c.go", Line: 3, Body: "typo"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := len(api.requests()); n != 1 {
+		t.Fatalf("requests = %d, want one review: %+v", n, api.requests())
+	}
+	b := jsonBody(t, api.find(t, "POST", "/repos/acme/api/pulls/9/reviews"))
+	want := map[string]any{
+		"commit_id": "head1", "event": "COMMENT", "body": "summary <!-- m -->",
+		"comments": []any{
+			map[string]any{"path": "a.go", "line": float64(12), "side": "RIGHT", "body": "nil deref"},
+			map[string]any{"path": "b/c.go", "line": float64(3), "side": "RIGHT", "body": "typo"},
+		},
+	}
+	if !reflect.DeepEqual(b, want) {
+		t.Fatalf("review body = %v\nwant %v", b, want)
+	}
+}
+
+func TestGitHubPostReviewShouldNeverSendApproveOrRequestChanges(t *testing.T) {
+	for name, o := range map[string]ReviewOptions{
+		"inline":        {HeadSHA: "h", Summary: "s", Comments: []InlineComment{{Path: "a.go", Line: 1, Body: "APPROVE"}}},
+		"summary only":  {HeadSHA: "h", Summary: "REQUEST_CHANGES"},
+		"empty summary": {HeadSHA: "h"},
+	} {
+		f, api := githubAt(t, map[string]func(http.ResponseWriter, *http.Request){
+			"POST /repos/acme/api/pulls/9/reviews": reply(200, `{"id":1}`),
+		})
+		if err := f.PostReview(context.Background(), 9, o); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		rs := api.requests()
+		if len(rs) == 0 {
+			t.Fatalf("%s: no review was sent", name)
+		}
+		for _, r := range rs {
+			if r.method != http.MethodPost || r.path != "/repos/acme/api/pulls/9/reviews" {
+				t.Errorf("%s: unexpected call %s %s", name, r.method, r.path)
+			}
+			if ev := jsonBody(t, r)["event"]; ev != "COMMENT" {
+				t.Errorf("%s: event = %v, want COMMENT", name, ev)
+			}
+		}
+	}
+}
+
+func TestGitHubReplyShouldFailWhenTheThreadHasNoComments(t *testing.T) {
+	for name, data := range map[string]string{
+		"no comments":    `{"data":{"node":{"comments":{"nodes":[]}}}}`,
+		"missing thread": `{"data":{"node":null}}`,
+	} {
+		f, api := githubAt(t, map[string]func(http.ResponseWriter, *http.Request){
+			"POST /graphql":                         reply(200, data),
+			"POST /repos/acme/api/pulls/9/comments": reply(201, `{"id":1}`),
+		})
+		if err := f.Reply(context.Background(), 9, "RT_gone", "thanks"); err == nil {
+			t.Errorf("%s: a thread with no comment to reply to must be an error", name)
+		}
+		if n := posts(api, "/repos/acme/api/pulls/9/comments"); n != 0 {
+			t.Errorf("%s: nothing may be posted, got %d", name, n)
+		}
+	}
+}
+
+func TestResolveThreadShouldBeNoOpForIssueComments(t *testing.T) {
+	f, api := githubAt(t, map[string]func(http.ResponseWriter, *http.Request){})
+	if err := f.ResolveThread(context.Background(), 9, "issue-comment:77"); err != nil {
+		t.Fatalf("a PR-level comment has nothing to resolve: %v", err)
+	}
+	if rs := api.requests(); len(rs) != 0 {
+		t.Fatalf("requests = %+v, want none", rs)
+	}
+}
+
+func TestGitHubResolveThreadShouldSendResolveReviewThreadMutation(t *testing.T) {
+	f, api := githubAt(t, map[string]func(http.ResponseWriter, *http.Request){
+		"POST /graphql": reply(200, `{"data":{"resolveReviewThread":{"thread":{"isResolved":true}}}}`),
+	})
+	if err := f.ResolveThread(context.Background(), 9, "RT_abc"); err != nil {
+		t.Fatal(err)
+	}
+	r := api.find(t, "POST", "/graphql")
+	q := strings.TrimSpace(jsonQuery(t, r))
+	if !strings.HasPrefix(q, "mutation") || !strings.Contains(q, "resolveReviewThread") {
+		t.Fatalf("query = %q, want the resolveReviewThread mutation", q)
+	}
+	if vars, _ := jsonBody(t, r)["variables"].(map[string]any); vars["threadId"] != "RT_abc" {
+		t.Fatalf("variables = %v, want threadId RT_abc", vars)
+	}
+
+	f, _ = githubAt(t, map[string]func(http.ResponseWriter, *http.Request){
+		"POST /graphql": reply(200, `{"data":null,"errors":[{"message":"Could not resolve to a node"}]}`),
+	})
+	if err := f.ResolveThread(context.Background(), 9, "RT_gone"); err == nil {
+		t.Fatal("a mutation GraphQL rejects must be an error")
+	}
+}

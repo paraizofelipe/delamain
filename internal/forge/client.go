@@ -2,6 +2,7 @@ package forge
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -75,12 +76,13 @@ type caller struct {
 
 const maxErrorLen = 500
 
-// fail builds the error of a failed attempt: an *APIError when the forge answered.
-func (c caller) fail(op string, status int, msg string, err error) error {
+// fail builds the error of a failed attempt: an *APIError when the forge answered. The bodies
+// the attempt sent are hidden before the message is cut, so no part of them survives.
+func (c caller) fail(op string, status int, msg string, err error, bodies []string) error {
 	if status >= 400 {
-		return &APIError{Forge: c.kind, Op: op, Status: status, Message: truncate(redact(strings.TrimSpace(msg), c.token), maxErrorLen)}
+		return &APIError{Forge: c.kind, Op: op, Status: status, Message: truncate(hide(redact(strings.TrimSpace(msg), c.token), bodies), maxErrorLen)}
 	}
-	return &opError{msg: fmt.Sprintf("%s %s: %s", c.kind, op, truncate(redact(err.Error(), c.token), maxErrorLen)), err: err}
+	return &opError{msg: fmt.Sprintf("%s %s: %s", c.kind, op, truncate(hide(redact(err.Error(), c.token), bodies), maxErrorLen)), err: err}
 }
 
 const attempts = 3
@@ -137,6 +139,25 @@ func createdAnyway(ctx context.Context, f interface {
 		return PR{}, err
 	}
 	return *pr, nil
+}
+
+// hide stars out of s the bodies a write sent, as is or JSON-escaped: a forge may quote what
+// it rejected, and bodies never reach errors or logs.
+func hide(s string, bodies []string) string {
+	for _, b := range bodies {
+		if b == "" {
+			continue
+		}
+		s = strings.ReplaceAll(s, b, "***")
+		var esc strings.Builder
+		enc := json.NewEncoder(&esc)
+		enc.SetEscapeHTML(false)
+		if enc.Encode(b) == nil {
+			quoted := strings.TrimSpace(esc.String())
+			s = strings.ReplaceAll(s, quoted[1:len(quoted)-1], "***")
+		}
+	}
+	return s
 }
 
 // truncate cuts s to n characters, never inside a UTF-8 sequence.

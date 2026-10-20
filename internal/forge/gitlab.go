@@ -39,9 +39,9 @@ func newGitLab(repo Repo, token string, o options) (*gitlabClient, error) {
 	return &gitlabClient{caller: caller{GitLab, token, o.backoff}, repo: repo, api: api}, nil
 }
 
-// do runs one API call with retries on gateway and network errors. client-go's own retries
-// are off so both forges follow the same rules.
-func (g *gitlabClient) do(ctx context.Context, op string, call func() (*gogitlab.Response, error)) error {
+// do runs one API call with retries on gateway and network errors, hiding bodies from its
+// error. client-go's own retries are off so both forges follow the same rules.
+func (g *gitlabClient) do(ctx context.Context, op string, call func() (*gogitlab.Response, error), bodies ...string) error {
 	return g.retry(ctx, func() (bool, time.Duration, error) {
 		resp, err := call()
 		if err == nil {
@@ -56,7 +56,7 @@ func (g *gitlabClient) do(ctx context.Context, op string, call func() (*gogitlab
 		} else if errors.Is(err, gogitlab.ErrNotFound) {
 			msg = "Not Found"
 		}
-		return transient(ctx, status, err), 0, g.fail(op, status, msg, err)
+		return transient(ctx, status, err), 0, g.fail(op, status, msg, err, bodies)
 	})
 }
 
@@ -284,4 +284,73 @@ func (g *gitlabClient) Threads(ctx context.Context, n int) ([]Thread, error) {
 		}
 	}
 	return byFirstComment(ts), nil
+}
+
+// PostReview opens one discussion per inline comment, then posts the summary as a note.
+// GitLab has no review object to send them all at once. A comment GitLab rejects with 400, an
+// invalid position, is appended to the summary instead of aborting the review.
+func (g *gitlabClient) PostReview(ctx context.Context, n int, o ReviewOptions) error {
+	text, parts := "text", []string{}
+	if o.Summary != "" {
+		parts = append(parts, o.Summary)
+	}
+	for _, c := range o.Comments {
+		line := int64(c.Line)
+		opt := &gogitlab.CreateMergeRequestDiscussionOptions{Body: &c.Body, Position: &gogitlab.PositionOptions{
+			PositionType: &text, BaseSHA: &o.BaseSHA, StartSHA: &o.StartSHA, HeadSHA: &o.HeadSHA,
+			NewPath: &c.Path, OldPath: &c.Path, NewLine: &line,
+		}}
+		err := g.do(ctx, "post review", func() (*gogitlab.Response, error) {
+			_, resp, err := g.api.Discussions.CreateMergeRequestDiscussion(g.repo.Path, int64(n), opt, gogitlab.WithContext(ctx))
+			return resp, err
+		}, c.Body)
+		if apiErr, ok := errors.AsType[*APIError](err); ok && apiErr.Status == http.StatusBadRequest {
+			parts = append(parts, fmt.Sprintf("`%s:%d`\n\n%s", c.Path, c.Line, c.Body))
+			continue
+		}
+		if err != nil {
+			return err
+		}
+	}
+	if len(parts) == 0 {
+		return nil
+	}
+	return g.PRComment(ctx, n, strings.Join(parts, "\n\n"))
+}
+
+func (g *gitlabClient) PRComment(ctx context.Context, n int, body string) error {
+	return g.do(ctx, "pr comment", func() (*gogitlab.Response, error) {
+		_, resp, err := g.api.Notes.CreateMergeRequestNote(g.repo.Path, int64(n), &gogitlab.CreateMergeRequestNoteOptions{Body: &body}, gogitlab.WithContext(ctx))
+		return resp, err
+	}, body)
+}
+
+func (g *gitlabClient) Reply(ctx context.Context, n int, threadID, body string) error {
+	return g.do(ctx, "reply", func() (*gogitlab.Response, error) {
+		_, resp, err := g.api.Discussions.AddMergeRequestDiscussionNote(g.repo.Path, int64(n), threadID, &gogitlab.AddMergeRequestDiscussionNoteOptions{Body: &body}, gogitlab.WithContext(ctx))
+		return resp, err
+	}, body)
+}
+
+func (g *gitlabClient) ResolveThread(ctx context.Context, n int, threadID string) error {
+	resolved := true
+	return g.do(ctx, "resolve thread", func() (*gogitlab.Response, error) {
+		_, resp, err := g.api.Discussions.ResolveMergeRequestDiscussion(g.repo.Path, int64(n), threadID, &gogitlab.ResolveMergeRequestDiscussionOptions{Resolved: &resolved}, gogitlab.WithContext(ctx))
+		return resp, err
+	})
+}
+
+// RelabelPR relies on GitLab creating unknown labels when they are assigned, like Relabel.
+func (g *gitlabClient) RelabelPR(ctx context.Context, n int, add, remove []string) error {
+	opt := &gogitlab.UpdateMergeRequestOptions{}
+	if len(add) > 0 {
+		opt.AddLabels = (*gogitlab.LabelOptions)(&add)
+	}
+	if len(remove) > 0 {
+		opt.RemoveLabels = (*gogitlab.LabelOptions)(&remove)
+	}
+	return g.do(ctx, "relabel pr", func() (*gogitlab.Response, error) {
+		_, resp, err := g.api.MergeRequests.UpdateMergeRequest(g.repo.Path, int64(n), opt, gogitlab.WithContext(ctx))
+		return resp, err
+	})
 }

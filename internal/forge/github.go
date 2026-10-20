@@ -41,9 +41,9 @@ func newGitHub(repo Repo, token string, o options) (*githubClient, error) {
 	return &githubClient{caller: caller{GitHub, token, o.backoff}, repo: repo, owner: owner, name: name, api: api}, nil
 }
 
-// do runs one API call with retries. Besides gateway and network errors, GitHub's secondary
-// rate limit is transient: it says how long to wait in Retry-After.
-func (g *githubClient) do(ctx context.Context, op string, call func() (*gogithub.Response, error)) error {
+// do runs one API call with retries, hiding bodies from its error. Besides gateway and network
+// errors, GitHub's secondary rate limit is transient: it says how long to wait in Retry-After.
+func (g *githubClient) do(ctx context.Context, op string, call func() (*gogithub.Response, error), bodies ...string) error {
 	return g.retry(ctx, func() (bool, time.Duration, error) {
 		resp, err := call()
 		if err == nil {
@@ -57,12 +57,12 @@ func (g *githubClient) do(ctx context.Context, op string, call func() (*gogithub
 			msg = er.Message
 		}
 		if rl, ok := errors.AsType[*gogithub.AbuseRateLimitError](err); ok {
-			return true, rl.GetRetryAfter(), g.fail(op, status, rl.Message, err)
+			return true, rl.GetRetryAfter(), g.fail(op, status, rl.Message, err, bodies)
 		}
 		if rl, ok := errors.AsType[*gogithub.RateLimitError](err); ok {
 			msg = rl.Message
 		}
-		return transient(ctx, status, err), 0, g.fail(op, status, msg, err)
+		return transient(ctx, status, err), 0, g.fail(op, status, msg, err, bodies)
 	})
 }
 
@@ -291,6 +291,9 @@ func (g *githubClient) LinkedIssues(ctx context.Context, n int) ([]Issue, error)
 	return readIssues(ctx, g, ns)
 }
 
+// issueCommentThread prefixes the thread id of a PR-level comment.
+const issueCommentThread = "issue-comment:"
+
 const reviewThreadsQuery = `query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100){nodes{id isResolved path line comments(first:100){nodes{databaseId author{login} body createdAt}}}}}}}`
 
 // Threads joins the inline review threads, which only GraphQL has, with the PR-level comments
@@ -348,9 +351,76 @@ func (g *githubClient) Threads(ctx context.Context, n int) ([]Thread, error) {
 	}
 	for _, c := range cs {
 		id := strconv.FormatInt(c.GetID(), 10)
-		ts = append(ts, Thread{ID: "issue-comment:" + id, Comments: []Comment{
+		ts = append(ts, Thread{ID: issueCommentThread + id, Comments: []Comment{
 			{ID: id, Author: c.GetUser().GetLogin(), Body: c.GetBody(), CreatedAt: c.GetCreatedAt().Time},
 		}})
 	}
 	return byFirstComment(ts), nil
+}
+
+// reviewEvent is the only review event delamain sends: it never approves nor requests changes.
+const reviewEvent = "COMMENT"
+
+// PostReview sends the summary and every inline comment in a single review.
+func (g *githubClient) PostReview(ctx context.Context, n int, o ReviewOptions) error {
+	event, side := reviewEvent, "RIGHT"
+	req := &gogithub.PullRequestReviewRequest{CommitID: &o.HeadSHA, Body: &o.Summary, Event: &event}
+	bodies := []string{o.Summary}
+	for _, c := range o.Comments {
+		req.Comments = append(req.Comments, &gogithub.DraftReviewComment{Path: &c.Path, Line: &c.Line, Side: &side, Body: &c.Body})
+		bodies = append(bodies, c.Body)
+	}
+	return g.do(ctx, "post review", func() (*gogithub.Response, error) {
+		_, resp, err := g.api.PullRequests.CreateReview(ctx, g.owner, g.name, n, req)
+		return resp, err
+	}, bodies...)
+}
+
+// PRComment uses the issues endpoint: on GitHub's API a PR is an issue.
+func (g *githubClient) PRComment(ctx context.Context, n int, body string) error {
+	return g.do(ctx, "pr comment", func() (*gogithub.Response, error) {
+		_, resp, err := g.api.Issues.CreateComment(ctx, g.owner, g.name, n, gogithub.IssueCommentRequest{Body: body})
+		return resp, err
+	}, body)
+}
+
+const firstThreadCommentQuery = `query($id:ID!){node(id:$id){... on PullRequestReviewThread{comments(first:1){nodes{databaseId}}}}}`
+
+// Reply answers a review thread by replying to its first comment, whose REST id only GraphQL
+// knows. A PR-level comment has no thread on GitHub: the answer is a new PR comment.
+func (g *githubClient) Reply(ctx context.Context, n int, threadID, body string) error {
+	if strings.HasPrefix(threadID, issueCommentThread) {
+		return g.PRComment(ctx, n, body)
+	}
+	var out struct {
+		Node *struct {
+			Comments struct{ Nodes []struct{ DatabaseID int64 } }
+		}
+	}
+	if err := g.graphql(ctx, firstThreadCommentQuery, map[string]any{"id": threadID}, &out); err != nil {
+		return err
+	}
+	if out.Node == nil || len(out.Node.Comments.Nodes) == 0 {
+		return fmt.Errorf("github reply: thread %q has no comment to reply to", threadID)
+	}
+	return g.do(ctx, "reply", func() (*gogithub.Response, error) {
+		_, resp, err := g.api.PullRequests.CreateCommentInReplyTo(ctx, g.owner, g.name, n, body, out.Node.Comments.Nodes[0].DatabaseID)
+		return resp, err
+	}, body)
+}
+
+const resolveThreadMutation = `mutation($threadId:ID!){resolveReviewThread(input:{threadId:$threadId}){thread{isResolved}}}`
+
+// ResolveThread resolves a review thread; a PR-level comment has nothing to resolve.
+func (g *githubClient) ResolveThread(ctx context.Context, _ int, threadID string) error {
+	if strings.HasPrefix(threadID, issueCommentThread) {
+		return nil
+	}
+	var out struct{}
+	return g.graphql(ctx, resolveThreadMutation, map[string]any{"threadId": threadID}, &out)
+}
+
+// RelabelPR is Relabel: on GitHub's API a PR is an issue.
+func (g *githubClient) RelabelPR(ctx context.Context, n int, add, remove []string) error {
+	return g.Relabel(ctx, n, add, remove)
 }

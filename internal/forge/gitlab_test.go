@@ -2,6 +2,7 @@ package forge
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -237,5 +238,141 @@ func TestGitLabThreadsShouldSkipSystemNotes(t *testing.T) {
 	}
 	if q, _ := url.ParseQuery(api.find(t, "GET", glProject+"/merge_requests/12/discussions").query); q.Get("per_page") != "100" {
 		t.Fatalf("must read up to 100 discussions: %v", q)
+	}
+}
+
+func TestGitLabPostReviewShouldCreateOneDiscussionPerCommentWithPosition(t *testing.T) {
+	discussions, notes := glProject+"/merge_requests/9/discussions", glProject+"/merge_requests/9/notes"
+	f, api := gitlabAt(t, map[string]func(http.ResponseWriter, *http.Request){
+		"POST " + discussions: reply(201, `{"id":"d1"}`),
+		"POST " + notes:       reply(201, `{"id":1}`),
+	})
+	err := f.PostReview(context.Background(), 9, ReviewOptions{
+		HeadSHA: "head1", BaseSHA: "base1", StartSHA: "start1", Summary: "summary",
+		Comments: []InlineComment{{Path: "a.go", Line: 12, Body: "nil deref"}, {Path: "b/c.go", Line: 3, Body: "typo"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []map[string]any
+	for _, r := range api.requests() {
+		if r.method == http.MethodPost && r.path == discussions {
+			got = append(got, jsonBody(t, r))
+		}
+	}
+	position := func(path string, line int) map[string]any {
+		return map[string]any{
+			"position_type": "text", "base_sha": "base1", "start_sha": "start1", "head_sha": "head1",
+			"new_path": path, "old_path": path, "new_line": float64(line),
+		}
+	}
+	want := []map[string]any{
+		{"body": "nil deref", "position": position("a.go", 12)},
+		{"body": "typo", "position": position("b/c.go", 3)},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("discussions = %v\nwant %v", got, want)
+	}
+	if b := jsonBody(t, api.find(t, "POST", notes))["body"]; b != "summary" {
+		t.Fatalf("summary note = %v", b)
+	}
+	if rs := api.requests(); rs[len(rs)-1].path != notes {
+		t.Fatalf("the summary goes after the inline comments: %+v", rs)
+	}
+}
+
+func TestGitLabPostReviewShouldMoveRejectedInlineCommentToSummary(t *testing.T) {
+	discussions, notes := glProject+"/merge_requests/9/discussions", glProject+"/merge_requests/9/notes"
+	f, api := gitlabAt(t, map[string]func(http.ResponseWriter, *http.Request){
+		"POST " + discussions: sequence(reply(201, `{"id":"d1"}`), reply(400, `{"message":"400 Bad request - Note {:line_code=>[\"can't be blank\"]}"}`)),
+		"POST " + notes:       reply(201, `{"id":1}`),
+	})
+	err := f.PostReview(context.Background(), 9, ReviewOptions{
+		HeadSHA: "h", BaseSHA: "b", StartSHA: "b", Summary: "summary",
+		Comments: []InlineComment{{Path: "a.go", Line: 12, Body: "nil deref"}, {Path: "b/c.go", Line: 3, Body: "typo here"}},
+	})
+	if err != nil {
+		t.Fatalf("an invalid position must not abort the review: %v", err)
+	}
+	if n := posts(api, discussions); n != 2 {
+		t.Fatalf("discussions = %d, want 2 attempts", n)
+	}
+	summary, _ := jsonBody(t, api.find(t, "POST", notes))["body"].(string)
+	if !strings.HasPrefix(summary, "summary") || !strings.Contains(summary, "b/c.go:3") || !strings.Contains(summary, "typo here") {
+		t.Fatalf("the rejected comment must be appended to the summary: %q", summary)
+	}
+	if strings.Contains(summary, "nil deref") {
+		t.Fatalf("an accepted comment must not be repeated in the summary: %q", summary)
+	}
+}
+
+func TestGitLabPostReviewShouldFailWhenADiscussionFailsWithAnotherStatus(t *testing.T) {
+	discussions, notes := glProject+"/merge_requests/9/discussions", glProject+"/merge_requests/9/notes"
+	f, api := gitlabAt(t, map[string]func(http.ResponseWriter, *http.Request){
+		"POST " + discussions: reply(403, `{"message":"403 Forbidden"}`),
+		"POST " + notes:       reply(201, `{"id":1}`),
+	})
+	err := f.PostReview(context.Background(), 9, ReviewOptions{
+		HeadSHA: "h", BaseSHA: "b", StartSHA: "b", Summary: "summary",
+		Comments: []InlineComment{{Path: "a.go", Line: 12, Body: "nil deref"}},
+	})
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Status != http.StatusForbidden {
+		t.Fatalf("a non-400 failure must abort with its status: %v", err)
+	}
+	if n := posts(api, notes); n != 0 {
+		t.Fatalf("an aborted review must not post the summary, got %d notes", n)
+	}
+}
+
+func TestGitLabResolveThreadShouldMarkTheDiscussionResolved(t *testing.T) {
+	path := glProject + "/merge_requests/9/discussions/d1"
+	f, api := gitlabAt(t, map[string]func(http.ResponseWriter, *http.Request){
+		"PUT " + path: reply(200, `{"id":"d1"}`),
+	})
+	if err := f.ResolveThread(context.Background(), 9, "d1"); err != nil {
+		t.Fatal(err)
+	}
+	if b := jsonBody(t, api.find(t, "PUT", path)); b["resolved"] != true {
+		t.Fatalf("body = %v, want resolved=true", b)
+	}
+}
+
+func TestGitLabPostReviewShouldNotPostAnEmptySummary(t *testing.T) {
+	discussions, notes := glProject+"/merge_requests/9/discussions", glProject+"/merge_requests/9/notes"
+	f, api := gitlabAt(t, map[string]func(http.ResponseWriter, *http.Request){
+		"POST " + discussions: reply(201, `{"id":"d1"}`),
+		"POST " + notes:       reply(201, `{"id":1}`),
+	})
+	err := f.PostReview(context.Background(), 9, ReviewOptions{
+		HeadSHA: "h", BaseSHA: "b", StartSHA: "b",
+		Comments: []InlineComment{{Path: "a.go", Line: 12, Body: "nil deref"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := posts(api, discussions); n != 1 {
+		t.Fatalf("discussions = %d, want 1", n)
+	}
+	if n := posts(api, notes); n != 0 {
+		t.Fatalf("no summary and no rejected comment: want no note, got %d", n)
+	}
+}
+
+func TestGitLabPostReviewShouldPostOnlyTheMovedCommentWhenTheSummaryIsEmpty(t *testing.T) {
+	discussions, notes := glProject+"/merge_requests/9/discussions", glProject+"/merge_requests/9/notes"
+	f, api := gitlabAt(t, map[string]func(http.ResponseWriter, *http.Request){
+		"POST " + discussions: reply(400, `{"message":"400 Bad request - Note {:line_code=>[\"can't be blank\"]}"}`),
+		"POST " + notes:       reply(201, `{"id":1}`),
+	})
+	err := f.PostReview(context.Background(), 9, ReviewOptions{
+		HeadSHA: "h", BaseSHA: "b", StartSHA: "b",
+		Comments: []InlineComment{{Path: "b/c.go", Line: 3, Body: "typo here"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b := jsonBody(t, api.find(t, "POST", notes))["body"]; b != "`b/c.go:3`\n\ntypo here" {
+		t.Fatalf("summary = %q, want just the moved comment", b)
 	}
 }
