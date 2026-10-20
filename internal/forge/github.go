@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 
 	gogithub "github.com/google/go-github/v92/github"
@@ -95,14 +96,56 @@ func (g *githubClient) OpenPR(ctx context.Context, head string) (*PR, error) {
 	return &PR{Number: prs[0].GetNumber(), URL: prs[0].GetHTMLURL(), Draft: prs[0].GetDraft()}, nil
 }
 
-func (g *githubClient) CreatePR(context.Context, PROptions) (PR, error) {
-	return PR{}, errors.New("github create pr: not implemented")
+func (g *githubClient) CreatePR(ctx context.Context, o PROptions) (PR, error) {
+	v, resp, err := g.api.PullRequests.Create(ctx, g.owner, g.name, gogithub.CreatePullRequest{
+		Title: &o.Title, Head: o.Head, Base: o.Base, Body: &o.Body, Draft: &o.Draft,
+	})
+	if err := g.check("create pr", resp, err); err != nil {
+		return PR{}, err
+	}
+	return PR{Number: v.GetNumber(), URL: v.GetHTMLURL(), Draft: v.GetDraft()}, nil
 }
 
-func (g *githubClient) Comment(context.Context, int, string) error {
-	return errors.New("github comment: not implemented")
+func (g *githubClient) Comment(ctx context.Context, n int, body string) error {
+	_, resp, err := g.api.Issues.CreateComment(ctx, g.owner, g.name, n, gogithub.IssueCommentRequest{Body: body})
+	return g.check("comment", resp, err)
 }
 
-func (g *githubClient) Relabel(context.Context, int, []string, []string) error {
-	return errors.New("github relabel: not implemented")
+// Relabel creates missing labels first: GitHub rejects unknown labels on edit.
+func (g *githubClient) Relabel(ctx context.Context, n int, add, remove []string) error {
+	color, desc := "5319e7", "delamain"
+	for _, l := range append(append([]string{}, add...), remove...) {
+		_, resp, err := g.api.Issues.CreateLabel(ctx, g.owner, g.name, gogithub.CreateIssueLabelRequest{Name: l, Color: &color, Description: &desc})
+		if err != nil && !alreadyExists(err) {
+			return g.check("relabel", resp, err)
+		}
+	}
+	if len(add) > 0 {
+		_, resp, err := g.api.Issues.AddLabelsToIssue(ctx, g.owner, g.name, n, add)
+		if err := g.check("relabel", resp, err); err != nil {
+			return err
+		}
+	}
+	for _, l := range remove {
+		// 404: the issue does not carry the label, which is the state asked for.
+		resp, err := g.api.Issues.RemoveLabelForIssue(ctx, g.owner, g.name, n, l)
+		if err != nil && (resp == nil || resp.StatusCode != http.StatusNotFound) {
+			return g.check("relabel", resp, err)
+		}
+	}
+	return nil
+}
+
+// alreadyExists recognizes GitHub's 422 for creating a label that is already there.
+func alreadyExists(err error) bool {
+	er, ok := errors.AsType[*gogithub.ErrorResponse](err)
+	if !ok {
+		return false
+	}
+	for _, e := range er.Errors {
+		if e.Code == "already_exists" {
+			return true
+		}
+	}
+	return false
 }

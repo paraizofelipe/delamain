@@ -2,6 +2,7 @@ package forge
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -188,5 +189,115 @@ func TestGitHubShouldReportAPIErrorsWithStatusAndMessage(t *testing.T) {
 	}
 	if err.Error() != "github issue: 404 Not Found" {
 		t.Fatalf("error = %q", err.Error())
+	}
+}
+
+// jsonBody decodes a recorded request body.
+func jsonBody(t *testing.T, r request) map[string]any {
+	t.Helper()
+	var m map[string]any
+	if err := json.Unmarshal([]byte(r.body), &m); err != nil {
+		t.Fatalf("body %q: %v", r.body, err)
+	}
+	return m
+}
+
+func TestGitHubShouldCreateDraftPR(t *testing.T) {
+	f, api := githubAt(t, map[string]func(http.ResponseWriter, *http.Request){
+		"POST /repos/acme/api/pulls": reply(201, `{"number":42,"html_url":"https://github.com/acme/api/pull/42","draft":true}`),
+	})
+	pr, err := f.CreatePR(context.Background(), PROptions{Head: "fix/7-add", Base: "main", Title: "fix: add", Body: "Closes #7", Draft: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pr != (PR{Number: 42, URL: "https://github.com/acme/api/pull/42", Draft: true}) {
+		t.Fatalf("pr = %+v", pr)
+	}
+	b := jsonBody(t, api.find(t, "POST", "/repos/acme/api/pulls"))
+	if b["head"] != "fix/7-add" || b["base"] != "main" || b["title"] != "fix: add" || b["body"] != "Closes #7" || b["draft"] != true {
+		t.Fatalf("create body = %v", b)
+	}
+}
+
+func TestGitHubShouldOpenReadyPRWhenNotDraft(t *testing.T) {
+	f, api := githubAt(t, map[string]func(http.ResponseWriter, *http.Request){
+		"POST /repos/acme/api/pulls": reply(201, `{"number":1,"html_url":"https://github.com/acme/api/pull/1","draft":false}`),
+	})
+	pr, err := f.CreatePR(context.Background(), PROptions{Head: "feat/x", Base: "main", Title: "feat: x"})
+	if err != nil || pr.Draft {
+		t.Fatalf("pr = %+v, err = %v", pr, err)
+	}
+	if d, ok := jsonBody(t, api.find(t, "POST", "/repos/acme/api/pulls"))["draft"]; ok && d != false {
+		t.Fatal("approved work must not be opened as draft")
+	}
+}
+
+func TestGitHubCommentShouldPostTheBodyAsJSON(t *testing.T) {
+	f, api := githubAt(t, map[string]func(http.ResponseWriter, *http.Request){
+		"POST /repos/acme/api/issues/7/comments": reply(201, `{"id":1}`),
+	})
+	if err := f.Comment(context.Background(), 7, "olá & \"aspas\""); err != nil {
+		t.Fatal(err)
+	}
+	r := api.find(t, "POST", "/repos/acme/api/issues/7/comments")
+	if jsonBody(t, r)["body"] != "olá & \"aspas\"" || strings.Contains(r.query, "ol") {
+		t.Fatalf("comment must travel in the JSON body: %+v", r)
+	}
+}
+
+const ghLabelExists = `{"message":"Validation Failed","errors":[{"resource":"Label","code":"already_exists","field":"name"}]}`
+
+func TestGitHubShouldEnsureLabelsExistBeforeRelabeling(t *testing.T) {
+	f, api := githubAt(t, map[string]func(http.ResponseWriter, *http.Request){
+		"POST /repos/acme/api/labels":                           reply(422, ghLabelExists),
+		"POST /repos/acme/api/issues/7/labels":                  reply(200, `[]`),
+		"DELETE /repos/acme/api/issues/7/labels/delamain:ready": reply(200, `[]`),
+	})
+	if err := f.Relabel(context.Background(), 7, []string{"delamain:in-progress"}, []string{"delamain:ready"}); err != nil {
+		t.Fatalf("an existing label is not an error: %v", err)
+	}
+	var created []string
+	for _, r := range api.requests() {
+		if r.method == "POST" && r.path == "/repos/acme/api/labels" {
+			b := jsonBody(t, r)
+			created = append(created, b["name"].(string))
+			if b["color"] != "5319e7" || b["description"] != "delamain" {
+				t.Errorf("label body = %v", b)
+			}
+		}
+	}
+	if strings.Join(created, ",") != "delamain:in-progress,delamain:ready" {
+		t.Fatalf("labels ensured = %v, want added and removed", created)
+	}
+	var added []string
+	if err := json.Unmarshal([]byte(api.find(t, "POST", "/repos/acme/api/issues/7/labels").body), &added); err != nil || strings.Join(added, ",") != "delamain:in-progress" {
+		t.Fatalf("added = %v %v", added, err)
+	}
+	api.find(t, "DELETE", "/repos/acme/api/issues/7/labels/delamain:ready")
+}
+
+func TestGitHubRelabelShouldIgnoreRemovingALabelTheIssueDoesNotHave(t *testing.T) {
+	f, _ := githubAt(t, map[string]func(http.ResponseWriter, *http.Request){
+		"POST /repos/acme/api/labels":                           reply(201, `{"name":"x"}`),
+		"DELETE /repos/acme/api/issues/7/labels/delamain:ready": reply(404, `{"message":"Label does not exist"}`),
+	})
+	if err := f.Relabel(context.Background(), 7, nil, []string{"delamain:ready"}); err != nil {
+		t.Fatalf("removing an absent label is a no-op: %v", err)
+	}
+}
+
+func TestGitHubRelabelShouldPropagateRealLabelErrors(t *testing.T) {
+	f, api := githubAt(t, map[string]func(http.ResponseWriter, *http.Request){
+		"POST /repos/acme/api/labels": reply(403, `{"message":"Resource not accessible by integration"}`),
+	})
+	err := f.Relabel(context.Background(), 7, []string{"x"}, nil)
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Status != 403 {
+		t.Fatalf("a permission error must not be swallowed: %v", err)
+	}
+	for _, r := range api.requests() {
+		if r.path == "/repos/acme/api/issues/7/labels" {
+			t.Fatal("must not relabel after failing to ensure the label")
+		}
 	}
 }

@@ -2,7 +2,6 @@ package forge
 
 import (
 	"context"
-	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -82,87 +81,6 @@ func TestDetectShouldRejectUnknownHostsAndMalformedURLs(t *testing.T) {
 		if _, err := Detect(u, "auto"); err == nil {
 			t.Errorf("Detect(%q) must fail: unknown forge or no repository path", u)
 		}
-	}
-}
-
-func TestGitHubShouldCreateDraftPRWithBodyOnStdin(t *testing.T) {
-	run := &fakeRunner{out: map[string]string{"pr create": "https://github.com/acme/api/pull/42\n"}}
-	f := NewExec(Repo{GitHub, "github.com", "acme/api"}, run)
-
-	pr, err := f.CreatePR(context.Background(), PROptions{Head: "fix/7-add", Base: "main", Title: "fix: add", Body: "Closes #7", Draft: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if pr.Number != 42 || pr.URL != "https://github.com/acme/api/pull/42" || !pr.Draft {
-		t.Fatalf("pr = %+v", pr)
-	}
-	c := run.find(t, "pr create")
-	for _, want := range [][2]string{{"-R", "acme/api"}, {"--head", "fix/7-add"}, {"--base", "main"}, {"--title", "fix: add"}, {"--body-file", "-"}, {"--draft", ""}} {
-		if !has(c.args, want[0], want[1]) {
-			t.Errorf("missing %s %s in %v", want[0], want[1], c.args)
-		}
-	}
-	if c.stdin != "Closes #7" {
-		t.Errorf("body must go through stdin, got %q", c.stdin)
-	}
-}
-
-func TestGitHubShouldOpenReadyPRWhenNotDraft(t *testing.T) {
-	run := &fakeRunner{out: map[string]string{"pr create": "https://github.com/acme/api/pull/1"}}
-	if _, err := NewExec(Repo{GitHub, "github.com", "acme/api"}, run).CreatePR(context.Background(), PROptions{Head: "feat/x", Base: "main", Title: "feat: x"}); err != nil {
-		t.Fatal(err)
-	}
-	if has(run.find(t, "pr create").args, "--draft", "") {
-		t.Fatal("approved work must not be opened as draft")
-	}
-}
-
-func TestGitHubShouldFailWhenCreateOutputHasNoPRURL(t *testing.T) {
-	run := &fakeRunner{out: map[string]string{"pr create": "something unexpected"}}
-	if _, err := NewExec(Repo{GitHub, "github.com", "acme/api"}, run).CreatePR(context.Background(), PROptions{Head: "feat/x", Base: "main", Title: "t"}); err == nil {
-		t.Fatal("an unparseable result must not be reported as an opened PR")
-	}
-}
-
-func TestGitHubShouldEnsureLabelsExistBeforeRelabeling(t *testing.T) {
-	run := &fakeRunner{errs: map[string]error{"label create": errors.New(`label with name "delamain:ready" already exists; use --force to update`)}}
-	err := NewExec(Repo{GitHub, "github.com", "acme/api"}, run).Relabel(context.Background(), 7, []string{"delamain:in-progress"}, []string{"delamain:ready"})
-	if err != nil {
-		t.Fatalf("an existing label is not an error: %v", err)
-	}
-	created := 0
-	for _, c := range run.calls {
-		if c.args[0] == "label" {
-			created++
-			if has(c.args, "--force", "") {
-				t.Error("must not overwrite the user's label color/description")
-			}
-		}
-	}
-	if created != 2 {
-		t.Errorf("labels ensured = %d, want 2 (added and removed)", created)
-	}
-	c := run.find(t, "issue edit")
-	if !has(c.args, "--add-label", "delamain:in-progress") || !has(c.args, "--remove-label", "delamain:ready") {
-		t.Fatalf("edit args = %v", c.args)
-	}
-}
-
-func TestGitHubRelabelShouldPropagateRealLabelErrors(t *testing.T) {
-	run := &fakeRunner{errs: map[string]error{"label create": errors.New("HTTP 403: Resource not accessible")}}
-	if err := NewExec(Repo{GitHub, "github.com", "acme/api"}, run).Relabel(context.Background(), 7, []string{"x"}, nil); err == nil {
-		t.Fatal("a permission error must not be swallowed")
-	}
-}
-
-func TestGitHubCommentShouldSendBodyOnStdin(t *testing.T) {
-	run := &fakeRunner{}
-	if err := NewExec(Repo{GitHub, "github.com", "acme/api"}, run).Comment(context.Background(), 7, "olá"); err != nil {
-		t.Fatal(err)
-	}
-	c := run.find(t, "issue comment")
-	if c.args[2] != "7" || !has(c.args, "--body-file", "-") || c.stdin != "olá" {
-		t.Fatalf("comment call = %+v", c)
 	}
 }
 
