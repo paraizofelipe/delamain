@@ -30,7 +30,7 @@ func TestVerifyShouldRunEveryGateOnTheHappyPath(t *testing.T) {
 	for _, c := range res.History[0].Checks {
 		names = append(names, c.Name)
 	}
-	want := []string{"worktree-limpa", "tem-commits", "testes-tocados", "matriz-criterios", "lint", "test", "prova-vermelho", "segredos"}
+	want := []string{"worktree-limpa", "tem-commits", "commits", "testes-tocados", "matriz-criterios", "lint", "test", "prova-vermelho", "segredos"}
 	if !slices.Equal(names, want) {
 		t.Fatalf("gates = %v, want %v", names, want)
 	}
@@ -242,5 +242,36 @@ func TestPreflightShouldFailClosedWhenABlockerCannotBeChecked(t *testing.T) {
 	hs.task.Body += "\n\ndepends on #9"
 	if res := hs.run(t); res.Outcome != OutcomeNeedsInfo || !strings.Contains(res.Reason, "#9") {
 		t.Fatalf("got %s: %s", res.Outcome, res.Reason)
+	}
+}
+
+func TestVerifyShouldFailWhenACommitSubjectIsTooLong(t *testing.T) {
+	hs := newHarness(t, happy)
+	hs.h.behave = func(role string, n int, text string) reply {
+		if role == "implementer" && n == 1 {
+			return reply{write: implJSON, mutate: func(g *fakeGit) {
+				g.commitFiles("fix: "+strings.Repeat("a", 80), map[string]string{
+					"calc.go":      "func Add(a, b int) int { return a + b }",
+					"calc_test.go": "func TestAdd(t *testing.T) {}",
+				})
+			}}
+		}
+		return happy(role, n, text)
+	}
+	res := hs.run(t)
+
+	// A rule can measure this, so it must never cost a review iteration.
+	c, ok := checkNamed(res.History[0], "commits")
+	if !ok || c.Passed() {
+		t.Fatalf("commits gate = %+v, want a failure", c)
+	}
+	if !strings.Contains(c.Tail, "limite") {
+		t.Fatalf("the detail must name the limit it broke: %q", c.Tail)
+	}
+	if len(hs.h.prompts["reviewer"]) != 0 {
+		t.Fatal("a commit subject must be fixed before the reviewer is paid to read the diff")
+	}
+	if !strings.Contains(hs.h.prompts["implementer"][1], "commits") {
+		t.Fatal("the implementer must be told which gate rejected the iteration")
 	}
 }
