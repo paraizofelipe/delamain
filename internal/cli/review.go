@@ -42,7 +42,7 @@ Exit codes: 0 reviewed or skipped · 1 interrupted.`,
 				return errors.New("review is disabled: set review.enabled: true in the config")
 			}
 			if cfg.Agent.Harness != config.HarnessClaude {
-				return fmt.Errorf("review requires agent.harness: claude, the only harness that confines the reviewer to reading the PR (got %q)", cfg.Agent.Harness)
+				return reviewHarnessError(cfg.Agent.Harness)
 			}
 			if !slices.Contains(outputFormats, output) {
 				return fmt.Errorf("invalid format %q: use %s", output, strings.Join(outputFormats, "|"))
@@ -81,6 +81,11 @@ Exit codes: 0 reviewed or skipped · 1 interrupted.`,
 	cmd.Flags().StringVar(&repo, "repo", "", "target repository (default: current directory)")
 	addOutputFlag(cmd, &output)
 	return cmd
+}
+
+// reviewHarnessError refuses to review on h: only Claude Code confines the reviewer to the PR.
+func reviewHarnessError(h config.Harness) error {
+	return fmt.Errorf("review requires agent.harness: claude, the only harness that confines the reviewer to reading the PR (got %q)", h)
 }
 
 func reviewPR(ctx context.Context, cfg config.Config, repo string, pr int, fg forge.Forge, user string) (pipeline.Result, error) {

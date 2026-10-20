@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -122,5 +123,26 @@ func TestRecoveredResultShouldFollowTheOutcomeMapping(t *testing.T) {
 		if got := recoveredResult(tc.res); got != tc.want {
 			t.Errorf("%s pr=%q draft=%v: got %q, want %q", tc.res.Outcome, tc.res.PRURL, tc.res.Draft, got, tc.want)
 		}
+	}
+}
+
+func TestDaemonShouldDescribeReviewStateOnStartup(t *testing.T) {
+	cfg := config.Default()
+	cfg.Agent.Harness = config.HarnessOmp
+	if got, err := reviewStartup(cfg); err != nil || got != "review: disabled" {
+		t.Fatalf("review off, on any harness: %q, %v", got, err)
+	}
+	cfg.Review.Enabled, cfg.Agent.Harness, cfg.Forge.Labels.Review = true, config.HarnessClaude, "needs-review"
+	if got, err := reviewStartup(cfg); err != nil || got != "review: enabled (label needs-review)" {
+		t.Fatalf("review on: %q, %v", got, err)
+	}
+}
+
+func TestDaemonShouldRefuseReviewWhenHarnessIsNotClaude(t *testing.T) {
+	cfg := config.Default()
+	cfg.Review.Enabled, cfg.Agent.Harness = true, config.HarnessOmp
+	_, err := reviewStartup(cfg)
+	if err == nil || !strings.Contains(err.Error(), `review requires agent.harness: claude`) || !strings.Contains(err.Error(), `"omp"`) {
+		t.Fatalf("an unconfined harness must not review on its own, err = %v", err)
 	}
 }
