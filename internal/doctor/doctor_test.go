@@ -296,6 +296,13 @@ func TestRunShouldReportTheNotificationServerOrWarnWithoutOne(t *testing.T) {
 		t.Fatalf("notify check = %+v", c)
 	}
 
+	d.Notify = func(context.Context) notify.Probe {
+		return notify.Probe{Backend: "dbus", Err: errors.New("org.freedesktop.Notifications: timeout")}
+	}
+	if c := byName(Run(context.Background(), cfg, d))["notify"]; c.Status != Warn || !strings.Contains(c.Detail, "did not answer: org.freedesktop.Notifications: timeout") {
+		t.Fatalf("a server that does not answer is a warning, not OK: %+v", c)
+	}
+
 	d.Notify = func(context.Context) notify.Probe { return notify.Probe{Backend: "none"} }
 	checks := Run(context.Background(), cfg, d)
 	if c := byName(checks)["notify"]; c.Status != Warn || c.Detail != "no desktop notification server; notifications disabled" {

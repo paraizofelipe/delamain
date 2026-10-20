@@ -255,6 +255,10 @@ func TestNotifyShouldBeOverriddenByEnv(t *testing.T) {
 	if cfg.Notify.Enabled || cfg.Notify.Backend != "macos" || !slices.Equal(cfg.Notify.Events, []string{"halted", "budget"}) {
 		t.Fatalf("env must override the file: %+v", cfg.Notify)
 	}
+	cfg, err = Load(p, envOf(map[string]string{"DELAMAIN_NOTIFY_EVENTS": " halted, ,budget,"}))
+	if err != nil || !slices.Equal(cfg.Notify.Events, []string{"halted", "budget"}) {
+		t.Fatalf("empty segments in DELAMAIN_NOTIFY_EVENTS are skipped: %v %v", cfg.Notify.Events, err)
+	}
 	if _, err := Load(p, envOf(map[string]string{"DELAMAIN_NOTIFY_ENABLED": "maybe"})); err == nil || !strings.Contains(err.Error(), "DELAMAIN_NOTIFY_ENABLED") {
 		t.Fatalf("a non-boolean DELAMAIN_NOTIFY_ENABLED must be rejected, got %v", err)
 	}

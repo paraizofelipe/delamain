@@ -234,10 +234,11 @@ func (r *Runner) finish(ctx context.Context, ru *run, t Task) error {
 	r.deliver(ctx, ru)
 	r.discardEmpty(ctx, ru)
 	r.announce(ctx, ru, t)
-	if !ru.recovered { // the recover toast sums recovered runs up
+	err := r.record(ctx, ru) // writes report.md before a toast offers to open it
+	if !ru.recovered {       // the recover toast sums recovered runs up
 		r.notify(ctx, ru.log, outcomeToast(ru, t, state))
 	}
-	return r.record(ctx, ru)
+	return err
 }
 
 func (r *Runner) runDir(repo string, id int64) string { return RunDir(r.Cfg.Paths.StateDir, repo, id) }

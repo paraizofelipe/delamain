@@ -34,14 +34,17 @@ func (f *fakeExec) last(t *testing.T) []string {
 	return f.calls[len(f.calls)-1]
 }
 
-// macSys is a Mac where terminal-notifier is installed when tn is true.
+// macSys is a Mac where terminal-notifier is installed when tn is true; osascript always is.
 func macSys(x *fakeExec, tn bool) sys {
 	return sys{
 		goos:   "darwin",
 		getenv: env(nil),
 		dial:   func(context.Context, string) (bus, error) { return nil, errors.New("no bus on macOS") },
 		lookPath: func(name string) (string, error) {
-			if tn && name == "terminal-notifier" {
+			switch {
+			case name == "osascript":
+				return "/usr/bin/osascript", nil
+			case tn && name == "terminal-notifier":
 				return "/opt/homebrew/bin/terminal-notifier", nil
 			}
 			return "", errors.New("not found")

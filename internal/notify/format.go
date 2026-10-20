@@ -99,7 +99,7 @@ func FormatHalted(r Run) Message {
 // FormatNeedsInfo is the toast of a task preflight rejected; a local task has no issue to relabel.
 func FormatNeedsInfo(r Run) Message {
 	facts := ""
-	if r.IssueURL != "" {
+	if r.NeedsInfoLabel != "" {
 		facts = "Issue relabeled " + r.NeedsInfoLabel
 	}
 	return Message{

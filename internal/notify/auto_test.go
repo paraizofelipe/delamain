@@ -103,6 +103,29 @@ func TestAutoShouldDisableAndWarnOnceWithoutServer(t *testing.T) {
 	}
 }
 
+func TestMacOSBackendShouldBeDisabledWithoutAProgramToPostWith(t *testing.T) {
+	x := &fakeExec{}
+	s := sys{goos: "linux", getenv: env(nil), run: x.run,
+		lookPath: func(string) (string, error) { return "", errors.New("not found") }}
+	var log syncBuffer
+	c := newWith(config.Notify{Enabled: true, Backend: "macos", Events: allEvents()}, Options{StateDir: t.TempDir(), Log: slogTo(&log)}, s)
+	t.Cleanup(func() { _ = c.Close() })
+	for range 3 {
+		if err := c.Notify(context.Background(), Message{Event: EventHalted, RunID: 1, Title: "t"}); err != nil {
+			t.Fatalf("no sender is not an error: %v", err)
+		}
+	}
+	if c.Backend() != "none" || len(x.calls) != 0 {
+		t.Fatalf("macos outside a Mac sends nothing: backend=%s calls=%q", c.Backend(), x.calls)
+	}
+	if n := strings.Count(log.String(), "notifications disabled"); n != 1 || !strings.Contains(log.String(), "osascript") {
+		t.Fatalf("exactly one warning naming the missing programs, got %d:\n%s", n, log.String())
+	}
+	if p := diagnose(context.Background(), "macos", s); p.Backend != "none" || !errors.Is(p.Err, errNoMacOS) {
+		t.Fatalf("doctor must not report macos without a sender: %+v", p)
+	}
+}
+
 func TestDiagnoseShouldReportTheServerAndItsActions(t *testing.T) {
 	b := &fakeBus{caps: []string{"body", "actions"}, server: [2]string{"mako", "1.9.0"}}
 	p := diagnose(context.Background(), "auto", dbusSys(b))

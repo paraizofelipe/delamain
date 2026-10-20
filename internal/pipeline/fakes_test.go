@@ -375,12 +375,13 @@ func (g *fakeGit) RemoteBranchExists(_ context.Context, _, branch string) (bool,
 
 // fakeForge records deliveries and issue updates.
 type fakeForge struct {
-	open      *forge.PR
-	created   []forge.PROptions
-	createErr error
-	comments  []string
-	relabels  [][2][]string // {add, remove}
-	issues    map[int]forge.Issue
+	open       *forge.PR
+	created    []forge.PROptions
+	createErr  error
+	comments   []string
+	relabels   [][2][]string // {add, remove}
+	relabelErr error
+	issues     map[int]forge.Issue
 }
 
 func (f *fakeForge) Repo() forge.Repo {
@@ -407,7 +408,7 @@ func (f *fakeForge) Comment(_ context.Context, _ int, body string) error {
 }
 func (f *fakeForge) Relabel(_ context.Context, _ int, add, remove []string) error {
 	f.relabels = append(f.relabels, [2][]string{add, remove})
-	return nil
+	return f.relabelErr
 }
 
 // fakeNotifier records every toast and how many issue comments existed when it was sent.
@@ -417,6 +418,7 @@ type fakeNotifier struct {
 	comments []int
 	forge    *fakeForge
 	err      error
+	onSend   func(notify.Message) // inspects the world as the toast goes out
 }
 
 func (n *fakeNotifier) Notify(_ context.Context, m notify.Message) error {
@@ -428,6 +430,9 @@ func (n *fakeNotifier) Notify(_ context.Context, m notify.Message) error {
 		seen = len(n.forge.comments)
 	}
 	n.comments = append(n.comments, seen)
+	if n.onSend != nil {
+		n.onSend(m)
+	}
 	return n.err
 }
 

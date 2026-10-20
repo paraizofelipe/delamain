@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -116,6 +117,51 @@ func TestNeedsInfoShouldNotify(t *testing.T) {
 	}
 	if len(m.Actions) == 0 || m.Actions[0].Target != issueURL {
 		t.Fatalf("default opens the issue: %+v", m.Actions)
+	}
+}
+
+func TestNeedsInfoShouldNotClaimTheRelabelWhenItFailed(t *testing.T) {
+	hs := newHarness(t, happy)
+	n := withNotifier(hs)
+	n.forge.relabelErr = errors.New("HTTP 502")
+	hs.task.Body = "Só uma frase vaga."
+	hs.run(t)
+
+	m, _ := only(t, n, notify.EventNeedsInfo)
+	if m.Body != "Fix add" {
+		t.Fatalf("a failed relabel must not be announced: %q", m.Body)
+	}
+	if len(m.Actions) == 0 || m.Actions[0].Target != issueURL {
+		t.Fatalf("the issue still opens on click: %+v", m.Actions)
+	}
+}
+
+func TestOutcomeToastShouldBeSentAfterTheReportIsWritten(t *testing.T) {
+	hs := newHarness(t, func(role string, n int, text string) reply {
+		if role == "reviewer" { // halts the run: its toast offers the report
+			return reply{write: reviewJSON(""), mutate: func(g *fakeGit) { g.commit("refactor: reviewer sneaks a fix") }}
+		}
+		return happy(role, n, text)
+	})
+	n := withNotifier(hs)
+	reports := map[notify.Event]bool{}
+	n.onSend = func(m notify.Message) {
+		for _, a := range m.Actions {
+			if a.Key == "open-report" {
+				_, err := os.Stat(a.Target)
+				reports[m.Event] = err == nil
+			}
+		}
+	}
+	hs.run(t)
+
+	if len(reports) == 0 {
+		t.Fatalf("an outcome toast must offer the report: %+v", n.sent)
+	}
+	for e, ok := range reports {
+		if !ok {
+			t.Fatalf("the %s toast offers report.md before it exists", e)
+		}
 	}
 }
 

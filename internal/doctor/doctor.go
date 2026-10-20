@@ -147,6 +147,9 @@ func Run(ctx context.Context, cfg config.Config, d Deps) []Check {
 func notifyCheck(p notify.Probe) Check {
 	switch p.Backend {
 	case config.NotifyDBus:
+		if p.Err != nil {
+			return Check{"notify", Warn, fmt.Sprintf("dbus: notification server did not answer: %v", p.Err)}
+		}
 		actions := "actions supported"
 		if !p.Actions {
 			actions = "no actions (clicks disabled)"

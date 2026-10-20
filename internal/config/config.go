@@ -332,7 +332,9 @@ func applyEnv(cfg *Config, getenv func(string) string) error {
 	if v := getenv("DELAMAIN_NOTIFY_EVENTS"); v != "" {
 		cfg.Notify.Events = nil
 		for e := range strings.SplitSeq(v, ",") {
-			cfg.Notify.Events = append(cfg.Notify.Events, strings.TrimSpace(e))
+			if e = strings.TrimSpace(e); e != "" {
+				cfg.Notify.Events = append(cfg.Notify.Events, e)
+			}
 		}
 	}
 	ints := map[string]*int{

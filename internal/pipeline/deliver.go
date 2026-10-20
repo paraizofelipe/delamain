@@ -137,31 +137,37 @@ func (r *Runner) needsInfo(ctx context.Context, t Task, problems []string, res *
 		fmt.Fprintf(&b, "- %s\n", p)
 	}
 	fmt.Fprintf(&b, "\nAjuste a issue e recoloque a label `%s`.", l.Ready)
-	r.issueUpdate(ctx, t, res, []string{l.NeedsInfo}, []string{l.Ready, l.InProgress}, b.String())
+	relabeled := r.issueUpdate(ctx, t, res, []string{l.NeedsInfo}, []string{l.Ready, l.InProgress}, b.String())
 	n := notify.Run{Repo: t.Repo, Ref: t.Ref, Title: t.Title}
 	if r.Forge != nil && t.Issue != 0 {
-		n.IssueURL, n.NeedsInfoLabel = t.URL, l.NeedsInfo
+		n.IssueURL = t.URL
+	}
+	if relabeled {
+		n.NeedsInfoLabel = l.NeedsInfo
 	}
 	r.notify(ctx, r.Log, notify.FormatNeedsInfo(n))
 }
 
 // issueUpdate relabels and comments on the task's issue. Forge hiccups here never fail the run:
-// they are logged and reported as warnings.
-func (r *Runner) issueUpdate(ctx context.Context, t Task, res *Result, add, remove []string, comment string) {
+// they are logged and reported as warnings. It reports whether the labels were applied.
+func (r *Runner) issueUpdate(ctx context.Context, t Task, res *Result, add, remove []string, comment string) bool {
 	if r.Forge == nil || t.Issue == 0 {
-		return
+		return false
 	}
+	relabeled := true
 	if err := r.Forge.Relabel(ctx, t.Issue, add, remove); err != nil {
 		r.Log.Warn("could not relabel issue", "issue", t.Issue, "err", err)
 		res.Warnings = append(res.Warnings, "labels da issue: "+err.Error())
+		relabeled = false
 	}
 	if comment == "" {
-		return
+		return relabeled
 	}
 	if err := r.Forge.Comment(ctx, t.Issue, comment); err != nil {
 		r.Log.Warn("could not comment on issue", "issue", t.Issue, "err", err)
 		res.Warnings = append(res.Warnings, "comentário na issue: "+err.Error())
 	}
+	return relabeled
 }
 
 var conventional = regexp.MustCompile(`^(feat|fix|chore|docs|refactor|test|ci|perf|build|style)(\([^)]+\))?!?: `)

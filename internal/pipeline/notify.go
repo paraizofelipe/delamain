@@ -31,7 +31,7 @@ func notifyRun(ru *run, t Task, state store.RunState) notify.Run {
 		PRURL:   ru.res.PRURL, Draft: ru.res.Draft, IssueURL: t.URL, Reason: ru.res.Reason,
 	}
 	if ru.dir != "" {
-		n.ReportPath = filepath.Join(ru.dir, "report.md") // written by record, right after the toast
+		n.ReportPath = filepath.Join(ru.dir, "report.md") // written by record, right before the toast
 	}
 	return n
 }
