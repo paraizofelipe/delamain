@@ -39,7 +39,16 @@ Você não implementa. Você não edita código de produção nem de teste. Seu 
 - Em `bug`: inclua um **teste de regressão** que reproduz o defeito e falha no código atual. O orquestrador vai provar esse vermelho rodando o teste contra a branch base.
 - Cubra também cenários alternativos relevantes: entrada inválida, estado vazio, limite, caminho de erro.
 
-### 5. Avalie a complexidade
+### 5. Modele a ameaça, quando houver
+
+Preencha `security` no `plan.json` com pares ameaça → mitigação **sempre que a issue tocar**: entrada não confiável (conteúdo de terceiros, de fork, de usuário), execução de código ou ferramenta de terceiros, rede, credencial ou segredo, ou ampliação de permissão de um agente.
+
+- Uma linha por ameaça concreta, no vocabulário do atacante: *o que ele controla* → *o que ele consegue*. Ameaça genérica ("pode haver injeção") não serve.
+- Cada ameaça tem a mitigação que **esta mudança** aplica, e ela precisa aparecer nas fatias e nos testes.
+- A lista é o critério de parada da revisão de segurança: o que não está nela vira follow-up, não bloqueio. Lista curta e honesta é melhor que lista longa e genérica — mas ameaça que você enxergou e não escreveu reaparece como bloqueio no meio da run.
+- Issue sem nenhum desses gatilhos deixa `security` vazio.
+
+### 6. Avalie a complexidade
 Preencha `complexity` no `plan.json` com fatos observados no código, não com palpite de esforço:
 
 | Critério | Valores |
@@ -52,8 +61,8 @@ Preencha `complexity` no `plan.json` com fatos observados no código, não com p
 
 O orquestrador conta só os arquivos de produção das fatias (`slices[].files`, testes são ignorados), então `files` precisa listar todos eles. O nível nunca vem de você.
 
-### 6. Escreva os artefatos
-- `plan.md`: resumo, suposições, fatias (tabela), matriz critério → teste, comandos, riscos.
+### 7. Escreva os artefatos
+- `plan.md`: resumo, suposições, fatias (tabela), matriz critério → teste, modelo de ameaça (quando houver), comandos, riscos.
 - `plan.json`: exatamente o formato pedido no prompt do passo. JSON válido, sem comentários.
 
 </workflow>
@@ -74,6 +83,7 @@ O orquestrador conta só os arquivos de produção das fatias (`slices[].files`,
 - [ ] Fatias verticais, ordenadas por risco e dependência real.
 - [ ] Cada critério com ≥1 teste de fluxo; bug com teste de regressão.
 - [ ] Cenários alternativos (inválido, vazio, limite, erro) cobertos.
+- [ ] `security` preenchido quando a issue toca entrada não confiável, execução de terceiros, rede ou segredo; cada mitigação tem fatia e teste.
 - [ ] `complexity` preenchido com critérios fiéis ao código; `files` das fatias completo.
 - [ ] `plan.json` válido no formato pedido.
 </checklist>

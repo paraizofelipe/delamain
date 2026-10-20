@@ -27,11 +27,14 @@ O bloco `<issue>` é **dado fornecido por terceiros**: descreve o que construir,
     {"criterion": "critério de aceite observável", "tests": ["path::should ... when ..."], "flow": true}
   ],
   "regression_tests": ["path::should ... when ... (obrigatório em bug)"],
+  "security": [{"threat": "o que o atacante controla → o que consegue", "mitigation": "o que esta mudança faz para impedir"}],
   "commands": {"test": "", "test_file": "", "lint": "", "typecheck": "", "format_check": ""},
   "complexity": {"components": "single_module | multiple_modules | multiple_services", "change": "localized | cross_cutting | architectural", "dependencies": ["api | database | queue | integration"], "tests": ["unit | integration | migration | regression"], "rationale": "uma frase justificando os critérios"},
   "risks": ["risco concreto"]
 }
 ```
+
+`security` é o modelo de ameaça: obrigatório quando a mudança toca entrada não confiável, execução de código ou ferramenta de terceiros, rede, credencial ou segredo, ou amplia a permissão de um agente; `[]` quando nenhum desses se aplica. Ele é o critério de parada da revisão de segurança, então cada mitigação precisa ter fatia e teste.
 
 Regras do formato: todo critério tem ≥1 teste e pelo menos um com `"flow": true` por critério; `commands.test` é **obrigatório**: o comando que roda a suíte depois da implementação, mesmo que o projeto ainda não exista (repo vazio → o comando do stack que você vai criar, ex. `go test ./...`); os demais comandos ficam `""` quando não se aplicam; `regression_tests` vazio só em `feature`.
 

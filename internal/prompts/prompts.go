@@ -131,7 +131,9 @@ type StageData struct {
 	PlanJSONPath  string
 	Feedback      string
 	Verify        string
-	BudgetLeft    string
+	// PrevReview digests the previous iteration's review so the next one does not move the bar.
+	PrevReview string
+	BudgetLeft string
 	// Review stages only.
 	PR           PR
 	LinkedIssues []Issue
@@ -152,6 +154,7 @@ func SampleStageData() StageData {
 		PlanJSONPath:  "/tmp/run/plan.json",
 		Feedback:      "- go test: TestX failed",
 		Verify:        "lint ok · test 10 passed",
+		PrevReview:    "- [minor · standards · julgamento] calc.go:7 — nome misterioso",
 		BudgetLeft:    "1.2M tokens",
 		PR: PR{
 			Number: 42, URL: "https://example.invalid/pull/42", Title: "Sample PR", Body: "Closes #41", Author: "octocat",
@@ -165,7 +168,7 @@ func SampleStageData() StageData {
 }
 
 // Delimiter tags wrapping untrusted text inside stage templates.
-var delimiters = []string{"issue", "feedback", "verify", "pr", "threads", "memory"}
+var delimiters = []string{"issue", "feedback", "verify", "prev_review", "pr", "threads", "memory"}
 
 // neutralize stops untrusted text (issue bodies, tool output) from closing a delimiter
 // tag early and smuggling instructions outside it.
@@ -191,6 +194,7 @@ func (s *Set) Render(stage string, data StageData) (string, error) {
 	data.Issue.Body = neutralize(data.Issue.Body)
 	data.Feedback = neutralize(data.Feedback)
 	data.Verify = neutralize(data.Verify)
+	data.PrevReview = neutralize(data.PrevReview)
 	for _, f := range []*string{&data.PR.Title, &data.PR.Body, &data.PR.Author, &data.PR.BaseRef, &data.PR.HeadRef} {
 		*f = neutralize(*f)
 	}

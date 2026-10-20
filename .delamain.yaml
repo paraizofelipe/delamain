@@ -1,0 +1,4 @@
+# Gates do orquestrador para este repositório. Os comandos vêm do stack (go.mod).
+gates:
+  # Assunto de commit com menos de 70 caracteres.
+  subject_limit: 69

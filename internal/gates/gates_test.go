@@ -227,3 +227,51 @@ func TestParseRepoConfigShouldKeepReadingOnlyTheFirstDocumentLikeLoadRepoConfig(
 		t.Fatalf("issue runs read the same config as before: %+v %v", rc, err)
 	}
 }
+
+func TestCommitsShouldFailWhenASubjectExceedsTheLimit(t *testing.T) {
+	long := strings.Repeat("a", 71)
+	ok, detail := Commits([]string{"abc1234 fix: short enough", "def5678 fix: " + long}, 0)
+	if ok {
+		t.Fatal("a subject past the limit must fail the gate, not reach the reviewer")
+	}
+	if !strings.Contains(detail, "def5678") || !strings.Contains(detail, "limite 72") {
+		t.Fatalf("detail must name the commit and the limit it broke: %q", detail)
+	}
+	if strings.Contains(detail, "abc1234") {
+		t.Fatalf("a compliant subject must not be reported: %q", detail)
+	}
+}
+
+func TestCommitsShouldCountCharactersNotBytes(t *testing.T) {
+	// 72 accented characters are 144 bytes: counting bytes would reject a valid pt-BR subject.
+	ok, detail := Commits([]string{"abc1234 " + strings.Repeat("ã", 72)}, 0)
+	if !ok {
+		t.Fatalf("a 72-character subject is within the limit: %q", detail)
+	}
+	if ok, _ := Commits([]string{"abc1234 " + strings.Repeat("ã", 73)}, 0); ok {
+		t.Fatal("73 characters must still break the 72-character limit")
+	}
+}
+
+func TestCommitsShouldUseTheRepoConfiguredLimitOverTheDefault(t *testing.T) {
+	subject := strings.Repeat("a", 70) // fine by default, too long for a repo that documents 69
+	if ok, _ := Commits([]string{"abc1234 " + subject}, 0); !ok {
+		t.Fatal("70 characters pass the default limit of 72")
+	}
+	ok, detail := Commits([]string{"abc1234 " + subject}, 69)
+	if ok || !strings.Contains(detail, "limite 69") {
+		t.Fatalf("the repository's stricter limit must win: ok=%v detail=%q", ok, detail)
+	}
+}
+
+func TestLoadRepoConfigShouldReadTheSubjectLimit(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, map[string]string{RepoConfigFile: "gates:\n  subject_limit: 69\n"})
+	rc, err := LoadRepoConfig(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rc.Gates.SubjectLimit != 69 {
+		t.Fatalf("SubjectLimit = %d, want 69", rc.Gates.SubjectLimit)
+	}
+}

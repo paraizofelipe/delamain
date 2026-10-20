@@ -83,6 +83,14 @@ func (c Complexity) validate() []error {
 	return errs
 }
 
+// Threat is one entry of the plan's threat model: what an attacker could do and what stops them.
+// Writing them down bounds the security review, which otherwise has no stopping criterion and
+// mines a new layer every iteration.
+type Threat struct {
+	Threat     string `json:"threat"`
+	Mitigation string `json:"mitigation"`
+}
+
 type Plan struct {
 	Summary         string       `json:"summary"`
 	Kind            string       `json:"kind"`
@@ -92,7 +100,10 @@ type Plan struct {
 	RegressionTests []string     `json:"regression_tests"`
 	Commands        Commands     `json:"commands"`
 	Complexity      Complexity   `json:"complexity"`
-	Risks           []string     `json:"risks"`
+	// Security is the threat model; empty when the change touches no untrusted input, no
+	// third-party execution, no network and no secret.
+	Security []Threat `json:"security"`
+	Risks    []string `json:"risks"`
 }
 
 // Validate enforces the contract: every acceptance criterion is proven by a test.
@@ -133,6 +144,11 @@ func (p Plan) Validate() error {
 	}
 	if strings.TrimSpace(p.Commands.Test) == "" {
 		errs = append(errs, errors.New("commands.test is empty: nothing would verify the change"))
+	}
+	for i, t := range p.Security {
+		if strings.TrimSpace(t.Threat) == "" || strings.TrimSpace(t.Mitigation) == "" {
+			errs = append(errs, fmt.Errorf("security %d: threat and mitigation are required", i+1))
+		}
 	}
 	errs = append(errs, p.Complexity.validate()...)
 	return errors.Join(errs...)

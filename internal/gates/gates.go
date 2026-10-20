@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"go.yaml.in/yaml/v3"
 
@@ -128,6 +129,8 @@ type RepoConfig struct {
 type RepoGates struct {
 	RedProof     string `yaml:"red_proof"`
 	RequireTests *bool  `yaml:"require_tests"`
+	// SubjectLimit caps a commit subject in characters; 0 means DefaultSubjectLimit.
+	SubjectLimit int `yaml:"subject_limit"`
 }
 
 const RepoConfigFile = ".delamain.yaml"
@@ -186,6 +189,34 @@ func IsTest(file string) bool {
 
 // IsProduction is source code that is not a test: what a behavior change touches.
 func IsProduction(file string) bool { return codeExt[path.Ext(file)] && !IsTest(file) }
+
+// DefaultSubjectLimit is git's conventional soft cap for a commit subject. A repository that
+// documents a stricter one sets gates.subject_limit in .delamain.yaml.
+const DefaultSubjectLimit = 72
+
+// Commits fails when a commit subject is longer than limit (0 = DefaultSubjectLimit). Measuring
+// this here keeps it off the reviewer's plate: it costs an iteration to have an LLM report what a
+// rule can decide, and run 12 of this repository spent one on a 73-character subject.
+// Each entry comes from Git.CommitsSince as "<short sha> <subject>".
+func Commits(commits []string, limit int) (bool, string) {
+	if limit <= 0 {
+		limit = DefaultSubjectLimit
+	}
+	var long []string
+	for _, c := range commits {
+		sha, subject, ok := strings.Cut(c, " ")
+		if !ok {
+			continue
+		}
+		if n := utf8.RuneCountInString(subject); n > limit {
+			long = append(long, fmt.Sprintf("%s: assunto com %d caracteres (limite %d): %s", sha, n, limit, subject))
+		}
+	}
+	if len(long) == 0 {
+		return true, ""
+	}
+	return false, strings.Join(long, "\n")
+}
 
 // TestsTouched fails when production code changed but no test file did.
 func TestsTouched(changed []string) (bool, string) {

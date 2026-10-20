@@ -23,6 +23,37 @@ func reviewFeedback(r artifacts.Review) string {
 	return strings.TrimSpace(b.String())
 }
 
+// findingKey fingerprints a finding so two reviews can be compared. The message gets reworded
+// between iterations and the line moves with the code, so neither belongs in the identity.
+func findingKey(axis string, f artifacts.Finding) string {
+	return axis + "|" + f.File + "|" + f.Category
+}
+
+// prevReviewDigest lists what the last review already said, blocking and not. The next reviewer
+// reads it to tell a blocker it genuinely could not see before from one it is only now promoting:
+// the diff grows every iteration, and a bar that keeps moving never lets the run converge.
+func prevReviewDigest(r artifacts.Review) string {
+	var b strings.Builder
+	for _, a := range r.Axes {
+		for _, f := range a.Findings {
+			fmt.Fprintf(&b, "- [%s · %s · %s] %s:%d — %s\n", f.Severity, a.Axis, f.Category, f.File, f.Line, firstLine(f.Message, 200))
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
+// firstLine trims a finding's message to one bounded line: the digest is context, not the report.
+func firstLine(s string, max int) string {
+	s = strings.TrimSpace(s)
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[:i]
+	}
+	if r := []rune(s); len(r) > max {
+		return string(r[:max]) + "…"
+	}
+	return s
+}
+
 func renderReport(res Result, task prompts.Issue) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# delamain run %d — %s %s\n\n", res.RunID, task.Ref, task.Title)

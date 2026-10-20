@@ -336,7 +336,8 @@ func (r *Runner) execute(ctx context.Context, ru *run, repo string, t Task) erro
 	ru.cmds, ru.res.CommandSources = gates.Effective(ru.repoCfg.Commands, ru.stack.Commands, plan.Commands)
 	ru.log.Info("gate commands", "run", ru.rec.ID, "stack", ru.stack.Name, "sources", ru.res.CommandSources)
 
-	feedback := ""
+	feedback, digest := "", ""
+	seenBlockers, diverging := map[string]bool{}, 0
 	for iter := 1; iter <= ru.maxIter; iter++ {
 		it := Iteration{N: iter, Feedback: feedback}
 		ru.rec.Iteration, ru.res.Iterations = iter, iter
@@ -369,7 +370,7 @@ func (r *Runner) execute(ctx context.Context, ru *run, repo string, t Task) erro
 		if err := r.setState(ctx, ru, store.StateReview); err != nil {
 			return err
 		}
-		review, err := r.review(ctx, ru, iter, filepath.Join(iterDir, "review.json"), checks)
+		review, err := r.review(ctx, ru, iter, filepath.Join(iterDir, "review.json"), checks, digest)
 		if err != nil {
 			return err
 		}
@@ -379,12 +380,52 @@ func (r *Runner) execute(ctx context.Context, ru *run, repo string, t Task) erro
 			ru.res.Outcome = OutcomeApproved
 			return r.setState(ctx, ru, store.StateDeliver)
 		}
-		feedback = reviewFeedback(review)
+		feedback, digest = reviewFeedback(review), prevReviewDigest(review)
+		if markBlockers(seenBlockers, review) {
+			diverging++
+		} else {
+			diverging = 0
+		}
+		if diverging >= divergingReviews {
+			ru.log.Info("review divergente", "run", ru.rec.ID, "reviews", diverging)
+			ru.res.Outcome = OutcomeExhausted
+			ru.res.Reason = fmt.Sprintf("review divergente: %d iterações seguidas com bloqueantes inéditos", diverging)
+			return r.setState(ctx, ru, store.StateDeliverDraft)
+		}
 	}
 	ru.res.Outcome = OutcomeExhausted
 	ru.res.Reason = fmt.Sprintf("%d iterações sem aprovação", ru.maxIter)
 	return r.setState(ctx, ru, store.StateDeliverDraft)
 }
+
+// divergingReviews is how many reviews in a row may raise only brand-new blockers before the run
+// is handed to a human. A reviewer that never repeats itself is auditing one layer deeper each
+// time, not converging: the iterations cost full budget and the implementer never learns when it
+// is done. Run 12 of this repository burned five iterations that way.
+const divergingReviews = 3
+
+// markBlockers records the review's blocking findings and reports whether every one of them is
+// new to the run. Findings are compared by findingKey, not by message.
+func markBlockers(seen map[string]bool, r artifacts.Review) bool {
+	allNew := true
+	for _, a := range r.Axes {
+		for _, f := range a.Findings {
+			if !f.Blocking() {
+				continue
+			}
+			k := findingKey(a.Axis, f)
+			if seen[k] {
+				allNew = false
+			}
+			seen[k] = true
+		}
+	}
+	return allNew
+}
+
+// plannedFilesWarning is the plan size above which a phase is worth splitting: past it the review
+// grows a diff it cannot audit in one pass.
+const plannedFilesWarning = 10
 
 // applyComplexity classifies the plan and sizes the run's iterations and per-issue budget by its
 // level. The budget is checked right away: planning may already have spent a smaller profile.
@@ -394,6 +435,10 @@ func (r *Runner) applyComplexity(ctx context.Context, ru *run) error {
 	ru.rec.MaxIterations, ru.rec.PerIssue, ru.rec.Complexity = ru.maxIter, ru.perIssue, string(a.Level)
 	ru.res.Complexity = a.Summary()
 	ru.log.Info("complexity", "run", ru.rec.ID, "assessment", ru.res.Complexity, "max_iterations", ru.maxIter, "per_issue", ru.perIssue)
+	if a.Files > plannedFilesWarning {
+		ru.res.Warnings = append(ru.res.Warnings, fmt.Sprintf(
+			"o plano toca %d arquivos de produção (acima de %d): considere dividir a issue em fases menores", a.Files, plannedFilesWarning))
+	}
 	if err := r.Store.UpdateRun(ctx, ru.rec); err != nil {
 		return err
 	}
@@ -594,7 +639,7 @@ func (r *Runner) stageData(ru *run, iter int, artifact, feedback string) prompts
 	}
 }
 
-func (r *Runner) review(ctx context.Context, ru *run, iter int, artifact string, checks []CheckResult) (artifacts.Review, error) {
+func (r *Runner) review(ctx context.Context, ru *run, iter int, artifact string, checks []CheckResult, prev string) (artifacts.Review, error) {
 	head, err := r.Git.Head(ctx, ru.repo.Worktree)
 	if err != nil {
 		return artifacts.Review{}, err
@@ -604,7 +649,7 @@ func (r *Runner) review(ctx context.Context, ru *run, iter int, artifact string,
 		return artifacts.Review{}, err
 	}
 	data := r.stageData(ru, iter, artifact, "")
-	data.Verify = verifySummary(checks)
+	data.Verify, data.PrevReview = verifySummary(checks), prev
 	review, err := stepArtifact[artifacts.Review](ctx, r, ru, "reviewer", "review", data)
 	if err != nil {
 		return review, err
