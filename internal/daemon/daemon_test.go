@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"slices"
+	"strconv"
 	"sync"
 	"testing"
 
@@ -13,11 +14,14 @@ import (
 	"github.com/paraizo/delamain/internal/pipeline"
 )
 
-// stubForge only lists ready issues.
+const reviewLabel = "delamain:review"
+
+// stubForge only lists ready issues and the PRs labeled reviewLabel.
 type stubForge struct {
 	forge.Forge
 	mu    sync.Mutex
 	ready []forge.Issue
+	prs   []forge.PRDetail
 	err   error
 }
 
@@ -25,6 +29,19 @@ func (s *stubForge) ListReady(context.Context, string) ([]forge.Issue, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return slices.Clone(s.ready), s.err
+}
+
+func (s *stubForge) ListPRs(_ context.Context, label string) ([]forge.PRDetail, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if label != reviewLabel {
+		return nil, s.err
+	}
+	return slices.Clone(s.prs), s.err
+}
+
+func pr(n int, head string) forge.PRDetail {
+	return forge.PRDetail{Number: n, Open: true, HeadSHA: head}
 }
 
 func issues(ns ...int) []forge.Issue {
@@ -62,6 +79,10 @@ func (r *runner) run(ctx context.Context, t pipeline.Task, _ forge.Forge) (pipel
 	r.active--
 	r.mu.Unlock()
 	return pipeline.Result{Outcome: pipeline.OutcomeApproved}, nil
+}
+
+func (r *runner) review(ctx context.Context, repo string, n int, _ forge.Forge) (pipeline.Result, error) {
+	return r.run(ctx, pipeline.Task{Repo: repo, Ref: "#pr:" + strconv.Itoa(n)}, nil)
 }
 
 func (r *runner) snapshot() []string {
@@ -113,6 +134,158 @@ func TestPollShouldKeepProcessingReadyIssuesAsBefore(t *testing.T) {
 	}
 	close(r.release)
 	d.Wait()
+}
+
+// reviewDaemon runs issues and, with review enabled, the labeled PRs; lastHead maps "<repo>#<n>"
+// to the head its last review saw.
+func reviewDaemon(r *runner, parallel int, lastHead map[string]string, sources ...Source) *Daemon {
+	reviews := ReviewJobs{
+		Enabled: true, Label: reviewLabel, Run: r.review,
+		LastHead: func(_ context.Context, repo string, n int) (string, error) {
+			return lastHead[repo+"#"+strconv.Itoa(n)], nil
+		},
+	}
+	return New(Options{
+		Sources: sources, MaxParallel: parallel, Log: discard,
+		Producers: Producers(discard, IssueJobs{Label: "delamain:ready", Run: r.run}, reviews),
+	})
+}
+
+func TestPollShouldStartReviewJobsForLabeledPRs(t *testing.T) {
+	r := newRunner()
+	d := reviewDaemon(r, 4, nil,
+		Source{Repo: "/a", Forge: &stubForge{prs: []forge.PRDetail{pr(4, "aaa"), pr(6, "bbb")}}},
+		Source{Repo: "/b", Forge: &stubForge{prs: []forge.PRDetail{pr(2, "ccc")}}},
+	)
+	if n := d.Poll(context.Background()); n != 3 {
+		t.Fatalf("started %d, want one review per labeled PR", n)
+	}
+	close(r.release)
+	d.Wait()
+	got := r.snapshot()
+	slices.Sort(got)
+	if want := []string{"/a#pr:4", "/a#pr:6", "/b#pr:2"}; !slices.Equal(got, want) {
+		t.Fatalf("reviews = %v, want %v", got, want)
+	}
+}
+
+func TestPollShouldSkipDraftPRs(t *testing.T) {
+	r := newRunner()
+	draft := pr(4, "aaa")
+	draft.Draft = true
+	d := reviewDaemon(r, 4, nil, Source{Repo: "/a", Forge: &stubForge{prs: []forge.PRDetail{draft, pr(6, "bbb")}}})
+	if n := d.Poll(context.Background()); n != 1 {
+		t.Fatalf("started %d, want only the ready-for-review PR", n)
+	}
+	close(r.release)
+	d.Wait()
+	if got := r.snapshot(); !slices.Equal(got, []string{"/a#pr:6"}) {
+		t.Fatalf("a draft PR is not reviewed: %v", got)
+	}
+}
+
+func TestPollShouldSkipPRWhoseHeadWasAlreadyReviewed(t *testing.T) {
+	r := newRunner()
+	reviewed := map[string]string{"/a#4": "aaa", "/a#6": "old"}
+	d := reviewDaemon(r, 4, reviewed, Source{Repo: "/a", Forge: &stubForge{prs: []forge.PRDetail{
+		pr(4, "aaa"), // head already reviewed
+		pr(6, "bbb"), // new push since the last review
+		pr(8, ""),    // head unknown: cannot be compared, so not skipped
+	}}})
+	if n := d.Poll(context.Background()); n != 2 {
+		t.Fatalf("started %d, want the two PRs whose head was not reviewed", n)
+	}
+	close(r.release)
+	d.Wait()
+	got := r.snapshot()
+	slices.Sort(got)
+	if want := []string{"/a#pr:6", "/a#pr:8"}; !slices.Equal(got, want) {
+		t.Fatalf("reviews = %v, want %v", got, want)
+	}
+}
+
+func TestPollShouldNotStartReviewsWhenTheLastHeadCannotBeRead(t *testing.T) {
+	r := newRunner()
+	d := reviewDaemon(r, 4, nil,
+		Source{Repo: "/a", Forge: &stubForge{ready: issues(1), prs: []forge.PRDetail{pr(4, "aaa")}}},
+		Source{Repo: "/b", Forge: &stubForge{prs: []forge.PRDetail{pr(2, "ccc")}}},
+	)
+	unreadable := errors.New("database is locked")
+	d.opts.Producers = Producers(discard, IssueJobs{Label: "delamain:ready", Run: r.run}, ReviewJobs{
+		Enabled: true, Label: reviewLabel, Run: r.review,
+		LastHead: func(_ context.Context, repo string, _ int) (string, error) {
+			if repo == "/a" {
+				return "", unreadable
+			}
+			return "", nil
+		},
+	})
+	d.Poll(context.Background())
+	close(r.release)
+	d.Wait()
+	got := r.snapshot()
+	slices.Sort(got)
+	if want := []string{"/a#1", "/b#pr:2"}; !slices.Equal(got, want) {
+		t.Fatalf("without /a's cursor no /a review may start, the rest goes on: got %v, want %v", got, want)
+	}
+}
+
+func TestPollShouldNotStartReviewJobsWhenReviewDisabled(t *testing.T) {
+	r := newRunner()
+	d := reviewDaemon(r, 4, nil, Source{Repo: "/a", Forge: &stubForge{ready: issues(1), prs: []forge.PRDetail{pr(4, "aaa")}}})
+	d.opts.Producers = Producers(discard, IssueJobs{Label: "delamain:ready", Run: r.run}, ReviewJobs{
+		Enabled: false, Label: reviewLabel, Run: r.review,
+		LastHead: func(context.Context, string, int) (string, error) { return "", nil },
+	})
+	d.Poll(context.Background())
+	close(r.release)
+	d.Wait()
+	if got := r.snapshot(); !slices.Equal(got, []string{"/a#1"}) {
+		t.Fatalf("with review.enabled false only issues run: %v", got)
+	}
+}
+
+func TestPollShouldShareSlotsBetweenIssuesAndReviews(t *testing.T) {
+	r := newRunner()
+	src := &stubForge{ready: issues(1), prs: []forge.PRDetail{pr(4, "aaa")}}
+	d := reviewDaemon(r, 1, nil, Source{Repo: "/a", Forge: src})
+	if n := d.Poll(context.Background()); n != 1 {
+		t.Fatalf("max_parallel 1 with an issue and a PR queued started %d", n)
+	}
+	if got := <-r.began; got != "/a#1" {
+		t.Fatalf("issues come before reviews, started %s", got)
+	}
+	r.release <- struct{}{}
+	d.waitIdle(1)
+	src.mu.Lock()
+	src.ready = nil // the finished run relabeled #1
+	src.mu.Unlock()
+	if n := d.Poll(context.Background()); n != 1 {
+		t.Fatalf("the freed slot must take the review, started %d", n)
+	}
+	close(r.release)
+	d.Wait()
+	if r.peak > 1 {
+		t.Fatalf("peak concurrency %d exceeds max_parallel shared by issues and reviews", r.peak)
+	}
+	if got := r.snapshot(); !slices.Equal(got, []string{"/a#1", "/a#pr:4"}) {
+		t.Fatalf("runs = %v", got)
+	}
+}
+
+func TestPollShouldNotStartTheSameReviewTwiceWhileInflight(t *testing.T) {
+	r := newRunner()
+	d := reviewDaemon(r, 2, nil, Source{Repo: "/a", Forge: &stubForge{prs: []forge.PRDetail{pr(4, "aaa")}}})
+	d.Poll(context.Background())
+	<-r.began
+	if n := d.Poll(context.Background()); n != 0 {
+		t.Fatalf("PR #4 is still under review, second poll started %d", n)
+	}
+	close(r.release)
+	d.Wait()
+	if got := r.snapshot(); !slices.Equal(got, []string{"/a#pr:4"}) {
+		t.Fatalf("runs = %v", got)
+	}
 }
 
 func TestPollShouldContinueWhenOneProducerFails(t *testing.T) {
