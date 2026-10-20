@@ -2,7 +2,9 @@ package pipeline
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -13,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/paraizo/delamain/internal/artifacts"
 	"github.com/paraizo/delamain/internal/config"
 	"github.com/paraizo/delamain/internal/prompts"
 	"github.com/paraizo/delamain/internal/store"
@@ -641,5 +644,146 @@ func TestRunShouldReadTheTurnOutcomeFromTheSessionWhenTheFinalMessageIsLost(t *t
 	})
 	if res := hs.run(t); res.Outcome != OutcomeHalted || !strings.Contains(res.Reason, "529 overloaded") {
 		t.Fatalf("a provider error must not pass as done when its frame is lost: %s %s", res.Outcome, res.Reason)
+	}
+}
+
+// reviewBlocking requests changes with one blocking finding on the given file, so a run can be
+// driven through reviews that repeat a blocker or raise a brand-new one each iteration.
+func reviewBlocking(axis, file, category string) string {
+	finding := `[{"severity":"major","category":"` + category + `","file":"` + file +
+		`","line":3,"evidence":"return a - b","rule":"critério Add(2,3)=5","message":"achado em ` + file + `"}]`
+	axes := map[string]string{"spec": "[]", "standards": "[]", "security": "[]"}
+	axes[axis] = finding
+	return `{"verdict":"approve","axes":[{"axis":"spec","executed":true,"findings":` + axes["spec"] +
+		`},{"axis":"standards","executed":true,"findings":` + axes["standards"] +
+		`},{"axis":"security","executed":true,"findings":` + axes["security"] + `}]}`
+}
+
+func TestPrevReviewDigestShouldListEveryFindingWithItsFingerprint(t *testing.T) {
+	review := artifacts.Review{Axes: []artifacts.Axis{
+		{Axis: "security", Executed: true, Findings: []artifacts.Finding{
+			{Severity: "critical", Category: "vulnerabilidade", File: "a.go", Line: 10, Message: "primeira linha\nsegunda linha"},
+		}},
+		{Axis: "standards", Executed: true, Findings: []artifacts.Finding{
+			{Severity: "minor", Category: "julgamento", File: "b.go", Line: 2, Message: "nome misterioso"},
+		}},
+	}}
+	got := prevReviewDigest(review)
+
+	// Minors belong in the digest too: the next review copies them instead of re-deriving them.
+	for _, want := range []string{"critical · security · vulnerabilidade", "a.go:10", "minor · standards · julgamento", "b.go:2"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("digest must contain %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "segunda linha") {
+		t.Fatalf("the digest is bounded context, not the full report:\n%s", got)
+	}
+}
+
+func TestReviewShouldReceiveThePreviousReviewDigest(t *testing.T) {
+	hs := newHarness(t, func(role string, n int, text string) reply {
+		if role == "reviewer" && n == 1 {
+			return reply{write: reviewBlocking("standards", "calc.go", "violacao")}
+		}
+		return happy(role, n, text)
+	})
+	res := hs.run(t)
+	if res.Outcome != OutcomeApproved {
+		t.Fatalf("got %s: %s", res.Outcome, res.Reason)
+	}
+
+	first, second := hs.h.prompts["reviewer"][0], hs.h.prompts["reviewer"][1]
+	if strings.Contains(first, "<prev_review>") {
+		t.Fatalf("the first review has no previous findings to compare against:\n%s", first)
+	}
+	for _, want := range []string{"<prev_review>", "major · standards · violacao", "calc.go:3", "achado em calc.go"} {
+		if !strings.Contains(second, want) {
+			t.Fatalf("the second review must carry the previous findings (%q):\n%s", want, second)
+		}
+	}
+	if !strings.Contains(second, "não podia tê-lo visto") {
+		t.Fatalf("the ratchet rule must travel with the digest:\n%s", second)
+	}
+}
+
+func TestExecuteShouldDeliverADraftWhenReviewsKeepRaisingOnlyNewBlockers(t *testing.T) {
+	hs := newHarness(t, func(role string, n int, text string) reply {
+		if role == "reviewer" {
+			// A different file every time: the reviewer never repeats itself, so the
+			// implementer never learns when it is done. This is run 12's failure mode.
+			return reply{write: reviewBlocking("security", fmt.Sprintf("layer%d.go", n), "vulnerabilidade")}
+		}
+		return happy(role, n, text)
+	})
+	hs.r.Cfg.Pipeline.MaxIterations = 6
+	f := withForge(hs)
+	res := hs.run(t)
+
+	if res.Outcome != OutcomeExhausted {
+		t.Fatalf("a diverging review must hand the work over, got %s", res.Outcome)
+	}
+	if res.Iterations != divergingReviews {
+		t.Fatalf("the run must stop at %d reviews, not burn all 6: stopped at %d", divergingReviews, res.Iterations)
+	}
+	if !strings.Contains(res.Reason, "review divergente") {
+		t.Fatalf("the reason must say why it stopped, not blame the iteration cap: %q", res.Reason)
+	}
+	// The work so far is still worth a draft for a human to judge.
+	if len(f.created) != 1 || !f.created[0].Draft {
+		t.Fatalf("created = %+v, want one draft PR", f.created)
+	}
+	if !strings.Contains(f.created[0].Body, "review divergente") {
+		t.Fatalf("the draft body must tell the human why it stopped:\n%s", f.created[0].Body)
+	}
+}
+
+func TestExecuteShouldKeepIteratingWhenABlockerRepeats(t *testing.T) {
+	hs := newHarness(t, func(role string, n int, text string) reply {
+		if role == "reviewer" {
+			return reply{write: reviewBlocking("spec", "calc.go", "faltando")}
+		}
+		return happy(role, n, text)
+	})
+	hs.r.Cfg.Pipeline.MaxIterations = 4
+	res := hs.run(t)
+
+	// A repeated blocker means the bar is holding still: the run gets its full budget.
+	if res.Iterations != 4 {
+		t.Fatalf("iterations = %d, want the full 4", res.Iterations)
+	}
+	if !strings.Contains(res.Reason, "4 iterações sem aprovação") {
+		t.Fatalf("reason = %q, want the ordinary exhaustion", res.Reason)
+	}
+}
+
+func TestApplyComplexityShouldWarnWhenThePlanTouchesTooManyFiles(t *testing.T) {
+	var files []string
+	for i := range plannedFilesWarning + 1 {
+		files = append(files, fmt.Sprintf("pkg/f%d.go", i))
+	}
+	raw, err := json.Marshal(files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hs := newHarness(t, func(role string, n int, text string) reply {
+		if role == "planner" {
+			return reply{write: strings.Replace(planJSON, `"files":["calc.go"]`, `"files":`+string(raw), 1)}
+		}
+		return happy(role, n, text)
+	})
+	res := hs.run(t)
+
+	var warned string
+	for _, w := range res.Warnings {
+		if strings.Contains(w, "arquivos de produção") {
+			warned = w
+		}
+	}
+	if warned == "" {
+		t.Fatalf("an oversized phase must be flagged to the human: %v", res.Warnings)
+	}
+	if !strings.Contains(warned, "dividir") {
+		t.Fatalf("the warning must say what to do about it: %q", warned)
 	}
 }

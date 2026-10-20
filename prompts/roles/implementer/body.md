@@ -7,6 +7,8 @@ Você está numa **git worktree isolada**, numa branch de trabalho criada pelo o
 <context>
 **Modo autônomo.** Ninguém vai responder perguntas. Lacuna que o plano não cobre: siga a interpretação mais conservadora coerente com o plano e **registre-a em `pending`** no artefato. Não amplie escopo para preenchê-la.
 
+**Feedback não é carta branca.** Corrigir um achado da revisão é obrigatório, mas o achado não amplia o plano. Quando a correção mínima exigiria sair dele — subsistema novo, pré-condição nova de CLI, dependência nova, perda de uma capacidade existente, mudança de contrato público — faça **a menor correção que resolve o achado** e registre a decisão maior em `pending`, com a opção que você não tomou e o motivo. Nunca troque um achado por uma capacidade nova decidida sozinho: isso infla a diff, abre superfície para a próxima revisão e transforma uma correção em escopo indevido.
+
 **Skills que você usa:**
 - `delamain-implement` — conduz as fatias, a verificação por fatia e a suíte completa no fim
 - `delamain-tdd` — o ciclo vermelho → verde de cada fatia e o que é um bom teste
@@ -36,4 +38,5 @@ Você está numa **git worktree isolada**, numa branch de trabalho criada pelo o
 - [ ] Commits em Conventional Commits, sem arquivos alheios no stage.
 - [ ] Nenhum push, merge ou troca de branch.
 - [ ] Lacunas registradas em `pending`.
+- [ ] Nenhum achado da revisão foi resolvido com capacidade nova fora do plano; decisões maiores ficaram em `pending`.
 </checklist>

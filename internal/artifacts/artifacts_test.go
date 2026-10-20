@@ -34,18 +34,19 @@ func TestReadPlanShouldAcceptContractCompliantPlan(t *testing.T) {
 
 func TestReadPlanShouldRejectContractBreaks(t *testing.T) {
 	cases := map[string]struct{ from, to, want string }{
-		"criterion without test": {`"tests":["calc_test.go::TestAdd"],"flow":true`, `"tests":[],"flow":true`, "has no test"},
-		"bug without regression": {`"regression_tests":["calc_test.go::TestAdd"]`, `"regression_tests":[]`, "regression_tests"},
-		"no test command":        {`"test":"go test ./..."`, `"test":""`, "commands.test is empty"},
-		"unknown kind":           {`"kind":"bug"`, `"kind":"chore"`, "kind must be"},
-		"typo in field name":     {`"risks":[]`, `"riskz":[]`, "unknown field"},
-		"duplicate slice":        {`"slices":[{"id":"S1"`, `"slices":[{"id":"S1","behavior":"x"},{"id":"S1"`, "repeated"},
-		"unknown components":     {`"single_module"`, `"monolith"`, "complexity.components"},
-		"unknown change":         {`"localized"`, `"tiny"`, "complexity.change"},
-		"unknown dependency":     {`"dependencies":[]`, `"dependencies":["cache"]`, "complexity.dependencies"},
-		"no test kind":           {`"tests":["unit"],"rationale"`, `"tests":[],"rationale"`, "complexity.tests"},
-		"missing complexity":     {`"complexity":{"components":"single_module","change":"localized","dependencies":[],"tests":["unit"],"rationale":"um arquivo"},`, ``, "complexity.components"},
-		"no acceptance":          {`"acceptance":[{"criterion":"Add(2,3)=5","tests":["calc_test.go::TestAdd"],"flow":true}]`, `"acceptance":[]`, "no acceptance"},
+		"criterion without test":    {`"tests":["calc_test.go::TestAdd"],"flow":true`, `"tests":[],"flow":true`, "has no test"},
+		"bug without regression":    {`"regression_tests":["calc_test.go::TestAdd"]`, `"regression_tests":[]`, "regression_tests"},
+		"no test command":           {`"test":"go test ./..."`, `"test":""`, "commands.test is empty"},
+		"unknown kind":              {`"kind":"bug"`, `"kind":"chore"`, "kind must be"},
+		"typo in field name":        {`"risks":[]`, `"riskz":[]`, "unknown field"},
+		"duplicate slice":           {`"slices":[{"id":"S1"`, `"slices":[{"id":"S1","behavior":"x"},{"id":"S1"`, "repeated"},
+		"unknown components":        {`"single_module"`, `"monolith"`, "complexity.components"},
+		"unknown change":            {`"localized"`, `"tiny"`, "complexity.change"},
+		"unknown dependency":        {`"dependencies":[]`, `"dependencies":["cache"]`, "complexity.dependencies"},
+		"no test kind":              {`"tests":["unit"],"rationale"`, `"tests":[],"rationale"`, "complexity.tests"},
+		"missing complexity":        {`"complexity":{"components":"single_module","change":"localized","dependencies":[],"tests":["unit"],"rationale":"um arquivo"},`, ``, "complexity.components"},
+		"no acceptance":             {`"acceptance":[{"criterion":"Add(2,3)=5","tests":["calc_test.go::TestAdd"],"flow":true}]`, `"acceptance":[]`, "no acceptance"},
+		"threat without mitigation": {`"risks":[]`, `"security":[{"threat":"um fork controla o head","mitigation":""}],"risks":[]`, "security 1: threat and mitigation"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -58,6 +59,22 @@ func TestReadPlanShouldRejectContractBreaks(t *testing.T) {
 				t.Fatalf("want error containing %q, got %v", tc.want, err)
 			}
 		})
+	}
+}
+
+func TestReadPlanShouldAcceptAThreatModelAndAlsoItsAbsence(t *testing.T) {
+	// security bounds the security review; a change that touches no untrusted input has none.
+	if p, err := Read[Plan](write(t, validPlan)); err != nil || len(p.Security) != 0 {
+		t.Fatalf("a plan without a threat model stays valid: %+v %v", p.Security, err)
+	}
+	body := strings.Replace(validPlan, `"risks":[]`,
+		`"security":[{"threat":"quem abre o PR controla o head","mitigation":"checkout sem hooks nem filtros"}],"risks":[]`, 1)
+	p, err := Read[Plan](write(t, body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p.Security) != 1 || p.Security[0].Mitigation != "checkout sem hooks nem filtros" {
+		t.Fatalf("threat model decoded wrong: %+v", p.Security)
 	}
 }
 

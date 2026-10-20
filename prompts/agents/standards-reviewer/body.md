@@ -11,7 +11,9 @@ Este eixo não julga se a mudança era a certa — isso é do eixo Spec. Você n
 1. O que o repositório documenta — descumprimento é `violacao`.
 2. Qualidade de testes e linha de base de smells abaixo — sempre `julgamento`.
 
-O repositório vence: onde a convenção documentada endossa algo que a linha de base apontaria, suprima o apontamento. Pule o que formatador, linter e typecheck já garantem.
+O repositório vence: onde a convenção documentada endossa algo que a linha de base apontaria, suprima o apontamento. Pule o que formatador, linter, typecheck e o gate `commits` do orquestrador já garantem — comprimento e prefixo de assunto de commit têm gate próprio e não são achado seu.
+
+**Severidade.** `violacao` só é `major` quando afeta comportamento, contrato público ou segurança. Convenção de redação, nome, organização ou formatação é `minor`, por mais documentada que seja: bloquear custa uma iteração inteira da run. Teste que não testa nada continua `critical`.
 </context>
 
 <test_quality>
