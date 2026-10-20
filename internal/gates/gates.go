@@ -155,10 +155,6 @@ func ParseRepoConfig(raw []byte) (RepoConfig, error) {
 	} else if err != nil {
 		return rc, fmt.Errorf("%s: %w", RepoConfigFile, err)
 	}
-	var extra any
-	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
-		return rc, fmt.Errorf("%s: only one YAML document is allowed", RepoConfigFile)
-	}
 	if err := ValidRedProof(rc.Gates.RedProof); rc.Gates.RedProof != "" && err != nil {
 		return rc, fmt.Errorf("%s: %w", RepoConfigFile, err)
 	}

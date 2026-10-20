@@ -208,10 +208,22 @@ func TestParseRepoConfigShouldTreatEmptyInputAsEmptyConfigAndRejectTypos(t *test
 		"typo":           "comands:\n  test: x\n",
 		"unknown policy": "gates:\n  red_proof: sometimes\n",
 		"not a mapping":  "- test\n",
-		"two documents":  "commands:\n  test: a\n---\ncomands: b\n",
 	} {
 		if _, err := ParseRepoConfig([]byte(raw)); err == nil || !strings.Contains(err.Error(), RepoConfigFile) {
 			t.Errorf("%s: must fail naming %s, got %v", name, RepoConfigFile, err)
 		}
+	}
+}
+
+func TestParseRepoConfigShouldKeepReadingOnlyTheFirstDocumentLikeLoadRepoConfig(t *testing.T) {
+	raw := "commands:\n  test: make test\n---\nnotes: anything after the first document is not config\n"
+	rc, err := ParseRepoConfig([]byte(raw))
+	if err != nil || rc.Commands.Test != "make test" {
+		t.Fatalf("a repository whose .delamain.yaml has more documents keeps working: %+v %v", rc, err)
+	}
+	dir := t.TempDir()
+	write(t, dir, map[string]string{".delamain.yaml": raw})
+	if rc, err := LoadRepoConfig(dir); err != nil || rc.Commands.Test != "make test" {
+		t.Fatalf("issue runs read the same config as before: %+v %v", rc, err)
 	}
 }
