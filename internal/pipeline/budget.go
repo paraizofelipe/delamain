@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"maps"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/paraizo/delamain/internal/budget"
@@ -31,6 +32,7 @@ func (r *Runner) checkBudget(ctx context.Context, ru *run) error {
 	if err != nil {
 		return haltf("contabilidade de tokens falhou: %v", err)
 	}
+	s = runStatus(ru, s)
 	if s.Level == budget.Soft && ru.budget.Level < budget.Soft {
 		ru.log.Warn("budget soft limit", "run", ru.rec.ID, "reason", s.Reason)
 	}
@@ -40,6 +42,14 @@ func (r *Runner) checkBudget(ctx context.Context, ru *run) error {
 		return halt{s.Reason}
 	}
 	return nil
+}
+
+// runStatus names a review's own budget in its reasons: it is review.per_review, not per_issue.
+func runStatus(ru *run, s budget.Status) budget.Status {
+	if ru.rec.Kind == store.KindReview {
+		s.Reason = strings.Replace(s.Reason, "budget da issue", "budget da review", 1)
+	}
+	return s
 }
 
 type watchResult struct {
@@ -75,7 +85,7 @@ func (r *Runner) watchBudget(ctx context.Context, ru *run, agent Agent) func() w
 			if err != nil || s.Level != budget.Hard {
 				continue
 			}
-			res = watchResult{tripped: true, status: s}
+			res = watchResult{tripped: true, status: runStatus(ru, s)}
 			if !aborted {
 				if err := agent.Abort(); err != nil {
 					ru.log.Warn("could not abort agent turn", "err", err)

@@ -233,3 +233,89 @@ func TestRunReviewShouldSkipClosedPRWithoutCreatingARun(t *testing.T) {
 		t.Fatal("nothing is fetched, prompted or posted for a closed PR")
 	}
 }
+
+// assertNothingPosted is the fail-closed contract: a halted review leaves no trace on the PR.
+func assertNothingPosted(t *testing.T, rh *reviewHarness, res Result, reason string) {
+	t.Helper()
+	if res.Outcome != OutcomeHalted || !strings.Contains(res.Reason, reason) {
+		t.Fatalf("want halted mentioning %q, got %s (%s)", reason, res.Outcome, res.Reason)
+	}
+	if len(rh.f.posted) != 0 {
+		t.Fatalf("nothing may be posted: %+v", rh.f.posted)
+	}
+	if _, err := rh.st.Cursor(context.Background(), rh.repo, 5); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("a halted review must not move the cursor: %v", err)
+	}
+	if res.Worktree != "" {
+		if _, err := os.Stat(res.Worktree); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("the worktree is removed even on halt: %v", err)
+		}
+	}
+	if rec := rh.finalRun(t, res.RunID); rec.State != store.StateRecorded || !strings.HasPrefix(rec.Reason, "halted") {
+		t.Fatalf("the halt is recorded: %+v", rec)
+	}
+}
+
+func TestRunReviewShouldHaltWithoutPostingWhenHeadShaDiffers(t *testing.T) {
+	rh := newReviewHarness(t, reviewsPR(prReviewJSON("")))
+	rh.g.prHead = prHead   // the fetch agrees with the forge…
+	rh.g.head = "cccccccc" // …but the worktree is not at the PR head
+	res := rh.review(t)
+
+	assertNothingPosted(t, rh, res, "cccccccc")
+	if len(rh.h.prompts["pr-reviewer"]) != 0 {
+		t.Fatal("a worktree at the wrong head is never reviewed")
+	}
+}
+
+func TestRunReviewShouldHaltWithoutPostingWhenFetchedHeadDiffersFromPR(t *testing.T) {
+	rh := newReviewHarness(t, reviewsPR(prReviewJSON("")))
+	rh.g.prHead = "dddddddd" // pushed after PRView: the review would describe another head
+	res := rh.review(t)
+
+	assertNothingPosted(t, rh, res, "dddddddd")
+	if len(rh.g.detached) != 0 || len(rh.h.prompts["pr-reviewer"]) != 0 {
+		t.Fatal("no worktree nor agent for a head that is not the PR's")
+	}
+	if len(rh.g.deleted) != 1 {
+		t.Fatalf("the fetched ref is still removed: %v", rh.g.deleted)
+	}
+}
+
+func TestRunReviewShouldHaltWhenReviewerChangesTheWorktree(t *testing.T) {
+	for name, mutate := range map[string]func(g *fakeGit){
+		"dirty tree": func(g *fakeGit) { g.status = " M a.go" },
+		"new commit": func(g *fakeGit) { g.head = "eeeeeeee" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			rh := newReviewHarness(t, func(string, int, string) reply {
+				return reply{write: prReviewJSON(""), mutate: mutate}
+			})
+			res := rh.review(t)
+			assertNothingPosted(t, rh, res, "alterou a worktree")
+		})
+	}
+}
+
+func TestRunReviewShouldHaltWithoutPostingWhenBlockingFindingsExceedMaxComments(t *testing.T) {
+	two := `[{"severity":"major","category":"erro","file":"a.go","line":3,"evidence":"x","rule":"r","message":"um"},
+{"severity":"critical","category":"injecao","file":"a.go","line":5,"evidence":"y","rule":"A03","message":"dois"}]`
+	rh := newReviewHarness(t, reviewsPR(prReviewJSON(two)))
+	rh.r.Cfg.Review.MaxComments = 1
+	res := rh.review(t)
+
+	assertNothingPosted(t, rh, res, "max_comments")
+}
+
+func TestRunReviewShouldStopOnPerReviewBudget(t *testing.T) {
+	rh := newReviewHarness(t, func(string, int, string) reply {
+		return reply{write: prReviewJSON(""), usage: 5000}
+	})
+	rh.r.Cfg.Review.PerReview = 1000 // budget.per_issue stays at its 2M default
+	res := rh.review(t)
+
+	assertNothingPosted(t, rh, res, "budget da review esgotado")
+	if rec := rh.finalRun(t, res.RunID); rec.PerIssue != 1000 {
+		t.Fatalf("the run is metered against review.per_review, got %v", rec.PerIssue)
+	}
+}

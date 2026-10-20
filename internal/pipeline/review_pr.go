@@ -113,10 +113,15 @@ func (r *Runner) reviewPR(ctx context.Context, ru *run, p *prRun) error {
 	if err := r.Git.FetchRef(ctx, repo, pr.BaseRef); err != nil {
 		return err
 	}
-	if _, err := r.Git.FetchPRHead(ctx, repo, r.Forge.Repo().Kind, pr.Number); err != nil {
+	fetched, err := r.Git.FetchPRHead(ctx, repo, r.Forge.Repo().Kind, pr.Number)
+	p.ref = gitx.PRRef(pr.Number) // removed even when the fetch half-failed
+	if err != nil {
 		return err
 	}
-	p.ref = gitx.PRRef(pr.Number)
+	// Fail closed: a review of another head would comment on code the PR no longer has.
+	if fetched != pr.HeadSHA {
+		return haltf("o head buscado (%s) difere do head do PR/MR #%d (%s); nada foi postado", short(fetched), pr.Number, short(pr.HeadSHA))
+	}
 	wt := filepath.Join(r.Cfg.Paths.WorktreesDir, filepath.Base(repo), fmt.Sprintf("review-pr-%d-%d", pr.Number, ru.rec.ID))
 	if err := r.Git.AddDetachedWorktree(ctx, repo, wt, p.ref); err != nil {
 		return err
@@ -128,6 +133,13 @@ func (r *Runner) reviewPR(ctx context.Context, ru *run, p *prRun) error {
 	ru.log.Info("review worktree", "run", ru.rec.ID, "path", wt, "pr", pr.Number, "head", pr.HeadSHA)
 	if err := r.Store.UpdateRun(ctx, ru.rec); err != nil {
 		return err
+	}
+	head, status, err := r.worktreeState(ctx, wt)
+	if err != nil {
+		return err
+	}
+	if head != pr.HeadSHA {
+		return haltf("a worktree está em %s, não no head do PR/MR #%d (%s); nada foi postado", short(head), pr.Number, short(pr.HeadSHA))
 	}
 
 	threads, err := r.Forge.Threads(ctx, pr.Number)
@@ -157,6 +169,17 @@ func (r *Runner) reviewPR(ctx context.Context, ru *run, p *prRun) error {
 	if err != nil {
 		return err
 	}
+	// The pr-reviewer is read-only by contract; prove it.
+	head2, status2, err := r.worktreeState(ctx, wt)
+	if err != nil {
+		return err
+	}
+	if head2 != head || status2 != status {
+		return haltf("o pr-reviewer alterou a worktree (HEAD %s→%s); review descartada, nada foi postado", short(head), short(head2))
+	}
+	if err := review.ValidateLimit(r.Cfg.Review.MaxComments); err != nil {
+		return haltf("artefato da review rejeitado: %v; nada foi postado", err)
+	}
 	p.review = &review
 
 	if err := r.setState(ctx, ru, store.StateDeliver); err != nil {
@@ -176,6 +199,15 @@ func (r *Runner) reviewPR(ctx context.Context, ru *run, p *prRun) error {
 	}
 	ru.res.Outcome = OutcomeReviewed
 	return nil
+}
+
+// worktreeState is the HEAD and `git status --porcelain` of a worktree.
+func (r *Runner) worktreeState(ctx context.Context, dir string) (head, status string, err error) {
+	if head, err = r.Git.Head(ctx, dir); err != nil {
+		return "", "", err
+	}
+	status, err = r.Git.Status(ctx, dir)
+	return head, status, err
 }
 
 // finishReview runs for every review that got a record: final budget tally, agents stopped,
