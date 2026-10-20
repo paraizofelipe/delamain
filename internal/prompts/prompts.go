@@ -107,6 +107,19 @@ type Repo struct {
 	Base     string
 }
 
+// PR is the pull/merge request a review stage works on.
+type PR struct {
+	Number  int
+	URL     string
+	Title   string
+	Body    string
+	Author  string
+	BaseRef string
+	HeadRef string
+	BaseSHA string
+	HeadSHA string
+}
+
 // StageData is everything a stage template may reference. Unknown fields fail rendering.
 type StageData struct {
 	Issue         Issue
@@ -119,6 +132,12 @@ type StageData struct {
 	Feedback      string
 	Verify        string
 	BudgetLeft    string
+	// Review stages only.
+	PR           PR
+	LinkedIssues []Issue
+	Threads      string // compact render of the PR's threads
+	Memory       string // the repository's stored learnings
+	MaxComments  int    // cap of critical/major findings a review may post
 }
 
 // SampleStageData fills every field so lint can prove each template renders.
@@ -134,11 +153,19 @@ func SampleStageData() StageData {
 		Feedback:      "- go test: TestX failed",
 		Verify:        "lint ok · test 10 passed",
 		BudgetLeft:    "1.2M tokens",
+		PR: PR{
+			Number: 42, URL: "https://example.invalid/pull/42", Title: "Sample PR", Body: "Closes #41", Author: "octocat",
+			BaseRef: "main", HeadRef: "feat/sample", BaseSHA: "1111111111111111111111111111111111111111", HeadSHA: "2222222222222222222222222222222222222222",
+		},
+		LinkedIssues: []Issue{{Ref: "#41", Title: "Sample linked issue", Body: "- [ ] criterion", URL: "https://example.invalid/issues/41"}},
+		Threads:      "- t1 · a.go:3 · alice · aberta: rename this",
+		Memory:       "- 2026-01-01 run 1 PR #40: tests use fakes in fakes_test.go",
+		MaxComments:  15,
 	}
 }
 
 // Delimiter tags wrapping untrusted text inside stage templates.
-var delimiters = []string{"issue", "feedback", "verify"}
+var delimiters = []string{"issue", "feedback", "verify", "pr", "threads", "memory"}
 
 // neutralize stops untrusted text (issue bodies, tool output) from closing a delimiter
 // tag early and smuggling instructions outside it.
@@ -164,6 +191,17 @@ func (s *Set) Render(stage string, data StageData) (string, error) {
 	data.Issue.Body = neutralize(data.Issue.Body)
 	data.Feedback = neutralize(data.Feedback)
 	data.Verify = neutralize(data.Verify)
+	for _, f := range []*string{&data.PR.Title, &data.PR.Body, &data.PR.Author, &data.PR.BaseRef, &data.PR.HeadRef} {
+		*f = neutralize(*f)
+	}
+	linked := make([]Issue, len(data.LinkedIssues))
+	for i, is := range data.LinkedIssues {
+		is.Title, is.Body = neutralize(is.Title), neutralize(is.Body)
+		linked[i] = is
+	}
+	data.LinkedIssues = linked
+	data.Threads = neutralize(data.Threads)
+	data.Memory = neutralize(data.Memory)
 	var out bytes.Buffer
 	if err := tmpl.Execute(&out, data); err != nil {
 		return "", fmt.Errorf("stage %s: %w", stage, err)
