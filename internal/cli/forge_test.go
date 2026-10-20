@@ -170,3 +170,22 @@ func TestRecoverShouldReportWhenNothingIsOrphaned(t *testing.T) {
 		t.Fatalf("out=%q err=%v", out, err)
 	}
 }
+
+func TestForgeAuthShouldExplainAMissingTokenForDoctor(t *testing.T) {
+	withLookup(t, nil)
+	id, err := forgeAuth(context.Background(), config.Default(), gitRepo(t, "git@gitlab.com:grp/api.git"))
+	if !errors.Is(err, forge.ErrTokenNotFound) || !strings.Contains(err.Error(), "GITLAB_TOKEN") {
+		t.Fatalf("err = %v", err)
+	}
+	if id.Kind != forge.GitLab || id.Host != "gitlab.com" || id.Login != "" {
+		t.Fatalf("identity = %+v", id)
+	}
+}
+
+func TestForgeAuthShouldReportLocalReposWithoutForge(t *testing.T) {
+	withLookup(t, nil)
+	id, err := forgeAuth(context.Background(), config.Default(), gitRepo(t, ""))
+	if err != nil || id.Host != "" {
+		t.Fatalf("a repository without origin has no forge to check: %+v %v", id, err)
+	}
+}

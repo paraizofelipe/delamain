@@ -87,6 +87,14 @@ func TokenHint(kind Kind, host string) string {
 	return "set " + strings.Join(tokenVars(kind, host), " or ") + ", or run `" + cli + "`"
 }
 
+// TokenPermissions is the least a token needs on kind's forge for delamain to work.
+func TokenPermissions(kind Kind) string {
+	if kind == GitLab {
+		return "the token needs the Developer role and the api scope; a dedicated bot account is recommended"
+	}
+	return "the token needs Issues and Pull requests read/write and Metadata read (fine-grained PAT); a dedicated bot account is recommended"
+}
+
 // tokenVars lists the variables gh/glab read for host, in their order of precedence.
 func tokenVars(kind Kind, host string) []string {
 	switch {

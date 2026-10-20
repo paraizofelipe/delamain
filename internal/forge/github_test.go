@@ -301,3 +301,30 @@ func TestGitHubRelabelShouldPropagateRealLabelErrors(t *testing.T) {
 		}
 	}
 }
+
+func TestGitHubWhoamiShouldReturnTheLoginFromGetUser(t *testing.T) {
+	api := &fakeAPI{routes: map[string]func(http.ResponseWriter, *http.Request){
+		"GET /user": reply(200, `{"login":"delamain-bot","id":1}`),
+	}}
+	srv := httptest.NewServer(api)
+	t.Cleanup(srv.Close)
+	login, err := Whoami(context.Background(), Repo{GitHub, "github.com", "acme/api"}, "tok", WithBaseURL(srv.URL+"/"))
+	if err != nil || login != "delamain-bot" {
+		t.Fatalf("login = %q, err = %v", login, err)
+	}
+	if got := api.find(t, "GET", "/user").header.Get("Authorization"); got != "Bearer tok" {
+		t.Fatalf("GET /user must carry the token, got %q", got)
+	}
+}
+
+func TestGitHubWhoamiShouldReportARejectedToken(t *testing.T) {
+	srv := httptest.NewServer(&fakeAPI{routes: map[string]func(http.ResponseWriter, *http.Request){
+		"GET /user": reply(401, `{"message":"Bad credentials"}`),
+	}})
+	t.Cleanup(srv.Close)
+	_, err := Whoami(context.Background(), Repo{GitHub, "github.com", "acme/api"}, "tok", WithBaseURL(srv.URL+"/"))
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Status != 401 {
+		t.Fatalf("want a 401 APIError, got %v", err)
+	}
+}

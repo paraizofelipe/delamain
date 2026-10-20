@@ -193,3 +193,12 @@ func alreadyExists(err error) bool {
 	}
 	return false
 }
+
+func (g *githubClient) whoami(ctx context.Context) (string, error) {
+	var u *gogithub.User
+	err := g.do(ctx, "whoami", func() (resp *gogithub.Response, err error) {
+		u, resp, err = g.api.Users.Get(ctx, "")
+		return resp, err
+	})
+	return u.GetLogin(), err
+}

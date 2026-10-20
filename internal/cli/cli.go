@@ -59,7 +59,7 @@ func NewRoot() *cobra.Command {
 		},
 		&cobra.Command{
 			Use:   "doctor",
-			Short: "Check omp (RPC mode), git, prompts, tools and, when enabled, herdr",
+			Short: "Check omp (RPC mode), git, prompts, tools, forge auth and, when enabled, herdr",
 			RunE: func(cmd *cobra.Command, _ []string) error {
 				cfg, err := load()
 				if err != nil {
@@ -75,6 +75,7 @@ func NewRoot() *cobra.Command {
 				checks := doctor.Run(ctx, cfg, doctor.Deps{
 					LookPath: exec.LookPath, Version: binVersion, OmpRPC: ompRPCReady, ClaudeAuth: claudeAuth, Herdr: h,
 					Prompts: set, PromptsTarget: promptsTarget(cfg),
+					ForgeAuth: func(ctx context.Context, dir string) (doctor.ForgeIdentity, error) { return forgeAuth(ctx, cfg, dir) },
 				})
 				if err := printChecks(cmd.OutOrStdout(), checks); err != nil {
 					return err

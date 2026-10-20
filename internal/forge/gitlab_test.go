@@ -165,3 +165,18 @@ func TestGitLabShouldRelabelWithoutEmptyLabels(t *testing.T) {
 		t.Fatalf("an empty removal must not be sent: %v", b)
 	}
 }
+
+func TestGitLabWhoamiShouldReturnTheUsernameFromGetUser(t *testing.T) {
+	api := &fakeAPI{routes: map[string]func(http.ResponseWriter, *http.Request){
+		"GET /api/v4/user": reply(200, `{"id":1,"username":"delamain-bot","name":"Delamain"}`),
+	}}
+	srv := httptest.NewServer(api)
+	t.Cleanup(srv.Close)
+	login, err := Whoami(context.Background(), Repo{GitLab, "gitlab.com", "grp/api"}, "glpat-tok", WithBaseURL(srv.URL))
+	if err != nil || login != "delamain-bot" {
+		t.Fatalf("login = %q, err = %v", login, err)
+	}
+	if got := api.find(t, "GET", "/api/v4/user").header.Get("Private-Token"); got != "glpat-tok" {
+		t.Fatalf("GET /user must carry the token, got %q", got)
+	}
+}

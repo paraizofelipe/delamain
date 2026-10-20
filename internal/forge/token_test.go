@@ -3,9 +3,11 @@ package forge
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -195,5 +197,31 @@ func TestOSLookupShouldRunTheCLIWithoutStdinOrPrompts(t *testing.T) {
 	}
 	if fd0 := out[strings.Index(out, "fd0=")+4:]; !strings.HasPrefix(fd0, "/dev/null") && !strings.HasPrefix(fd0, "none") {
 		t.Fatalf("the CLI must not inherit stdin: %q", fd0)
+	}
+}
+
+// forgeCLI matches a Go string literal that names the gh or glab CLI.
+var forgeCLI = regexp.MustCompile(`"(gh|glab)(\s[^"]*)?"`)
+
+func TestOnlyTokenGoShouldNameTheForgeCLIs(t *testing.T) {
+	root := filepath.Join("..") // internal/
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return err
+		}
+		if filepath.ToSlash(path) == "../forge/token.go" {
+			return nil
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if m := forgeCLI.Find(b); m != nil {
+			t.Errorf("%s names a forge CLI (%s): only token.go may, to read the token", path, m)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }

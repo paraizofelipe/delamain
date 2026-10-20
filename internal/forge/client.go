@@ -138,3 +138,20 @@ func New(repo Repo, token string, opts ...Option) (Forge, error) {
 	}
 	return newGitHub(repo, token, o)
 }
+
+// Whoami returns the login token authenticates as on repo's forge (GET /user).
+func Whoami(ctx context.Context, repo Repo, token string, opts ...Option) (string, error) {
+	o := newOptions(opts)
+	if repo.Kind == GitLab {
+		g, err := newGitLab(repo, token, o)
+		if err != nil {
+			return "", err
+		}
+		return g.whoami(ctx)
+	}
+	g, err := newGitHub(repo, token, o)
+	if err != nil {
+		return "", err
+	}
+	return g.whoami(ctx)
+}

@@ -144,3 +144,15 @@ func (g *gitlabClient) Relabel(ctx context.Context, n int, add, remove []string)
 		return resp, err
 	})
 }
+
+func (g *gitlabClient) whoami(ctx context.Context) (string, error) {
+	var u *gogitlab.User
+	err := g.do(ctx, "whoami", func() (resp *gogitlab.Response, err error) {
+		u, resp, err = g.api.Users.CurrentUser(gogitlab.WithContext(ctx))
+		return resp, err
+	})
+	if err != nil {
+		return "", err
+	}
+	return u.Username, nil
+}
