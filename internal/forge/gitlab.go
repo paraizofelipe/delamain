@@ -290,7 +290,10 @@ func (g *gitlabClient) Threads(ctx context.Context, n int) ([]Thread, error) {
 // GitLab has no review object to send them all at once. A comment GitLab rejects with 400, an
 // invalid position, is appended to the summary instead of aborting the review.
 func (g *gitlabClient) PostReview(ctx context.Context, n int, o ReviewOptions) error {
-	text, summary := "text", o.Summary
+	text, parts := "text", []string{}
+	if o.Summary != "" {
+		parts = append(parts, o.Summary)
+	}
 	for _, c := range o.Comments {
 		line := int64(c.Line)
 		opt := &gogitlab.CreateMergeRequestDiscussionOptions{Body: &c.Body, Position: &gogitlab.PositionOptions{
@@ -302,17 +305,17 @@ func (g *gitlabClient) PostReview(ctx context.Context, n int, o ReviewOptions) e
 			return resp, err
 		}, c.Body)
 		if apiErr, ok := errors.AsType[*APIError](err); ok && apiErr.Status == http.StatusBadRequest {
-			summary += fmt.Sprintf("\n\n`%s:%d`\n\n%s", c.Path, c.Line, c.Body)
+			parts = append(parts, fmt.Sprintf("`%s:%d`\n\n%s", c.Path, c.Line, c.Body))
 			continue
 		}
 		if err != nil {
 			return err
 		}
 	}
-	if summary == "" {
+	if len(parts) == 0 {
 		return nil
 	}
-	return g.PRComment(ctx, n, summary)
+	return g.PRComment(ctx, n, strings.Join(parts, "\n\n"))
 }
 
 func (g *gitlabClient) PRComment(ctx context.Context, n int, body string) error {

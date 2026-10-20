@@ -337,3 +337,42 @@ func TestGitLabResolveThreadShouldMarkTheDiscussionResolved(t *testing.T) {
 		t.Fatalf("body = %v, want resolved=true", b)
 	}
 }
+
+func TestGitLabPostReviewShouldNotPostAnEmptySummary(t *testing.T) {
+	discussions, notes := glProject+"/merge_requests/9/discussions", glProject+"/merge_requests/9/notes"
+	f, api := gitlabAt(t, map[string]func(http.ResponseWriter, *http.Request){
+		"POST " + discussions: reply(201, `{"id":"d1"}`),
+		"POST " + notes:       reply(201, `{"id":1}`),
+	})
+	err := f.PostReview(context.Background(), 9, ReviewOptions{
+		HeadSHA: "h", BaseSHA: "b", StartSHA: "b",
+		Comments: []InlineComment{{Path: "a.go", Line: 12, Body: "nil deref"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := posts(api, discussions); n != 1 {
+		t.Fatalf("discussions = %d, want 1", n)
+	}
+	if n := posts(api, notes); n != 0 {
+		t.Fatalf("no summary and no rejected comment: want no note, got %d", n)
+	}
+}
+
+func TestGitLabPostReviewShouldPostOnlyTheMovedCommentWhenTheSummaryIsEmpty(t *testing.T) {
+	discussions, notes := glProject+"/merge_requests/9/discussions", glProject+"/merge_requests/9/notes"
+	f, api := gitlabAt(t, map[string]func(http.ResponseWriter, *http.Request){
+		"POST " + discussions: reply(400, `{"message":"400 Bad request - Note {:line_code=>[\"can't be blank\"]}"}`),
+		"POST " + notes:       reply(201, `{"id":1}`),
+	})
+	err := f.PostReview(context.Background(), 9, ReviewOptions{
+		HeadSHA: "h", BaseSHA: "b", StartSHA: "b",
+		Comments: []InlineComment{{Path: "b/c.go", Line: 3, Body: "typo here"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b := jsonBody(t, api.find(t, "POST", notes))["body"]; b != "`b/c.go:3`\n\ntypo here" {
+		t.Fatalf("summary = %q, want just the moved comment", b)
+	}
+}
