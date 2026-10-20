@@ -79,14 +79,14 @@ Only one instance runs per state_dir. Ctrl+C stops it: in-flight runs end as int
 				return err
 			}
 			meter := budget.Meter{Store: st, Cfg: cfg.Budget}
+			issues := daemon.IssueJobs{Label: cfg.Forge.Labels.Ready, Run: func(ctx context.Context, t pipeline.Task, fg forge.Forge) (pipeline.Result, error) {
+				r := *base // per-run copy: each repository has its own forge
+				r.Forge = fg
+				return r.Run(ctx, t)
+			}}
 			d := daemon.New(daemon.Options{
-				Sources: sources, Label: cfg.Forge.Labels.Ready, MaxParallel: cfg.Pipeline.MaxParallel,
-				Interval: cfg.Daemon.PollInterval, Log: base.Log,
-				Run: func(ctx context.Context, t pipeline.Task, fg forge.Forge) (pipeline.Result, error) {
-					r := *base // per-run copy: each repository has its own forge
-					r.Forge = fg
-					return r.Run(ctx, t)
-				},
+				Sources: sources, Producers: daemon.Producers(base.Log, issues, daemon.ReviewJobs{}),
+				MaxParallel: cfg.Pipeline.MaxParallel, Interval: cfg.Daemon.PollInterval, Log: base.Log,
 				DayExhausted: dayExhausted(meter.Today, &budgetAlert{notify: base.Notify, softRatio: cfg.Budget.SoftRatio, now: time.Now}),
 			})
 			base.Log.Info("daemon started", "repos", len(sources), "max_parallel", cfg.Pipeline.MaxParallel, "poll", cfg.Daemon.PollInterval)

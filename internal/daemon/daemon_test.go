@@ -70,11 +70,90 @@ func (r *runner) snapshot() []string {
 	return slices.Clone(r.started)
 }
 
+var discard = slog.New(slog.NewTextHandler(io.Discard, nil))
+
 func newDaemon(r *runner, parallel int, sources ...Source) *Daemon {
 	return New(Options{
-		Sources: sources, Label: "delamain:ready", MaxParallel: parallel, Run: r.run,
-		Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Sources: sources, MaxParallel: parallel, Log: discard,
+		Producers: Producers(discard, IssueJobs{Label: "delamain:ready", Run: r.run}, ReviewJobs{}),
 	})
+}
+
+func TestPollShouldKeepProcessingReadyIssuesAsBefore(t *testing.T) {
+	r := newRunner()
+	a, b := &stubForge{ready: issues(1, 2, 3)}, &stubForge{ready: issues(7)}
+	d := newDaemon(r, 2, Source{Repo: "/a", Forge: a}, Source{Repo: "/b", Forge: b})
+	started := func(want ...string) {
+		t.Helper()
+		got := []string{<-r.began, <-r.began}
+		slices.Sort(got)
+		if !slices.Equal(got, want) {
+			t.Fatalf("started %v, want %v", got, want)
+		}
+	}
+	if n := d.Poll(context.Background()); n != 2 {
+		t.Fatalf("first poll started %d, want 2 (max_parallel)", n)
+	}
+	started("/a#1", "/b#7") // the oldest of each repository, not /a's two oldest
+	r.release <- struct{}{}
+	r.release <- struct{}{}
+	d.waitIdle(2)
+	a.mu.Lock()
+	a.ready = issues(2, 3) // the finished runs relabeled their issues
+	a.mu.Unlock()
+	b.mu.Lock()
+	b.ready = nil
+	b.mu.Unlock()
+	if n := d.Poll(context.Background()); n != 2 {
+		t.Fatalf("second poll started %d, want 2", n)
+	}
+	started("/a#2", "/a#3")
+	if n := d.Poll(context.Background()); n != 0 {
+		t.Fatalf("issues in flight must not start again, started %d", n)
+	}
+	close(r.release)
+	d.Wait()
+}
+
+func TestPollShouldContinueWhenOneProducerFails(t *testing.T) {
+	r := newRunner()
+	issueJobs := Producers(discard, IssueJobs{Label: "delamain:ready", Run: r.run}, ReviewJobs{})
+	failing := func(context.Context, Source) ([]Job, error) { return nil, errors.New("HTTP 502") }
+	d := New(Options{
+		Sources:   []Source{{Repo: "/a", Forge: &stubForge{ready: issues(4)}}},
+		Producers: append([]Producer{failing}, issueJobs...), MaxParallel: 2, Log: discard,
+	})
+	if n := d.Poll(context.Background()); n != 1 {
+		t.Fatalf("a failing producer must not stop the others, started %d", n)
+	}
+	close(r.release)
+	d.Wait()
+	if got := r.snapshot(); !slices.Equal(got, []string{"/a#4"}) {
+		t.Fatalf("runs = %v", got)
+	}
+}
+
+func TestPollShouldSkipAllJobsWhenDailyBudgetIsExhausted(t *testing.T) {
+	r := newRunner()
+	other := func(_ context.Context, src Source) ([]Job, error) {
+		return []Job{{Key: src.Repo + "#pr:9", Run: func(context.Context) (pipeline.Result, error) { return pipeline.Result{}, nil }}}, nil
+	}
+	reason := "budget diário esgotado"
+	d := New(Options{
+		Sources:     []Source{{Repo: "/a", Forge: &stubForge{ready: issues(1)}}},
+		Producers:   append(Producers(discard, IssueJobs{Label: "delamain:ready", Run: r.run}, ReviewJobs{}), other),
+		MaxParallel: 4, Log: discard,
+		DayExhausted: func(context.Context) (string, error) { return reason, nil },
+	})
+	if n := d.Poll(context.Background()); n != 0 {
+		t.Fatalf("started %d jobs with the day's budget spent", n)
+	}
+	reason = "" // a new day: both the issue and the other job are still pending
+	if n := d.Poll(context.Background()); n != 2 {
+		t.Fatalf("once the budget allows, the pending jobs start; started %d, want 2", n)
+	}
+	close(r.release)
+	d.Wait()
 }
 
 func TestPollShouldStartReadyIssuesOldestFirstUpToMaxParallel(t *testing.T) {

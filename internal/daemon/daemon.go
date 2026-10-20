@@ -1,16 +1,14 @@
-// Package daemon is step 12 of the worker flow: it polls forges for ready issues and runs them,
-// at most MaxParallel at a time, each in its own worktree and herdr workspace.
+// Package daemon is step 12 of the worker flow: it polls forges for ready issues (and, with review
+// on, for PRs/MRs labeled for review) and runs them, at most MaxParallel at a time.
 package daemon
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"sync"
 	"time"
 
 	"github.com/paraizo/delamain/internal/forge"
-	"github.com/paraizo/delamain/internal/pipeline"
 )
 
 // Source is one repository the daemon serves.
@@ -20,11 +18,11 @@ type Source struct {
 }
 
 type Options struct {
-	Sources     []Source
-	Label       string
+	Sources []Source
+	// Producers are asked, in order, for each source's jobs on every poll.
+	Producers   []Producer
 	MaxParallel int
 	Interval    time.Duration
-	Run         func(ctx context.Context, t pipeline.Task, fg forge.Forge) (pipeline.Result, error)
 	// DayExhausted returns a reason when the daily budget forbids new runs.
 	DayExhausted func(ctx context.Context) (string, error)
 	Log          *slog.Logger
@@ -66,7 +64,7 @@ func (d *Daemon) Serve(ctx context.Context) error {
 	}
 }
 
-// Poll starts ready issues while slots are free and returns how many it started.
+// Poll starts ready jobs while slots are free and returns how many it started.
 func (d *Daemon) Poll(ctx context.Context) int {
 	if ctx.Err() != nil {
 		return 0
@@ -83,10 +81,9 @@ func (d *Daemon) Poll(ctx context.Context) int {
 		}
 	}
 	started := 0
-	for _, c := range d.candidates(ctx) {
-		key := fmt.Sprintf("%s#%d", c.src.Repo, c.issue.Number)
+	for _, j := range d.jobs(ctx) {
 		d.mu.Lock()
-		busy := d.inflight[key]
+		busy := d.inflight[j.Key]
 		d.mu.Unlock()
 		if busy {
 			continue
@@ -97,63 +94,62 @@ func (d *Daemon) Poll(ctx context.Context) int {
 			return started // all slots busy; the rest stays ready for the next poll
 		}
 		d.mu.Lock()
-		d.inflight[key] = true
+		d.inflight[j.Key] = true
 		d.mu.Unlock()
 		d.wg.Add(1)
 		started++
-		go d.run(ctx, key, c.src, c.issue)
+		go d.run(ctx, j)
 	}
 	return started
 }
 
-type candidate struct {
-	src   Source
-	issue forge.Issue
-}
-
-// candidates interleaves the repositories' ready issues (each oldest first) so one busy
-// repository cannot starve the others.
-func (d *Daemon) candidates(ctx context.Context) []candidate {
-	var lists [][]forge.Issue
-	for _, s := range d.opts.Sources {
-		is, err := s.Forge.ListReady(ctx, d.opts.Label)
-		if err != nil {
-			d.opts.Log.Warn("could not list ready issues", "repo", s.Repo, "err", err)
+// jobs asks each producer, in order, for every source's jobs. Within a producer the sources are
+// interleaved so one busy repository cannot starve the others; a failing producer or forge is
+// skipped until the next poll.
+func (d *Daemon) jobs(ctx context.Context) []Job {
+	var out []Job
+	for _, p := range d.opts.Producers {
+		var lists [][]Job
+		for _, s := range d.opts.Sources {
+			js, err := p(ctx, s)
+			if err != nil {
+				d.opts.Log.Warn("could not list jobs", "repo", s.Repo, "err", err)
+			}
+			lists = append(lists, js)
 		}
-		lists = append(lists, is)
-	}
-	var out []candidate
-	for i := 0; ; i++ {
-		added := false
-		for j, is := range lists {
-			if i < len(is) {
-				out = append(out, candidate{d.opts.Sources[j], is[i]})
-				added = true
+		for i := 0; ; i++ {
+			added := false
+			for _, js := range lists {
+				if i < len(js) {
+					out = append(out, js[i])
+					added = true
+				}
+			}
+			if !added {
+				break
 			}
 		}
-		if !added {
-			return out
-		}
 	}
+	return out
 }
 
-func (d *Daemon) run(ctx context.Context, key string, src Source, is forge.Issue) {
+func (d *Daemon) run(ctx context.Context, j Job) {
 	defer func() {
 		<-d.slots
 		d.mu.Lock()
-		delete(d.inflight, key)
+		delete(d.inflight, j.Key)
 		d.finished++
 		d.cond.Broadcast()
 		d.mu.Unlock()
 		d.wg.Done()
 	}()
-	d.opts.Log.Info("run started", "issue", key)
-	res, err := d.opts.Run(ctx, pipeline.TaskFromIssue(is, src.Repo), src.Forge)
+	d.opts.Log.Info("run started", "job", j.Key)
+	res, err := j.Run(ctx)
 	if err != nil {
-		d.opts.Log.Error("run failed before recording an outcome", "issue", key, "err", err)
+		d.opts.Log.Error("run failed before recording an outcome", "job", j.Key, "err", err)
 		return
 	}
-	d.opts.Log.Info("run finished", "issue", key, "outcome", res.Outcome, "reason", res.Reason, "pr", res.PRURL)
+	d.opts.Log.Info("run finished", "job", j.Key, "outcome", res.Outcome, "reason", res.Reason, "pr", res.PRURL)
 }
 
 // Wait blocks until every started run has finished.
