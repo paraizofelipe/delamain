@@ -104,6 +104,8 @@ type Forge interface {
 	PRView(ctx context.Context, number int) (PRDetail, error)
 	// ListPRs returns open PRs/MRs carrying label, oldest (lowest number) first.
 	ListPRs(ctx context.Context, label string) ([]PRDetail, error)
+	// LinkedIssues returns up to 5 issues the PR/MR closes.
+	LinkedIssues(ctx context.Context, number int) ([]Issue, error)
 }
 
 var scpLike = regexp.MustCompile(`^[\w.-]+@([\w.-]+):(.+)$`)
@@ -168,6 +170,24 @@ func redact(raw, token string) string {
 func oldestFirst(is []Issue) []Issue {
 	slices.SortFunc(is, func(a, b Issue) int { return a.Number - b.Number })
 	return is
+}
+
+// maxLinkedIssues caps LinkedIssues.
+const maxLinkedIssues = 5
+
+// readIssues reads the first maxLinkedIssues issues of ns; a failed read fails them all.
+func readIssues(ctx context.Context, f interface {
+	Issue(context.Context, int) (Issue, error)
+}, ns []int) ([]Issue, error) {
+	is := make([]Issue, 0, min(len(ns), maxLinkedIssues))
+	for _, n := range ns[:min(len(ns), maxLinkedIssues)] {
+		v, err := f.Issue(ctx, n)
+		if err != nil {
+			return nil, err
+		}
+		is = append(is, v)
+	}
+	return is, nil
 }
 
 func oldestPRsFirst(prs []PRDetail) []PRDetail {

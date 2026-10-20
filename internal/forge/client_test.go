@@ -2,6 +2,7 @@ package forge
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -343,8 +344,9 @@ func TestReadMethodsShouldNeverWriteToTheForge(t *testing.T) {
 			}
 			ctx := context.Background()
 			reads := map[string]func() error{
-				"PRView":  func() error { _, err := f.PRView(ctx, 1); return err },
-				"ListPRs": func() error { _, err := f.ListPRs(ctx, "review"); return err },
+				"PRView":       func() error { _, err := f.PRView(ctx, 1); return err },
+				"ListPRs":      func() error { _, err := f.ListPRs(ctx, "review"); return err },
+				"LinkedIssues": func() error { _, err := f.LinkedIssues(ctx, 1); return err },
 			}
 			for name, read := range reads {
 				before := len(requests())
@@ -432,6 +434,47 @@ func TestListPRsShouldReturnEmptyWhenNoPRHasTheLabel(t *testing.T) {
 				t.Fatalf("prs = %+v, err = %v", prs, err)
 			}
 			api.find(t, "GET", tc.list)
+		})
+	}
+}
+
+func TestLinkedIssuesShouldUseForgeReferences(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		at     func(*testing.T, map[string]func(http.ResponseWriter, *http.Request), ...Option) (Forge, *fakeAPI)
+		routes map[string]func(http.ResponseWriter, *http.Request)
+	}{
+		{"github", githubAt, map[string]func(http.ResponseWriter, *http.Request){
+			"POST /graphql":                reply(200, `{"data":{"repository":{"pullRequest":{"closingIssuesReferences":{"nodes":[{"number":3},{"number":8}]}}}}}`),
+			"GET /repos/acme/api/issues/3": reply(200, `{"number":3,"title":"three","state":"open"}`),
+			"GET /repos/acme/api/issues/8": reply(200, `{"number":8,"title":"eight","state":"closed"}`),
+		}},
+		{"gitlab", gitlabAt, map[string]func(http.ResponseWriter, *http.Request){
+			"GET " + glProject + "/merge_requests/12/closes_issues": reply(200, `[{"iid":3},{"iid":8}]`),
+			"GET " + glProject + "/issues/3":                        reply(200, `{"iid":3,"title":"three","state":"opened"}`),
+			"GET " + glProject + "/issues/8":                        reply(200, `{"iid":8,"title":"eight","state":"closed"}`),
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, api := tc.at(t, tc.routes)
+			is, err := f.LinkedIssues(context.Background(), 12)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(is) != 2 || is[0].Number != 3 || is[0].Title != "three" || !is[0].Open || is[1].Number != 8 || is[1].Title != "eight" || is[1].Open {
+				t.Fatalf("want issues 3 and 8 as the forge links them, got %+v", is)
+			}
+			if tc.name == "github" {
+				var sent struct {
+					Query     string         `json:"query"`
+					Variables map[string]any `json:"variables"`
+				}
+				r := api.find(t, "POST", "/graphql")
+				if err := json.Unmarshal([]byte(r.body), &sent); err != nil || !strings.Contains(sent.Query, "closingIssuesReferences(first:5)") ||
+					sent.Variables["owner"] != "acme" || sent.Variables["name"] != "api" || sent.Variables["number"] != float64(12) {
+					t.Fatalf("graphql request = %s (%v)", r.body, err)
+				}
+			}
 		})
 	}
 }

@@ -252,3 +252,26 @@ func (g *githubClient) ListPRs(ctx context.Context, label string) ([]PRDetail, e
 	}
 	return oldestPRsFirst(prs), nil
 }
+
+const closingIssuesQuery = `query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){closingIssuesReferences(first:5){nodes{number}}}}}`
+
+// LinkedIssues asks GraphQL, the only API that knows which issues a PR closes.
+func (g *githubClient) LinkedIssues(ctx context.Context, n int) ([]Issue, error) {
+	var out struct {
+		Repository struct {
+			PullRequest struct {
+				ClosingIssuesReferences struct {
+					Nodes []struct{ Number int }
+				}
+			}
+		}
+	}
+	if err := g.graphql(ctx, closingIssuesQuery, map[string]any{"owner": g.owner, "name": g.name, "number": n}, &out); err != nil {
+		return nil, err
+	}
+	var ns []int
+	for _, v := range out.Repository.PullRequest.ClosingIssuesReferences.Nodes {
+		ns = append(ns, v.Number)
+	}
+	return readIssues(ctx, g, ns)
+}

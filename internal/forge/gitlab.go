@@ -216,3 +216,19 @@ func (g *gitlabClient) ListPRs(ctx context.Context, label string) ([]PRDetail, e
 	}
 	return oldestPRsFirst(prs), nil
 }
+
+func (g *gitlabClient) LinkedIssues(ctx context.Context, n int) ([]Issue, error) {
+	var vs []*gogitlab.Issue
+	err := g.do(ctx, "linked issues", func() (resp *gogitlab.Response, err error) {
+		vs, resp, err = g.api.MergeRequests.GetIssuesClosedOnMerge(g.repo.Path, int64(n), nil, gogitlab.WithContext(ctx))
+		return resp, err
+	})
+	if err != nil {
+		return nil, err
+	}
+	var ns []int
+	for _, v := range vs {
+		ns = append(ns, int(v.IID))
+	}
+	return readIssues(ctx, g, ns)
+}
