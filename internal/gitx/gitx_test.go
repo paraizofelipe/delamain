@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/paraizo/delamain/internal/forge"
 )
@@ -708,5 +709,40 @@ func TestChangedLinesShouldRunNoTextconvTheCheckoutPicks(t *testing.T) {
 	gitIn(t, r, "diff", base+"...HEAD")
 	if _, err := os.Stat(filepath.Join(marks, "textconv")); err != nil {
 		t.Fatalf("the fixture's textconv must run on a plain diff: %v", err)
+	}
+}
+
+func TestUntrustedStatusShouldRunNoFilterOfTheCheckout(t *testing.T) {
+	g, ctx := New(), context.Background()
+	r := repo(t)
+	marks := hostileCheckout(t, r)
+	wt := filepath.Join(t.TempDir(), "review")
+	if err := g.AddUntrustedWorktree(ctx, r, wt, "pr"); err != nil {
+		t.Fatal(err)
+	}
+	// A stale stat makes status re-hash the file, which runs its clean filter.
+	stale := func() {
+		t.Helper()
+		later := time.Now().Add(time.Hour)
+		if err := os.Chtimes(filepath.Join(wt, "a.txt"), later, later); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	stale()
+	if out, err := g.UntrustedStatus(ctx, wt); err != nil || out != "" {
+		t.Fatalf("an untouched checkout is clean: %q %v", out, err)
+	}
+	if ran, _ := os.ReadDir(marks); len(ran) != 0 {
+		t.Fatalf("the status of third-party code ran %v", ran)
+	}
+
+	// Control: a plain status of the same stale checkout runs the clean filter.
+	stale()
+	if _, err := g.Status(ctx, wt); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(marks, "clean")); err != nil {
+		t.Fatalf("the fixture's clean filter must run on a plain status: %v", err)
 	}
 }
