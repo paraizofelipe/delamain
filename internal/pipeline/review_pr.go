@@ -52,10 +52,6 @@ func (r *Runner) RunReview(ctx context.Context, repo string, n int) (Result, err
 	if r.Forge == nil {
 		return res, errors.New("review requires a GitHub or GitLab origin")
 	}
-	// The reviewer reads third-party code: only Claude Code can confine it (see confined).
-	if r.Cfg.Agent.Harness != config.HarnessClaude {
-		return res, fmt.Errorf("review requires agent.harness: claude, the only harness that confines the reviewer to reading the PR (got %q)", r.Cfg.Agent.Harness)
-	}
 	repo, err := r.Git.Toplevel(ctx, repo)
 	if err != nil {
 		return res, fmt.Errorf("repository: %w", err)
@@ -68,6 +64,13 @@ func (r *Runner) RunReview(ctx context.Context, repo string, n int) (Result, err
 	if !pr.Open {
 		res.Outcome, res.Reason = OutcomeSkipped, fmt.Sprintf("o PR/MR #%d não está aberto", n)
 		return res, nil
+	}
+	// Only a head in another repository brings third-party code, and confining the reviewer
+	// that reads it still takes Claude Code (see confined). A PR whose branch lives in this
+	// repository is what delamain itself implemented, or what someone with write access
+	// pushed: the same code the issue flow already works on, on either harness.
+	if pr.Fork && r.Cfg.Agent.Harness != config.HarnessClaude {
+		return res, fmt.Errorf("revisar um PR/MR vindo de fork pede agent.harness: claude, o único que confina o revisor à leitura do PR (got %q)", r.Cfg.Agent.Harness)
 	}
 	if err := r.ensurePrompts(); err != nil {
 		return res, err
@@ -196,7 +199,9 @@ func (r *Runner) reviewPR(ctx context.Context, ru *run, p *prRun) error {
 		return err
 	}
 	artifact := filepath.Join(ru.dir, "review.json")
-	ru.confine = &Confinement{Checkout: wt, Base: pr.BaseSHA, Artifact: artifact}
+	if pr.Fork {
+		ru.confine = &Confinement{Checkout: wt, Base: pr.BaseSHA, Artifact: artifact}
+	}
 	data := r.stageData(ru, 0, artifact, "")
 	data.PR = prompts.PR{
 		Number: pr.Number, URL: pr.URL, Title: pr.Title, Body: pr.Body, Author: pr.Author,

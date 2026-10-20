@@ -56,12 +56,14 @@ func newReviewHarness(t *testing.T, b behavior) *reviewHarness {
 	f := &fakeForge{
 		pr: forge.PRDetail{
 			Number: 5, URL: "https://github.com/acme/api/pull/5", Title: "Add parse", Body: "Closes #3", Author: "alice",
-			Open: true, Fork: true, BaseRef: "main", HeadRef: "feat/parse", BaseSHA: prBase, HeadSHA: prHead, StartSHA: prBase,
+			Open: true, BaseRef: "main", HeadRef: "feat/parse", BaseSHA: prBase, HeadSHA: prHead, StartSHA: prBase,
 		},
 		threads: []forge.Thread{{ID: "t1", Path: "a.go", Line: 1, Comments: []forge.Comment{{ID: "c1", Author: "bob", Body: "por que um novo pacote?"}}}},
 	}
 	hs.r.Forge, hs.r.ForgeUser = f, "delamain-bot"
-	hs.r.Cfg.Agent.Harness = config.HarnessClaude // the only harness that confines the reviewer
+	// The ordinary case: the branch lives in this repository, so the review runs on the
+	// default harness with the reviewer's own tools, as the issue flow already does.
+	hs.r.Cfg.Agent.Harness = config.HarnessOmp
 	hs.g.lines = map[string][]gitx.LineRange{"a.go": {{Start: 1, End: 10}}}
 	return &reviewHarness{harness: hs, f: f, repo: hs.task.Repo}
 }
@@ -608,8 +610,28 @@ func TestRunReviewShouldHaltWithoutMovingTheCursorWhenAForgeOrGitCallFails(t *te
 	}
 }
 
+// fromFork turns the fixture into a contribution pushed from another repository: the only case
+// whose code is third-party and still needs the reviewer confined.
+func (rh *reviewHarness) fromFork() {
+	rh.f.pr.Fork = true
+	rh.r.Cfg.Agent.Harness = config.HarnessClaude
+}
+
+func TestRunReviewShouldReviewAPRFromThisRepositoryWithoutConfiningTheReviewer(t *testing.T) {
+	rh := newReviewHarness(t, reviewsPR(prReviewJSON("")))
+	res := rh.review(t)
+	if res.Outcome != OutcomeReviewed {
+		t.Fatalf("omp must review a PR delamain itself opened: %s (%s)", res.Outcome, res.Reason)
+	}
+	start := rh.h.starts["pr-reviewer-r"+strconv.FormatInt(res.RunID, 10)]
+	if start.Confine != nil {
+		t.Fatalf("code from this repository is not third-party: the reviewer keeps its tools, got %+v", start.Confine)
+	}
+}
+
 func TestRunReviewShouldConfineThePRReviewerToReadingTheCheckout(t *testing.T) {
 	rh := newReviewHarness(t, reviewsPR(prReviewJSON("")))
+	rh.fromFork()
 	res := rh.review(t)
 	if res.Outcome != OutcomeReviewed {
 		t.Fatalf("got %s (%s)", res.Outcome, res.Reason)
@@ -676,12 +698,13 @@ func TestRunReviewShouldHaltWithoutPostingWhenTheReviewLeaksASecret(t *testing.T
 	}
 }
 
-func TestRunReviewShouldRefuseAHarnessThatCannotConfineTheReviewer(t *testing.T) {
+func TestRunReviewShouldRefuseAForkOnAHarnessThatCannotConfineTheReviewer(t *testing.T) {
 	rh := newReviewHarness(t, reviewsPR(prReviewJSON("")))
+	rh.f.pr.Fork = true
 	rh.r.Cfg.Agent.Harness = config.HarnessOmp // no per-command allowlist: the reviewer would get a free shell
 	_, err := rh.r.RunReview(context.Background(), rh.repo, 5)
 	if err == nil || !strings.Contains(err.Error(), "agent.harness: claude") {
-		t.Fatalf("a review on omp must be refused before any work: %v", err)
+		t.Fatalf("a fork review on omp must be refused before any work: %v", err)
 	}
 	if runs, _ := rh.st.RecentRuns(context.Background(), 10); len(runs) != 0 {
 		t.Fatalf("no run is recorded: %+v", runs)
