@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -174,6 +175,20 @@ func oldestFirst(is []Issue) []Issue {
 
 // maxLinkedIssues caps LinkedIssues.
 const maxLinkedIssues = 5
+
+var closingKeyword = regexp.MustCompile(`(?i)(close[sd]?|fix(e[sd])?|resolve[sd]?) #(\d+)`)
+
+// closedInBody returns the issues a PR/MR body closes, fixes or resolves, in order of
+// appearance and without repeats.
+func closedInBody(body string) []int {
+	var ns []int
+	for _, m := range closingKeyword.FindAllStringSubmatch(body, -1) {
+		if n, err := strconv.Atoi(m[3]); err == nil && !slices.Contains(ns, n) {
+			ns = append(ns, n)
+		}
+	}
+	return ns
+}
 
 // readIssues reads the first maxLinkedIssues issues of ns; a failed read fails them all.
 func readIssues(ctx context.Context, f interface {

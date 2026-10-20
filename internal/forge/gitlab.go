@@ -217,6 +217,7 @@ func (g *gitlabClient) ListPRs(ctx context.Context, label string) ([]PRDetail, e
 	return oldestPRsFirst(prs), nil
 }
 
+// LinkedIssues falls back to the closing keywords of the description when GitLab knows none.
 func (g *gitlabClient) LinkedIssues(ctx context.Context, n int) ([]Issue, error) {
 	var vs []*gogitlab.Issue
 	err := g.do(ctx, "linked issues", func() (resp *gogitlab.Response, err error) {
@@ -229,6 +230,13 @@ func (g *gitlabClient) LinkedIssues(ctx context.Context, n int) ([]Issue, error)
 	var ns []int
 	for _, v := range vs {
 		ns = append(ns, int(v.IID))
+	}
+	if len(ns) == 0 {
+		pr, err := g.PRView(ctx, n)
+		if err != nil {
+			return nil, err
+		}
+		ns = closedInBody(pr.Body)
 	}
 	return readIssues(ctx, g, ns)
 }

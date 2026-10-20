@@ -255,7 +255,8 @@ func (g *githubClient) ListPRs(ctx context.Context, label string) ([]PRDetail, e
 
 const closingIssuesQuery = `query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){closingIssuesReferences(first:5){nodes{number}}}}}`
 
-// LinkedIssues asks GraphQL, the only API that knows which issues a PR closes.
+// LinkedIssues asks GraphQL, the only API that knows which issues a PR closes, and falls back
+// to the closing keywords of the body when it knows none.
 func (g *githubClient) LinkedIssues(ctx context.Context, n int) ([]Issue, error) {
 	var out struct {
 		Repository struct {
@@ -272,6 +273,13 @@ func (g *githubClient) LinkedIssues(ctx context.Context, n int) ([]Issue, error)
 	var ns []int
 	for _, v := range out.Repository.PullRequest.ClosingIssuesReferences.Nodes {
 		ns = append(ns, v.Number)
+	}
+	if len(ns) == 0 {
+		pr, err := g.PRView(ctx, n)
+		if err != nil {
+			return nil, err
+		}
+		ns = closedInBody(pr.Body)
 	}
 	return readIssues(ctx, g, ns)
 }

@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -474,6 +476,48 @@ func TestLinkedIssuesShouldUseForgeReferences(t *testing.T) {
 					sent.Variables["owner"] != "acme" || sent.Variables["name"] != "api" || sent.Variables["number"] != float64(12) {
 					t.Fatalf("graphql request = %s (%v)", r.body, err)
 				}
+			}
+		})
+	}
+}
+
+func TestLinkedIssuesShouldFallBackToClosesKeywordsInBody(t *testing.T) {
+	const body = "Fixes #3 and closes #3 again; resolves #4.\nCloses #5, fix #6, resolved #7, close #8. See #9."
+	for _, tc := range []struct {
+		name   string
+		at     func(*testing.T, map[string]func(http.ResponseWriter, *http.Request), ...Option) (Forge, *fakeAPI)
+		routes map[string]func(http.ResponseWriter, *http.Request)
+		issue  func(n int) (string, string) // route and payload of issue n
+	}{
+		{"github", githubAt, map[string]func(http.ResponseWriter, *http.Request){
+			"POST /graphql":                reply(200, `{"data":{"repository":{"pullRequest":{"closingIssuesReferences":{"nodes":[]}}}}}`),
+			"GET /repos/acme/api/pulls/12": reply(200, `{"number":12,"body":`+strconv.Quote(body)+`}`),
+		}, func(n int) (string, string) {
+			return "GET /repos/acme/api/issues/" + strconv.Itoa(n), `{"number":` + strconv.Itoa(n) + `,"state":"open"}`
+		}},
+		{"gitlab", gitlabAt, map[string]func(http.ResponseWriter, *http.Request){
+			"GET " + glProject + "/merge_requests/12/closes_issues": reply(200, `[]`),
+			"GET " + glProject + "/merge_requests/12":               reply(200, `{"iid":12,"description":`+strconv.Quote(body)+`}`),
+		}, func(n int) (string, string) {
+			return "GET " + glProject + "/issues/" + strconv.Itoa(n), `{"iid":` + strconv.Itoa(n) + `,"state":"opened"}`
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for n := 3; n <= 9; n++ {
+				route, payload := tc.issue(n)
+				tc.routes[route] = reply(200, payload)
+			}
+			f, _ := tc.at(t, tc.routes)
+			is, err := f.LinkedIssues(context.Background(), 12)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got []int
+			for _, i := range is {
+				got = append(got, i.Number)
+			}
+			if !slices.Equal(got, []int{3, 4, 5, 6, 7}) {
+				t.Fatalf("want the first 5 distinct closed issues of the body, in order, got %v", got)
 			}
 		})
 	}
