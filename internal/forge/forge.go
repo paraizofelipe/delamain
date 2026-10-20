@@ -130,6 +130,8 @@ type Forge interface {
 	PRComment(ctx context.Context, number int, body string) error
 	// Reply answers inside a thread Threads returned.
 	Reply(ctx context.Context, number int, threadID, body string) error
+	// ResolveThread marks a thread Threads returned as resolved.
+	ResolveThread(ctx context.Context, number int, threadID string) error
 }
 
 var scpLike = regexp.MustCompile(`^[\w.-]+@([\w.-]+):(.+)$`)

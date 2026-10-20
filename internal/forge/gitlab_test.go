@@ -324,3 +324,16 @@ func TestGitLabPostReviewShouldFailWhenADiscussionFailsWithAnotherStatus(t *test
 		t.Fatalf("an aborted review must not post the summary, got %d notes", n)
 	}
 }
+
+func TestGitLabResolveThreadShouldMarkTheDiscussionResolved(t *testing.T) {
+	path := glProject + "/merge_requests/9/discussions/d1"
+	f, api := gitlabAt(t, map[string]func(http.ResponseWriter, *http.Request){
+		"PUT " + path: reply(200, `{"id":"d1"}`),
+	})
+	if err := f.ResolveThread(context.Background(), 9, "d1"); err != nil {
+		t.Fatal(err)
+	}
+	if b := jsonBody(t, api.find(t, "PUT", path)); b["resolved"] != true {
+		t.Fatalf("body = %v, want resolved=true", b)
+	}
+}

@@ -328,3 +328,11 @@ func (g *gitlabClient) Reply(ctx context.Context, n int, threadID, body string) 
 		return resp, err
 	})
 }
+
+func (g *gitlabClient) ResolveThread(ctx context.Context, n int, threadID string) error {
+	resolved := true
+	return g.do(ctx, "resolve thread", func() (*gogitlab.Response, error) {
+		_, resp, err := g.api.Discussions.ResolveMergeRequestDiscussion(g.repo.Path, int64(n), threadID, &gogitlab.ResolveMergeRequestDiscussionOptions{Resolved: &resolved}, gogitlab.WithContext(ctx))
+		return resp, err
+	})
+}

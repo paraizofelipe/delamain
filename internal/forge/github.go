@@ -406,3 +406,14 @@ func (g *githubClient) Reply(ctx context.Context, n int, threadID, body string) 
 		return resp, err
 	})
 }
+
+const resolveThreadMutation = `mutation($threadId:ID!){resolveReviewThread(input:{threadId:$threadId}){thread{isResolved}}}`
+
+// ResolveThread resolves a review thread; a PR-level comment has nothing to resolve.
+func (g *githubClient) ResolveThread(ctx context.Context, _ int, threadID string) error {
+	if strings.HasPrefix(threadID, issueCommentThread) {
+		return nil
+	}
+	var out struct{}
+	return g.graphql(ctx, resolveThreadMutation, map[string]any{"threadId": threadID}, &out)
+}
