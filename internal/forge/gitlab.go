@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	gogitlab "gitlab.com/gitlab-org/api/client-go/v3"
@@ -230,7 +231,10 @@ func (g *gitlabClient) LinkedIssues(ctx context.Context, n int) ([]Issue, error)
 	}
 	var ns []int
 	for _, v := range vs {
-		ns = append(ns, int(v.IID))
+		// An issue of another project would be read here under the same IID.
+		if v.References != nil && strings.EqualFold(v.References.Full, fmt.Sprintf("%s#%d", g.repo.Path, v.IID)) {
+			ns = append(ns, int(v.IID))
+		}
 	}
 	if len(ns) == 0 {
 		pr, err := g.PRView(ctx, n)

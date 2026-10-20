@@ -178,14 +178,15 @@ func oldestFirst(is []Issue) []Issue {
 // maxLinkedIssues caps LinkedIssues.
 const maxLinkedIssues = 5
 
-var closingKeyword = regexp.MustCompile(`(?i)(close[sd]?|fix(e[sd])?|resolve[sd]?) #(\d+)`)
+// closingKeyword is a whole closing keyword ("fixes", not "prefix") with an optional colon.
+var closingKeyword = regexp.MustCompile(`(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?\s+#(\d+)\b`)
 
 // closedInBody returns the issues a PR/MR body closes, fixes or resolves, in order of
 // appearance and without repeats.
 func closedInBody(body string) []int {
 	var ns []int
 	for _, m := range closingKeyword.FindAllStringSubmatch(body, -1) {
-		if n, err := strconv.Atoi(m[3]); err == nil && !slices.Contains(ns, n) {
+		if n, err := strconv.Atoi(m[1]); err == nil && !slices.Contains(ns, n) {
 			ns = append(ns, n)
 		}
 	}

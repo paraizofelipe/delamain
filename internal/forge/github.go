@@ -254,7 +254,7 @@ func (g *githubClient) ListPRs(ctx context.Context, label string) ([]PRDetail, e
 	return oldestPRsFirst(prs), nil
 }
 
-const closingIssuesQuery = `query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){closingIssuesReferences(first:5){nodes{number}}}}}`
+const closingIssuesQuery = `query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){closingIssuesReferences(first:5){nodes{number repository{nameWithOwner}}}}}}`
 
 // LinkedIssues asks GraphQL, the only API that knows which issues a PR closes, and falls back
 // to the closing keywords of the body when it knows none.
@@ -263,7 +263,10 @@ func (g *githubClient) LinkedIssues(ctx context.Context, n int) ([]Issue, error)
 		Repository struct {
 			PullRequest struct {
 				ClosingIssuesReferences struct {
-					Nodes []struct{ Number int }
+					Nodes []struct {
+						Number     int
+						Repository struct{ NameWithOwner string }
+					}
 				}
 			}
 		}
@@ -273,7 +276,10 @@ func (g *githubClient) LinkedIssues(ctx context.Context, n int) ([]Issue, error)
 	}
 	var ns []int
 	for _, v := range out.Repository.PullRequest.ClosingIssuesReferences.Nodes {
-		ns = append(ns, v.Number)
+		// An issue of another repository would be read here under the same number.
+		if strings.EqualFold(v.Repository.NameWithOwner, g.owner+"/"+g.name) {
+			ns = append(ns, v.Number)
+		}
 	}
 	if len(ns) == 0 {
 		pr, err := g.PRView(ctx, n)

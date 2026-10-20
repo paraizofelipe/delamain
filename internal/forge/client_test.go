@@ -452,12 +452,12 @@ func TestLinkedIssuesShouldUseForgeReferences(t *testing.T) {
 		routes map[string]func(http.ResponseWriter, *http.Request)
 	}{
 		{"github", githubAt, map[string]func(http.ResponseWriter, *http.Request){
-			"POST /graphql":                reply(200, `{"data":{"repository":{"pullRequest":{"closingIssuesReferences":{"nodes":[{"number":3},{"number":8}]}}}}}`),
+			"POST /graphql":                reply(200, `{"data":{"repository":{"pullRequest":{"closingIssuesReferences":{"nodes":[{"number":3,"repository":{"nameWithOwner":"acme/api"}},{"number":8,"repository":{"nameWithOwner":"Acme/API"}}]}}}}}`),
 			"GET /repos/acme/api/issues/3": reply(200, `{"number":3,"title":"three","state":"open"}`),
 			"GET /repos/acme/api/issues/8": reply(200, `{"number":8,"title":"eight","state":"closed"}`),
 		}},
 		{"gitlab", gitlabAt, map[string]func(http.ResponseWriter, *http.Request){
-			"GET " + glProject + "/merge_requests/12/closes_issues": reply(200, `[{"iid":3},{"iid":8}]`),
+			"GET " + glProject + "/merge_requests/12/closes_issues": reply(200, `[{"iid":3,"references":{"full":"grp/api#3"}},{"iid":8,"references":{"full":"GRP/api#8"}}]`),
 			"GET " + glProject + "/issues/3":                        reply(200, `{"iid":3,"title":"three","state":"opened"}`),
 			"GET " + glProject + "/issues/8":                        reply(200, `{"iid":8,"title":"eight","state":"closed"}`),
 		}},
@@ -483,6 +483,54 @@ func TestLinkedIssuesShouldUseForgeReferences(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestLinkedIssuesShouldIgnoreIssuesOfOtherRepositories(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		at     func(*testing.T, map[string]func(http.ResponseWriter, *http.Request), ...Option) (Forge, *fakeAPI)
+		routes map[string]func(http.ResponseWriter, *http.Request)
+	}{
+		{"github", githubAt, map[string]func(http.ResponseWriter, *http.Request){
+			"POST /graphql":                reply(200, `{"data":{"repository":{"pullRequest":{"closingIssuesReferences":{"nodes":[{"number":5,"repository":{"nameWithOwner":"other/repo"}}]}}}}}`),
+			"GET /repos/acme/api/pulls/12": reply(200, `{"number":12,"body":"Fixes other/repo#5 and fixes #2"}`),
+			"GET /repos/acme/api/issues/2": reply(200, `{"number":2,"title":"two","state":"open"}`),
+			"GET /repos/acme/api/issues/5": reply(200, `{"number":5,"title":"not linked","state":"open"}`),
+		}},
+		{"gitlab", gitlabAt, map[string]func(http.ResponseWriter, *http.Request){
+			"GET " + glProject + "/merge_requests/12/closes_issues": reply(200, `[{"iid":5,"references":{"full":"other/proj#5"}}]`),
+			"GET " + glProject + "/merge_requests/12":               reply(200, `{"iid":12,"description":"Closes other/proj#5 and closes #2"}`),
+			"GET " + glProject + "/issues/2":                        reply(200, `{"iid":2,"title":"two","state":"opened"}`),
+			"GET " + glProject + "/issues/5":                        reply(200, `{"iid":5,"title":"not linked","state":"opened"}`),
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, _ := tc.at(t, tc.routes)
+			is, err := f.LinkedIssues(context.Background(), 12)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(is) != 1 || is[0].Number != 2 {
+				t.Fatalf("issue 5 of another repository is not this repository's #5; the body fallback still applies: %+v", is)
+			}
+		})
+	}
+}
+
+func TestClosedInBodyShouldMatchWholeClosingKeywordsOnly(t *testing.T) {
+	for body, want := range map[string][]int{
+		"prefix #12, suffix #13, unresolved #14, bugfix #15": nil,
+		"Fixes: #3":            {3},
+		"closes   #4":          {4},
+		"Resolved #5.":         {5},
+		"fix #6x and fix #7":   {7},
+		"Fixes other/repo#8":   nil,
+		"(fixes #9) closes #9": {9},
+	} {
+		if got := closedInBody(body); !slices.Equal(got, want) {
+			t.Errorf("closedInBody(%q) = %v, want %v", body, got, want)
+		}
 	}
 }
 
@@ -573,12 +621,12 @@ func TestLinkedIssuesShouldFailWhenALinkedIssueCannotBeRead(t *testing.T) {
 		routes map[string]func(http.ResponseWriter, *http.Request)
 	}{
 		{"github", githubAt, map[string]func(http.ResponseWriter, *http.Request){
-			"POST /graphql":                reply(200, `{"data":{"repository":{"pullRequest":{"closingIssuesReferences":{"nodes":[{"number":3},{"number":8}]}}}}}`),
+			"POST /graphql":                reply(200, `{"data":{"repository":{"pullRequest":{"closingIssuesReferences":{"nodes":[{"number":3,"repository":{"nameWithOwner":"acme/api"}},{"number":8,"repository":{"nameWithOwner":"Acme/API"}}]}}}}}`),
 			"GET /repos/acme/api/issues/3": reply(200, `{"number":3,"state":"open"}`),
 			"GET /repos/acme/api/issues/8": forbidden,
 		}},
 		{"gitlab", gitlabAt, map[string]func(http.ResponseWriter, *http.Request){
-			"GET " + glProject + "/merge_requests/12/closes_issues": reply(200, `[{"iid":3},{"iid":8}]`),
+			"GET " + glProject + "/merge_requests/12/closes_issues": reply(200, `[{"iid":3,"references":{"full":"grp/api#3"}},{"iid":8,"references":{"full":"GRP/api#8"}}]`),
 			"GET " + glProject + "/issues/3":                        reply(200, `{"iid":3,"state":"opened"}`),
 			"GET " + glProject + "/issues/8":                        forbidden,
 		}},
