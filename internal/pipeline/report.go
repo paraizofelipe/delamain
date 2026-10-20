@@ -100,6 +100,15 @@ func renderReviewReport(res Result, p *prRun) string {
 		fmt.Fprintf(&b, "| Motivo | %s |\n", strings.ReplaceAll(res.Reason, "|", `\|`))
 	}
 	fmt.Fprintf(&b, "| PR/MR | %s |\n| Head | `%s` (base `%s` em `%s`) |\n", p.pr.URL, p.pr.HeadSHA, p.pr.BaseRef, p.pr.BaseSHA)
+	var cmds []string
+	for _, c := range [][2]string{{"format_check", p.cmds.FormatCheck}, {"lint", p.cmds.Lint}, {"typecheck", p.cmds.Typecheck}, {"test", p.cmds.Test}} {
+		if c[1] != "" {
+			cmds = append(cmds, fmt.Sprintf("%s: `%s`", c[0], strings.ReplaceAll(c[1], "|", `\|`)))
+		}
+	}
+	if len(cmds) > 0 {
+		fmt.Fprintf(&b, "| Comandos da base (não executados) | %s |\n", strings.Join(cmds, " · "))
+	}
 	if res.Review != nil {
 		fmt.Fprintf(&b, "| Postado | %d inline · %d no resumo · %d descartados |\n", res.Review.Inline, res.Review.InSummary, res.Review.Dropped)
 	}

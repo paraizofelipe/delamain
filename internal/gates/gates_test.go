@@ -193,3 +193,25 @@ func TestDependenciesShouldFindBlockingIssueReferences(t *testing.T) {
 		}
 	}
 }
+
+func TestParseRepoConfigShouldTreatEmptyInputAsEmptyConfigAndRejectTypos(t *testing.T) {
+	for name, raw := range map[string]string{"nil": "", "blank": "\n  \n", "comment only": "# nada\n"} {
+		if rc, err := ParseRepoConfig([]byte(raw)); err != nil || rc.Commands.Test != "" {
+			t.Errorf("%s: an empty file is an empty config: %+v %v", name, rc, err)
+		}
+	}
+	rc, err := ParseRepoConfig([]byte("commands:\n  test: make test\ngates:\n  red_proof: never\n"))
+	if err != nil || rc.Commands.Test != "make test" || rc.Gates.RedProof != "never" {
+		t.Fatalf("repo config = %+v %v", rc, err)
+	}
+	for name, raw := range map[string]string{
+		"typo":           "comands:\n  test: x\n",
+		"unknown policy": "gates:\n  red_proof: sometimes\n",
+		"not a mapping":  "- test\n",
+		"two documents":  "commands:\n  test: a\n---\ncomands: b\n",
+	} {
+		if _, err := ParseRepoConfig([]byte(raw)); err == nil || !strings.Contains(err.Error(), RepoConfigFile) {
+			t.Errorf("%s: must fail naming %s, got %v", name, RepoConfigFile, err)
+		}
+	}
+}

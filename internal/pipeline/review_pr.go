@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -13,7 +14,9 @@ import (
 	"github.com/paraizo/delamain/internal/artifacts"
 	"github.com/paraizo/delamain/internal/budget"
 	"github.com/paraizo/delamain/internal/forge"
+	"github.com/paraizo/delamain/internal/gates"
 	"github.com/paraizo/delamain/internal/gitx"
+	"github.com/paraizo/delamain/internal/memory"
 	"github.com/paraizo/delamain/internal/prompts"
 	"github.com/paraizo/delamain/internal/store"
 )
@@ -32,7 +35,11 @@ type prRun struct {
 	ref     string // refs/delamain/pr/N once fetched
 	threads []forge.Thread
 	review  *artifacts.PRReview
+	cmds    artifacts.Commands // from the base's .delamain.yaml, for the report
 }
+
+// memoryPromptBytes caps the repository memory sent to the pr-reviewer.
+const memoryPromptBytes = 8192
 
 // RunReview reviews PR/MR n of repo read-only and posts a comment-only review. Like Run, a
 // non-nil error means the review could not even be recorded; guardrail stops are
@@ -121,6 +128,17 @@ func (r *Runner) reviewPR(ctx context.Context, ru *run, p *prRun) error {
 	if err := r.Git.FetchRef(ctx, repo, pr.BaseRef); err != nil {
 		return err
 	}
+	base := "origin/" + pr.BaseRef
+	// The config comes from the base: the PR's author controls everything in its head.
+	raw, err := r.Git.ShowFile(ctx, repo, base, gates.RepoConfigFile)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return haltf("não foi possível ler o %s da base %s: %v", gates.RepoConfigFile, base, err)
+	}
+	rc, err := gates.ParseRepoConfig(raw)
+	if err != nil {
+		return haltf("%v (lido de %s)", err, base)
+	}
+	ru.repoCfg, p.cmds = rc, rc.Commands
 	fetched, err := r.Git.FetchPRHead(ctx, repo, r.Forge.Repo().Kind, pr.Number)
 	p.ref = gitx.PRRef(pr.Number) // removed even when the fetch half-failed
 	if err != nil {
@@ -134,7 +152,6 @@ func (r *Runner) reviewPR(ctx context.Context, ru *run, p *prRun) error {
 	if err := r.Git.AddDetachedWorktree(ctx, repo, wt, p.ref); err != nil {
 		return err
 	}
-	base := "origin/" + pr.BaseRef
 	ru.repo = prompts.Repo{Worktree: wt, Base: base}
 	ru.rec.Worktree, ru.rec.Base = wt, base
 	ru.res.Worktree, ru.res.Base = wt, base
@@ -173,6 +190,10 @@ func (r *Runner) reviewPR(ctx context.Context, ru *run, p *prRun) error {
 	}
 	data.Threads = renderThreads(threads)
 	data.MaxComments = r.Cfg.Review.MaxComments
+	mem, fr := memory.Store{Dir: r.Cfg.Paths.MemoryDir()}, r.Forge.Repo()
+	if data.Memory, err = mem.Read(fr.Host, fr.Path, memoryPromptBytes); err != nil {
+		ru.log.Warn("could not read the repository memory", "err", err)
+	}
 	review, err := stepArtifact[artifacts.PRReview](ctx, r, ru, "pr-reviewer", "review-pr", data)
 	if err != nil {
 		return err
@@ -211,6 +232,11 @@ func (r *Runner) reviewPR(ctx context.Context, ru *run, p *prRun) error {
 		return err
 	}
 	ru.res.Outcome = OutcomeReviewed
+	if n, err := mem.Append(fr.Host, fr.Path, ru.rec.ID, pr.Number, review.Learnings, time.Now()); err != nil {
+		ru.log.Warn("could not update the repository memory", "err", err)
+	} else {
+		ru.log.Info("repository memory", "run", ru.rec.ID, "learnings", n)
+	}
 	return nil
 }
 

