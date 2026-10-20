@@ -562,3 +562,26 @@ func TestRunReviewShouldIgnoreMarkersNotPostedByDelamain(t *testing.T) {
 		t.Fatalf("delamain's own markers still deduplicate: %+v", rh.f.posted)
 	}
 }
+
+func TestRunReviewShouldHaltWithoutMovingTheCursorWhenAForgeOrGitCallFails(t *testing.T) {
+	for name, tc := range map[string]struct {
+		breaks func(*reviewHarness)
+		reason string
+	}{
+		"post fails":         {func(rh *reviewHarness) { rh.f.postErr = errors.New("HTTP 502") }, "HTTP 502"},
+		"threads unreadable": {func(rh *reviewHarness) { rh.f.threadsErr = errors.New("HTTP 403") }, "HTTP 403"},
+		"diff lines unknown": {func(rh *reviewHarness) { rh.g.linesErr = errors.New("bad revision") }, "bad revision"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			rh := newReviewHarness(t, reviewsPR(prReviewJSON("")))
+			tc.breaks(rh)
+			res := rh.review(t)
+
+			// The cursor stays put so the same head is reviewed again on the next run.
+			assertNothingPosted(t, rh, res, tc.reason)
+			if _, err := os.Stat(filepath.Join(rh.r.Cfg.Paths.MemoryDir(), "github.com", "acme", "api.md")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("a review that posted nothing learns nothing: %v", err)
+			}
+		})
+	}
+}

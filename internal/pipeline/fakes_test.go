@@ -296,6 +296,7 @@ type fakeGit struct {
 	shown      []string                    // "<ref>:<path>" per ShowFile call
 	lines      map[string][]gitx.LineRange // ChangedLines result
 	deleted    []string                    // refs DeleteRef removed
+	linesErr   error                       // ChangedLines failure
 }
 
 func newFakeGit() *fakeGit {
@@ -410,7 +411,7 @@ func (g *fakeGit) ShowFile(_ context.Context, _, ref, path string) ([]byte, erro
 }
 
 func (g *fakeGit) ChangedLines(context.Context, string, string) (map[string][]gitx.LineRange, error) {
-	return g.lines, nil
+	return g.lines, g.linesErr
 }
 
 func (g *fakeGit) DeleteRef(_ context.Context, _, ref string) error {
@@ -437,6 +438,8 @@ type fakeForge struct {
 	linked  []forge.Issue
 	threads []forge.Thread
 	posted  []forge.ReviewOptions
+	// Failures of the review calls.
+	threadsErr, postErr error
 }
 
 func (f *fakeForge) Repo() forge.Repo {
@@ -476,8 +479,13 @@ func (f *fakeForge) PRView(_ context.Context, n int) (forge.PRDetail, error) {
 }
 func (f *fakeForge) ListPRs(context.Context, string) ([]forge.PRDetail, error) { return nil, nil }
 func (f *fakeForge) LinkedIssues(context.Context, int) ([]forge.Issue, error)  { return f.linked, nil }
-func (f *fakeForge) Threads(context.Context, int) ([]forge.Thread, error)      { return f.threads, nil }
+func (f *fakeForge) Threads(context.Context, int) ([]forge.Thread, error) {
+	return f.threads, f.threadsErr
+}
 func (f *fakeForge) PostReview(_ context.Context, _ int, o forge.ReviewOptions) error {
+	if f.postErr != nil {
+		return f.postErr
+	}
 	f.posted = append(f.posted, o)
 	return nil
 }
