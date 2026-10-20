@@ -19,7 +19,7 @@ const deadPID = 999_999
 func crashed(t *testing.T, hs *harness, state store.RunState) store.Run {
 	t.Helper()
 	ctx := context.Background()
-	rec, err := hs.st.CreateRun(ctx, "/repo", "#7", "Fix add", "omp", 3)
+	rec, err := hs.st.CreateRun(ctx, "/repo", "#7", "Fix add", "omp", 3, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +84,7 @@ func TestRecoverShouldLeaveRunsOfLiveProcessesAlone(t *testing.T) {
 
 func TestRecoverShouldSkipRunsOfThisProcess(t *testing.T) {
 	hs := newHarness(t, happy)
-	if _, err := hs.st.CreateRun(context.Background(), "/repo", "#7", "x", "omp", 3); err != nil {
+	if _, err := hs.st.CreateRun(context.Background(), "/repo", "#7", "x", "omp", 3, 0); err != nil {
 		t.Fatal(err)
 	}
 	hs.r.Alive = func(int) bool { return false }

@@ -51,9 +51,12 @@ type Run struct {
 	OwnerPID  int
 	Base      string
 	Workspace string
-	// Harness and MaxIterations are fixed when the run is created; runs older than v4 have "" and 0.
+	// Harness is fixed when the run is created; runs older than v4 have "". MaxIterations, PerIssue and
+	// Complexity may change once, after planning classifies the issue; runs older than that have 0, 0 and "".
 	Harness       string
 	MaxIterations int
+	PerIssue      float64
+	Complexity    string
 	CreatedAt     time.Time
 	UpdatedAt     time.Time
 }
@@ -168,6 +171,8 @@ var migrations = []string{
 	);`,
 	`ALTER TABLE runs ADD COLUMN harness TEXT NOT NULL DEFAULT '';
 	ALTER TABLE runs ADD COLUMN max_iterations INTEGER NOT NULL DEFAULT 0;`,
+	`ALTER TABLE runs ADD COLUMN complexity TEXT NOT NULL DEFAULT '';
+	ALTER TABLE runs ADD COLUMN per_issue REAL NOT NULL DEFAULT 0;`,
 }
 
 func (s *Store) migrate(ctx context.Context) error {
@@ -199,7 +204,7 @@ func (s *Store) migrate(ctx context.Context) error {
 }
 
 // CreateRun inserts a claimed run, refusing a second active run for the same issue.
-func (s *Store) CreateRun(ctx context.Context, repo, issueRef, title, harness string, maxIterations int) (Run, error) {
+func (s *Store) CreateRun(ctx context.Context, repo, issueRef, title, harness string, maxIterations int, perIssue float64) (Run, error) {
 	if r, err := s.ActiveRun(ctx, repo, issueRef); err == nil {
 		return Run{}, fmt.Errorf("issue %s already has active run %d in state %s", issueRef, r.ID, r.State)
 	} else if !errors.Is(err, ErrNotFound) {
@@ -207,8 +212,8 @@ func (s *Store) CreateRun(ctx context.Context, repo, issueRef, title, harness st
 	}
 	now := s.now()
 	res, err := s.db.ExecContext(ctx,
-		`INSERT INTO runs (repo, issue_ref, title, state, owner_pid, harness, max_iterations, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		repo, issueRef, title, StateClaimed, os.Getpid(), harness, maxIterations, now, now)
+		`INSERT INTO runs (repo, issue_ref, title, state, owner_pid, harness, max_iterations, per_issue, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		repo, issueRef, title, StateClaimed, os.Getpid(), harness, maxIterations, perIssue, now, now)
 	if err != nil {
 		return Run{}, err
 	}
@@ -216,11 +221,11 @@ func (s *Store) CreateRun(ctx context.Context, repo, issueRef, title, harness st
 	return s.GetRun(ctx, id)
 }
 
-const runCols = `id, repo, issue_ref, title, branch, worktree, state, iteration, mr_url, reason, owner_pid, base, workspace, harness, max_iterations, created_at, updated_at`
+const runCols = `id, repo, issue_ref, title, branch, worktree, state, iteration, mr_url, reason, owner_pid, base, workspace, harness, max_iterations, per_issue, complexity, created_at, updated_at`
 
 func scanRun(row interface{ Scan(...any) error }) (Run, error) {
 	var r Run
-	err := row.Scan(&r.ID, &r.Repo, &r.IssueRef, &r.Title, &r.Branch, &r.Worktree, &r.State, &r.Iteration, &r.MRURL, &r.Reason, &r.OwnerPID, &r.Base, &r.Workspace, &r.Harness, &r.MaxIterations, &r.CreatedAt, &r.UpdatedAt)
+	err := row.Scan(&r.ID, &r.Repo, &r.IssueRef, &r.Title, &r.Branch, &r.Worktree, &r.State, &r.Iteration, &r.MRURL, &r.Reason, &r.OwnerPID, &r.Base, &r.Workspace, &r.Harness, &r.MaxIterations, &r.PerIssue, &r.Complexity, &r.CreatedAt, &r.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Run{}, ErrNotFound
 	}
@@ -279,8 +284,8 @@ func (s *Store) ClaimRun(ctx context.Context, id int64, from, to int) (bool, err
 // UpdateRun persists mutable fields of r.
 func (s *Store) UpdateRun(ctx context.Context, r Run) error {
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE runs SET branch=?, worktree=?, state=?, iteration=?, mr_url=?, reason=?, base=?, workspace=?, updated_at=? WHERE id=?`,
-		r.Branch, r.Worktree, r.State, r.Iteration, r.MRURL, r.Reason, r.Base, r.Workspace, s.now(), r.ID)
+		`UPDATE runs SET branch=?, worktree=?, state=?, iteration=?, mr_url=?, reason=?, base=?, workspace=?, max_iterations=?, per_issue=?, complexity=?, updated_at=? WHERE id=?`,
+		r.Branch, r.Worktree, r.State, r.Iteration, r.MRURL, r.Reason, r.Base, r.Workspace, r.MaxIterations, r.PerIssue, r.Complexity, s.now(), r.ID)
 	if err != nil {
 		return err
 	}

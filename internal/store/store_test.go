@@ -22,7 +22,7 @@ func openTest(t *testing.T) *Store {
 
 func TestCreateRunShouldStartClaimedAndBeRetrievable(t *testing.T) {
 	s := openTest(t)
-	r, err := s.CreateRun(context.Background(), "gh:me/app", "#12", "fix login", "omp", 3)
+	r, err := s.CreateRun(context.Background(), "gh:me/app", "#12", "fix login", "omp", 3, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,12 +38,12 @@ func TestCreateRunShouldStartClaimedAndBeRetrievable(t *testing.T) {
 func TestCreateRunShouldPersistHarnessAndMaxIterations(t *testing.T) {
 	s := openTest(t)
 	ctx := context.Background()
-	r, err := s.CreateRun(ctx, "repo", "#1", "a", "claude", 5)
+	r, err := s.CreateRun(ctx, "repo", "#1", "a", "claude", 5, 2e6)
 	if err != nil {
 		t.Fatal(err)
 	}
 	got, err := s.GetRun(ctx, r.ID)
-	if err != nil || got.Harness != "claude" || got.MaxIterations != 5 {
+	if err != nil || got.Harness != "claude" || got.MaxIterations != 5 || got.PerIssue != 2e6 || got.Complexity != "" {
 		t.Fatalf("status must report the harness and max iterations the run started with: %+v %v", got, err)
 	}
 	got.State, got.Iteration = StateImplement, 2
@@ -55,16 +55,33 @@ func TestCreateRunShouldPersistHarnessAndMaxIterations(t *testing.T) {
 	}
 }
 
+func TestUpdateRunShouldPersistTheClassifiedLimits(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	rec, err := s.CreateRun(ctx, "repo", "#1", "a", "omp", 3, 2e6)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec.MaxIterations, rec.PerIssue, rec.Complexity = 5, 4e6, "high"
+	if err := s.UpdateRun(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetRun(ctx, rec.ID)
+	if err != nil || got.MaxIterations != 5 || got.PerIssue != 4e6 || got.Complexity != "high" {
+		t.Fatalf("classified limits must be persisted: %+v %v", got, err)
+	}
+}
+
 func TestCreateRunShouldRefuseSecondActiveRunForSameIssue(t *testing.T) {
 	s := openTest(t)
 	ctx := context.Background()
-	if _, err := s.CreateRun(ctx, "repo", "#1", "a", "omp", 3); err != nil {
+	if _, err := s.CreateRun(ctx, "repo", "#1", "a", "omp", 3, 0); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.CreateRun(ctx, "repo", "#1", "a", "omp", 3); err == nil {
+	if _, err := s.CreateRun(ctx, "repo", "#1", "a", "omp", 3, 0); err == nil {
 		t.Fatal("two workers on the same issue would race on one branch")
 	}
-	if _, err := s.CreateRun(ctx, "other-repo", "#1", "a", "omp", 3); err != nil {
+	if _, err := s.CreateRun(ctx, "other-repo", "#1", "a", "omp", 3, 0); err != nil {
 		t.Fatalf("same issue number in another repo is independent: %v", err)
 	}
 }
@@ -72,12 +89,12 @@ func TestCreateRunShouldRefuseSecondActiveRunForSameIssue(t *testing.T) {
 func TestCreateRunShouldAllowNewRunAfterPreviousIsRecorded(t *testing.T) {
 	s := openTest(t)
 	ctx := context.Background()
-	r, _ := s.CreateRun(ctx, "repo", "#1", "a", "omp", 3)
+	r, _ := s.CreateRun(ctx, "repo", "#1", "a", "omp", 3, 0)
 	r.State = StateRecorded
 	if err := s.UpdateRun(ctx, r); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.CreateRun(ctx, "repo", "#1", "a", "omp", 3); err != nil {
+	if _, err := s.CreateRun(ctx, "repo", "#1", "a", "omp", 3, 0); err != nil {
 		t.Fatalf("a finished issue may be re-run: %v", err)
 	}
 }
@@ -85,9 +102,9 @@ func TestCreateRunShouldAllowNewRunAfterPreviousIsRecorded(t *testing.T) {
 func TestUnfinishedRunsShouldListOnlyResumableRunsInOrder(t *testing.T) {
 	s := openTest(t)
 	ctx := context.Background()
-	a, _ := s.CreateRun(ctx, "repo", "#1", "a", "omp", 3)
-	b, _ := s.CreateRun(ctx, "repo", "#2", "b", "omp", 3)
-	c, _ := s.CreateRun(ctx, "repo", "#3", "c", "omp", 3)
+	a, _ := s.CreateRun(ctx, "repo", "#1", "a", "omp", 3, 0)
+	b, _ := s.CreateRun(ctx, "repo", "#2", "b", "omp", 3, 0)
+	c, _ := s.CreateRun(ctx, "repo", "#3", "c", "omp", 3, 0)
 	b.State = StateNeedsInfo
 	c.State, c.Iteration = StateImplement, 2
 	_ = s.UpdateRun(ctx, b)
@@ -112,7 +129,7 @@ func TestUpdateRunShouldReportMissingRun(t *testing.T) {
 func TestRecordUsageShouldLedgerOnlyTheDeltaBetweenSnapshots(t *testing.T) {
 	s := openTest(t)
 	ctx := context.Background()
-	r, _ := s.CreateRun(ctx, "repo", "#1", "a", "omp", 3)
+	r, _ := s.CreateRun(ctx, "repo", "#1", "a", "omp", 3, 0)
 	f := "/sessions/implementer/s.jsonl"
 
 	d1, err := s.RecordUsage(ctx, r.ID, "implementer", f, Usage{Input: 100, Output: 10, CacheRead: 1000, CostUSD: 0.1})
@@ -140,7 +157,7 @@ func TestRecordUsageShouldLedgerOnlyTheDeltaBetweenSnapshots(t *testing.T) {
 func TestRecordUsageShouldNotCreateNegativeEntriesWhenSnapshotShrinks(t *testing.T) {
 	s := openTest(t)
 	ctx := context.Background()
-	r, _ := s.CreateRun(ctx, "repo", "#1", "a", "omp", 3)
+	r, _ := s.CreateRun(ctx, "repo", "#1", "a", "omp", 3, 0)
 	f := "/s.jsonl"
 	_, _ = s.RecordUsage(ctx, r.ID, "planner", f, Usage{Input: 500})
 	d, _ := s.RecordUsage(ctx, r.ID, "planner", f, Usage{Input: 100}) // file rewritten
@@ -163,8 +180,8 @@ func TestUsageSinceShouldAggregateAcrossRunsWithinWindow(t *testing.T) {
 	clock := time.Date(2026, 10, 16, 23, 0, 0, 0, time.UTC)
 	s.now = func() time.Time { return clock }
 
-	a, _ := s.CreateRun(ctx, "repo", "#1", "a", "omp", 3)
-	b, _ := s.CreateRun(ctx, "repo", "#2", "b", "omp", 3)
+	a, _ := s.CreateRun(ctx, "repo", "#1", "a", "omp", 3, 0)
+	b, _ := s.CreateRun(ctx, "repo", "#2", "b", "omp", 3, 0)
 	_, _ = s.RecordUsage(ctx, a.ID, "implementer", "/a.jsonl", Usage{Input: 1000}) // yesterday
 	clock = time.Date(2026, 10, 17, 1, 0, 0, 0, time.UTC)
 	_, _ = s.RecordUsage(ctx, a.ID, "implementer", "/a.jsonl", Usage{Input: 1200}) // +200 today
@@ -186,7 +203,7 @@ func TestOpenShouldBeIdempotentAcrossRestarts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r, _ := s1.CreateRun(ctx, "repo", "#9", "x", "omp", 3)
+	r, _ := s1.CreateRun(ctx, "repo", "#9", "x", "omp", 3, 0)
 	s1.Close()
 
 	s2, err := Open(ctx, path)
@@ -212,7 +229,7 @@ func TestOpenShouldRefuseDatabaseFromNewerBinary(t *testing.T) {
 
 func TestCreateRunShouldRecordTheOwningProcess(t *testing.T) {
 	s := openTest(t)
-	r, err := s.CreateRun(context.Background(), "repo", "#1", "x", "omp", 3)
+	r, err := s.CreateRun(context.Background(), "repo", "#1", "x", "omp", 3, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -224,7 +241,7 @@ func TestCreateRunShouldRecordTheOwningProcess(t *testing.T) {
 func TestUpdateRunShouldPersistBaseAndWorkspace(t *testing.T) {
 	s := openTest(t)
 	ctx := context.Background()
-	r, _ := s.CreateRun(ctx, "repo", "#1", "x", "omp", 3)
+	r, _ := s.CreateRun(ctx, "repo", "#1", "x", "omp", 3, 0)
 	r.Base, r.Workspace = "origin/main", "w9"
 	if err := s.UpdateRun(ctx, r); err != nil {
 		t.Fatal(err)
@@ -293,7 +310,7 @@ func TestOpenShouldUpgradeDatabaseKeepingRunsWithEmptyHarness(t *testing.T) {
 func TestClaimRunShouldTransferOwnershipOnlyFromTheExpectedOwner(t *testing.T) {
 	s := openTest(t)
 	ctx := context.Background()
-	r, _ := s.CreateRun(ctx, "repo", "#1", "x", "omp", 3)
+	r, _ := s.CreateRun(ctx, "repo", "#1", "x", "omp", 3, 0)
 	if ok, err := s.ClaimRun(ctx, r.ID, 4242, 7); err != nil || ok {
 		t.Fatalf("wrong expected owner must not claim: %v %v", ok, err)
 	}
