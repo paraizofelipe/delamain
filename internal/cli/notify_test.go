@@ -121,7 +121,8 @@ func TestDaemonShouldCreateInteractiveNotifier(t *testing.T) {
 	useFakeNotifier(t, n, cancel) // stop the daemon right after it wired the notifier
 	cfgFile, state := isolatedConfig(t, "")
 	repo := gitRepo(t, "https://github.com/acme/api.git")
-	onlyGit(t) // a daemon that polls must not reach the real gh
+	onlyGit(t)                            // a daemon that polls must not reach the real gh
+	t.Setenv("GH_TOKEN", "ghp_test_only") // the forge needs a token; ctx is canceled before any call
 
 	var out bytes.Buffer
 	root := NewRoot()

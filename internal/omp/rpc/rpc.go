@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/paraizo/delamain/internal/agent"
+	"github.com/paraizo/delamain/internal/gitx"
 )
 
 // ErrTimeout means a turn did not end in time; it was aborted.
@@ -34,7 +35,8 @@ type Options struct {
 	Binary string
 	Dir    string
 	Args   []string // omp arguments; "--mode rpc" is added
-	// Env is appended to the inherited environment; its keys win over inherited ones.
+	// Env is appended to the inherited environment, already stripped of credentials by
+	// gitx.AgentEnviron; its keys win over inherited ones.
 	Env          []string
 	Log          io.Writer // human-readable event log (what the herdr tab shows)
 	Stderr       io.Writer
@@ -124,7 +126,7 @@ type Client struct {
 func Start(ctx context.Context, o Options) (*Client, error) {
 	cmd := exec.Command(o.Binary, append([]string{"--mode", "rpc"}, o.Args...)...) //nolint:gosec // configured binary
 	cmd.Dir = o.Dir
-	cmd.Env = append(os.Environ(), o.Env...) // exec keeps the last value of a duplicated key
+	cmd.Env = append(gitx.AgentEnviron(os.Environ()), o.Env...) // exec keeps the last value of a duplicated key
 	cmd.Stderr = o.Stderr
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true} // Close kills omp and its tools together
 	stdin, err := cmd.StdinPipe()

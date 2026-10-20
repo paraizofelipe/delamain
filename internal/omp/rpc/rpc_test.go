@@ -45,6 +45,7 @@ func assistant(stop, errMsg string, input int64) map[string]any {
 func fakeOmp(scenario string) {
 	trace, _ := os.OpenFile(os.Getenv("OMP_FAKE_TRACE"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	fmt.Fprintf(trace, "env GH_TOKEN=%s\n", os.Getenv("GH_TOKEN"))
+	fmt.Fprintf(trace, "envs %s\n", tracedEnv())
 	if scenario == "noready" {
 		time.Sleep(time.Hour)
 	}
@@ -367,5 +368,36 @@ func TestLogFrameShouldExplainAFailedToolFromItsResult(t *testing.T) {
 	f.IsError = false
 	if c.logFrame(f); buf.Len() != 0 {
 		t.Fatalf("a successful tool logs nothing on end: %q", buf.String())
+	}
+}
+
+// tracedKeys are the variables the fake agent reports, to check what it inherited.
+var tracedKeys = []string{"GH_TOKEN", "GITHUB_TOKEN", "OAUTH_TOKEN", "X_SECRET", "OPENAI_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"}
+
+func tracedEnv() string {
+	kv := make([]string, 0, len(tracedKeys))
+	for _, k := range tracedKeys {
+		kv = append(kv, k+"="+os.Getenv(k))
+	}
+	return strings.Join(kv, " ")
+}
+
+func setAgentSecrets(t *testing.T) {
+	t.Helper()
+	for k, v := range map[string]string{
+		"GH_TOKEN": "s-gh", "GITHUB_TOKEN": "s-github", "OAUTH_TOKEN": "s-oauth", "X_SECRET": "s-x",
+		"OPENAI_API_KEY": "k-openai", "CLAUDE_CODE_OAUTH_TOKEN": "c-oauth",
+	} {
+		t.Setenv(k, v)
+	}
+}
+
+const wantAgentEnv = "envs GH_TOKEN=delamain-push-blocked:// GITHUB_TOKEN= OAUTH_TOKEN= X_SECRET= OPENAI_API_KEY=k-openai CLAUDE_CODE_OAUTH_TOKEN=c-oauth"
+
+func TestStartShouldStripForgeTokensFromTheInheritedEnv(t *testing.T) {
+	setAgentSecrets(t)
+	_, h := start(t, "ok")
+	if got := h.lines(t)[1]; got != wantAgentEnv {
+		t.Fatalf("omp inherited\n%s\nwant\n%s", got, wantAgentEnv)
 	}
 }

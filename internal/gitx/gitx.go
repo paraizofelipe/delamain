@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"slices"
 	"strings"
 	"unicode"
 
@@ -275,4 +276,25 @@ func BranchName(kind, ref, title string) string {
 	}
 	id := Slug(ref, 30) // task refs are up to "task-" + 24 chars; cutting them makes tasks collide
 	return prefix + "/" + id + "-" + Slug(title, 40)
+}
+
+// harnessCredentials are the *_TOKEN keys the agent harness itself logs in with (Claude Code's
+// OAuth token and Anthropic's auth token); without them every agent fails its first turn.
+var harnessCredentials = []string{"CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_AUTH_TOKEN"}
+
+// AgentEnviron is the whole environment an agent runs with: base without forge tokens or any
+// *_TOKEN, *_PAT or *_SECRET (except harnessCredentials), plus AgentEnv's push block. Model
+// provider *_API_KEY variables stay: agents need them to run.
+func AgentEnviron(base []string) []string {
+	env := make([]string, 0, len(base))
+	for _, kv := range base {
+		key, _, _ := strings.Cut(kv, "=")
+		upper := strings.ToUpper(key)
+		secret := strings.HasSuffix(upper, "_TOKEN") || strings.HasSuffix(upper, "_PAT") || strings.HasSuffix(upper, "_SECRET")
+		if secret && !slices.Contains(harnessCredentials, key) {
+			continue
+		}
+		env = append(env, kv)
+	}
+	return append(env, AgentEnv()...)
 }

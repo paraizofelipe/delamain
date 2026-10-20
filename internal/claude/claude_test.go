@@ -57,6 +57,7 @@ func result(turn int, extra map[string]any) map[string]any {
 func fakeClaude(scenario string) {
 	trace, _ := os.OpenFile(os.Getenv("CLAUDE_FAKE_TRACE"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	fmt.Fprintf(trace, "env GH_TOKEN=%s\nargs %s\n", os.Getenv("GH_TOKEN"), strings.Join(os.Args[1:], " "))
+	fmt.Fprintf(trace, "envs %s\n", tracedEnv())
 	if scenario == "die" {
 		fmt.Fprintln(os.Stderr, "Error: not logged in · run claude auth login")
 	}
@@ -358,5 +359,39 @@ func TestUsageFilesShouldListEveryRolesSession(t *testing.T) {
 	}
 	if files, err := UsageFiles(filepath.Join(dir, "absent")); err != nil || len(files) != 0 {
 		t.Fatalf("a run without sessions has no usage: %v %v", files, err)
+	}
+}
+
+// tracedKeys are the variables the fake agent reports, to check what it inherited.
+var tracedKeys = []string{"GH_TOKEN", "GITHUB_TOKEN", "OAUTH_TOKEN", "X_SECRET", "OPENAI_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"}
+
+func tracedEnv() string {
+	kv := make([]string, 0, len(tracedKeys))
+	for _, k := range tracedKeys {
+		kv = append(kv, k+"="+os.Getenv(k))
+	}
+	return strings.Join(kv, " ")
+}
+
+func setAgentSecrets(t *testing.T) {
+	t.Helper()
+	for k, v := range map[string]string{
+		"GH_TOKEN": "s-gh", "GITHUB_TOKEN": "s-github", "OAUTH_TOKEN": "s-oauth", "X_SECRET": "s-x",
+		"OPENAI_API_KEY": "k-openai", "CLAUDE_CODE_OAUTH_TOKEN": "c-oauth",
+	} {
+		t.Setenv(k, v)
+	}
+}
+
+const wantAgentEnv = "envs GH_TOKEN=delamain-push-blocked:// GITHUB_TOKEN= OAUTH_TOKEN= X_SECRET= OPENAI_API_KEY=k-openai CLAUDE_CODE_OAUTH_TOKEN=c-oauth"
+
+func TestStartShouldStripForgeTokensFromTheInheritedEnv(t *testing.T) {
+	setAgentSecrets(t)
+	s := start(t, "ok")
+	if _, err := s.c.Prompt(context.Background(), "go", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if tr := s.traced(t); !strings.Contains(tr, wantAgentEnv+"\n") {
+		t.Fatalf("claude inherited\n%s\nwant a line\n%s", tr, wantAgentEnv)
 	}
 }
