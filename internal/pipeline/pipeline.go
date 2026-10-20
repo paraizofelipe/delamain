@@ -66,7 +66,7 @@ type Result struct {
 	Worktree    string
 	WorkspaceID string
 	Iterations  int
-	Complexity  string // the plan's assessment, e.g. "high (12 arquivos; high: change, files)"
+	Complexity  string // the plan's assessment, e.g. "high (12 arquivos; sinais altos: change, files)"
 	Commits     []string
 	RunDir      string
 	ReportPath  string

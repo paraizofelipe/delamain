@@ -334,9 +334,12 @@ func (c Config) Validate() error {
 	if c.Budget.SoftRatio <= 0 || c.Budget.SoftRatio > 1 {
 		errs = append(errs, errors.New("budget.soft_ratio must be in (0, 1]"))
 	}
-	for level, p := range map[string]Profile{"low": c.Complexity.Low, "medium": c.Complexity.Medium, "high": c.Complexity.High} {
-		if p.MaxIterations < 0 || p.PerIssue < 0 {
-			errs = append(errs, fmt.Errorf("complexity.%s: max_iterations and per_issue must be >= 0", level))
+	for _, lp := range []struct {
+		level string
+		p     Profile
+	}{{"low", c.Complexity.Low}, {"medium", c.Complexity.Medium}, {"high", c.Complexity.High}} {
+		if lp.p.MaxIterations < 0 || lp.p.PerIssue < 0 {
+			errs = append(errs, fmt.Errorf("complexity.%s: max_iterations and per_issue must be >= 0", lp.level))
 		}
 	}
 	switch c.Agent.Harness {

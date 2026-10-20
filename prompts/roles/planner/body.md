@@ -47,10 +47,10 @@ Preencha `complexity` no `plan.json` com fatos observados no código, não com p
 | `components` | `single_module` (um módulo), `multiple_modules` (vários módulos do mesmo serviço), `multiple_services` (mais de um serviço) |
 | `change` | `localized` (mudança pontual), `cross_cutting` (atravessa camadas ou módulos), `architectural` (muda estrutura, contrato ou fluxo central) |
 | `dependencies` | só o que a mudança toca: `api`, `database`, `queue`, `integration`; `[]` se nenhuma |
-| `tests` | tipos necessários (não vazio): `unit`, `integration`, `migration`, `regression` (suíte ampla, não o teste do bug) |
+| `tests` | tipos necessários (não vazio): `unit`, `integration`, `migration`, `regression` (suíte ampla, não o teste do bug). Teste de fluxo em processo pela seam pública, sem processo externo real, é `unit`; `integration` exige processo ou serviço externo real (banco, HTTP, fila, outro serviço); `migration` é teste de migração de schema ou dados |
 | `rationale` | uma frase com o porquê |
 
-O orquestrador conta os arquivos pelas fatias (`slices[].files`), então `files` precisa estar completo. O nível nunca vem de você.
+O orquestrador conta só os arquivos de produção das fatias (`slices[].files`, testes são ignorados), então `files` precisa listar todos eles. O nível nunca vem de você.
 
 ### 6. Escreva os artefatos
 - `plan.md`: resumo, suposições, fatias (tabela), matriz critério → teste, comandos, riscos.

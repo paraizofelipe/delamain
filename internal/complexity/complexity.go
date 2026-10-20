@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/paraizo/delamain/internal/artifacts"
+	"github.com/paraizo/delamain/internal/gates"
 )
 
 type Level string
@@ -21,7 +22,7 @@ const (
 // Assessment is the outcome of classifying a plan, with the per-criterion signals behind it.
 type Assessment struct {
 	Level   Level
-	Files   int              // unique paths across plan.Slices[].Files
+	Files   int              // unique non-test paths across plan.Slices[].Files
 	Signals map[string]Level // keys: files, components, change, dependencies, tests
 }
 
@@ -31,7 +32,9 @@ func Classify(p artifacts.Plan) Assessment {
 	seen := map[string]bool{}
 	for _, s := range p.Slices {
 		for _, f := range s.Files {
-			seen[f] = true
+			if !gates.IsTest(f) {
+				seen[f] = true
+			}
 		}
 	}
 	c := p.Complexity
@@ -102,7 +105,7 @@ func testsSignal(tests []string) Level {
 	return Low
 }
 
-// Summary renders the assessment for the user, e.g. "high (5 arquivos; high: change, dependencies)".
+// Summary renders the assessment for the user, e.g. "high (5 arquivos; sinais altos: change, dependencies)".
 func (a Assessment) Summary() string {
 	var high []string
 	for k, l := range a.Signals {
@@ -111,9 +114,16 @@ func (a Assessment) Summary() string {
 		}
 	}
 	sort.Strings(high)
-	s := fmt.Sprintf("%s (%d arquivos", a.Level, a.Files)
+	s := fmt.Sprintf("%s (%s", a.Level, plural(a.Files))
 	if len(high) > 0 {
-		s += "; high: " + strings.Join(high, ", ")
+		s += "; sinais altos: " + strings.Join(high, ", ")
 	}
 	return s + ")"
+}
+
+func plural(n int) string {
+	if n == 1 {
+		return "1 arquivo"
+	}
+	return fmt.Sprintf("%d arquivos", n)
 }

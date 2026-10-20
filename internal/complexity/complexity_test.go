@@ -2,7 +2,6 @@ package complexity
 
 import (
 	"fmt"
-	"strings"
 	"testing"
 
 	"github.com/paraizo/delamain/internal/artifacts"
@@ -32,6 +31,8 @@ func TestClassifyShouldApplyTheThresholds(t *testing.T) {
 	heavy.Tests = []string{"unit", "migration"}
 	api := lowCriteria()
 	api.Dependencies = []string{"api"}
+	wide := lowCriteria()
+	wide.Tests = []string{"regression"}
 
 	tests := []struct {
 		name   string
@@ -41,10 +42,13 @@ func TestClassifyShouldApplyTheThresholds(t *testing.T) {
 		want   Level
 	}{
 		{"all low", plan(names(2), lowCriteria()), Low, "files", Low},
+		{"four files", plan(names(4), lowCriteria()), Medium, "files", Medium},
+		{"ten files", plan(names(10), lowCriteria()), Medium, "files", Medium},
 		{"five files", plan(names(5), lowCriteria()), Medium, "files", Medium},
 		{"many files and architectural", plan(names(11), arch), High, "files", High},
 		{"architectural alone", plan(names(2), arch), Medium, "change", High},
 		{"dependencies and tests", plan(names(2), heavy), High, "tests", High},
+		{"regression suite", plan(names(2), wide), Medium, "tests", High},
 		{"one dependency", plan(names(2), api), Medium, "dependencies", Medium},
 	}
 	for _, tt := range tests {
@@ -68,14 +72,21 @@ func TestClassifyShouldCountARepeatedFileOnce(t *testing.T) {
 	}
 }
 
-func TestSummaryShouldNameTheHighSignals(t *testing.T) {
+func TestClassifyShouldIgnoreTestFiles(t *testing.T) {
+	a := Classify(plan([]string{"calc.go", "calc_test.go"}, lowCriteria()))
+	if a.Files != 1 {
+		t.Errorf("Files = %d, want 1", a.Files)
+	}
+}
+
+func TestSummaryShouldRenderTheExactText(t *testing.T) {
 	c := lowCriteria()
 	c.Change = "architectural"
 	c.Dependencies = []string{"database", "queue"}
-	got := Classify(plan(names(5), c)).Summary()
-	for _, want := range []string{"high", "change", "dependencies"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("Summary() = %q, missing %q", got, want)
-		}
+	if got, want := Classify(plan(names(5), c)).Summary(), "high (5 arquivos; sinais altos: change, dependencies)"; got != want {
+		t.Errorf("Summary() = %q, want %q", got, want)
+	}
+	if got, want := Classify(plan(names(1), lowCriteria())).Summary(), "low (1 arquivo)"; got != want {
+		t.Errorf("Summary() = %q, want %q", got, want)
 	}
 }
