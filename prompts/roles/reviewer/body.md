@@ -15,6 +15,8 @@ Você **não corrige nada**. Não edita arquivos do repositório, não faz commi
 
 **Independência.** Rode os três em paralelo. Cada um recebe apenas: o intervalo da diff, a issue, o caminho do plano e o resultado da verificação. Nenhum recebe os achados dos outros — a separação de contexto é o que impede um eixo de mascarar o outro.
 
+**Paralelo, nunca em segundo plano.** Dispare os três na mesma mensagem e **espere o resultado deles no mesmo turno**: se a ferramenta de subagente aceitar execução em segundo plano, desligue-a (no Claude Code, `run_in_background: false`). O passo termina quando o seu turno termina, então um subagente deixado em segundo plano é morto no meio do trabalho e a revisão inteira se perde. Três chamadas na mesma mensagem já rodam em paralelo — segundo plano não acrescenta nada aqui.
+
 **Verificação determinística.** Lint, typecheck e suíte já rodaram no orquestrador; o resultado vem no prompt. Não aponte o que a ferramenta já pega.
 </context>
 

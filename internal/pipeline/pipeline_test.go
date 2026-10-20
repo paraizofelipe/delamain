@@ -96,6 +96,7 @@ func newHarness(t *testing.T, b behavior) *harness {
 			PromptsTarget: prompts.Target{OmpAgentDir: filepath.Join(root, "omp"), RolesDir: filepath.Join(root, "roles")},
 			Log:           slog.New(slog.NewTextHandler(io.Discard, nil)),
 			LookPath:      func(string) (string, error) { return "", errors.New("not installed") },
+			SubagentWait:  time.Nanosecond, // the waiting turns are what the tests assert, not the pause
 		},
 		h: h, g: g, st: st,
 		task: Task{Ref: "#7", Title: "Fix add", Body: "Add subtrai.\n\n## Critérios de aceite\n- [ ] Add(2,3)=5", Kind: "bug", Repo: filepath.Join(root, "repo")},
@@ -319,6 +320,62 @@ func TestRunShouldAskOnceToFixAnInvalidArtifact(t *testing.T) {
 	}
 	if fix := hs.h.prompts["planner"][1]; !strings.Contains(fix, "está ausente ou inválido") {
 		t.Fatalf("second planner prompt must be the correction:\n%s", fix)
+	}
+}
+
+// Claude Code's Agent tool puts a subagent in the background unless the call says otherwise and
+// reports its result only in a later turn, so a review turn can end with the axes still running.
+// The step must hand over further turns instead of calling the artifact missing: run 14 lost a
+// whole review that way, with the subagents still working when the session was closed.
+func TestReviewShouldWaitForSubagentsThatOnlyReportInALaterTurn(t *testing.T) {
+	hs := newHarness(t, func(role string, n int, text string) reply {
+		if role != "reviewer" {
+			return happy(role, n, text)
+		}
+		if n < 3 {
+			return reply{} // the axes are still running: no artifact yet
+		}
+		return reply{write: reviewJSON("")}
+	})
+	res := hs.run(t)
+
+	if res.Outcome != OutcomeApproved {
+		t.Fatalf("a review whose subagents answer late still approves: %s (%s)", res.Outcome, res.Reason)
+	}
+	if n := len(hs.h.prompts["reviewer"]); n != 3 {
+		t.Fatalf("the reviewer gets a turn per wait until it writes: %d prompts", n)
+	}
+	// The waiting turn asks for patience, never for an invented finding.
+	for _, i := range []int{1, 2} {
+		w := hs.h.prompts["reviewer"][i]
+		if !strings.Contains(w, "ainda não existe") || !strings.Contains(w, "não** invente") {
+			t.Fatalf("prompt %d must be the waiting one:\n%s", i, w)
+		}
+		if strings.Contains(w, "está ausente ou inválido") {
+			t.Fatalf("prompt %d must not be the correction yet:\n%s", i, w)
+		}
+	}
+}
+
+// A malformed artifact is not a subagent still running: the step wrote a file, so it gets the
+// single correction turn and no waiting.
+func TestStepArtifactShouldNotWaitWhenTheArtifactIsMalformed(t *testing.T) {
+	hs := newHarness(t, func(role string, n int, text string) reply {
+		if role == "reviewer" {
+			return reply{write: "{"}
+		}
+		return happy(role, n, text)
+	})
+	res := hs.run(t)
+
+	if res.Outcome != OutcomeHalted {
+		t.Fatalf("got %s (%s)", res.Outcome, res.Reason)
+	}
+	if n := len(hs.h.prompts["reviewer"]); n != 2 {
+		t.Fatalf("exactly one correction turn, no waiting: %d prompts", n)
+	}
+	if fix := hs.h.prompts["reviewer"][1]; !strings.Contains(fix, "está ausente ou inválido") {
+		t.Fatalf("the second prompt is the correction:\n%s", fix)
 	}
 }
 
