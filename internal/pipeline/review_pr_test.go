@@ -585,3 +585,24 @@ func TestRunReviewShouldHaltWithoutMovingTheCursorWhenAForgeOrGitCallFails(t *te
 		})
 	}
 }
+
+func TestRunReviewShouldConfineThePRReviewerToReadingTheCheckout(t *testing.T) {
+	rh := newReviewHarness(t, reviewsPR(prReviewJSON("")))
+	res := rh.review(t)
+	if res.Outcome != OutcomeReviewed {
+		t.Fatalf("got %s (%s)", res.Outcome, res.Reason)
+	}
+	start := rh.h.starts["pr-reviewer-r"+strconv.FormatInt(res.RunID, 10)]
+	want := Confinement{Checkout: res.Worktree, Artifact: filepath.Join(res.RunDir, "review.json")}
+	if start.Confine == nil || *start.Confine != want {
+		t.Fatalf("the pr-reviewer reads third-party code: it must run confined to %+v, got %+v", want, start.Confine)
+	}
+
+	hs := newHarness(t, happy)
+	hs.run(t)
+	for name, o := range hs.h.starts {
+		if o.Confine != nil {
+			t.Errorf("%s works on delamain's own branch and keeps its tools: %+v", name, o.Confine)
+		}
+	}
+}

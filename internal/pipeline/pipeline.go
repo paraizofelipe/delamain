@@ -167,6 +167,8 @@ type run struct {
 	pr *prRun
 	// agentDir is the agents' cwd when it must not be the worktree (default: the worktree).
 	agentDir string
+	// confine restricts agents that read third-party code; nil for issue runs.
+	confine *Confinement
 }
 
 // Run executes the task end to end. A non-nil error means the run could not even be recorded;
@@ -495,6 +497,7 @@ func (r *Runner) startAgent(ctx context.Context, ru *run, role string) error {
 		// Only the orchestrator publishes work: the agent gets an env where push fails.
 		Env:     gitx.AgentEnv(),
 		LogPath: logPath, ErrPath: filepath.Join(logDir, role+".stderr"),
+		Confine: ru.confine,
 	})
 	if err != nil {
 		return haltf("o agente %s não subiu: %v", role, err)

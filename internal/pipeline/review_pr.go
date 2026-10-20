@@ -188,7 +188,9 @@ func (r *Runner) reviewPR(ctx context.Context, ru *run, p *prRun) error {
 	if err := r.setState(ctx, ru, store.StateReview); err != nil {
 		return err
 	}
-	data := r.stageData(ru, 0, filepath.Join(ru.dir, "review.json"), "")
+	artifact := filepath.Join(ru.dir, "review.json")
+	ru.confine = &Confinement{Checkout: wt, Artifact: artifact}
+	data := r.stageData(ru, 0, artifact, "")
 	data.PR = prompts.PR{
 		Number: pr.Number, URL: pr.URL, Title: pr.Title, Body: pr.Body, Author: pr.Author,
 		BaseRef: pr.BaseRef, HeadRef: pr.HeadRef, BaseSHA: pr.BaseSHA, HeadSHA: pr.HeadSHA,

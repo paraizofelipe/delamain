@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -22,7 +23,7 @@ func TestRPCAgentsShouldPassTheOmpConfigSessionDirAndRoleToOmp(t *testing.T) {
 
 func TestClaudeAgentsShouldRunUnattendedApartFromTheUsersClaudeSetup(t *testing.T) {
 	a := ClaudeAgents{Model: "opus", Effort: "high", PermissionMode: "bypassPermissions", AgentsFile: "/p/agents.json", PluginDir: "/p/plugin"}
-	got := strings.Join(a.args("sid", "be the planner"), " ")
+	got := strings.Join(a.args("sid", "be the planner", nil), " ")
 	for _, want := range []string{
 		"--model opus --effort high --permission-mode bypassPermissions",
 		"--session-id sid --no-session-persistence",
@@ -69,5 +70,57 @@ func TestNewSessionIDShouldBeARandomUUID(t *testing.T) {
 	b, _ := newSessionID()
 	if err != nil || a == b || !regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`).MatchString(a) {
 		t.Fatalf("%q %q %v", a, b, err)
+	}
+}
+
+func TestClaudeAgentsShouldConfineASessionToReadingItsCheckout(t *testing.T) {
+	a := ClaudeAgents{Model: "opus", Effort: "high", PermissionMode: "bypassPermissions", AgentsFile: "/p/agents.json", PluginDir: "/p/plugin"}
+	args := a.args("sid", "review the PR", &Confinement{Checkout: "/wt/review-pr-5-1", Artifact: "/run/5/review.json"})
+	got := strings.Join(args, " ")
+	if strings.Contains(got, "bypassPermissions") || !strings.Contains(got, "--permission-mode dontAsk") {
+		t.Fatalf("a confined session denies everything not allowed below: %s", got)
+	}
+	if !strings.Contains(got, "--tools Read,Grep,Glob,Bash,Write,Agent ") {
+		t.Fatalf("no LSP, web or edit tools for a confined session: %s", got)
+	}
+	allowed := map[string]bool{}
+	for i, arg := range args {
+		if arg == "--allowedTools" {
+			for _, rule := range args[i+1:] {
+				if strings.HasPrefix(rule, "--") {
+					break
+				}
+				allowed[rule] = true
+			}
+		}
+	}
+	want := []string{
+		"Read(//wt/review-pr-5-1/**)",
+		"Bash(git -C /wt/review-pr-5-1 diff:*)", "Bash(git -C /wt/review-pr-5-1 log:*)", "Bash(git -C /wt/review-pr-5-1 show:*)",
+		"Edit(//run/5/review.json)",
+	}
+	if len(allowed) != len(want) {
+		t.Fatalf("allowed rules %v, want exactly %v", allowed, want)
+	}
+	for _, rule := range want {
+		if !allowed[rule] {
+			t.Errorf("missing allow rule %q in %v", rule, allowed)
+		}
+	}
+	for _, kept := range []string{"--setting-sources project --strict-mcp-config", "--permission-prompts none"} {
+		if !strings.Contains(got, kept) {
+			t.Errorf("a confined session keeps %q: %s", kept, got)
+		}
+	}
+	if plain := strings.Join(a.args("sid", "plan", nil), " "); !strings.Contains(plain, "--permission-mode bypassPermissions") || strings.Contains(plain, "--allowedTools") {
+		t.Fatalf("issue runs keep the configured mode: %s", plain)
+	}
+}
+
+func TestRPCAgentsShouldDisableLSPForConfinedSessions(t *testing.T) {
+	a := RPCAgents{Binary: "omp", Model: "m", Thinking: "medium", ApprovalMode: "yolo"}
+	got := a.args(AgentOptions{SessionDir: "/s", SystemPrompt: "/r.md", Confine: &Confinement{Checkout: "/wt", Artifact: "/a.json"}})
+	if !slices.Contains(got, "--no-lsp") {
+		t.Fatalf("a language server over a PR's code can run its build scripts: %v", got)
 	}
 }

@@ -45,6 +45,15 @@ type AgentOptions struct {
 	Env          []string // wins over the inherited environment
 	LogPath      string   // human-readable event log, read by `delamain logs` (and a herdr tab)
 	ErrPath      string   // the harness' stderr
+	// Confine, when set, restricts a session that reads third-party code (a PR review).
+	Confine *Confinement
+}
+
+// Confinement lets an agent read Checkout, run read-only git there (diff, log, show) and write
+// only Artifact: the code it reads is untrusted, so its harness must not hand it a free shell.
+type Confinement struct {
+	Checkout string
+	Artifact string
 }
 
 // RPCAgents runs each session as `omp --mode rpc`.
@@ -54,10 +63,16 @@ type RPCAgents struct {
 }
 
 func (a RPCAgents) args(o AgentOptions) []string {
-	return []string{
+	args := []string{
 		"--model", a.Model, "--thinking", a.Thinking, "--approval-mode", a.ApprovalMode,
 		"--session-dir", o.SessionDir, "--append-system-prompt", o.SystemPrompt,
 	}
+	if o.Confine != nil {
+		// omp has no per-command allowlist: a confined session only loses LSP, which could run
+		// the checkout's build scripts.
+		args = append(args, "--no-lsp")
+	}
+	return args
 }
 
 func (RPCAgents) Sessions(sessionsDir string) ([]budget.SessionUsage, error) {
@@ -105,9 +120,13 @@ type ClaudeAgents struct {
 	AgentsFile, PluginDir         string // delamain's subagents and skills (`delamain prompts install`)
 }
 
-func (a ClaudeAgents) args(sessionID, rolePrompt string) []string {
-	return []string{
-		"--model", a.Model, "--effort", a.Effort, "--permission-mode", a.PermissionMode,
+func (a ClaudeAgents) args(sessionID, rolePrompt string, c *Confinement) []string {
+	mode := a.PermissionMode
+	if c != nil {
+		mode = "dontAsk" // anything not allowed by confined() is denied, never prompted
+	}
+	args := []string{
+		"--model", a.Model, "--effort", a.Effort, "--permission-mode", mode,
 		"--session-id", sessionID, "--no-session-persistence",
 		"--append-system-prompt", rolePrompt,
 		"--agents", a.AgentsFile, "--plugin-dir", a.PluginDir,
@@ -115,8 +134,23 @@ func (a ClaudeAgents) args(sessionID, rolePrompt string) []string {
 		// turn, and only the target repository's project settings apply.
 		"--setting-sources", "project", "--strict-mcp-config",
 		"--permission-prompts", "none", "--disallowed-tools", "AskUserQuestion",
-		// Commits carry no Co-Authored-By trailer, as with omp.
-		"--settings", `{"attribution":{"commit":"","pr":"","sessionUrl":false}}`,
+	}
+	if c != nil {
+		args = append(args, confined(c)...)
+	}
+	// Commits carry no Co-Authored-By trailer, as with omp.
+	return append(args, "--settings", `{"attribution":{"commit":"","pr":"","sessionUrl":false}}`)
+}
+
+// confined narrows Claude Code to reading the checkout, read-only git in it and writing the
+// artifact. Rules on absolute paths start with "//"; Edit rules cover Write. Subagents inherit
+// them. Verified against Claude Code 2.1.303: reads elsewhere, other commands (compound ones
+// included) and other writes are denied.
+func confined(c *Confinement) []string {
+	git := "Bash(git -C " + c.Checkout + " "
+	return []string{
+		"--tools", "Read,Grep,Glob,Bash,Write,Agent",
+		"--allowedTools", "Read(/" + c.Checkout + "/**)", git + "diff:*)", git + "log:*)", git + "show:*)", "Edit(/" + c.Artifact + ")",
 	}
 }
 
@@ -160,7 +194,7 @@ func (a ClaudeAgents) Start(ctx context.Context, o AgentOptions) (Agent, error) 
 		files = append(files, f)
 	}
 	c, err := claude.Start(ctx, claude.Options{
-		Binary: a.Binary, Dir: o.Dir, Args: a.args(id, string(role)), Env: o.Env,
+		Binary: a.Binary, Dir: o.Dir, Args: a.args(id, string(role), o.Confine), Env: o.Env,
 		Log: files[0], Stderr: files[1], Transcript: files[2],
 		UsagePath: filepath.Join(o.SessionDir, id+claude.UsageSuffix),
 	})
