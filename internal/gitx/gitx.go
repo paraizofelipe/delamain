@@ -194,7 +194,8 @@ func (g Git) untrustedConfig(ctx context.Context, repo string) ([]string, error)
 	safe := []string{"-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"}
 	out, err := g.run(ctx, repo, "config", "--name-only", "--get-regexp", `^filter\.`)
 	var exit *exec.ExitError
-	if err != nil && !(errors.As(err, &exit) && exit.ExitCode() == 1) { // 1: no filter configured
+	noFilter := errors.As(err, &exit) && exit.ExitCode() == 1
+	if err != nil && !noFilter {
 		return nil, err
 	}
 	seen := map[string]bool{}
