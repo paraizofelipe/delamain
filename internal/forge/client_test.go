@@ -51,10 +51,11 @@ func newServer(t *testing.T, h http.HandlerFunc) string {
 	return srv.URL
 }
 
-func countOf(api *fakeAPI, method, path string) int {
+// posts counts the POSTs the fake received on path.
+func posts(api *fakeAPI, path string) int {
 	n := 0
 	for _, r := range api.requests() {
-		if r.method == method && r.path == path {
+		if r.method == http.MethodPost && r.path == path {
 			n++
 		}
 	}
@@ -75,7 +76,7 @@ func TestClientShouldRetryTransientErrorsThreeTimes(t *testing.T) {
 				if err := f.Comment(context.Background(), 7, "c"); err != nil {
 					t.Fatalf("the third attempt succeeds: %v", err)
 				}
-				if n := countOf(api, "POST", fc.comment); n != 3 {
+				if n := posts(api, fc.comment); n != 3 {
 					t.Fatalf("attempts = %d, want 3", n)
 				}
 
@@ -83,7 +84,7 @@ func TestClientShouldRetryTransientErrorsThreeTimes(t *testing.T) {
 				if err := f.Comment(context.Background(), 7, "c"); err == nil {
 					t.Fatal("a failure that never clears must be reported")
 				}
-				if n := countOf(api, "POST", fc.comment); n != 3 {
+				if n := posts(api, fc.comment); n != 3 {
 					t.Fatalf("attempts = %d, want to give up after 3", n)
 				}
 			})
@@ -102,7 +103,7 @@ func TestClientShouldNotRetryClientErrors(t *testing.T) {
 			if !errors.As(err, &apiErr) || apiErr.Status != status {
 				t.Errorf("%s %d: want APIError with that status, got %v", fc.name, status, err)
 			}
-			if n := countOf(api, "POST", fc.comment); n != 1 {
+			if n := posts(api, fc.comment); n != 1 {
 				t.Errorf("%s %d: attempts = %d, an API rejection is not retried", fc.name, status, n)
 			}
 		}
@@ -125,7 +126,7 @@ func TestGitHubClientShouldHonorRetryAfterOnSecondaryRateLimit(t *testing.T) {
 	if waited := time.Since(start); waited < time.Second {
 		t.Fatalf("retried after %v, before the 1s Retry-After", waited)
 	}
-	if n := countOf(api, "POST", "/repos/acme/api/issues/7/comments"); n != 2 {
+	if n := posts(api, "/repos/acme/api/issues/7/comments"); n != 2 {
 		t.Fatalf("attempts = %d, want 2", n)
 	}
 }
@@ -149,7 +150,7 @@ func TestClientShouldStopRetryingWhenContextIsCancelled(t *testing.T) {
 		case <-time.After(5 * time.Second):
 			t.Fatalf("%s: shutdown must not wait out the backoff", fc.name)
 		}
-		if n := countOf(api, "POST", fc.comment); n != 1 {
+		if n := posts(api, fc.comment); n != 1 {
 			t.Errorf("%s: attempts = %d after cancel, want 1", fc.name, n)
 		}
 		cancel()

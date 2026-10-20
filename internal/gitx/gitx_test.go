@@ -354,15 +354,14 @@ func TestListWorktreesShouldReportEveryCheckoutWithItsBranch(t *testing.T) {
 	}
 }
 
-func envValue(env []string, key string) (string, bool) {
+func envValue(env []string, key string) string {
 	v := ""
-	found := false
 	for _, kv := range env { // the last value wins, as in exec
 		if k, val, _ := strings.Cut(kv, "="); k == key {
-			v, found = val, true
+			v = val
 		}
 	}
-	return v, found
+	return v
 }
 
 func TestAgentEnvironShouldStripForgeAndGenericTokens(t *testing.T) {
@@ -380,7 +379,7 @@ func TestAgentEnvironShouldStripForgeAndGenericTokens(t *testing.T) {
 		}
 	}
 	for key, want := range map[string]string{"PATH": "/usr/bin", "HOME": "/home/dev", "OPENAI_API_KEY": "k-openai", "ANTHROPIC_API_KEY": "k-anthropic"} {
-		if got, _ := envValue(env, key); got != want {
+		if got := envValue(env, key); got != want {
 			t.Errorf("%s = %q, want %q: the agent's own keys must stay", key, got, want)
 		}
 	}
@@ -389,7 +388,7 @@ func TestAgentEnvironShouldStripForgeAndGenericTokens(t *testing.T) {
 func TestAgentEnvironShouldKeepHarnessAllowlistedKeys(t *testing.T) {
 	env := AgentEnviron([]string{"CLAUDE_CODE_OAUTH_TOKEN=c-oauth", "ANTHROPIC_AUTH_TOKEN=a-auth", "GH_TOKEN=s-gh"})
 	for key, want := range map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "c-oauth", "ANTHROPIC_AUTH_TOKEN": "a-auth"} {
-		if got, _ := envValue(env, key); got != want {
+		if got := envValue(env, key); got != want {
 			t.Errorf("%s = %q, want %q: the harness needs its own credential", key, got, want)
 		}
 	}

@@ -15,6 +15,9 @@ type gitlabClient struct {
 	api  *gogitlab.Client
 }
 
+// opened is GitLab's state of an open issue or MR.
+const opened = "opened"
+
 // newGitLab talks to https://<host>/api/v4 on gitlab.com and self-hosted instances alike.
 func newGitLab(repo Repo, token string, o options) (*gitlabClient, error) {
 	base := "https://" + repo.Host
@@ -57,7 +60,7 @@ func (g *gitlabClient) do(ctx context.Context, op string, call func() (*gogitlab
 func (g *gitlabClient) Repo() Repo { return g.repo }
 
 func fromGitLab(v *gogitlab.Issue) Issue {
-	return Issue{Number: int(v.IID), Title: v.Title, Body: v.Description, URL: v.WebURL, Labels: v.Labels, Open: v.State == "opened"}
+	return Issue{Number: int(v.IID), Title: v.Title, Body: v.Description, URL: v.WebURL, Labels: v.Labels, Open: v.State == opened}
 }
 
 func (g *gitlabClient) Issue(ctx context.Context, n int) (Issue, error) {
@@ -74,9 +77,10 @@ func (g *gitlabClient) Issue(ctx context.Context, n int) (Issue, error) {
 
 func (g *gitlabClient) ListReady(ctx context.Context, label string) ([]Issue, error) {
 	var vs []*gogitlab.Issue
+	state := opened
 	err := g.do(ctx, "list ready", func() (resp *gogitlab.Response, err error) {
 		vs, resp, err = g.api.Issues.ListProjectIssues(g.repo.Path, &gogitlab.ListProjectIssuesOptions{
-			State: gogitlab.Ptr("opened"), Labels: &gogitlab.LabelOptions{label}, ListOptions: gogitlab.ListOptions{PerPage: 100},
+			State: &state, Labels: &gogitlab.LabelOptions{label}, ListOptions: gogitlab.ListOptions{PerPage: 100},
 		}, gogitlab.WithContext(ctx))
 		return resp, err
 	})
@@ -92,9 +96,10 @@ func (g *gitlabClient) ListReady(ctx context.Context, label string) ([]Issue, er
 
 func (g *gitlabClient) OpenPR(ctx context.Context, head string) (*PR, error) {
 	var mrs []*gogitlab.BasicMergeRequest
+	state := opened
 	err := g.do(ctx, "open pr", func() (resp *gogitlab.Response, err error) {
 		mrs, resp, err = g.api.MergeRequests.ListProjectMergeRequests(g.repo.Path, &gogitlab.ListProjectMergeRequestsOptions{
-			State: gogitlab.Ptr("opened"), SourceBranch: &head,
+			State: &state, SourceBranch: &head,
 		}, gogitlab.WithContext(ctx))
 		return resp, err
 	})
