@@ -116,8 +116,9 @@ func TestListShouldShowTheComplexityOrWaitUntilThePlanClassifiesIt(t *testing.T)
 	if err := f.st.UpdateRun(context.Background(), classified); err != nil {
 		t.Fatal(err)
 	}
+	f.run(t, "#3", "fix/3-c", store.StateRecorded) // ended before any plan classified it
 
-	out := f.exec(t, "ls")
+	out := f.exec(t, "ls", "--all")
 	lines := strings.Split(strings.TrimSpace(out), "\n")
 	if header := strings.Fields(lines[0]); len(header) < 6 || header[4] != "ITER" || header[5] != "COMPLEXITY" {
 		t.Fatalf("COMPLEXITY follows ITER:\n%s", out)
@@ -127,8 +128,8 @@ func TestListShouldShowTheComplexityOrWaitUntilThePlanClassifiesIt(t *testing.T)
 		row := strings.Fields(l)
 		got[row[2]] = row[5]
 	}
-	if got["#1"] != "wait" || got["#2"] != "high" {
-		t.Fatalf("complexity per issue = %v, want #1 wait (still planning) and #2 high:\n%s", got, out)
+	if got["#1"] != "wait" || got["#2"] != "high" || got["#3"] != "-" {
+		t.Fatalf("complexity per issue = %v, want #1 wait (still planning), #2 high, #3 - (finished unclassified):\n%s", got, out)
 	}
 }
 

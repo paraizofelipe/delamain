@@ -279,12 +279,16 @@ func listTable(w io.Writer, views []RunView, all bool) error {
 	return tw.Flush()
 }
 
-// complexity is the run's level, or "wait" until the plan classifies it.
+// complexity is the run's level, "wait" until the plan classifies it, or "-" for a run that
+// ended unclassified.
 func (v RunView) complexity() string {
-	if v.Complexity == "" {
-		return "wait"
+	switch {
+	case v.Complexity != "":
+		return v.Complexity
+	case v.terminal:
+		return "-"
 	}
-	return v.Complexity
+	return "wait"
 }
 
 func newStatusCmd(load func() (config.Config, error)) *cobra.Command {
