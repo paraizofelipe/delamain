@@ -412,3 +412,25 @@ func TestGitHubThreadsShouldMergeReviewThreadsAndIssueComments(t *testing.T) {
 		t.Fatalf("must read up to 100 PR comments: %v", q)
 	}
 }
+
+func TestGitHubListPRsShouldFailWhenAPRCannotBeRead(t *testing.T) {
+	f, _ := githubAt(t, map[string]func(http.ResponseWriter, *http.Request){
+		"GET /repos/acme/api/issues": reply(200, `[
+			{"number":5,"state":"open","pull_request":{"url":"https://api.github.com/repos/acme/api/pulls/5"}},
+			{"number":9,"state":"open","pull_request":{"url":"https://api.github.com/repos/acme/api/pulls/9"}}]`),
+		"GET /repos/acme/api/pulls/5": reply(200, `{"number":5,"state":"open"}`),
+		"GET /repos/acme/api/pulls/9": forbidden,
+	})
+	prs, err := f.ListPRs(context.Background(), "delamain:review")
+	wantForbidden(t, prs, err)
+}
+
+func TestGitHubThreadsShouldFailWhenPRCommentsCannotBeRead(t *testing.T) {
+	f, _ := githubAt(t, map[string]func(http.ResponseWriter, *http.Request){
+		"POST /graphql": reply(200, `{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[
+			{"id":"RT_1","path":"a.go","line":1,"comments":{"nodes":[{"databaseId":1,"body":"x","createdAt":"2026-01-01T08:00:00Z"}]}}]}}}}}`),
+		"GET /repos/acme/api/issues/12/comments": forbidden,
+	})
+	ts, err := f.Threads(context.Background(), 12)
+	wantForbidden(t, ts, err)
+}

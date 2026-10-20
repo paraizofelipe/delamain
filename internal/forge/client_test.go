@@ -553,3 +553,63 @@ func TestThreadsShouldReturnEmptyForPRWithoutComments(t *testing.T) {
 		})
 	}
 }
+
+// forbidden is a read the forge rejects; 403 is final, so it is never retried.
+var forbidden = reply(403, `{"message":"Resource not accessible by integration"}`)
+
+// wantForbidden fails unless err is the forge's 403 and the read returned nothing.
+func wantForbidden[T any](t *testing.T, got []T, err error) {
+	t.Helper()
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Status != http.StatusForbidden || got != nil {
+		t.Fatalf("a failed read must fail the whole call: got %+v, err %v", got, err)
+	}
+}
+
+func TestLinkedIssuesShouldFailWhenALinkedIssueCannotBeRead(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		at     func(*testing.T, map[string]func(http.ResponseWriter, *http.Request), ...Option) (Forge, *fakeAPI)
+		routes map[string]func(http.ResponseWriter, *http.Request)
+	}{
+		{"github", githubAt, map[string]func(http.ResponseWriter, *http.Request){
+			"POST /graphql":                reply(200, `{"data":{"repository":{"pullRequest":{"closingIssuesReferences":{"nodes":[{"number":3},{"number":8}]}}}}}`),
+			"GET /repos/acme/api/issues/3": reply(200, `{"number":3,"state":"open"}`),
+			"GET /repos/acme/api/issues/8": forbidden,
+		}},
+		{"gitlab", gitlabAt, map[string]func(http.ResponseWriter, *http.Request){
+			"GET " + glProject + "/merge_requests/12/closes_issues": reply(200, `[{"iid":3},{"iid":8}]`),
+			"GET " + glProject + "/issues/3":                        reply(200, `{"iid":3,"state":"opened"}`),
+			"GET " + glProject + "/issues/8":                        forbidden,
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, _ := tc.at(t, tc.routes)
+			is, err := f.LinkedIssues(context.Background(), 12)
+			wantForbidden(t, is, err)
+		})
+	}
+}
+
+func TestLinkedIssuesShouldFailWhenTheFallbackCannotReadThePR(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		at     func(*testing.T, map[string]func(http.ResponseWriter, *http.Request), ...Option) (Forge, *fakeAPI)
+		routes map[string]func(http.ResponseWriter, *http.Request)
+	}{
+		{"github", githubAt, map[string]func(http.ResponseWriter, *http.Request){
+			"POST /graphql":                reply(200, `{"data":{"repository":{"pullRequest":{"closingIssuesReferences":{"nodes":[]}}}}}`),
+			"GET /repos/acme/api/pulls/12": forbidden,
+		}},
+		{"gitlab", gitlabAt, map[string]func(http.ResponseWriter, *http.Request){
+			"GET " + glProject + "/merge_requests/12/closes_issues": reply(200, `[]`),
+			"GET " + glProject + "/merge_requests/12":               forbidden,
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, _ := tc.at(t, tc.routes)
+			is, err := f.LinkedIssues(context.Background(), 12)
+			wantForbidden(t, is, err)
+		})
+	}
+}
