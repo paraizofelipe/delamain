@@ -90,6 +90,7 @@ func NewRoot() *cobra.Command {
 		},
 		newPromptsCmd(load),
 		newRunCmd(load),
+		newReviewCmd(load),
 		newDaemonCmd(load),
 		newRecoverCmd(load),
 		newNotifyCmd(load),
