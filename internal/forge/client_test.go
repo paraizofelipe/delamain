@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -815,48 +816,79 @@ func TestRelabelPRShouldAddAndRemoveLabels(t *testing.T) {
 	})
 }
 
-// A forge may quote what it rejected; the bodies delamain posts must still stay out of errors.
+// A forge may quote what it rejected; the bodies delamain posts must still stay out of errors,
+// even when they are longer than the error message itself.
 func TestWriteMethodsShouldNeverPutBodiesInErrors(t *testing.T) {
+	sizes := map[string]string{"short": "", "long": strings.Repeat(" and more", maxErrorLen)}
 	for _, repo := range []Repo{{GitHub, "github.com", "acme/api"}, {GitLab, "gitlab.com", "grp/api"}} {
-		for _, status := range []int{http.StatusBadRequest, http.StatusUnprocessableEntity} {
-			t.Run(string(repo.Kind)+"/"+strconv.Itoa(status), func(t *testing.T) {
-				srv := newServer(t, func(w http.ResponseWriter, r *http.Request) {
-					b, _ := io.ReadAll(r.Body)
-					if r.URL.Path == "/graphql" {
-						reply(200, `{"data":{"node":{"comments":{"nodes":[{"databaseId":5}]}}}}`)(w, r)
-						return
+		for size, pad := range sizes {
+			for _, status := range []int{http.StatusBadRequest, http.StatusUnprocessableEntity} {
+				t.Run(string(repo.Kind)+"/"+size+"/"+strconv.Itoa(status), func(t *testing.T) {
+					srv := newServer(t, func(w http.ResponseWriter, r *http.Request) {
+						b, _ := io.ReadAll(r.Body)
+						if r.URL.Path == "/graphql" {
+							reply(200, `{"data":{"node":{"comments":{"nodes":[{"databaseId":5}]}}}}`)(w, r)
+							return
+						}
+						msg, _ := json.Marshal(map[string]string{"message": "rejected " + string(b)})
+						reply(status, string(msg))(w, r)
+					})
+					f, err := New(repo, "tok", WithBaseURL(srv+"/"), WithBackoff(1))
+					if err != nil {
+						t.Fatal(err)
 					}
-					msg, _ := json.Marshal(map[string]string{"message": "rejected " + string(b)})
-					reply(status, string(msg))(w, r)
+					ctx := context.Background()
+					writes := map[string]func() error{
+						"PostReview": func() error {
+							return f.PostReview(ctx, 9, ReviewOptions{HeadSHA: "h", BaseSHA: "b", StartSHA: "b", Summary: "BODY-summary" + pad,
+								Comments: []InlineComment{{Path: "a.go", Line: 1, Body: "BODY-inline" + pad}}})
+						},
+						"PRComment":           func() error { return f.PRComment(ctx, 9, "BODY-comment"+pad) },
+						"Reply":               func() error { return f.Reply(ctx, 9, "RT_1", "BODY-reply"+pad) },
+						"Reply issue comment": func() error { return f.Reply(ctx, 9, "issue-comment:1", "BODY-reply"+pad) },
+					}
+					for name, write := range writes {
+						err := write()
+						if err == nil {
+							t.Errorf("%s: the forge rejected it, want an error", name)
+							continue
+						}
+						if strings.Contains(err.Error(), "BODY-") {
+							t.Errorf("%s: error leaks a body: %v", name, err)
+						}
+						if !strings.Contains(err.Error(), strconv.Itoa(status)) {
+							t.Errorf("%s: error must keep the status: %v", name, err)
+						}
+					}
 				})
-				f, err := New(repo, "tok", WithBaseURL(srv+"/"), WithBackoff(1))
-				if err != nil {
-					t.Fatal(err)
-				}
-				ctx := context.Background()
-				writes := map[string]func() error{
-					"PostReview": func() error {
-						return f.PostReview(ctx, 9, ReviewOptions{HeadSHA: "h", BaseSHA: "b", StartSHA: "b", Summary: "BODY-summary",
-							Comments: []InlineComment{{Path: "a.go", Line: 1, Body: "BODY-inline"}}})
-					},
-					"PRComment":           func() error { return f.PRComment(ctx, 9, "BODY-comment") },
-					"Reply":               func() error { return f.Reply(ctx, 9, "RT_1", "BODY-reply") },
-					"Reply issue comment": func() error { return f.Reply(ctx, 9, "issue-comment:1", "BODY-reply") },
-				}
-				for name, write := range writes {
-					err := write()
-					if err == nil {
-						t.Errorf("%s: the forge rejected it, want an error", name)
-						continue
-					}
-					if strings.Contains(err.Error(), "BODY-") {
-						t.Errorf("%s: error leaks a body: %v", name, err)
-					}
-					if !strings.Contains(err.Error(), strconv.Itoa(status)) {
-						t.Errorf("%s: error must keep the status: %v", name, err)
-					}
-				}
-			})
+			}
+		}
+	}
+}
+
+// roundTripFunc is a transport that never reaches a server.
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestWriteMethodsShouldKeepTheErrorChainWhenHidingBodies(t *testing.T) {
+	// A transport that quotes the body it failed to send, like some proxies do.
+	quoting := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		b, _ := io.ReadAll(r.Body)
+		r.Body.Close()
+		return nil, fmt.Errorf("proxy refused %s: %w", b, context.DeadlineExceeded)
+	})}
+	for _, repo := range []Repo{{GitHub, "github.com", "acme/api"}, {GitLab, "gitlab.com", "grp/api"}} {
+		f, err := New(repo, "tok", WithBaseURL("http://forge.invalid/"), WithBackoff(1), WithHTTPClient(quoting))
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = f.PRComment(context.Background(), 9, "BODY-comment")
+		if err == nil || strings.Contains(err.Error(), "BODY-") {
+			t.Errorf("%s: error = %v, want one without the body", repo.Kind, err)
+		}
+		if _, ok := errors.AsType[*url.Error](err); !ok || !errors.Is(err, context.DeadlineExceeded) {
+			t.Errorf("%s: hiding the body must keep the wrapped error: %v", repo.Kind, err)
 		}
 	}
 }

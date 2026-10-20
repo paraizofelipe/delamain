@@ -39,9 +39,9 @@ func newGitLab(repo Repo, token string, o options) (*gitlabClient, error) {
 	return &gitlabClient{caller: caller{GitLab, token, o.backoff}, repo: repo, api: api}, nil
 }
 
-// do runs one API call with retries on gateway and network errors. client-go's own retries
-// are off so both forges follow the same rules.
-func (g *gitlabClient) do(ctx context.Context, op string, call func() (*gogitlab.Response, error)) error {
+// do runs one API call with retries on gateway and network errors, hiding bodies from its
+// error. client-go's own retries are off so both forges follow the same rules.
+func (g *gitlabClient) do(ctx context.Context, op string, call func() (*gogitlab.Response, error), bodies ...string) error {
 	return g.retry(ctx, func() (bool, time.Duration, error) {
 		resp, err := call()
 		if err == nil {
@@ -56,7 +56,7 @@ func (g *gitlabClient) do(ctx context.Context, op string, call func() (*gogitlab
 		} else if errors.Is(err, gogitlab.ErrNotFound) {
 			msg = "Not Found"
 		}
-		return transient(ctx, status, err), 0, g.fail(op, status, msg, err)
+		return transient(ctx, status, err), 0, g.fail(op, status, msg, err, bodies)
 	})
 }
 
@@ -297,10 +297,10 @@ func (g *gitlabClient) PostReview(ctx context.Context, n int, o ReviewOptions) e
 			PositionType: &text, BaseSHA: &o.BaseSHA, StartSHA: &o.StartSHA, HeadSHA: &o.HeadSHA,
 			NewPath: &c.Path, OldPath: &c.Path, NewLine: &line,
 		}}
-		err := hide(g.do(ctx, "post review", func() (*gogitlab.Response, error) {
+		err := g.do(ctx, "post review", func() (*gogitlab.Response, error) {
 			_, resp, err := g.api.Discussions.CreateMergeRequestDiscussion(g.repo.Path, int64(n), opt, gogitlab.WithContext(ctx))
 			return resp, err
-		}), c.Body)
+		}, c.Body)
 		if apiErr, ok := errors.AsType[*APIError](err); ok && apiErr.Status == http.StatusBadRequest {
 			summary += fmt.Sprintf("\n\n`%s:%d`\n\n%s", c.Path, c.Line, c.Body)
 			continue
@@ -316,17 +316,17 @@ func (g *gitlabClient) PostReview(ctx context.Context, n int, o ReviewOptions) e
 }
 
 func (g *gitlabClient) PRComment(ctx context.Context, n int, body string) error {
-	return hide(g.do(ctx, "pr comment", func() (*gogitlab.Response, error) {
+	return g.do(ctx, "pr comment", func() (*gogitlab.Response, error) {
 		_, resp, err := g.api.Notes.CreateMergeRequestNote(g.repo.Path, int64(n), &gogitlab.CreateMergeRequestNoteOptions{Body: &body}, gogitlab.WithContext(ctx))
 		return resp, err
-	}), body)
+	}, body)
 }
 
 func (g *gitlabClient) Reply(ctx context.Context, n int, threadID, body string) error {
-	return hide(g.do(ctx, "reply", func() (*gogitlab.Response, error) {
+	return g.do(ctx, "reply", func() (*gogitlab.Response, error) {
 		_, resp, err := g.api.Discussions.AddMergeRequestDiscussionNote(g.repo.Path, int64(n), threadID, &gogitlab.AddMergeRequestDiscussionNoteOptions{Body: &body}, gogitlab.WithContext(ctx))
 		return resp, err
-	}), body)
+	}, body)
 }
 
 func (g *gitlabClient) ResolveThread(ctx context.Context, n int, threadID string) error {

@@ -41,9 +41,9 @@ func newGitHub(repo Repo, token string, o options) (*githubClient, error) {
 	return &githubClient{caller: caller{GitHub, token, o.backoff}, repo: repo, owner: owner, name: name, api: api}, nil
 }
 
-// do runs one API call with retries. Besides gateway and network errors, GitHub's secondary
-// rate limit is transient: it says how long to wait in Retry-After.
-func (g *githubClient) do(ctx context.Context, op string, call func() (*gogithub.Response, error)) error {
+// do runs one API call with retries, hiding bodies from its error. Besides gateway and network
+// errors, GitHub's secondary rate limit is transient: it says how long to wait in Retry-After.
+func (g *githubClient) do(ctx context.Context, op string, call func() (*gogithub.Response, error), bodies ...string) error {
 	return g.retry(ctx, func() (bool, time.Duration, error) {
 		resp, err := call()
 		if err == nil {
@@ -57,12 +57,12 @@ func (g *githubClient) do(ctx context.Context, op string, call func() (*gogithub
 			msg = er.Message
 		}
 		if rl, ok := errors.AsType[*gogithub.AbuseRateLimitError](err); ok {
-			return true, rl.GetRetryAfter(), g.fail(op, status, rl.Message, err)
+			return true, rl.GetRetryAfter(), g.fail(op, status, rl.Message, err, bodies)
 		}
 		if rl, ok := errors.AsType[*gogithub.RateLimitError](err); ok {
 			msg = rl.Message
 		}
-		return transient(ctx, status, err), 0, g.fail(op, status, msg, err)
+		return transient(ctx, status, err), 0, g.fail(op, status, msg, err, bodies)
 	})
 }
 
@@ -370,18 +370,18 @@ func (g *githubClient) PostReview(ctx context.Context, n int, o ReviewOptions) e
 		req.Comments = append(req.Comments, &gogithub.DraftReviewComment{Path: &c.Path, Line: &c.Line, Side: &side, Body: &c.Body})
 		bodies = append(bodies, c.Body)
 	}
-	return hide(g.do(ctx, "post review", func() (*gogithub.Response, error) {
+	return g.do(ctx, "post review", func() (*gogithub.Response, error) {
 		_, resp, err := g.api.PullRequests.CreateReview(ctx, g.owner, g.name, n, req)
 		return resp, err
-	}), bodies...)
+	}, bodies...)
 }
 
 // PRComment uses the issues endpoint: on GitHub's API a PR is an issue.
 func (g *githubClient) PRComment(ctx context.Context, n int, body string) error {
-	return hide(g.do(ctx, "pr comment", func() (*gogithub.Response, error) {
+	return g.do(ctx, "pr comment", func() (*gogithub.Response, error) {
 		_, resp, err := g.api.Issues.CreateComment(ctx, g.owner, g.name, n, gogithub.IssueCommentRequest{Body: body})
 		return resp, err
-	}), body)
+	}, body)
 }
 
 const firstThreadCommentQuery = `query($id:ID!){node(id:$id){... on PullRequestReviewThread{comments(first:1){nodes{databaseId}}}}}`
@@ -403,10 +403,10 @@ func (g *githubClient) Reply(ctx context.Context, n int, threadID, body string) 
 	if out.Node == nil || len(out.Node.Comments.Nodes) == 0 {
 		return fmt.Errorf("github reply: thread %q has no comment to reply to", threadID)
 	}
-	return hide(g.do(ctx, "reply", func() (*gogithub.Response, error) {
+	return g.do(ctx, "reply", func() (*gogithub.Response, error) {
 		_, resp, err := g.api.PullRequests.CreateCommentInReplyTo(ctx, g.owner, g.name, n, body, out.Node.Comments.Nodes[0].DatabaseID)
 		return resp, err
-	}), body)
+	}, body)
 }
 
 const resolveThreadMutation = `mutation($threadId:ID!){resolveReviewThread(input:{threadId:$threadId}){thread{isResolved}}}`
