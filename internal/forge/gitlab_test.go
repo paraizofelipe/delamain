@@ -2,6 +2,7 @@ package forge
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -277,5 +278,49 @@ func TestGitLabPostReviewShouldCreateOneDiscussionPerCommentWithPosition(t *test
 	}
 	if rs := api.requests(); rs[len(rs)-1].path != notes {
 		t.Fatalf("the summary goes after the inline comments: %+v", rs)
+	}
+}
+
+func TestGitLabPostReviewShouldMoveRejectedInlineCommentToSummary(t *testing.T) {
+	discussions, notes := glProject+"/merge_requests/9/discussions", glProject+"/merge_requests/9/notes"
+	f, api := gitlabAt(t, map[string]func(http.ResponseWriter, *http.Request){
+		"POST " + discussions: sequence(reply(201, `{"id":"d1"}`), reply(400, `{"message":"400 Bad request - Note {:line_code=>[\"can't be blank\"]}"}`)),
+		"POST " + notes:       reply(201, `{"id":1}`),
+	})
+	err := f.PostReview(context.Background(), 9, ReviewOptions{
+		HeadSHA: "h", BaseSHA: "b", StartSHA: "b", Summary: "summary",
+		Comments: []InlineComment{{Path: "a.go", Line: 12, Body: "nil deref"}, {Path: "b/c.go", Line: 3, Body: "typo here"}},
+	})
+	if err != nil {
+		t.Fatalf("an invalid position must not abort the review: %v", err)
+	}
+	if n := posts(api, discussions); n != 2 {
+		t.Fatalf("discussions = %d, want 2 attempts", n)
+	}
+	summary, _ := jsonBody(t, api.find(t, "POST", notes))["body"].(string)
+	if !strings.HasPrefix(summary, "summary") || !strings.Contains(summary, "b/c.go:3") || !strings.Contains(summary, "typo here") {
+		t.Fatalf("the rejected comment must be appended to the summary: %q", summary)
+	}
+	if strings.Contains(summary, "nil deref") {
+		t.Fatalf("an accepted comment must not be repeated in the summary: %q", summary)
+	}
+}
+
+func TestGitLabPostReviewShouldFailWhenADiscussionFailsWithAnotherStatus(t *testing.T) {
+	discussions, notes := glProject+"/merge_requests/9/discussions", glProject+"/merge_requests/9/notes"
+	f, api := gitlabAt(t, map[string]func(http.ResponseWriter, *http.Request){
+		"POST " + discussions: reply(403, `{"message":"403 Forbidden"}`),
+		"POST " + notes:       reply(201, `{"id":1}`),
+	})
+	err := f.PostReview(context.Background(), 9, ReviewOptions{
+		HeadSHA: "h", BaseSHA: "b", StartSHA: "b", Summary: "summary",
+		Comments: []InlineComment{{Path: "a.go", Line: 12, Body: "nil deref"}},
+	})
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Status != http.StatusForbidden {
+		t.Fatalf("a non-400 failure must abort with its status: %v", err)
+	}
+	if n := posts(api, notes); n != 0 {
+		t.Fatalf("an aborted review must not post the summary, got %d notes", n)
 	}
 }
