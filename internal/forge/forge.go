@@ -90,7 +90,22 @@ type PROptions struct {
 	Draft       bool
 }
 
-// Forge is everything delamain does on a forge. There is intentionally no Merge.
+// InlineComment is one review comment on a line of the new file (head side).
+type InlineComment struct {
+	Path string
+	Line int    // line in the new file (head side)
+	Body string // already contains the marker
+}
+
+// ReviewOptions is a review delamain posts: a PR-level summary plus inline comments.
+type ReviewOptions struct {
+	HeadSHA, BaseSHA, StartSHA string
+	Summary                    string // PR-level body, already contains the marker
+	Comments                   []InlineComment
+}
+
+// Forge is everything delamain does on a forge. There is intentionally no Merge, Approve or
+// RequestChanges.
 type Forge interface {
 	Repo() Repo
 	Issue(ctx context.Context, number int) (Issue, error)
@@ -109,6 +124,8 @@ type Forge interface {
 	LinkedIssues(ctx context.Context, number int) ([]Issue, error)
 	// Threads returns the review threads and PR-level comments, by their first comment.
 	Threads(ctx context.Context, number int) ([]Thread, error)
+	// PostReview posts a comment-only review: it never approves nor requests changes.
+	PostReview(ctx context.Context, number int, o ReviewOptions) error
 }
 
 var scpLike = regexp.MustCompile(`^[\w.-]+@([\w.-]+):(.+)$`)

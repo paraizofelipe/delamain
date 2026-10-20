@@ -285,3 +285,7 @@ func (g *gitlabClient) Threads(ctx context.Context, n int) ([]Thread, error) {
 	}
 	return byFirstComment(ts), nil
 }
+
+func (g *gitlabClient) PostReview(ctx context.Context, n int, o ReviewOptions) error {
+	return errors.New("gitlab post review: not implemented")
+}

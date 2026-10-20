@@ -434,3 +434,57 @@ func TestGitHubThreadsShouldFailWhenPRCommentsCannotBeRead(t *testing.T) {
 	ts, err := f.Threads(context.Background(), 12)
 	wantForbidden(t, ts, err)
 }
+
+func TestGitHubPostReviewShouldSendOneCommentEventWithInlineComments(t *testing.T) {
+	f, api := githubAt(t, map[string]func(http.ResponseWriter, *http.Request){
+		"POST /repos/acme/api/pulls/9/reviews": reply(200, `{"id":1}`),
+	})
+	err := f.PostReview(context.Background(), 9, ReviewOptions{
+		HeadSHA: "head1", BaseSHA: "base1", StartSHA: "base1", Summary: "summary <!-- m -->",
+		Comments: []InlineComment{{Path: "a.go", Line: 12, Body: "nil deref"}, {Path: "b/c.go", Line: 3, Body: "typo"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := len(api.requests()); n != 1 {
+		t.Fatalf("requests = %d, want one review: %+v", n, api.requests())
+	}
+	b := jsonBody(t, api.find(t, "POST", "/repos/acme/api/pulls/9/reviews"))
+	want := map[string]any{
+		"commit_id": "head1", "event": "COMMENT", "body": "summary <!-- m -->",
+		"comments": []any{
+			map[string]any{"path": "a.go", "line": float64(12), "side": "RIGHT", "body": "nil deref"},
+			map[string]any{"path": "b/c.go", "line": float64(3), "side": "RIGHT", "body": "typo"},
+		},
+	}
+	if !reflect.DeepEqual(b, want) {
+		t.Fatalf("review body = %v\nwant %v", b, want)
+	}
+}
+
+func TestGitHubPostReviewShouldNeverSendApproveOrRequestChanges(t *testing.T) {
+	for name, o := range map[string]ReviewOptions{
+		"inline":        {HeadSHA: "h", Summary: "s", Comments: []InlineComment{{Path: "a.go", Line: 1, Body: "APPROVE"}}},
+		"summary only":  {HeadSHA: "h", Summary: "REQUEST_CHANGES"},
+		"empty summary": {HeadSHA: "h"},
+	} {
+		f, api := githubAt(t, map[string]func(http.ResponseWriter, *http.Request){
+			"POST /repos/acme/api/pulls/9/reviews": reply(200, `{"id":1}`),
+		})
+		if err := f.PostReview(context.Background(), 9, o); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		rs := api.requests()
+		if len(rs) == 0 {
+			t.Fatalf("%s: no review was sent", name)
+		}
+		for _, r := range rs {
+			if r.method != http.MethodPost || r.path != "/repos/acme/api/pulls/9/reviews" {
+				t.Errorf("%s: unexpected call %s %s", name, r.method, r.path)
+			}
+			if ev := jsonBody(t, r)["event"]; ev != "COMMENT" {
+				t.Errorf("%s: event = %v, want COMMENT", name, ev)
+			}
+		}
+	}
+}

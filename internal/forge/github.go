@@ -354,3 +354,19 @@ func (g *githubClient) Threads(ctx context.Context, n int) ([]Thread, error) {
 	}
 	return byFirstComment(ts), nil
 }
+
+// reviewEvent is the only review event delamain sends: it never approves nor requests changes.
+const reviewEvent = "COMMENT"
+
+// PostReview sends the summary and every inline comment in a single review.
+func (g *githubClient) PostReview(ctx context.Context, n int, o ReviewOptions) error {
+	event, side := reviewEvent, "RIGHT"
+	req := &gogithub.PullRequestReviewRequest{CommitID: &o.HeadSHA, Body: &o.Summary, Event: &event}
+	for _, c := range o.Comments {
+		req.Comments = append(req.Comments, &gogithub.DraftReviewComment{Path: &c.Path, Line: &c.Line, Side: &side, Body: &c.Body})
+	}
+	return g.do(ctx, "post review", func() (*gogithub.Response, error) {
+		_, resp, err := g.api.PullRequests.CreateReview(ctx, g.owner, g.name, n, req)
+		return resp, err
+	})
+}
