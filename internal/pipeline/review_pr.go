@@ -196,7 +196,7 @@ func (r *Runner) reviewPR(ctx context.Context, ru *run, p *prRun) error {
 		return err
 	}
 	artifact := filepath.Join(ru.dir, "review.json")
-	ru.confine = &Confinement{Checkout: wt, Artifact: artifact}
+	ru.confine = &Confinement{Checkout: wt, Base: pr.BaseSHA, Artifact: artifact}
 	data := r.stageData(ru, 0, artifact, "")
 	data.PR = prompts.PR{
 		Number: pr.Number, URL: pr.URL, Title: pr.Title, Body: pr.Body, Author: pr.Author,

@@ -75,7 +75,7 @@ func TestNewSessionIDShouldBeARandomUUID(t *testing.T) {
 
 func TestClaudeAgentsShouldConfineASessionToReadingItsCheckout(t *testing.T) {
 	a := ClaudeAgents{Model: "opus", Effort: "high", PermissionMode: "bypassPermissions", AgentsFile: "/p/agents.json", PluginDir: "/p/plugin"}
-	args := a.args("sid", "review the PR", &Confinement{Checkout: "/wt/review-pr-5-1", Artifact: "/run/5/review.json"})
+	args := a.args("sid", "review the PR", &Confinement{Checkout: "/wt/review-pr-5-1", Base: "b4se", Artifact: "/run/5/review.json"})
 	got := strings.Join(args, " ")
 	if strings.Contains(got, "bypassPermissions") || !strings.Contains(got, "--permission-mode dontAsk") {
 		t.Fatalf("a confined session denies everything not allowed below: %s", got)
@@ -94,9 +94,11 @@ func TestClaudeAgentsShouldConfineASessionToReadingItsCheckout(t *testing.T) {
 			}
 		}
 	}
+	// Exact commands only: a prefix rule ("diff:*") would allow --no-index (read any file) and
+	// --output=<path> (write any file).
 	want := []string{
 		"Read(//wt/review-pr-5-1/**)",
-		"Bash(git -C /wt/review-pr-5-1 diff:*)", "Bash(git -C /wt/review-pr-5-1 log:*)", "Bash(git -C /wt/review-pr-5-1 show:*)",
+		"Bash(git -C /wt/review-pr-5-1 diff b4se...HEAD)", "Bash(git -C /wt/review-pr-5-1 log b4se..HEAD --oneline)",
 		"Edit(//run/5/review.json)",
 	}
 	if len(allowed) != len(want) {
@@ -105,6 +107,11 @@ func TestClaudeAgentsShouldConfineASessionToReadingItsCheckout(t *testing.T) {
 	for _, rule := range want {
 		if !allowed[rule] {
 			t.Errorf("missing allow rule %q in %v", rule, allowed)
+		}
+	}
+	for rule := range allowed {
+		if strings.Contains(rule, ":*") {
+			t.Errorf("open-ended rule %q lets the agent add any flag", rule)
 		}
 	}
 	for _, kept := range []string{"--setting-sources project --strict-mcp-config", "--permission-prompts none"} {

@@ -596,9 +596,16 @@ func TestRunReviewShouldConfineThePRReviewerToReadingTheCheckout(t *testing.T) {
 		t.Fatalf("got %s (%s)", res.Outcome, res.Reason)
 	}
 	start := rh.h.starts["pr-reviewer-r"+strconv.FormatInt(res.RunID, 10)]
-	want := Confinement{Checkout: res.Worktree, Artifact: filepath.Join(res.RunDir, "review.json")}
+	want := Confinement{Checkout: res.Worktree, Base: prBase, Artifact: filepath.Join(res.RunDir, "review.json")}
 	if start.Confine == nil || *start.Confine != want {
 		t.Fatalf("the pr-reviewer reads third-party code: it must run confined to %+v, got %+v", want, start.Confine)
+	}
+	// The only commands the confinement allows must be the ones the prompt asks for, verbatim.
+	prompt := strings.Join(rh.h.prompts["pr-reviewer"], "\n")
+	for _, cmd := range []string{"git -C " + res.Worktree + " diff " + prBase + "...HEAD", "git -C " + res.Worktree + " log " + prBase + "..HEAD --oneline"} {
+		if !strings.Contains(prompt, "`"+cmd+"`") {
+			t.Errorf("the prompt must give %q exactly as the confinement allows it", cmd)
+		}
 	}
 
 	hs := newHarness(t, happy)

@@ -140,15 +140,19 @@ func (a ClaudeAgents) args(sessionID, rolePrompt string, c *Confinement) []strin
 	return append(args, "--settings", `{"attribution":{"commit":"","pr":"","sessionUrl":false}}`)
 }
 
-// confined narrows Claude Code to reading the checkout, read-only git in it and writing the
-// artifact. Rules on absolute paths start with "//"; Edit rules cover Write. Subagents inherit
-// them. Verified against Claude Code 2.1.303: reads elsewhere, other commands (compound ones
-// included) and other writes are denied.
+// confined narrows Claude Code to reading the checkout, two exact git commands in it and writing
+// the artifact. The git rules are whole commands, not prefixes: "diff:*" would also allow
+// --no-index (read any file) and --output=<path> (write any file). Rules on absolute paths start
+// with "//"; Edit rules cover Write; subagents inherit them. Verified against Claude Code 2.1.303:
+// reads elsewhere (symlinks out of the checkout included), extra flags or arguments, compound
+// commands and other writes are denied.
 func confined(c *Confinement) []string {
 	git := "Bash(git -C " + c.Checkout + " "
 	return []string{
 		"--tools", "Read,Grep,Glob,Bash,Write,Agent",
-		"--allowedTools", "Read(/" + c.Checkout + "/**)", git + "diff:*)", git + "log:*)", git + "show:*)", "Edit(/" + c.Artifact + ")",
+		"--allowedTools", "Read(/" + c.Checkout + "/**)",
+		git + "diff " + c.Base + "...HEAD)", git + "log " + c.Base + "..HEAD --oneline)",
+		"Edit(/" + c.Artifact + ")",
 	}
 }
 
