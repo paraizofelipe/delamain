@@ -331,3 +331,56 @@ func TestCurrentUserShouldReturnTheLoginFromGetUser(t *testing.T) {
 		}
 	}
 }
+
+// net/http keeps custom headers such as GitLab's Private-Token across hosts, and Authorization
+// across ports and an https->http downgrade: the client must never follow a redirect off origin.
+func TestClientShouldNotSendTheTokenThroughARedirectToAnotherOrigin(t *testing.T) {
+	const secret = "glpat-R3D1RECT3D"
+	for _, kind := range []Kind{GitHub, GitLab} {
+		var leaked atomic.Int64
+		evil := serve(t, func(w http.ResponseWriter, r *http.Request) {
+			if strings.Contains(r.Header.Get("Private-Token")+r.Header.Get("Authorization"), secret) {
+				leaked.Add(1)
+			}
+			writeJSON(w, okIssue)
+		})
+		var asked atomic.Int64
+		origin := serveTLS(t, func(w http.ResponseWriter, r *http.Request) {
+			asked.Add(1)
+			http.Redirect(w, r, evil.URL+r.URL.Path, http.StatusFound) // other port, plain http
+		})
+		f, err := New(Repo{kind, origin.Listener.Addr().String(), "acme/api"}, secret, WithHTTPClient(origin.Client()), WithBackoff(time.Millisecond))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = f.Issue(context.Background(), 1)
+		if leaked.Load() != 0 {
+			t.Errorf("%s: the token reached another origin %d times", kind, leaked.Load())
+		}
+		if err == nil || strings.Contains(err.Error(), secret) {
+			t.Errorf("%s: a refused redirect fails without the token: %v", kind, err)
+		}
+		if asked.Load() != 1 {
+			t.Errorf("%s: a refused redirect is not transient, asked %d times", kind, asked.Load())
+		}
+	}
+}
+
+func TestClientShouldFollowRedirectsWithinTheSameOrigin(t *testing.T) {
+	for _, kind := range []Kind{GitHub, GitLab} {
+		srv := serveTLS(t, func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasSuffix(r.URL.Path, "/issues/1") {
+				http.Redirect(w, r, strings.TrimSuffix(r.URL.Path, "1")+"2", http.StatusMovedPermanently) // e.g. a renamed repository
+				return
+			}
+			writeJSON(w, `{"number":2,"iid":2,"state":"open"}`)
+		})
+		f, err := New(Repo{kind, srv.Listener.Addr().String(), "acme/api"}, "tok", WithHTTPClient(srv.Client()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if is, err := f.Issue(context.Background(), 1); err != nil || is.Number != 2 {
+			t.Fatalf("%s: issue = %+v, err = %v", kind, is, err)
+		}
+	}
+}

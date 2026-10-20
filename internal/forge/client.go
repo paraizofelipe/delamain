@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"regexp"
@@ -119,10 +120,29 @@ func (c cancelOnClose) Close() error {
 	return err
 }
 
+// errCrossOrigin is a redirect off the forge's origin, which would take the token with it.
+var errCrossOrigin = errors.New("refusing to follow a redirect to another host or scheme")
+
+// sameOrigin follows redirects only within the scheme and host:port of the first request:
+// net/http forwards custom headers (GitLab's Private-Token) to any host, and Authorization to
+// another port or over plain http, so leaving the origin would leak the token.
+func sameOrigin(req *http.Request, via []*http.Request) error {
+	if len(via) >= 10 {
+		return errors.New("stopped after 10 redirects")
+	}
+	if from := via[0].URL; req.URL.Scheme != from.Scheme || !strings.EqualFold(req.URL.Host, from.Host) {
+		return fmt.Errorf("%w: %s://%s", errCrossOrigin, req.URL.Scheme, req.URL.Host)
+	}
+	return nil
+}
+
 // gitlabRetry is client-go's retry policy narrowed to network and gateway errors.
 func gitlabRetry(ctx context.Context, resp *http.Response, err error) (bool, error) {
 	if ctx.Err() != nil {
 		return false, ctx.Err()
+	}
+	if errors.Is(err, errCrossOrigin) {
+		return false, nil
 	}
 	return err != nil || transientStatus(resp.StatusCode), nil
 }

@@ -128,6 +128,7 @@ func New(repo Repo, token string, opts ...Option) (Forge, error) {
 		c := *o.httpClient
 		hc = &c
 	}
+	hc.CheckRedirect = sameOrigin
 	if repo.Kind == GitLab {
 		return newGitLab(repo, token, hc, o)
 	}
