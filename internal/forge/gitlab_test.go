@@ -106,3 +106,62 @@ func TestGitLabSelfHostedShouldUseApiV4BaseURL(t *testing.T) {
 		t.Fatalf("self-hosted API lives under https://<host>/api/v4: %v (requests %+v)", err, api.requests())
 	}
 }
+
+func TestGitLabShouldCreateDraftMR(t *testing.T) {
+	f, api := gitlabAt(t, map[string]func(http.ResponseWriter, *http.Request){
+		"POST " + glProject + "/merge_requests": reply(201, `{"iid":15,"web_url":"https://gitlab.com/grp/api/-/merge_requests/15","draft":true}`),
+	})
+	pr, err := f.CreatePR(context.Background(), PROptions{Head: "fix/7-add", Base: "main", Title: "fix: add", Body: "Closes #7", Draft: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pr != (PR{Number: 15, URL: "https://gitlab.com/grp/api/-/merge_requests/15", Draft: true}) {
+		t.Fatalf("mr = %+v", pr)
+	}
+	b := jsonBody(t, api.find(t, "POST", glProject+"/merge_requests"))
+	if b["source_branch"] != "fix/7-add" || b["target_branch"] != "main" || b["title"] != "Draft: fix: add" || b["description"] != "Closes #7" {
+		t.Fatalf("create body = %v", b)
+	}
+}
+
+func TestGitLabShouldOpenReadyMRWhenNotDraft(t *testing.T) {
+	f, api := gitlabAt(t, map[string]func(http.ResponseWriter, *http.Request){
+		"POST " + glProject + "/merge_requests": reply(201, `{"iid":1,"web_url":"https://gitlab.com/grp/api/-/merge_requests/1","draft":false}`),
+	})
+	pr, err := f.CreatePR(context.Background(), PROptions{Head: "feat/x", Base: "main", Title: "feat: x"})
+	if err != nil || pr.Draft {
+		t.Fatalf("pr = %+v, err = %v", pr, err)
+	}
+	if title := jsonBody(t, api.find(t, "POST", glProject+"/merge_requests"))["title"]; title != "feat: x" {
+		t.Fatalf("approved work must not be opened as draft, title = %v", title)
+	}
+}
+
+func TestGitLabCommentShouldSendTheBodyInTheRequestBody(t *testing.T) {
+	f, api := gitlabAt(t, map[string]func(http.ResponseWriter, *http.Request){
+		"POST " + glProject + "/issues/3/notes": reply(201, `{"id":1}`),
+	})
+	if err := f.Comment(context.Background(), 3, "status: olá"); err != nil {
+		t.Fatal(err)
+	}
+	r := api.find(t, "POST", glProject+"/issues/3/notes")
+	if jsonBody(t, r)["body"] != "status: olá" || strings.Contains(r.query, "status") {
+		t.Fatalf("note must travel in the request body, never the URL: %+v", r)
+	}
+}
+
+func TestGitLabShouldRelabelWithoutEmptyLabels(t *testing.T) {
+	f, api := gitlabAt(t, map[string]func(http.ResponseWriter, *http.Request){
+		"PUT " + glProject + "/issues/3": reply(200, `{"iid":3}`),
+	})
+	if err := f.Relabel(context.Background(), 3, []string{"a", "b"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	b := jsonBody(t, api.find(t, "PUT", glProject+"/issues/3"))
+	if b["add_labels"] != "a,b" {
+		t.Fatalf("update body = %v", b)
+	}
+	if _, ok := b["remove_labels"]; ok {
+		t.Fatalf("an empty removal must not be sent: %v", b)
+	}
+}

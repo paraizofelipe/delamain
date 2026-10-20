@@ -84,48 +84,6 @@ func TestDetectShouldRejectUnknownHostsAndMalformedURLs(t *testing.T) {
 	}
 }
 
-func TestGitLabShouldCreateDraftMRNonInteractively(t *testing.T) {
-	run := &fakeRunner{out: map[string]string{"mr create": "\nCreating merge request for fix/7-add into main in grp/api\n\nhttps://gitlab.com/grp/api/-/merge_requests/15\n"}}
-	f := NewExec(Repo{GitLab, "gitlab.com", "grp/api"}, run)
-	pr, err := f.CreatePR(context.Background(), PROptions{Head: "fix/7-add", Base: "main", Title: "fix: add", Body: "Closes #7", Draft: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if pr.Number != 15 || pr.URL != "https://gitlab.com/grp/api/-/merge_requests/15" {
-		t.Fatalf("mr = %+v", pr)
-	}
-	c := run.find(t, "mr create")
-	for _, want := range [][2]string{{"-R", "https://gitlab.com/grp/api"}, {"--source-branch", "fix/7-add"}, {"--target-branch", "main"}, {"--title", "fix: add"}, {"--description-file", "-"}, {"--draft", ""}, {"--yes", ""}, {"--no-editor", ""}} {
-		if !has(c.args, want[0], want[1]) {
-			t.Errorf("missing %s %s in %v", want[0], want[1], c.args)
-		}
-	}
-	if has(c.args, "--push", "") || has(c.args, "--fill", "") {
-		t.Error("glab must never push: the orchestrator pushes after its own guards")
-	}
-	if c.stdin != "Closes #7" {
-		t.Errorf("description must go through stdin, got %q", c.stdin)
-	}
-}
-
-func TestGitLabShouldRelabelAndCommentWithoutEmptyFlags(t *testing.T) {
-	run := &fakeRunner{}
-	f := NewExec(Repo{GitLab, "gitlab.com", "grp/api"}, run)
-	if err := f.Relabel(context.Background(), 3, []string{"a", "b"}, nil); err != nil {
-		t.Fatal(err)
-	}
-	c := run.find(t, "issue update")
-	if !has(c.args, "--label", "a,b") || has(c.args, "--unlabel", "") {
-		t.Fatalf("update args = %v", c.args)
-	}
-	if err := f.Comment(context.Background(), 3, "status"); err != nil {
-		t.Fatal(err)
-	}
-	if c := run.find(t, "issue note"); !has(c.args, "--message", "status") {
-		t.Fatalf("note args = %v", c.args)
-	}
-}
-
 // The whole point of delamain's delivery: it opens PRs/MRs and never merges them.
 func TestForgeShouldNeverIssueMergeCommands(t *testing.T) {
 	for _, repo := range []Repo{{GitHub, "github.com", "acme/api"}, {GitLab, "gitlab.com", "grp/api"}} {

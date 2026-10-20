@@ -86,14 +86,35 @@ func (g *gitlabClient) OpenPR(ctx context.Context, head string) (*PR, error) {
 	return &PR{Number: int(mrs[0].IID), URL: mrs[0].WebURL, Draft: mrs[0].Draft}, nil
 }
 
-func (g *gitlabClient) CreatePR(context.Context, PROptions) (PR, error) {
-	return PR{}, errors.New("gitlab create pr: not implemented")
+// CreatePR marks drafts with GitLab's "Draft: " title prefix; the branch is already pushed.
+func (g *gitlabClient) CreatePR(ctx context.Context, o PROptions) (PR, error) {
+	title := o.Title
+	if o.Draft {
+		title = "Draft: " + title
+	}
+	v, resp, err := g.api.MergeRequests.CreateMergeRequest(g.repo.Path, &gogitlab.CreateMergeRequestOptions{
+		Title: &title, Description: &o.Body, SourceBranch: &o.Head, TargetBranch: &o.Base,
+	}, gogitlab.WithContext(ctx))
+	if err := g.check("create pr", resp, err); err != nil {
+		return PR{}, err
+	}
+	return PR{Number: int(v.IID), URL: v.WebURL, Draft: v.Draft}, nil
 }
 
-func (g *gitlabClient) Comment(context.Context, int, string) error {
-	return errors.New("gitlab comment: not implemented")
+func (g *gitlabClient) Comment(ctx context.Context, n int, body string) error {
+	_, resp, err := g.api.Notes.CreateIssueNote(g.repo.Path, int64(n), &gogitlab.CreateIssueNoteOptions{Body: &body}, gogitlab.WithContext(ctx))
+	return g.check("comment", resp, err)
 }
 
-func (g *gitlabClient) Relabel(context.Context, int, []string, []string) error {
-	return errors.New("gitlab relabel: not implemented")
+// Relabel relies on GitLab creating unknown labels when they are assigned.
+func (g *gitlabClient) Relabel(ctx context.Context, n int, add, remove []string) error {
+	opt := &gogitlab.UpdateIssueOptions{}
+	if len(add) > 0 {
+		opt.AddLabels = (*gogitlab.LabelOptions)(&add)
+	}
+	if len(remove) > 0 {
+		opt.RemoveLabels = (*gogitlab.LabelOptions)(&remove)
+	}
+	_, resp, err := g.api.Issues.UpdateIssue(g.repo.Path, int64(n), opt, gogitlab.WithContext(ctx))
+	return g.check("relabel", resp, err)
 }
