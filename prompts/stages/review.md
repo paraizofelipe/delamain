@@ -1,6 +1,6 @@
 # Passo: revisão — {{.Issue.Ref}} · iteração {{.Iteration}} de {{.MaxIterations}}
 
-Revise a diff `{{.Repo.Base}}...HEAD` na worktree `{{.Repo.Worktree}}` (branch `{{.Repo.Branch}}`) seguindo o seu papel de reviewer: rode `delamain-spec-reviewer`, `delamain-standards-reviewer` e `delamain-security-reviewer` **em paralelo**, cada um só com estes insumos:
+Revise a diff `{{.Repo.Base}}...HEAD` na worktree `{{.Repo.Worktree}}` (branch `{{.Repo.Branch}}`) seguindo o seu papel de reviewer: rode `delamain-spec-reviewer`, `delamain-standards-reviewer` e `delamain-security-reviewer` **em paralelo e no mesmo turno**, nunca em segundo plano (este passo acaba quando o seu turno acaba), cada um só com estes insumos:
 
 - Diff: `git diff {{.Repo.Base}}...HEAD` e `git log {{.Repo.Base}}..HEAD --oneline`
 - Plano: `{{.PlanPath}}` e `{{.PlanJSONPath}}` (inclusive o modelo de ameaça em `security`, que delimita o eixo Segurança)
