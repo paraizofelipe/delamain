@@ -279,9 +279,10 @@ type LineRange struct{ Start, End int }
 var hunkHeader = regexp.MustCompile(`^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@`)
 
 // ChangedLines maps each file of base...HEAD to the lines added or modified on the head side,
-// by the head path. Removal-only hunks, deleted and binary files have no lines.
+// by the head path. Removal-only hunks, deleted and binary files have no lines. No external diff
+// or textconv runs: the checkout's .gitattributes would pick which driver handles its files.
 func (g Git) ChangedLines(ctx context.Context, dir, base string) (map[string][]LineRange, error) {
-	out, err := g.run(ctx, dir, "-c", "core.quotePath=false", "diff", "--no-color", "--no-ext-diff", "--unified=0",
+	out, err := g.run(ctx, dir, "-c", "core.quotePath=false", "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--unified=0",
 		"--find-renames", "--src-prefix=a/", "--dst-prefix=b/", base+"...HEAD")
 	if err != nil {
 		return nil, err

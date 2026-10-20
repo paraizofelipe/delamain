@@ -681,3 +681,32 @@ func TestAddUntrustedWorktreeShouldRunNoHookNorFilterOfTheCheckout(t *testing.T)
 		}
 	}
 }
+
+func TestChangedLinesShouldRunNoTextconvTheCheckoutPicks(t *testing.T) {
+	g, ctx := New(), context.Background()
+	r := repo(t)
+	base := gitIn(t, r, "rev-parse", "HEAD")
+	marks := t.TempDir()
+	// The operator's textconv driver; the PR's .gitattributes decides which files it runs on.
+	gitIn(t, r, "config", "diff.evil.textconv", "sh -c 'touch "+filepath.Join(marks, "textconv")+"; cat \"$0\"'")
+	gitIn(t, r, "switch", "-q", "-c", "pr")
+	commitFile(t, r, ".gitattributes", "*.txt diff=evil\n")
+	commitFile(t, r, "a.txt", "one\ntwo\n")
+
+	got, err := g.ChangedLines(ctx, r, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ran, _ := os.ReadDir(marks); len(ran) != 0 {
+		t.Fatalf("reading the PR's diff lines ran %v", ran)
+	}
+	if !slices.Equal(got["a.txt"], []LineRange{{1, 2}}) {
+		t.Fatalf("lines come from the committed content: %v", got)
+	}
+
+	// Control: a plain diff of the same range does run the driver, so the fixture is hostile.
+	gitIn(t, r, "diff", base+"...HEAD")
+	if _, err := os.Stat(filepath.Join(marks, "textconv")); err != nil {
+		t.Fatalf("the fixture's textconv must run on a plain diff: %v", err)
+	}
+}
