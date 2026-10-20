@@ -163,6 +163,8 @@ type run struct {
 	recovered bool
 	// pr is set on PR review runs only.
 	pr *prRun
+	// agentDir is the agents' cwd when it must not be the worktree (default: the worktree).
+	agentDir string
 }
 
 // Run executes the task end to end. A non-nil error means the run could not even be recorded;
@@ -481,8 +483,12 @@ func (r *Runner) startAgent(ctx context.Context, ru *run, role string) error {
 		return err
 	}
 	ru.viewDo("show "+role, func(v View) error { return v.Show(ctx, role, logPath) })
+	dir := ru.repo.Worktree
+	if ru.agentDir != "" {
+		dir = ru.agentDir
+	}
 	agent, err := r.Agents.Start(ctx, AgentOptions{
-		Name: fmt.Sprintf("%s-r%d", role, ru.rec.ID), Dir: ru.repo.Worktree,
+		Name: fmt.Sprintf("%s-r%d", role, ru.rec.ID), Dir: dir,
 		SessionDir: sessDir, SystemPrompt: r.PromptsTarget.RolePath(role),
 		// Only the orchestrator publishes work: the agent gets an env where push fails.
 		Env:     gitx.AgentEnv(),

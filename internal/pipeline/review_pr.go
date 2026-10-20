@@ -122,8 +122,13 @@ func (r *Runner) reviewPR(ctx context.Context, ru *run, p *prRun) error {
 		ru.res.Outcome, ru.res.Reason = OutcomeSkipped, fmt.Sprintf("o head %s do PR/MR #%d já foi revisado", pr.HeadSHA, pr.Number)
 		return nil
 	}
-	if err := os.MkdirAll(filepath.Join(ru.dir, "sessions"), 0o700); err != nil {
-		return err
+	// The agent never starts inside the PR checkout: its harness would load the settings, hooks
+	// and instruction files (.claude/, .omp/, CLAUDE.md, AGENTS.md) the PR's author controls.
+	ru.agentDir = filepath.Join(ru.dir, "agent")
+	for _, d := range []string{filepath.Join(ru.dir, "sessions"), ru.agentDir} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			return err
+		}
 	}
 	if err := r.Git.FetchRef(ctx, repo, pr.BaseRef); err != nil {
 		return err
