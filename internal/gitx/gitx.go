@@ -216,14 +216,19 @@ func (g Git) RemoteBranchExists(ctx context.Context, repo, branch string) (bool,
 const pushBlocked = "delamain-push-blocked://"
 
 // AgentEnv is the environment agents run with: git push to any remote fails and the forge CLIs
-// lose their credentials, so only the orchestrator can publish work (after its own guards).
+// lose their credentials, so only the orchestrator can publish work (after its own guards). Each
+// token variable gh/glab read first is set, Enterprise ones included: an unset one would make
+// them fall back to the login stored for the host.
 func AgentEnv() []string {
 	prefixes := []string{"/", "https://", "http://", "ssh://", "git@", "git://", "file://"}
 	env := []string{fmt.Sprintf("GIT_CONFIG_COUNT=%d", len(prefixes))}
 	for i, p := range prefixes {
 		env = append(env, fmt.Sprintf("GIT_CONFIG_KEY_%d=url.%s.pushInsteadOf", i, pushBlocked), fmt.Sprintf("GIT_CONFIG_VALUE_%d=%s", i, p))
 	}
-	return append(env, "GH_TOKEN="+pushBlocked, "GITLAB_TOKEN="+pushBlocked)
+	for _, k := range []string{"GH_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GITLAB_TOKEN"} {
+		env = append(env, k+"="+pushBlocked)
+	}
+	return env
 }
 
 // agentAllowed are credentials an agent harness needs even though they look like tokens.

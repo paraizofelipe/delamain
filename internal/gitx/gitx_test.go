@@ -213,7 +213,7 @@ func TestAgentEnvironShouldStripForgeAndGenericTokens(t *testing.T) {
 		"my_lower_token=kept",
 	}
 	got := envMap(AgentEnviron(base))
-	for _, k := range []string{"GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GITLAB_ACCESS_TOKEN", "GITLAB_PRIVATE_KEY",
+	for _, k := range []string{"GITHUB_TOKEN", "GITLAB_ACCESS_TOKEN", "GITLAB_PRIVATE_KEY",
 		"OAUTH_TOKEN", "CI_JOB_TOKEN", "NPM_TOKEN", "AWS_SESSION_TOKEN", "MY_PAT", "DB_SECRET"} {
 		if v, ok := got[k]; ok {
 			t.Errorf("%s=%s must not reach agents", k, v)
@@ -230,6 +230,19 @@ func TestAgentEnvironShouldStripForgeAndGenericTokens(t *testing.T) {
 	for _, kv := range AgentEnviron(base) {
 		if strings.Contains(kv, "_real") {
 			t.Errorf("leaked %q", kv)
+		}
+	}
+}
+
+// Without its variables gh falls back to the login stored for the host, so every token variable
+// gh/glab read first is set to the blocked value, even when the user never set it.
+func TestAgentEnvironShouldBlockTheStoredForgeLoginsOfEveryHost(t *testing.T) {
+	for _, base := range [][]string{nil, {"GH_ENTERPRISE_TOKEN=ghe_real", "GITHUB_ENTERPRISE_TOKEN=ghe_real2"}} {
+		got := envMap(AgentEnviron(base))
+		for _, k := range []string{"GH_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GITLAB_TOKEN"} {
+			if got[k] != pushBlocked {
+				t.Errorf("base %v: %s = %q, want the blocked value so gh/glab never use a stored login", base, k, got[k])
+			}
 		}
 	}
 }
