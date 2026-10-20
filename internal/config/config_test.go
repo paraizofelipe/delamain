@@ -248,3 +248,10 @@ func TestLimitsShouldInheritGlobalForZeroOrUnknown(t *testing.T) {
 		t.Fatalf("Limits(high) = (%d, %v), want (5, 2e6)", it, budget)
 	}
 }
+
+func TestPathsShouldPlaceMemoryDirUnderStateDir(t *testing.T) {
+	p := Paths{StateDir: "/home/u/.local/state/delamain"}
+	if got := p.MemoryDir(); got != "/home/u/.local/state/delamain/memory" {
+		t.Fatalf("MemoryDir = %q", got)
+	}
+}
