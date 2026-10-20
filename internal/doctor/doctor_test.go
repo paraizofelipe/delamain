@@ -5,11 +5,13 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"testing/fstest"
 
 	"github.com/paraizo/delamain/internal/config"
 	"github.com/paraizo/delamain/internal/herdr"
+	"github.com/paraizo/delamain/internal/notify"
 	"github.com/paraizo/delamain/internal/prompts"
 )
 
@@ -274,5 +276,56 @@ func TestRunShouldWarnWhenInstalledPromptsAreOutdated(t *testing.T) {
 	}
 	if c := byName(Run(context.Background(), cfg, d))["prompts"]; c.Status != Warn {
 		t.Fatalf("outdated install is a warning: %+v", c)
+	}
+}
+
+func TestRunShouldReportTheNotificationServerOrWarnWithoutOne(t *testing.T) {
+	cfg, d := healthy(t)
+	d.Notify = func(context.Context) notify.Probe {
+		return notify.Probe{Backend: "dbus", Server: "mako", Version: "1.9.0", Actions: true}
+	}
+	c := byName(Run(context.Background(), cfg, d))["notify"]
+	if c.Status != OK || c.Detail != "dbus: mako 1.9.0, actions supported" {
+		t.Fatalf("notify check = %+v", c)
+	}
+
+	d.Notify = func(context.Context) notify.Probe {
+		return notify.Probe{Backend: "dbus", Server: "dunst", Version: "1.11", Actions: false}
+	}
+	if c := byName(Run(context.Background(), cfg, d))["notify"]; c.Status != OK || c.Detail != "dbus: dunst 1.11, no actions (clicks disabled)" {
+		t.Fatalf("notify check = %+v", c)
+	}
+
+	d.Notify = func(context.Context) notify.Probe {
+		return notify.Probe{Backend: "dbus", Err: errors.New("org.freedesktop.Notifications: timeout")}
+	}
+	if c := byName(Run(context.Background(), cfg, d))["notify"]; c.Status != Warn || !strings.Contains(c.Detail, "did not answer: org.freedesktop.Notifications: timeout") {
+		t.Fatalf("a server that does not answer is a warning, not OK: %+v", c)
+	}
+
+	d.Notify = func(context.Context) notify.Probe { return notify.Probe{Backend: "none"} }
+	checks := Run(context.Background(), cfg, d)
+	if c := byName(checks)["notify"]; c.Status != Warn || c.Detail != "no desktop notification server; notifications disabled" {
+		t.Fatalf("without a server notify only warns: %+v", c)
+	}
+	if Failed(checks) {
+		t.Fatal("a missing notification server never fails doctor")
+	}
+}
+
+func TestRunShouldRemindToAllowNotificationsOnMacOS(t *testing.T) {
+	cfg, d := healthy(t)
+	d.Notify = func(context.Context) notify.Probe {
+		return notify.Probe{Backend: "macos", TerminalNotifier: "/opt/homebrew/bin/terminal-notifier"}
+	}
+	c := byName(Run(context.Background(), cfg, d))["notify"]
+	if c.Status != OK || !strings.Contains(c.Detail, "terminal-notifier (/opt/homebrew/bin/terminal-notifier)") || !strings.Contains(c.Detail, "allow notifications for terminal-notifier in System Settings") {
+		t.Fatalf("notify check = %+v", c)
+	}
+
+	d.Notify = func(context.Context) notify.Probe { return notify.Probe{Backend: "macos"} }
+	c = byName(Run(context.Background(), cfg, d))["notify"]
+	if c.Status != OK || !strings.Contains(c.Detail, "terminal-notifier not found") || !strings.Contains(c.Detail, "allow notifications for Script Editor in System Settings") {
+		t.Fatalf("notify check = %+v", c)
 	}
 }

@@ -24,6 +24,7 @@ import (
 	"github.com/paraizo/delamain/internal/forge"
 	"github.com/paraizo/delamain/internal/gates"
 	"github.com/paraizo/delamain/internal/gitx"
+	"github.com/paraizo/delamain/internal/notify"
 	"github.com/paraizo/delamain/internal/omp"
 	"github.com/paraizo/delamain/internal/prompts"
 	"github.com/paraizo/delamain/internal/store"
@@ -112,6 +113,8 @@ type Runner struct {
 	LookPath func(string) (string, error)
 	// Alive reports whether a run's owner process still exists (default: signal 0).
 	Alive func(pid int) bool
+	// Notify shows desktop toasts; nil sends none.
+	Notify notify.Notifier
 	// BudgetInterval paces the budget watcher during agent turns (default 10s).
 	BudgetInterval time.Duration
 }
@@ -201,6 +204,7 @@ func (r *Runner) Run(ctx context.Context, t Task) (Result, error) {
 	res.RunDir = ru.dir
 	r.openLog(ru)
 	defer ru.closeLog()
+	r.notify(ctx, ru.log, notify.FormatStarted(notifyRun(ru, t, rec.State)))
 	r.issueUpdate(ctx, t, &res, []string{r.Cfg.Forge.Labels.InProgress}, []string{r.Cfg.Forge.Labels.Ready}, "")
 
 	defer r.cleanup(context.WithoutCancel(ctx), ru) // safety net; finish normally stops agents first
@@ -221,6 +225,7 @@ func (r *Runner) Run(ctx context.Context, t Task) (Result, error) {
 // tally, agents stopped, delivery, removal of empty work, issue update and the report.
 func (r *Runner) finish(ctx context.Context, ru *run, t Task) error {
 	ctx = context.WithoutCancel(ctx)
+	state := ru.rec.State      // record moves it to recorded; the halted toast shows where it stopped
 	_ = r.checkBudget(ctx, ru) // final tally; the level no longer matters
 	r.cleanup(ctx, ru)         // agents stop before anything touches their worktree
 	if ru.repo.Worktree != "" {
@@ -229,7 +234,11 @@ func (r *Runner) finish(ctx context.Context, ru *run, t Task) error {
 	r.deliver(ctx, ru)
 	r.discardEmpty(ctx, ru)
 	r.announce(ctx, ru, t)
-	return r.record(ctx, ru)
+	err := r.record(ctx, ru) // writes report.md before a toast offers to open it
+	if !ru.recovered {       // the recover toast sums recovered runs up
+		r.notify(ctx, ru.log, outcomeToast(ru, t, state))
+	}
+	return err
 }
 
 func (r *Runner) runDir(repo string, id int64) string { return RunDir(r.Cfg.Paths.StateDir, repo, id) }
