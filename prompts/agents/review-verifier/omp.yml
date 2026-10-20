@@ -1,4 +1,4 @@
 name: delamain-review-verifier
 description: Confirma na worktree cada achado de uma review de PR/MR, rebaixando para minor ou descartando com motivo o que não se sustenta. Somente leitura.
-tools: [read, grep, glob, lsp, bash]
+tools: [read, grep, glob, bash]
 thinking-level: high

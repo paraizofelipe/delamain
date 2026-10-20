@@ -365,3 +365,24 @@ func TestRenderShouldKeepUntrustedPRThreadsAndMemoryInsideTheirDelimiters(t *tes
 		}
 	}
 }
+
+func TestEmbeddedReviewVerifierShouldKeepConfirmedFindingsOutsideTheDiffAndStayReadOnly(t *testing.T) {
+	s := mustLoad(t, embedded.FS)
+	fm, body, err := s.agentParts("review-verifier")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The orchestrator moves confirmed findings off the changed lines to the summary; the
+	// verifier dropping them would hide real problems as "not sustained".
+	if !strings.Contains(string(body), "Fora das linhas alteradas não é motivo para descartar") {
+		t.Fatalf("the verifier must keep confirmed findings outside the diff:\n%s", body)
+	}
+	if strings.Contains(string(body), "fora da diff): move para `dropped`") {
+		t.Fatal("being outside the diff must not be a reason to drop a finding")
+	}
+	for _, tool := range fm.Tools {
+		if tool == "lsp" {
+			t.Fatal("a language server over a PR's code can run its build scripts: the verifier gets no lsp")
+		}
+	}
+}
