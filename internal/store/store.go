@@ -36,6 +36,15 @@ func (s RunState) Terminal() bool {
 	return s == StateRecorded || s == StateNeedsInfo
 }
 
+// RunKind is what a run works on: an issue, a PR review, or addressing a PR's review comments.
+type RunKind string
+
+const (
+	KindIssue   RunKind = "issue"
+	KindReview  RunKind = "review"
+	KindAddress RunKind = "address"
+)
+
 type Run struct {
 	ID        int64
 	Repo      string
@@ -57,8 +66,10 @@ type Run struct {
 	MaxIterations int
 	PerIssue      float64
 	Complexity    string
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
+	// Kind is fixed when the run is created; runs older than v6 are KindIssue.
+	Kind      RunKind
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 // Usage is a cumulative token/cost snapshot of one omp session file.
@@ -173,6 +184,15 @@ var migrations = []string{
 	ALTER TABLE runs ADD COLUMN max_iterations INTEGER NOT NULL DEFAULT 0;`,
 	`ALTER TABLE runs ADD COLUMN complexity TEXT NOT NULL DEFAULT '';
 	ALTER TABLE runs ADD COLUMN per_issue REAL NOT NULL DEFAULT 0;`,
+	`ALTER TABLE runs ADD COLUMN kind TEXT NOT NULL DEFAULT 'issue';
+	CREATE TABLE review_cursors (
+		repo          TEXT NOT NULL,
+		pr            INTEGER NOT NULL,
+		last_seen_at  TIMESTAMP NOT NULL,
+		rounds        INTEGER NOT NULL DEFAULT 0,
+		last_head_sha TEXT NOT NULL DEFAULT '',
+		PRIMARY KEY (repo, pr)
+	);`,
 }
 
 func (s *Store) migrate(ctx context.Context) error {
@@ -204,7 +224,7 @@ func (s *Store) migrate(ctx context.Context) error {
 }
 
 // CreateRun inserts a claimed run, refusing a second active run for the same issue.
-func (s *Store) CreateRun(ctx context.Context, repo, issueRef, title, harness string, maxIterations int, perIssue float64) (Run, error) {
+func (s *Store) CreateRun(ctx context.Context, repo, issueRef, title, harness string, maxIterations int, perIssue float64, kind RunKind) (Run, error) {
 	if r, err := s.ActiveRun(ctx, repo, issueRef); err == nil {
 		return Run{}, fmt.Errorf("issue %s already has active run %d in state %s", issueRef, r.ID, r.State)
 	} else if !errors.Is(err, ErrNotFound) {
@@ -212,8 +232,8 @@ func (s *Store) CreateRun(ctx context.Context, repo, issueRef, title, harness st
 	}
 	now := s.now()
 	res, err := s.db.ExecContext(ctx,
-		`INSERT INTO runs (repo, issue_ref, title, state, owner_pid, harness, max_iterations, per_issue, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		repo, issueRef, title, StateClaimed, os.Getpid(), harness, maxIterations, perIssue, now, now)
+		`INSERT INTO runs (repo, issue_ref, title, state, owner_pid, harness, max_iterations, per_issue, kind, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		repo, issueRef, title, StateClaimed, os.Getpid(), harness, maxIterations, perIssue, kind, now, now)
 	if err != nil {
 		return Run{}, err
 	}
@@ -234,11 +254,11 @@ func (r Run) Limits(defaultMaxIter int, defaultPerIssue float64) (maxIter int, p
 	return maxIter, perIssue
 }
 
-const runCols = `id, repo, issue_ref, title, branch, worktree, state, iteration, mr_url, reason, owner_pid, base, workspace, harness, max_iterations, per_issue, complexity, created_at, updated_at`
+const runCols = `id, repo, issue_ref, title, branch, worktree, state, iteration, mr_url, reason, owner_pid, base, workspace, harness, max_iterations, per_issue, complexity, kind, created_at, updated_at`
 
 func scanRun(row interface{ Scan(...any) error }) (Run, error) {
 	var r Run
-	err := row.Scan(&r.ID, &r.Repo, &r.IssueRef, &r.Title, &r.Branch, &r.Worktree, &r.State, &r.Iteration, &r.MRURL, &r.Reason, &r.OwnerPID, &r.Base, &r.Workspace, &r.Harness, &r.MaxIterations, &r.PerIssue, &r.Complexity, &r.CreatedAt, &r.UpdatedAt)
+	err := row.Scan(&r.ID, &r.Repo, &r.IssueRef, &r.Title, &r.Branch, &r.Worktree, &r.State, &r.Iteration, &r.MRURL, &r.Reason, &r.OwnerPID, &r.Base, &r.Workspace, &r.Harness, &r.MaxIterations, &r.PerIssue, &r.Complexity, &r.Kind, &r.CreatedAt, &r.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Run{}, ErrNotFound
 	}
@@ -363,4 +383,34 @@ func (s *Store) RunUsage(ctx context.Context, runID int64) (Usage, error) {
 // UsageSince is the total consumed by all runs since t (e.g. start of the UTC day).
 func (s *Store) UsageSince(ctx context.Context, t time.Time) (Usage, error) {
 	return s.sumLedger(ctx, "at >= ?", t.UTC())
+}
+
+// ReviewCursor is how far the reviewer got on a PR.
+type ReviewCursor struct {
+	Repo        string
+	PR          int
+	LastSeenAt  time.Time
+	Rounds      int
+	LastHeadSHA string
+}
+
+// Cursor returns the review cursor of a PR, or ErrNotFound before the first SaveCursor.
+func (s *Store) Cursor(ctx context.Context, repo string, pr int) (ReviewCursor, error) {
+	c := ReviewCursor{Repo: repo, PR: pr}
+	err := s.db.QueryRowContext(ctx,
+		`SELECT last_seen_at, rounds, last_head_sha FROM review_cursors WHERE repo = ? AND pr = ?`, repo, pr).
+		Scan(&c.LastSeenAt, &c.Rounds, &c.LastHeadSHA)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ReviewCursor{}, ErrNotFound
+	}
+	return c, err
+}
+
+// SaveCursor inserts or overwrites the review cursor of c.Repo and c.PR.
+func (s *Store) SaveCursor(ctx context.Context, c ReviewCursor) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO review_cursors (repo, pr, last_seen_at, rounds, last_head_sha) VALUES (?, ?, ?, ?, ?)
+		 ON CONFLICT(repo, pr) DO UPDATE SET last_seen_at=excluded.last_seen_at, rounds=excluded.rounds, last_head_sha=excluded.last_head_sha`,
+		c.Repo, c.PR, c.LastSeenAt.UTC(), c.Rounds, c.LastHeadSHA)
+	return err
 }

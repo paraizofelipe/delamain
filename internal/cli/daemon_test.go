@@ -85,7 +85,7 @@ func TestRecoverShouldNotifyOnlyWhenRunsWereRecovered(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rec, err := st.CreateRun(ctx, filepath.Join(t.TempDir(), "api"), "#7", "Fix add", "omp", 3, 0)
+	rec, err := st.CreateRun(ctx, filepath.Join(t.TempDir(), "api"), "#7", "Fix add", "omp", 3, 0, store.KindIssue)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -56,7 +56,7 @@ func newFixture(t *testing.T) *fixture {
 func (f *fixture) run(t *testing.T, ref, branch string, state store.RunState) store.Run {
 	t.Helper()
 	ctx := context.Background()
-	rec, err := f.st.CreateRun(ctx, f.repo, ref, "Fix "+ref, "omp", 3, 0)
+	rec, err := f.st.CreateRun(ctx, f.repo, ref, "Fix "+ref, "omp", 3, 0, store.KindIssue)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +98,7 @@ func TestListShouldShowOnlyActiveRunsWithTheirRunningAgents(t *testing.T) {
 			t.Fatalf("%s: header + one active run:\n%s", cmd, out)
 		}
 		row := strings.Fields(lines[1])
-		if row[0] != "1" || row[1] != "app" || row[2] != "#1" || row[3] != "implement" || row[4] != "1/3" || row[5] != "wait" || row[6] != "fix/1-a" || row[7] != "implementer" || !strings.Contains(lines[1], "(alive)") {
+		if row[0] != "1" || row[1] != "issue" || row[2] != "app" || row[3] != "#1" || row[4] != "implement" || row[5] != "1/3" || row[6] != "wait" || row[7] != "fix/1-a" || row[8] != "implementer" || !strings.Contains(lines[1], "(alive)") {
 			t.Fatalf("%s: row = %q", cmd, lines[1])
 		}
 	}
@@ -120,13 +120,13 @@ func TestListShouldShowTheComplexityOrWaitUntilThePlanClassifiesIt(t *testing.T)
 
 	out := f.exec(t, "ls", "--all")
 	lines := strings.Split(strings.TrimSpace(out), "\n")
-	if header := strings.Fields(lines[0]); len(header) < 6 || header[4] != "ITER" || header[5] != "COMPLEXITY" {
+	if header := strings.Fields(lines[0]); len(header) < 7 || header[5] != "ITER" || header[6] != "COMPLEXITY" {
 		t.Fatalf("COMPLEXITY follows ITER:\n%s", out)
 	}
 	got := map[string]string{}
 	for _, l := range lines[1:] {
 		row := strings.Fields(l)
-		got[row[2]] = row[5]
+		got[row[3]] = row[6]
 	}
 	if got["#1"] != "wait" || got["#2"] != "high" || got["#3"] != "-" {
 		t.Fatalf("complexity per issue = %v, want #1 wait (still planning), #2 high, #3 - (finished unclassified):\n%s", got, out)
@@ -144,7 +144,7 @@ func TestListShouldFlagAnActiveRunWhoseOwnerDied(t *testing.T) {
 	if !strings.Contains(out, "dead: run delamain recover") {
 		t.Fatalf("a dead owner must be visible:\n%s", out)
 	}
-	if row := strings.Fields(strings.Split(strings.TrimSpace(out), "\n")[1]); row[7] != "-" {
+	if row := strings.Fields(strings.Split(strings.TrimSpace(out), "\n")[1]); row[8] != "-" {
 		t.Fatalf("an agent recorded as running died with its owner; none is running: %v", row)
 	}
 }
@@ -184,7 +184,7 @@ func TestStatusShouldShowTheRunItsWorktreesAndAgents(t *testing.T) {
 	if strings.Contains(out, "feat/mine") {
 		t.Errorf("only worktrees under worktrees_dir/<repo> are listed:\n%s", out)
 	}
-	if got := statusLabels(out)[:5]; strings.Join(got, " ") != "RUN REPO HARNESS STATE INTERACTIONS" {
+	if got := statusLabels(out)[:6]; strings.Join(got, " ") != "RUN KIND REPO HARNESS STATE INTERACTIONS" {
 		t.Errorf("HARNESS follows REPO and INTERACTIONS follows STATE, got %v:\n%s", got, out)
 	}
 	for label, want := range map[string]string{"HARNESS": "omp", "STATE": "implement", "INTERACTIONS": "1/3"} {
@@ -207,7 +207,7 @@ func TestStatusShouldShowTheHarnessAndMaxIterationsRecordedOnTheRun(t *testing.T
 	f := newFixture(t)
 	ctx := context.Background()
 	// The fixture's config says omp and 3 iterations; the run was started under claude with 5.
-	rec, err := f.st.CreateRun(ctx, f.repo, "#1", "Fix #1", "claude", 5, 0)
+	rec, err := f.st.CreateRun(ctx, f.repo, "#1", "Fix #1", "claude", 5, 0, store.KindIssue)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -229,7 +229,7 @@ func TestStatusShouldFallBackForRunsWithoutHarness(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
 	// Runs created before the harness was recorded read back as "" and 0.
-	rec, err := f.st.CreateRun(ctx, f.repo, "#1", "Fix #1", "", 0, 0)
+	rec, err := f.st.CreateRun(ctx, f.repo, "#1", "Fix #1", "", 0, 0, store.KindIssue)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -245,14 +245,14 @@ func TestStatusShouldFallBackForRunsWithoutHarness(t *testing.T) {
 	if got := statusField(out, "INTERACTIONS"); got != "1/3" {
 		t.Errorf("INTERACTIONS = %q, want the config's maximum as fallback:\n%s", got, out)
 	}
-	if row := strings.Fields(strings.Split(strings.TrimSpace(f.exec(t, "ls")), "\n")[1]); row[4] != "1/3" {
+	if row := strings.Fields(strings.Split(strings.TrimSpace(f.exec(t, "ls")), "\n")[1]); row[5] != "1/3" {
 		t.Errorf("ls keeps showing x/N for old runs: %v", row)
 	}
 }
 
 func TestStatusShouldShowNoInteractionBeforeTheFirstIteration(t *testing.T) {
 	f := newFixture(t)
-	if _, err := f.st.CreateRun(context.Background(), f.repo, "#1", "Fix #1", "claude", 5, 0); err != nil {
+	if _, err := f.st.CreateRun(context.Background(), f.repo, "#1", "Fix #1", "claude", 5, 0, store.KindIssue); err != nil {
 		t.Fatal(err)
 	}
 	out := f.exec(t, "status", "1")
@@ -378,13 +378,90 @@ func TestWithinShouldOnlyAcceptPathsStrictlyInsideTheDir(t *testing.T) {
 	}
 }
 
+// review seeds an active review run of the fixture's repo for PR n.
+func (f *fixture) review(t *testing.T, n int) {
+	t.Helper()
+	ctx := context.Background()
+	rec, err := f.st.CreateRun(ctx, f.repo, fmt.Sprintf("pr:%d", n), fmt.Sprintf("Review PR %d", n), "omp", 3, 0, store.KindReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec.State, rec.Iteration = store.StateReview, 1
+	if err := f.st.UpdateRun(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestListShouldShowTheKindOfEachRun(t *testing.T) {
+	f := newFixture(t)
+	f.run(t, "#1", "fix/1-a", store.StateImplement)
+	f.review(t, 3)
+
+	lines := strings.Split(strings.TrimSpace(f.exec(t, "ls")), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("header + two active runs:\n%s", strings.Join(lines, "\n"))
+	}
+	if header := strings.Fields(lines[0]); header[0] != "RUN" || header[1] != "KIND" || header[2] != "REPO" {
+		t.Fatalf("KIND follows RUN: %v", header)
+	}
+	kinds := map[string]string{}
+	for _, l := range lines[1:] {
+		row := strings.Fields(l)
+		kinds[row[3]] = row[1]
+	}
+	if kinds["#1"] != "issue" || kinds["pr:3"] != "review" {
+		t.Fatalf("kind by issue ref = %v:\n%s", kinds, strings.Join(lines, "\n"))
+	}
+}
+
+func TestStatusShouldShowTheKindOfTheRun(t *testing.T) {
+	f := newFixture(t)
+	f.run(t, "#1", "fix/1-a", store.StateImplement)
+	f.review(t, 3)
+
+	issue := f.exec(t, "status", "1")
+	if got := statusLabels(issue)[:2]; strings.Join(got, " ") != "RUN KIND" {
+		t.Errorf("KIND follows RUN, got %v:\n%s", got, issue)
+	}
+	if got := statusField(issue, "KIND"); got != "issue" {
+		t.Errorf("KIND = %q, want issue:\n%s", got, issue)
+	}
+	if got := statusField(f.exec(t, "status", "2"), "KIND"); got != "review" {
+		t.Errorf("KIND = %q, want review", got)
+	}
+}
+
+func TestStatusShouldIncludeTheKindInJSONAndYAML(t *testing.T) {
+	f := newFixture(t)
+	f.review(t, 3)
+
+	var rawJSON, rawYAML struct {
+		Run map[string]any `json:"run" yaml:"run"`
+	}
+	if err := json.Unmarshal([]byte(f.exec(t, "status", "1", "-o", "json")), &rawJSON); err != nil {
+		t.Fatal(err)
+	}
+	if err := yaml.Unmarshal([]byte(f.exec(t, "status", "1", "-o", "yaml")), &rawYAML); err != nil {
+		t.Fatal(err)
+	}
+	for name, run := range map[string]map[string]any{"json": rawJSON.Run, "yaml": rawYAML.Run} {
+		if run["kind"] != "review" {
+			t.Errorf("%s run kind = %v, want review", name, run["kind"])
+		}
+	}
+	var runs []map[string]any
+	if err := json.Unmarshal([]byte(f.exec(t, "ls", "-o", "json")), &runs); err != nil || len(runs) != 1 || runs[0]["kind"] != "review" {
+		t.Errorf("ls json carries the kind too: %v %v", runs, err)
+	}
+}
+
 func TestStatusShouldShowTheComplexityAndItsPerIssueBudget(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
 	if err := os.WriteFile(f.cfgFile, []byte("paths:\n  state_dir: "+f.stateDir+"\n  worktrees_dir: "+f.wtDir+"\nbudget:\n  per_issue: 2000000\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	rec, err := f.st.CreateRun(ctx, f.repo, "#1", "Fix #1", "omp", 3, 2e6)
+	rec, err := f.st.CreateRun(ctx, f.repo, "#1", "Fix #1", "omp", 3, 2e6, store.KindIssue)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -392,7 +469,7 @@ func TestStatusShouldShowTheComplexityAndItsPerIssueBudget(t *testing.T) {
 	if err := f.st.UpdateRun(ctx, rec); err != nil {
 		t.Fatal(err)
 	}
-	plain, err := f.st.CreateRun(ctx, f.repo, "#2", "Fix #2", "omp", 3, 7e6)
+	plain, err := f.st.CreateRun(ctx, f.repo, "#2", "Fix #2", "omp", 3, 7e6, store.KindIssue)
 	if err != nil {
 		t.Fatal(err)
 	}

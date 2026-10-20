@@ -31,6 +31,7 @@ type Config struct {
 	Claude   Claude   `yaml:"claude"`
 	Pipeline Pipeline `yaml:"pipeline"`
 	Budget   Budget   `yaml:"budget"`
+	Review   Review   `yaml:"review"`
 	Forge    Forge    `yaml:"forge"`
 	Gates    Gates    `yaml:"gates"`
 	Daemon   Daemon   `yaml:"daemon"`
@@ -132,6 +133,23 @@ type Budget struct {
 	SoftRatio float64 `yaml:"soft_ratio"`
 }
 
+// Review configures the runs that review pull requests and address their review comments.
+type Review struct {
+	Enabled bool `yaml:"enabled"`
+	// MaxComments caps the comments one review posts; MaxRounds caps the reviews of one PR.
+	MaxComments int `yaml:"max_comments"`
+	MaxRounds   int `yaml:"max_rounds"`
+	// PerReview is the budget of one review run, in the unit of budget.mode.
+	PerReview float64       `yaml:"per_review"`
+	Address   ReviewAddress `yaml:"address"`
+}
+
+// ReviewAddress lets delamain answer the review comments on its own PRs.
+type ReviewAddress struct {
+	Enabled bool `yaml:"enabled"`
+	Push    bool `yaml:"push"`
+}
+
 // Forge kinds. ForgeAuto detects GitHub/GitLab from the origin URL; ForgeNone delivers locally only.
 const (
 	ForgeAuto   = "auto"
@@ -154,6 +172,7 @@ type Labels struct {
 	MROpened   string `yaml:"mr_opened"`
 	NeedsHuman string `yaml:"needs_human"`
 	NeedsInfo  string `yaml:"needs_info"`
+	Review     string `yaml:"review"`
 }
 
 // Gates are the orchestrator's own checks; a repository's .delamain.yaml may override them.
@@ -215,7 +234,7 @@ const DefaultLabelPrefix = "delamain"
 func (l Labels) withPrefix() Labels {
 	for dst, stage := range map[*string]string{
 		&l.Ready: "ready", &l.InProgress: "in-progress", &l.MROpened: "mr-opened",
-		&l.NeedsHuman: "needs-human", &l.NeedsInfo: "needs-info",
+		&l.NeedsHuman: "needs-human", &l.NeedsInfo: "needs-info", &l.Review: "review",
 	} {
 		if *dst == "" && l.Prefix != "" {
 			*dst = l.Prefix + ":" + stage
@@ -246,6 +265,7 @@ func defaults() Config {
 		Claude:   Claude{Binary: "claude", Model: "opus", Effort: "high", PermissionMode: "bypassPermissions"},
 		Pipeline: Pipeline{MaxIterations: 3, MaxParallel: 1, PromptTimeout: 30 * time.Minute, CheckTimeout: 20 * time.Minute},
 		Budget:   Budget{Mode: BudgetTokens, PerIssue: 2_000_000, Daily: 10_000_000, SoftRatio: 0.8},
+		Review:   Review{MaxComments: 15, MaxRounds: 3, PerReview: 500_000},
 		Forge:    Forge{Kind: ForgeAuto, Labels: Labels{Prefix: DefaultLabelPrefix}},
 		Gates:    Gates{RedProof: "bug", RequireTests: true},
 		Daemon:   Daemon{PollInterval: 5 * time.Minute},
@@ -315,12 +335,22 @@ func applyEnv(cfg *Config, getenv func(string) string) error {
 			*dst = v
 		}
 	}
-	if v := getenv("DELAMAIN_HERDR"); v != "" {
+	bools := map[string]*bool{
+		"DELAMAIN_HERDR":                  &cfg.Herdr.Enabled,
+		"DELAMAIN_REVIEW_ENABLED":         &cfg.Review.Enabled,
+		"DELAMAIN_REVIEW_ADDRESS_ENABLED": &cfg.Review.Address.Enabled,
+		"DELAMAIN_REVIEW_ADDRESS_PUSH":    &cfg.Review.Address.Push,
+	}
+	for key, dst := range bools {
+		v := getenv(key)
+		if v == "" {
+			continue
+		}
 		b, err := strconv.ParseBool(v)
 		if err != nil {
-			return fmt.Errorf("DELAMAIN_HERDR: %q is not a boolean", v)
+			return fmt.Errorf("%s: %q is not a boolean", key, v)
 		}
-		cfg.Herdr.Enabled = b
+		*dst = b
 	}
 	if v := getenv("DELAMAIN_NOTIFY_ENABLED"); v != "" {
 		b, err := strconv.ParseBool(v)
@@ -338,8 +368,10 @@ func applyEnv(cfg *Config, getenv func(string) string) error {
 		}
 	}
 	ints := map[string]*int{
-		"DELAMAIN_MAX_ITERATIONS": &cfg.Pipeline.MaxIterations,
-		"DELAMAIN_MAX_PARALLEL":   &cfg.Pipeline.MaxParallel,
+		"DELAMAIN_MAX_ITERATIONS":      &cfg.Pipeline.MaxIterations,
+		"DELAMAIN_MAX_PARALLEL":        &cfg.Pipeline.MaxParallel,
+		"DELAMAIN_REVIEW_MAX_COMMENTS": &cfg.Review.MaxComments,
+		"DELAMAIN_REVIEW_MAX_ROUNDS":   &cfg.Review.MaxRounds,
 	}
 	for key, dst := range ints {
 		v := getenv(key)
@@ -351,6 +383,13 @@ func applyEnv(cfg *Config, getenv func(string) string) error {
 			return fmt.Errorf("%s: %q is not an integer", key, v)
 		}
 		*dst = n
+	}
+	if v := getenv("DELAMAIN_REVIEW_PER_REVIEW"); v != "" {
+		f, err := strconv.ParseFloat(v, 64)
+		if err != nil {
+			return fmt.Errorf("DELAMAIN_REVIEW_PER_REVIEW: %q is not a number", v)
+		}
+		cfg.Review.PerReview = f
 	}
 	return nil
 }
@@ -379,6 +418,15 @@ func (c Config) Validate() error {
 	if c.Budget.SoftRatio <= 0 || c.Budget.SoftRatio > 1 {
 		errs = append(errs, errors.New("budget.soft_ratio must be in (0, 1]"))
 	}
+	if c.Review.MaxComments < 1 {
+		errs = append(errs, errors.New("review.max_comments must be >= 1"))
+	}
+	if c.Review.MaxRounds < 1 {
+		errs = append(errs, errors.New("review.max_rounds must be >= 1"))
+	}
+	if c.Review.PerReview <= 0 {
+		errs = append(errs, errors.New("review.per_review must be > 0"))
+	}
 	for _, lp := range []struct {
 		level string
 		p     Profile
@@ -404,7 +452,7 @@ func (c Config) Validate() error {
 	if strings.Contains(l.Prefix, ",") || strings.HasSuffix(l.Prefix, ":") {
 		errs = append(errs, fmt.Errorf("forge.labels.prefix %q must have no comma or trailing colon", l.Prefix))
 	}
-	for _, v := range []string{l.Ready, l.InProgress, l.MROpened, l.NeedsHuman, l.NeedsInfo} {
+	for _, v := range []string{l.Ready, l.InProgress, l.MROpened, l.NeedsHuman, l.NeedsInfo, l.Review} {
 		if strings.TrimSpace(v) == "" || strings.Contains(v, ",") {
 			errs = append(errs, fmt.Errorf("forge.labels: %q must be non-empty and contain no comma", v))
 		}

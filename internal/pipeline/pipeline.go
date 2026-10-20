@@ -184,7 +184,7 @@ func (r *Runner) Run(ctx context.Context, t Task) (Result, error) {
 		return res, nil
 	}
 
-	rec, err := r.Store.CreateRun(ctx, repo, t.Ref, t.Title, string(r.Cfg.Agent.Harness), r.Cfg.Pipeline.MaxIterations, r.Cfg.Budget.PerIssue)
+	rec, err := r.Store.CreateRun(ctx, repo, t.Ref, t.Title, string(r.Cfg.Agent.Harness), r.Cfg.Pipeline.MaxIterations, r.Cfg.Budget.PerIssue, store.KindIssue)
 	if err != nil {
 		return res, err
 	}
