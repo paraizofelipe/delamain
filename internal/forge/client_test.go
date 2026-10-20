@@ -2,10 +2,14 @@ package forge
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -276,7 +280,11 @@ func TestForgeShouldNeverCallMergeEndpoints(t *testing.T) {
 		_, _ = f.CreatePR(ctx, PROptions{Head: "feat/x", Base: "main", Title: "t"})
 		_ = f.Comment(ctx, 1, "c")
 		_ = f.Relabel(ctx, 1, []string{"a"}, []string{"b"})
-		if len(paths) < 6 {
+		_, _ = f.PRView(ctx, 1)
+		_, _ = f.ListPRs(ctx, "review")
+		_, _ = f.LinkedIssues(ctx, 1)
+		_, _ = f.Threads(ctx, 1)
+		if len(paths) < 10 {
 			t.Fatalf("%s: only %d requests reached the fake: %v", repo.Kind, len(paths), paths)
 		}
 		for _, p := range paths {
@@ -286,5 +294,370 @@ func TestForgeShouldNeverCallMergeEndpoints(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+func TestPRViewShouldFailWhenThePRDoesNotExist(t *testing.T) {
+	for _, fc := range bothForges {
+		f, _ := fc.at(t, map[string]func(http.ResponseWriter, *http.Request){})
+		_, err := f.PRView(context.Background(), 404)
+		var apiErr *APIError
+		if !errors.As(err, &apiErr) || apiErr.Status != http.StatusNotFound {
+			t.Errorf("%s: want an APIError with status 404, got %v", fc.name, err)
+		}
+	}
+}
+
+// readOnlyAPI answers every read a Forge makes with an empty but valid payload and records
+// each request, so a test can check that none of them writes.
+func readOnlyAPI(t *testing.T) (string, func() []request) {
+	t.Helper()
+	var (
+		mu   sync.Mutex
+		reqs []request
+	)
+	base := newServer(t, func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		reqs = append(reqs, request{method: r.Method, path: r.URL.EscapedPath(), body: string(b)})
+		mu.Unlock()
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/graphql":
+			reply(200, `{"data":{"repository":{"pullRequest":{"closingIssuesReferences":{"nodes":[]},"reviewThreads":{"nodes":[]}}}}}`)(w, r)
+		case r.Method != http.MethodGet:
+			reply(405, `{"message":"read only"}`)(w, r)
+		case strings.HasSuffix(r.URL.Path, "/1"):
+			reply(200, `{"number":1,"iid":1}`)(w, r)
+		default:
+			reply(200, `[]`)(w, r)
+		}
+	})
+	return base, func() []request {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]request(nil), reqs...)
+	}
+}
+
+// Review is read only: no new method may change anything on the forge.
+func TestReadMethodsShouldNeverWriteToTheForge(t *testing.T) {
+	for _, repo := range []Repo{{GitHub, "github.com", "acme/api"}, {GitLab, "gitlab.com", "grp/api"}} {
+		t.Run(string(repo.Kind), func(t *testing.T) {
+			srv, requests := readOnlyAPI(t)
+			f, err := New(repo, "tok", WithBaseURL(srv+"/"), WithBackoff(1))
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx := context.Background()
+			reads := map[string]func() error{
+				"PRView":       func() error { _, err := f.PRView(ctx, 1); return err },
+				"ListPRs":      func() error { _, err := f.ListPRs(ctx, "review"); return err },
+				"LinkedIssues": func() error { _, err := f.LinkedIssues(ctx, 1); return err },
+				"Threads":      func() error { _, err := f.Threads(ctx, 1); return err },
+			}
+			for name, read := range reads {
+				before := len(requests())
+				if err := read(); err != nil {
+					t.Errorf("%s: %v", name, err)
+				}
+				if len(requests()) == before {
+					t.Errorf("%s reached no endpoint of the fake", name)
+				}
+			}
+			for _, r := range requests() {
+				graphqlQuery := r.method == http.MethodPost && r.path == "/graphql" && !strings.HasPrefix(strings.TrimSpace(jsonQuery(t, r)), "mutation")
+				if r.method != http.MethodGet && !graphqlQuery {
+					t.Errorf("forbidden write %s %s %s", r.method, r.path, r.body)
+				}
+			}
+		})
+	}
+}
+
+// jsonQuery returns the GraphQL query a recorded request sent.
+func jsonQuery(t *testing.T, r request) string {
+	t.Helper()
+	q, _ := jsonBody(t, r)["query"].(string)
+	return q
+}
+
+// listPRsCase is a PR listing on one forge: the routes it serves and the query it must send.
+type listPRsCase struct {
+	name  string
+	at    func(*testing.T, map[string]func(http.ResponseWriter, *http.Request), ...Option) (Forge, *fakeAPI)
+	list  string // the listing endpoint
+	state string // the forge's word for open
+}
+
+var listPRsCases = []listPRsCase{
+	{"github", githubAt, "/repos/acme/api/issues", "open"},
+	{"gitlab", gitlabAt, glProject + "/merge_requests", "opened"},
+}
+
+func TestListPRsShouldReturnOpenPRsWithLabelOldestFirst(t *testing.T) {
+	routes := map[string]map[string]func(http.ResponseWriter, *http.Request){
+		"github": {
+			// the issues endpoint is the one that filters by label; it mixes issues and PRs
+			"GET /repos/acme/api/issues": reply(200, `[
+				{"number":9,"state":"open","pull_request":{"url":"https://api.github.com/repos/acme/api/pulls/9"}},
+				{"number":4,"state":"open"},
+				{"number":5,"state":"open","pull_request":{"url":"https://api.github.com/repos/acme/api/pulls/5"}}]`),
+			"GET /repos/acme/api/pulls/9": reply(200, `{"number":9,"title":"nine","state":"open","head":{"ref":"feat/nine","sha":"h9"}}`),
+			"GET /repos/acme/api/pulls/5": reply(200, `{"number":5,"title":"five","state":"open","head":{"ref":"feat/five","sha":"h5"}}`),
+		},
+		"gitlab": {
+			"GET " + glProject + "/merge_requests": reply(200, `[
+				{"iid":9,"title":"nine","state":"opened","source_branch":"feat/nine","sha":"h9"},
+				{"iid":5,"title":"five","state":"opened","source_branch":"feat/five","sha":"h5"}]`),
+		},
+	}
+	for _, tc := range listPRsCases {
+		t.Run(tc.name, func(t *testing.T) {
+			f, api := tc.at(t, routes[tc.name])
+			prs, err := f.ListPRs(context.Background(), "delamain:review")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(prs) != 2 || prs[0].Number != 5 || prs[1].Number != 9 {
+				t.Fatalf("want PRs 5 then 9 and no plain issue, got %+v", prs)
+			}
+			if prs[0].Title != "five" || prs[0].HeadRef != "feat/five" || prs[0].HeadSHA != "h5" || !prs[0].Open {
+				t.Fatalf("each PR carries its detail: %+v", prs[0])
+			}
+			q, _ := url.ParseQuery(api.find(t, "GET", tc.list).query)
+			if q.Get("state") != tc.state || q.Get("labels") != "delamain:review" || q.Get("per_page") != "100" {
+				t.Fatalf("must list open PRs by label, up to 100: %v", q)
+			}
+		})
+	}
+}
+
+func TestListPRsShouldReturnEmptyWhenNoPRHasTheLabel(t *testing.T) {
+	for _, tc := range listPRsCases {
+		t.Run(tc.name, func(t *testing.T) {
+			f, api := tc.at(t, map[string]func(http.ResponseWriter, *http.Request){"GET " + tc.list: reply(200, `[]`)})
+			prs, err := f.ListPRs(context.Background(), "delamain:review")
+			if err != nil || len(prs) != 0 {
+				t.Fatalf("prs = %+v, err = %v", prs, err)
+			}
+			api.find(t, "GET", tc.list)
+		})
+	}
+}
+
+func TestLinkedIssuesShouldUseForgeReferences(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		at     func(*testing.T, map[string]func(http.ResponseWriter, *http.Request), ...Option) (Forge, *fakeAPI)
+		routes map[string]func(http.ResponseWriter, *http.Request)
+	}{
+		{"github", githubAt, map[string]func(http.ResponseWriter, *http.Request){
+			"POST /graphql":                reply(200, `{"data":{"repository":{"pullRequest":{"closingIssuesReferences":{"nodes":[{"number":3,"repository":{"nameWithOwner":"acme/api"}},{"number":8,"repository":{"nameWithOwner":"Acme/API"}}]}}}}}`),
+			"GET /repos/acme/api/issues/3": reply(200, `{"number":3,"title":"three","state":"open"}`),
+			"GET /repos/acme/api/issues/8": reply(200, `{"number":8,"title":"eight","state":"closed"}`),
+		}},
+		{"gitlab", gitlabAt, map[string]func(http.ResponseWriter, *http.Request){
+			"GET " + glProject + "/merge_requests/12/closes_issues": reply(200, `[{"iid":3,"references":{"full":"grp/api#3"}},{"iid":8,"references":{"full":"GRP/api#8"}}]`),
+			"GET " + glProject + "/issues/3":                        reply(200, `{"iid":3,"title":"three","state":"opened"}`),
+			"GET " + glProject + "/issues/8":                        reply(200, `{"iid":8,"title":"eight","state":"closed"}`),
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, api := tc.at(t, tc.routes)
+			is, err := f.LinkedIssues(context.Background(), 12)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(is) != 2 || is[0].Number != 3 || is[0].Title != "three" || !is[0].Open || is[1].Number != 8 || is[1].Title != "eight" || is[1].Open {
+				t.Fatalf("want issues 3 and 8 as the forge links them, got %+v", is)
+			}
+			if tc.name == "github" {
+				var sent struct {
+					Query     string         `json:"query"`
+					Variables map[string]any `json:"variables"`
+				}
+				r := api.find(t, "POST", "/graphql")
+				if err := json.Unmarshal([]byte(r.body), &sent); err != nil || !strings.Contains(sent.Query, "closingIssuesReferences(first:5)") ||
+					sent.Variables["owner"] != "acme" || sent.Variables["name"] != "api" || sent.Variables["number"] != float64(12) {
+					t.Fatalf("graphql request = %s (%v)", r.body, err)
+				}
+			}
+		})
+	}
+}
+
+func TestLinkedIssuesShouldIgnoreIssuesOfOtherRepositories(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		at     func(*testing.T, map[string]func(http.ResponseWriter, *http.Request), ...Option) (Forge, *fakeAPI)
+		routes map[string]func(http.ResponseWriter, *http.Request)
+	}{
+		{"github", githubAt, map[string]func(http.ResponseWriter, *http.Request){
+			"POST /graphql":                reply(200, `{"data":{"repository":{"pullRequest":{"closingIssuesReferences":{"nodes":[{"number":5,"repository":{"nameWithOwner":"other/repo"}}]}}}}}`),
+			"GET /repos/acme/api/pulls/12": reply(200, `{"number":12,"body":"Fixes other/repo#5 and fixes #2"}`),
+			"GET /repos/acme/api/issues/2": reply(200, `{"number":2,"title":"two","state":"open"}`),
+			"GET /repos/acme/api/issues/5": reply(200, `{"number":5,"title":"not linked","state":"open"}`),
+		}},
+		{"gitlab", gitlabAt, map[string]func(http.ResponseWriter, *http.Request){
+			"GET " + glProject + "/merge_requests/12/closes_issues": reply(200, `[{"iid":5,"references":{"full":"other/proj#5"}}]`),
+			"GET " + glProject + "/merge_requests/12":               reply(200, `{"iid":12,"description":"Closes other/proj#5 and closes #2"}`),
+			"GET " + glProject + "/issues/2":                        reply(200, `{"iid":2,"title":"two","state":"opened"}`),
+			"GET " + glProject + "/issues/5":                        reply(200, `{"iid":5,"title":"not linked","state":"opened"}`),
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, _ := tc.at(t, tc.routes)
+			is, err := f.LinkedIssues(context.Background(), 12)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(is) != 1 || is[0].Number != 2 {
+				t.Fatalf("issue 5 of another repository is not this repository's #5; the body fallback still applies: %+v", is)
+			}
+		})
+	}
+}
+
+func TestClosedInBodyShouldMatchWholeClosingKeywordsOnly(t *testing.T) {
+	for body, want := range map[string][]int{
+		"prefix #12, suffix #13, unresolved #14, bugfix #15": nil,
+		"Fixes: #3":            {3},
+		"closes   #4":          {4},
+		"Resolved #5.":         {5},
+		"fix #6x and fix #7":   {7},
+		"Fixes other/repo#8":   nil,
+		"(fixes #9) closes #9": {9},
+	} {
+		if got := closedInBody(body); !slices.Equal(got, want) {
+			t.Errorf("closedInBody(%q) = %v, want %v", body, got, want)
+		}
+	}
+}
+
+func TestLinkedIssuesShouldFallBackToClosesKeywordsInBody(t *testing.T) {
+	const body = "Fixes #3 and closes #3 again; resolves #4.\nCloses #5, fix #6, resolved #7, close #8. See #9."
+	for _, tc := range []struct {
+		name   string
+		at     func(*testing.T, map[string]func(http.ResponseWriter, *http.Request), ...Option) (Forge, *fakeAPI)
+		routes map[string]func(http.ResponseWriter, *http.Request)
+		issue  func(n int) (string, string) // route and payload of issue n
+	}{
+		{"github", githubAt, map[string]func(http.ResponseWriter, *http.Request){
+			"POST /graphql":                reply(200, `{"data":{"repository":{"pullRequest":{"closingIssuesReferences":{"nodes":[]}}}}}`),
+			"GET /repos/acme/api/pulls/12": reply(200, `{"number":12,"body":`+strconv.Quote(body)+`}`),
+		}, func(n int) (string, string) {
+			return "GET /repos/acme/api/issues/" + strconv.Itoa(n), `{"number":` + strconv.Itoa(n) + `,"state":"open"}`
+		}},
+		{"gitlab", gitlabAt, map[string]func(http.ResponseWriter, *http.Request){
+			"GET " + glProject + "/merge_requests/12/closes_issues": reply(200, `[]`),
+			"GET " + glProject + "/merge_requests/12":               reply(200, `{"iid":12,"description":`+strconv.Quote(body)+`}`),
+		}, func(n int) (string, string) {
+			return "GET " + glProject + "/issues/" + strconv.Itoa(n), `{"iid":` + strconv.Itoa(n) + `,"state":"opened"}`
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for n := 3; n <= 9; n++ {
+				route, payload := tc.issue(n)
+				tc.routes[route] = reply(200, payload)
+			}
+			f, _ := tc.at(t, tc.routes)
+			is, err := f.LinkedIssues(context.Background(), 12)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got []int
+			for _, i := range is {
+				got = append(got, i.Number)
+			}
+			if !slices.Equal(got, []int{3, 4, 5, 6, 7}) {
+				t.Fatalf("want the first 5 distinct closed issues of the body, in order, got %v", got)
+			}
+		})
+	}
+}
+
+func TestThreadsShouldReturnEmptyForPRWithoutComments(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		at     func(*testing.T, map[string]func(http.ResponseWriter, *http.Request), ...Option) (Forge, *fakeAPI)
+		routes map[string]func(http.ResponseWriter, *http.Request)
+		read   string // an endpoint the threads must come from
+	}{
+		{"github", githubAt, map[string]func(http.ResponseWriter, *http.Request){
+			"POST /graphql":                          reply(200, `{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}`),
+			"GET /repos/acme/api/issues/12/comments": reply(200, `[]`),
+		}, "/repos/acme/api/issues/12/comments"},
+		{"gitlab", gitlabAt, map[string]func(http.ResponseWriter, *http.Request){
+			"GET " + glProject + "/merge_requests/12/discussions": reply(200, `[]`),
+		}, glProject + "/merge_requests/12/discussions"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, api := tc.at(t, tc.routes)
+			ts, err := f.Threads(context.Background(), 12)
+			if err != nil || len(ts) != 0 {
+				t.Fatalf("threads = %+v, err = %v", ts, err)
+			}
+			api.find(t, "GET", tc.read)
+		})
+	}
+}
+
+// forbidden is a read the forge rejects; 403 is final, so it is never retried.
+var forbidden = reply(403, `{"message":"Resource not accessible by integration"}`)
+
+// wantForbidden fails unless err is the forge's 403 and the read returned nothing.
+func wantForbidden[T any](t *testing.T, got []T, err error) {
+	t.Helper()
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Status != http.StatusForbidden || got != nil {
+		t.Fatalf("a failed read must fail the whole call: got %+v, err %v", got, err)
+	}
+}
+
+func TestLinkedIssuesShouldFailWhenALinkedIssueCannotBeRead(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		at     func(*testing.T, map[string]func(http.ResponseWriter, *http.Request), ...Option) (Forge, *fakeAPI)
+		routes map[string]func(http.ResponseWriter, *http.Request)
+	}{
+		{"github", githubAt, map[string]func(http.ResponseWriter, *http.Request){
+			"POST /graphql":                reply(200, `{"data":{"repository":{"pullRequest":{"closingIssuesReferences":{"nodes":[{"number":3,"repository":{"nameWithOwner":"acme/api"}},{"number":8,"repository":{"nameWithOwner":"Acme/API"}}]}}}}}`),
+			"GET /repos/acme/api/issues/3": reply(200, `{"number":3,"state":"open"}`),
+			"GET /repos/acme/api/issues/8": forbidden,
+		}},
+		{"gitlab", gitlabAt, map[string]func(http.ResponseWriter, *http.Request){
+			"GET " + glProject + "/merge_requests/12/closes_issues": reply(200, `[{"iid":3,"references":{"full":"grp/api#3"}},{"iid":8,"references":{"full":"GRP/api#8"}}]`),
+			"GET " + glProject + "/issues/3":                        reply(200, `{"iid":3,"state":"opened"}`),
+			"GET " + glProject + "/issues/8":                        forbidden,
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, _ := tc.at(t, tc.routes)
+			is, err := f.LinkedIssues(context.Background(), 12)
+			wantForbidden(t, is, err)
+		})
+	}
+}
+
+func TestLinkedIssuesShouldFailWhenTheFallbackCannotReadThePR(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		at     func(*testing.T, map[string]func(http.ResponseWriter, *http.Request), ...Option) (Forge, *fakeAPI)
+		routes map[string]func(http.ResponseWriter, *http.Request)
+	}{
+		{"github", githubAt, map[string]func(http.ResponseWriter, *http.Request){
+			"POST /graphql":                reply(200, `{"data":{"repository":{"pullRequest":{"closingIssuesReferences":{"nodes":[]}}}}}`),
+			"GET /repos/acme/api/pulls/12": forbidden,
+		}},
+		{"gitlab", gitlabAt, map[string]func(http.ResponseWriter, *http.Request){
+			"GET " + glProject + "/merge_requests/12/closes_issues": reply(200, `[]`),
+			"GET " + glProject + "/merge_requests/12":               forbidden,
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, _ := tc.at(t, tc.routes)
+			is, err := f.LinkedIssues(context.Background(), 12)
+			wantForbidden(t, is, err)
+		})
 	}
 }

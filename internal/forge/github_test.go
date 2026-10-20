@@ -8,9 +8,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // request is one call a fake forge server received.
@@ -327,4 +329,108 @@ func TestGitHubWhoamiShouldReportARejectedToken(t *testing.T) {
 	if !errors.As(err, &apiErr) || apiErr.Status != 401 {
 		t.Fatalf("want a 401 APIError, got %v", err)
 	}
+}
+
+func TestGitHubPRViewShouldParseRefsShasAndFork(t *testing.T) {
+	f, _ := githubAt(t, map[string]func(http.ResponseWriter, *http.Request){
+		"GET /repos/acme/api/pulls/5": reply(200, `{"number":5,"html_url":"https://github.com/acme/api/pull/5","title":"feat: x","body":"Closes #2",
+			"user":{"login":"ana"},"draft":true,"state":"open",
+			"base":{"ref":"main","sha":"b1","repo":{"full_name":"acme/api"}},
+			"head":{"ref":"feat/x","sha":"h1","repo":{"full_name":"acme/api"}}}`),
+		"GET /repos/acme/api/pulls/6": reply(200, `{"number":6,"state":"closed",
+			"base":{"ref":"main","sha":"b2","repo":{"full_name":"acme/api"}},
+			"head":{"ref":"patch-1","sha":"h2","repo":{"full_name":"bob/api"}}}`),
+		"GET /repos/acme/api/pulls/7": reply(200, `{"number":7,"state":"open",
+			"base":{"ref":"main","sha":"b3","repo":{"full_name":"acme/api"}},
+			"head":{"ref":"patch-2","sha":"h3","repo":null}}`),
+	})
+	ctx := context.Background()
+	pr, err := f.PRView(ctx, 5)
+	want := PRDetail{Number: 5, URL: "https://github.com/acme/api/pull/5", Title: "feat: x", Body: "Closes #2", Author: "ana",
+		Draft: true, Open: true, BaseRef: "main", HeadRef: "feat/x", BaseSHA: "b1", HeadSHA: "h1", StartSHA: "b1"}
+	if err != nil || pr != want {
+		t.Fatalf("pr = %+v, err = %v; want %+v", pr, err, want)
+	}
+
+	pr, err = f.PRView(ctx, 6)
+	if err != nil || !pr.Fork || pr.Open || pr.HeadRef != "patch-1" || pr.HeadSHA != "h2" || pr.StartSHA != "b2" {
+		t.Fatalf("a head in another repository is a fork: %+v %v", pr, err)
+	}
+
+	pr, err = f.PRView(ctx, 7)
+	if err != nil || !pr.Fork {
+		t.Fatalf("a head whose repository was deleted is a fork: %+v %v", pr, err)
+	}
+}
+
+// at parses an RFC 3339 time for expectations.
+func at(t *testing.T, s string) time.Time {
+	t.Helper()
+	v, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return v
+}
+
+func TestGitHubThreadsShouldMergeReviewThreadsAndIssueComments(t *testing.T) {
+	f, api := githubAt(t, map[string]func(http.ResponseWriter, *http.Request){
+		"POST /graphql": reply(200, `{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[
+			{"id":"RT_2","isResolved":true,"path":"a.go","line":10,"comments":{"nodes":[
+				{"databaseId":201,"author":{"login":"ana"},"body":"fix this","createdAt":"2026-01-01T10:00:00Z"},
+				{"databaseId":202,"author":null,"body":"done","createdAt":"2026-01-01T12:00:00Z"}]}},
+			{"id":"RT_1","isResolved":false,"path":"b.go","line":null,"comments":{"nodes":[
+				{"databaseId":101,"author":{"login":"bob"},"body":"why?","createdAt":"2026-01-01T08:00:00Z"}]}}]}}}}}`),
+		"GET /repos/acme/api/issues/12/comments": reply(200, `[
+			{"id":301,"user":{"login":"carol"},"body":"lgtm","created_at":"2026-01-01T09:00:00Z"}]`),
+	})
+	ts, err := f.Threads(context.Background(), 12)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Thread{
+		{ID: "RT_1", Path: "b.go", Comments: []Comment{{ID: "101", Author: "bob", Body: "why?", CreatedAt: at(t, "2026-01-01T08:00:00Z")}}},
+		{ID: "issue-comment:301", Comments: []Comment{{ID: "301", Author: "carol", Body: "lgtm", CreatedAt: at(t, "2026-01-01T09:00:00Z")}}},
+		{ID: "RT_2", Path: "a.go", Line: 10, Resolved: true, Comments: []Comment{
+			{ID: "201", Author: "ana", Body: "fix this", CreatedAt: at(t, "2026-01-01T10:00:00Z")},
+			{ID: "202", Body: "done", CreatedAt: at(t, "2026-01-01T12:00:00Z")},
+		}},
+	}
+	if !reflect.DeepEqual(ts, want) {
+		t.Fatalf("threads =\n%+v\nwant, by first comment,\n%+v", ts, want)
+	}
+	var sent struct {
+		Query     string         `json:"query"`
+		Variables map[string]any `json:"variables"`
+	}
+	r := api.find(t, "POST", "/graphql")
+	if err := json.Unmarshal([]byte(r.body), &sent); err != nil || !strings.Contains(sent.Query, "reviewThreads(first:100)") ||
+		sent.Variables["owner"] != "acme" || sent.Variables["name"] != "api" || sent.Variables["number"] != float64(12) {
+		t.Fatalf("graphql request = %s (%v)", r.body, err)
+	}
+	if q, _ := url.ParseQuery(api.find(t, "GET", "/repos/acme/api/issues/12/comments").query); q.Get("per_page") != "100" {
+		t.Fatalf("must read up to 100 PR comments: %v", q)
+	}
+}
+
+func TestGitHubListPRsShouldFailWhenAPRCannotBeRead(t *testing.T) {
+	f, _ := githubAt(t, map[string]func(http.ResponseWriter, *http.Request){
+		"GET /repos/acme/api/issues": reply(200, `[
+			{"number":5,"state":"open","pull_request":{"url":"https://api.github.com/repos/acme/api/pulls/5"}},
+			{"number":9,"state":"open","pull_request":{"url":"https://api.github.com/repos/acme/api/pulls/9"}}]`),
+		"GET /repos/acme/api/pulls/5": reply(200, `{"number":5,"state":"open"}`),
+		"GET /repos/acme/api/pulls/9": forbidden,
+	})
+	prs, err := f.ListPRs(context.Background(), "delamain:review")
+	wantForbidden(t, prs, err)
+}
+
+func TestGitHubThreadsShouldFailWhenPRCommentsCannotBeRead(t *testing.T) {
+	f, _ := githubAt(t, map[string]func(http.ResponseWriter, *http.Request){
+		"POST /graphql": reply(200, `{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[
+			{"id":"RT_1","path":"a.go","line":1,"comments":{"nodes":[{"databaseId":1,"body":"x","createdAt":"2026-01-01T08:00:00Z"}]}}]}}}}}`),
+		"GET /repos/acme/api/issues/12/comments": forbidden,
+	})
+	ts, err := f.Threads(context.Background(), 12)
+	wantForbidden(t, ts, err)
 }

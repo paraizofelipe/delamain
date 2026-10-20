@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -205,4 +206,151 @@ func (g *githubClient) whoami(ctx context.Context) (string, error) {
 		return resp, err
 	})
 	return u.GetLogin(), err
+}
+
+// PRView reads one PR. A head without repository is a fork whose repository was deleted.
+func (g *githubClient) PRView(ctx context.Context, n int) (PRDetail, error) {
+	var v *gogithub.PullRequest
+	err := g.do(ctx, "pr view", func() (resp *gogithub.Response, err error) {
+		v, resp, err = g.api.PullRequests.Get(ctx, g.owner, g.name, n)
+		return resp, err
+	})
+	if err != nil {
+		return PRDetail{}, err
+	}
+	head, base := v.GetHead(), v.GetBase()
+	return PRDetail{
+		Number: v.GetNumber(), URL: v.GetHTMLURL(), Title: v.GetTitle(), Body: v.GetBody(), Author: v.GetUser().GetLogin(),
+		Draft: v.GetDraft(), Open: v.GetState() == "open",
+		Fork:    head.GetRepo() == nil || head.GetRepo().GetFullName() != base.GetRepo().GetFullName(),
+		BaseRef: base.GetRef(), HeadRef: head.GetRef(), BaseSHA: base.GetSHA(), HeadSHA: head.GetSHA(), StartSHA: base.GetSHA(),
+	}, nil
+}
+
+// ListPRs filters by label on the issues endpoint, since the pulls one cannot, and reads each
+// PR it finds. Only the first 100 labeled issues are seen.
+func (g *githubClient) ListPRs(ctx context.Context, label string) ([]PRDetail, error) {
+	var vs []*gogithub.Issue
+	err := g.do(ctx, "list prs", func() (resp *gogithub.Response, err error) {
+		vs, resp, err = g.api.Issues.ListByRepo(ctx, g.owner, g.name, &gogithub.IssueListByRepoOptions{
+			State: "open", Labels: []string{label}, ListOptions: gogithub.ListOptions{PerPage: 100},
+		})
+		return resp, err
+	})
+	if err != nil {
+		return nil, err
+	}
+	prs := make([]PRDetail, 0, len(vs))
+	for _, v := range vs {
+		if !v.IsPullRequest() {
+			continue
+		}
+		pr, err := g.PRView(ctx, v.GetNumber())
+		if err != nil {
+			return nil, err
+		}
+		prs = append(prs, pr)
+	}
+	return oldestPRsFirst(prs), nil
+}
+
+const closingIssuesQuery = `query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){closingIssuesReferences(first:5){nodes{number repository{nameWithOwner}}}}}}`
+
+// LinkedIssues asks GraphQL, the only API that knows which issues a PR closes, and falls back
+// to the closing keywords of the body when it knows none.
+func (g *githubClient) LinkedIssues(ctx context.Context, n int) ([]Issue, error) {
+	var out struct {
+		Repository struct {
+			PullRequest struct {
+				ClosingIssuesReferences struct {
+					Nodes []struct {
+						Number     int
+						Repository struct{ NameWithOwner string }
+					}
+				}
+			}
+		}
+	}
+	if err := g.graphql(ctx, closingIssuesQuery, map[string]any{"owner": g.owner, "name": g.name, "number": n}, &out); err != nil {
+		return nil, err
+	}
+	var ns []int
+	for _, v := range out.Repository.PullRequest.ClosingIssuesReferences.Nodes {
+		// An issue of another repository would be read here under the same number.
+		if strings.EqualFold(v.Repository.NameWithOwner, g.owner+"/"+g.name) {
+			ns = append(ns, v.Number)
+		}
+	}
+	if len(ns) == 0 {
+		pr, err := g.PRView(ctx, n)
+		if err != nil {
+			return nil, err
+		}
+		ns = closedInBody(pr.Body)
+	}
+	return readIssues(ctx, g, ns)
+}
+
+const reviewThreadsQuery = `query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100){nodes{id isResolved path line comments(first:100){nodes{databaseId author{login} body createdAt}}}}}}}`
+
+// Threads joins the inline review threads, which only GraphQL has, with the PR-level comments
+// of the issues endpoint. Only the first 100 of each are read; line is null on outdated threads
+// and author on deleted accounts.
+func (g *githubClient) Threads(ctx context.Context, n int) ([]Thread, error) {
+	var out struct {
+		Repository struct {
+			PullRequest struct {
+				ReviewThreads struct {
+					Nodes []struct {
+						ID         string
+						IsResolved bool
+						Path       string
+						Line       *int
+						Comments   struct {
+							Nodes []struct {
+								DatabaseID int64
+								Author     *struct{ Login string }
+								Body       string
+								CreatedAt  time.Time
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	if err := g.graphql(ctx, reviewThreadsQuery, map[string]any{"owner": g.owner, "name": g.name, "number": n}, &out); err != nil {
+		return nil, err
+	}
+	var cs []*gogithub.IssueComment
+	err := g.do(ctx, "threads", func() (resp *gogithub.Response, err error) {
+		cs, resp, err = g.api.Issues.ListComments(ctx, g.owner, g.name, n, &gogithub.IssueListCommentsOptions{ListOptions: gogithub.ListOptions{PerPage: 100}})
+		return resp, err
+	})
+	if err != nil {
+		return nil, err
+	}
+	nodes := out.Repository.PullRequest.ReviewThreads.Nodes
+	ts := make([]Thread, 0, len(nodes)+len(cs))
+	for _, v := range nodes {
+		t := Thread{ID: v.ID, Path: v.Path, Resolved: v.IsResolved}
+		if v.Line != nil {
+			t.Line = *v.Line
+		}
+		for _, c := range v.Comments.Nodes {
+			cm := Comment{ID: strconv.FormatInt(c.DatabaseID, 10), Body: c.Body, CreatedAt: c.CreatedAt}
+			if c.Author != nil {
+				cm.Author = c.Author.Login
+			}
+			t.Comments = append(t.Comments, cm)
+		}
+		ts = append(ts, t)
+	}
+	for _, c := range cs {
+		id := strconv.FormatInt(c.GetID(), 10)
+		ts = append(ts, Thread{ID: "issue-comment:" + id, Comments: []Comment{
+			{ID: id, Author: c.GetUser().GetLogin(), Body: c.GetBody(), CreatedAt: c.GetCreatedAt().Time},
+		}})
+	}
+	return byFirstComment(ts), nil
 }

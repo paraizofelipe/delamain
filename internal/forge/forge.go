@@ -13,7 +13,9 @@ import (
 	"net/url"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
+	"time"
 )
 
 type Kind string
@@ -48,6 +50,40 @@ type PR struct {
 	Draft  bool
 }
 
+// PRDetail is what a review needs to know about one PR/MR.
+type PRDetail struct {
+	Number   int
+	URL      string
+	Title    string
+	Body     string
+	Author   string
+	Draft    bool
+	Open     bool
+	Fork     bool   // head lives in another repository
+	BaseRef  string // target branch
+	HeadRef  string // source branch
+	BaseSHA  string
+	HeadSHA  string
+	StartSHA string // GitLab diff_refs.start_sha; GitHub: same as BaseSHA
+}
+
+// Comment is one note of a thread; Path/Line are empty for PR-level comments.
+type Comment struct {
+	ID        string
+	Author    string
+	Body      string
+	CreatedAt time.Time
+}
+
+// Thread is a review thread (inline) or a PR-level comment, oldest comment first.
+type Thread struct {
+	ID       string // GitHub: review thread node id or "issue-comment:<id>"; GitLab: discussion id
+	Path     string
+	Line     int
+	Resolved bool
+	Comments []Comment
+}
+
 type PROptions struct {
 	Head, Base  string
 	Title, Body string
@@ -65,6 +101,14 @@ type Forge interface {
 	CreatePR(ctx context.Context, o PROptions) (PR, error)
 	Comment(ctx context.Context, number int, body string) error
 	Relabel(ctx context.Context, number int, add, remove []string) error
+	// PRView reads one PR/MR; a missing one is an *APIError with Status 404.
+	PRView(ctx context.Context, number int) (PRDetail, error)
+	// ListPRs returns open PRs/MRs carrying label, oldest (lowest number) first.
+	ListPRs(ctx context.Context, label string) ([]PRDetail, error)
+	// LinkedIssues returns up to 5 issues the PR/MR closes.
+	LinkedIssues(ctx context.Context, number int) ([]Issue, error)
+	// Threads returns the review threads and PR-level comments, by their first comment.
+	Threads(ctx context.Context, number int) ([]Thread, error)
 }
 
 var scpLike = regexp.MustCompile(`^[\w.-]+@([\w.-]+):(.+)$`)
@@ -129,4 +173,55 @@ func redact(raw, token string) string {
 func oldestFirst(is []Issue) []Issue {
 	slices.SortFunc(is, func(a, b Issue) int { return a.Number - b.Number })
 	return is
+}
+
+// maxLinkedIssues caps LinkedIssues.
+const maxLinkedIssues = 5
+
+// closingKeyword is a whole closing keyword ("fixes", not "prefix") with an optional colon.
+var closingKeyword = regexp.MustCompile(`(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?\s+#(\d+)\b`)
+
+// closedInBody returns the issues a PR/MR body closes, fixes or resolves, in order of
+// appearance and without repeats.
+func closedInBody(body string) []int {
+	var ns []int
+	for _, m := range closingKeyword.FindAllStringSubmatch(body, -1) {
+		if n, err := strconv.Atoi(m[1]); err == nil && !slices.Contains(ns, n) {
+			ns = append(ns, n)
+		}
+	}
+	return ns
+}
+
+// readIssues reads the first maxLinkedIssues issues of ns; a failed read fails them all.
+func readIssues(ctx context.Context, f interface {
+	Issue(context.Context, int) (Issue, error)
+}, ns []int) ([]Issue, error) {
+	is := make([]Issue, 0, min(len(ns), maxLinkedIssues))
+	for _, n := range ns[:min(len(ns), maxLinkedIssues)] {
+		v, err := f.Issue(ctx, n)
+		if err != nil {
+			return nil, err
+		}
+		is = append(is, v)
+	}
+	return is, nil
+}
+
+// byFirstComment orders threads by when their first comment was made, keeping the forge's
+// order on ties.
+func byFirstComment(ts []Thread) []Thread {
+	first := func(t Thread) time.Time {
+		if len(t.Comments) == 0 {
+			return time.Time{}
+		}
+		return t.Comments[0].CreatedAt
+	}
+	slices.SortStableFunc(ts, func(a, b Thread) int { return first(a).Compare(first(b)) })
+	return ts
+}
+
+func oldestPRsFirst(prs []PRDetail) []PRDetail {
+	slices.SortFunc(prs, func(a, b PRDetail) int { return a.Number - b.Number })
+	return prs
 }

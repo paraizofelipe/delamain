@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	gogitlab "gitlab.com/gitlab-org/api/client-go/v3"
@@ -165,4 +167,121 @@ func (g *gitlabClient) whoami(ctx context.Context) (string, error) {
 		return "", err
 	}
 	return u.Username, nil
+}
+
+func (g *gitlabClient) PRView(ctx context.Context, n int) (PRDetail, error) {
+	var v *gogitlab.MergeRequest
+	err := g.do(ctx, "pr view", func() (resp *gogitlab.Response, err error) {
+		v, resp, err = g.api.MergeRequests.GetMergeRequest(g.repo.Path, int64(n), nil, gogitlab.WithContext(ctx))
+		return resp, err
+	})
+	if err != nil {
+		return PRDetail{}, err
+	}
+	pr := fromGitLabMR(&v.BasicMergeRequest)
+	pr.BaseSHA, pr.HeadSHA, pr.StartSHA = v.DiffRefs.BaseSha, v.DiffRefs.HeadSha, v.DiffRefs.StartSha
+	return pr, nil
+}
+
+// fromGitLabMR maps what every MR payload carries; the SHAs need diff_refs, which only the
+// single MR endpoint returns.
+func fromGitLabMR(v *gogitlab.BasicMergeRequest) PRDetail {
+	pr := PRDetail{
+		Number: int(v.IID), URL: v.WebURL, Title: v.Title, Body: v.Description, Draft: v.Draft, Open: v.State == opened,
+		Fork: v.SourceProjectID != v.TargetProjectID, BaseRef: v.TargetBranch, HeadRef: v.SourceBranch,
+	}
+	if v.Author != nil {
+		pr.Author = v.Author.Username
+	}
+	return pr
+}
+
+// ListPRs sees only the first 100 labeled MRs. The listing has no diff_refs: HeadSHA is the
+// MR's sha and BaseSHA/StartSHA stay empty; PRView has them all.
+func (g *gitlabClient) ListPRs(ctx context.Context, label string) ([]PRDetail, error) {
+	var mrs []*gogitlab.BasicMergeRequest
+	state := opened
+	err := g.do(ctx, "list prs", func() (resp *gogitlab.Response, err error) {
+		mrs, resp, err = g.api.MergeRequests.ListProjectMergeRequests(g.repo.Path, &gogitlab.ListProjectMergeRequestsOptions{
+			State: &state, Labels: &gogitlab.LabelOptions{label}, ListOptions: gogitlab.ListOptions{PerPage: 100},
+		}, gogitlab.WithContext(ctx))
+		return resp, err
+	})
+	if err != nil {
+		return nil, err
+	}
+	prs := make([]PRDetail, 0, len(mrs))
+	for _, v := range mrs {
+		pr := fromGitLabMR(v)
+		pr.HeadSHA = v.SHA
+		prs = append(prs, pr)
+	}
+	return oldestPRsFirst(prs), nil
+}
+
+// LinkedIssues falls back to the closing keywords of the description when GitLab knows none.
+func (g *gitlabClient) LinkedIssues(ctx context.Context, n int) ([]Issue, error) {
+	var vs []*gogitlab.Issue
+	err := g.do(ctx, "linked issues", func() (resp *gogitlab.Response, err error) {
+		vs, resp, err = g.api.MergeRequests.GetIssuesClosedOnMerge(g.repo.Path, int64(n), nil, gogitlab.WithContext(ctx))
+		return resp, err
+	})
+	if err != nil {
+		return nil, err
+	}
+	var ns []int
+	for _, v := range vs {
+		// An issue of another project would be read here under the same IID.
+		if v.References != nil && strings.EqualFold(v.References.Full, fmt.Sprintf("%s#%d", g.repo.Path, v.IID)) {
+			ns = append(ns, int(v.IID))
+		}
+	}
+	if len(ns) == 0 {
+		pr, err := g.PRView(ctx, n)
+		if err != nil {
+			return nil, err
+		}
+		ns = closedInBody(pr.Body)
+	}
+	return readIssues(ctx, g, ns)
+}
+
+// Threads reads the first 100 discussions without GitLab's system notes, dropping discussions
+// made only of them. Path and line come from the first remaining note, Resolved from the first
+// resolvable one.
+func (g *gitlabClient) Threads(ctx context.Context, n int) ([]Thread, error) {
+	var ds []*gogitlab.Discussion
+	err := g.do(ctx, "threads", func() (resp *gogitlab.Response, err error) {
+		ds, resp, err = g.api.Discussions.ListMergeRequestDiscussions(g.repo.Path, int64(n), &gogitlab.ListMergeRequestDiscussionsOptions{
+			ListOptions: gogitlab.ListOptions{PerPage: 100},
+		}, gogitlab.WithContext(ctx))
+		return resp, err
+	})
+	if err != nil {
+		return nil, err
+	}
+	ts := make([]Thread, 0, len(ds))
+	for _, d := range ds {
+		t, resolvable := Thread{ID: d.ID}, false
+		for _, v := range d.Notes {
+			if v.System {
+				continue
+			}
+			if len(t.Comments) == 0 && v.Position != nil {
+				t.Path, t.Line = v.Position.NewPath, int(v.Position.NewLine)
+			}
+			if !resolvable && v.Resolvable {
+				resolvable, t.Resolved = true, v.Resolved
+			}
+			c := Comment{ID: strconv.FormatInt(v.ID, 10), Author: v.Author.Username, Body: v.Body}
+			if v.CreatedAt != nil {
+				c.CreatedAt = *v.CreatedAt
+			}
+			t.Comments = append(t.Comments, c)
+		}
+		if len(t.Comments) > 0 {
+			ts = append(ts, t)
+		}
+	}
+	return byFirstComment(ts), nil
 }

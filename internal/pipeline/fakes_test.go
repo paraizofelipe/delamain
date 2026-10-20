@@ -410,6 +410,12 @@ func (f *fakeForge) Relabel(_ context.Context, _ int, add, remove []string) erro
 	f.relabels = append(f.relabels, [2][]string{add, remove})
 	return f.relabelErr
 }
+func (f *fakeForge) PRView(context.Context, int) (forge.PRDetail, error) {
+	return forge.PRDetail{}, nil
+}
+func (f *fakeForge) ListPRs(context.Context, string) ([]forge.PRDetail, error) { return nil, nil }
+func (f *fakeForge) LinkedIssues(context.Context, int) ([]forge.Issue, error)  { return nil, nil }
+func (f *fakeForge) Threads(context.Context, int) ([]forge.Thread, error)      { return nil, nil }
 
 // fakeNotifier records every toast and how many issue comments existed when it was sent.
 type fakeNotifier struct {
