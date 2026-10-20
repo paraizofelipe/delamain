@@ -54,5 +54,9 @@ func (e *APIError) Error() string {
 
 // New returns the forge client for repo, authenticated with token.
 func New(repo Repo, token string, opts ...Option) (Forge, error) {
-	return newGitHub(repo, token, newOptions(opts))
+	o := newOptions(opts)
+	if repo.Kind == GitLab {
+		return newGitLab(repo, token, o)
+	}
+	return newGitHub(repo, token, o)
 }

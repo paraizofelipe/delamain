@@ -55,7 +55,7 @@ func (g *githubClient) check(op string, resp *gogithub.Response, err error) erro
 
 func (g *githubClient) Repo() Repo { return g.repo }
 
-func toIssue(v *gogithub.Issue) Issue {
+func fromGitHub(v *gogithub.Issue) Issue {
 	is := Issue{Number: v.GetNumber(), Title: v.GetTitle(), Body: v.GetBody(), URL: v.GetHTMLURL(), Open: v.GetState() == "open"}
 	for _, l := range v.Labels {
 		is.Labels = append(is.Labels, l.GetName())
@@ -68,7 +68,7 @@ func (g *githubClient) Issue(ctx context.Context, n int) (Issue, error) {
 	if err := g.check("issue", resp, err); err != nil {
 		return Issue{}, err
 	}
-	return toIssue(v), nil
+	return fromGitHub(v), nil
 }
 
 // ListReady drops pull requests: GitHub's issues endpoint returns them too.
@@ -82,7 +82,7 @@ func (g *githubClient) ListReady(ctx context.Context, label string) ([]Issue, er
 	is := make([]Issue, 0, len(vs))
 	for _, v := range vs {
 		if !v.IsPullRequest() {
-			is = append(is, toIssue(v))
+			is = append(is, fromGitHub(v))
 		}
 	}
 	return oldestFirst(is), nil
