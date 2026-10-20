@@ -72,6 +72,38 @@ func TestRecoverShouldDeliverCommittedWorkAsDraft(t *testing.T) {
 	}
 }
 
+func TestRecoverShouldFallBackToConfigLimitsForUnclassifiedRuns(t *testing.T) {
+	for name, tc := range map[string]struct {
+		maxIter            int
+		perIssue           float64
+		complexity         string
+		wantIter, wantTail string
+	}{
+		"unclassified": {0, 0, "", "2/3", "/2M"},
+		"classified":   {5, 5000, "high", "2/5", "/5K"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			hs := newHarness(t, happy)
+			rec := crashed(t, hs, store.StateImplement)
+			rec.MaxIterations, rec.PerIssue, rec.Complexity = tc.maxIter, tc.perIssue, tc.complexity
+			if err := hs.st.UpdateRun(context.Background(), rec); err != nil {
+				t.Fatal(err)
+			}
+			out := recoverAll(t, hs)
+			if len(out) != 1 || out[0].Complexity != tc.complexity {
+				t.Fatalf("results = %+v", out)
+			}
+			if len(hs.h.metadata) == 0 {
+				t.Fatal("the restored workspace must get metadata")
+			}
+			last := hs.h.metadata[len(hs.h.metadata)-1].tokens
+			if last["iter"] != tc.wantIter || !strings.HasSuffix(last["tokens"], tc.wantTail) {
+				t.Fatalf("recovered limits: want iter %s and tokens ending in %s, got %v", tc.wantIter, tc.wantTail, last)
+			}
+		})
+	}
+}
+
 func TestRecoverShouldLeaveRunsOfLiveProcessesAlone(t *testing.T) {
 	hs := newHarness(t, happy)
 	f := withForge(hs)
