@@ -86,24 +86,26 @@ func TestLoadShouldFailOnMalformedYAML(t *testing.T) {
 
 func TestValidateShouldRejectUnsafeOrMeaninglessValues(t *testing.T) {
 	cases := map[string]func(*Config){
-		"zero iterations":      func(c *Config) { c.Pipeline.MaxIterations = 0 },
-		"zero parallel":        func(c *Config) { c.Pipeline.MaxParallel = 0 },
-		"zero prompt timeout":  func(c *Config) { c.Pipeline.PromptTimeout = 0 },
-		"unknown budget mode":  func(c *Config) { c.Budget.Mode = "credits" },
-		"negative budget":      func(c *Config) { c.Budget.PerIssue = -1 },
-		"soft ratio above one": func(c *Config) { c.Budget.SoftRatio = 1.5 },
-		"soft ratio zero":      func(c *Config) { c.Budget.SoftRatio = 0 },
-		"unknown approval":     func(c *Config) { c.Omp.ApprovalMode = "auto" },
-		"empty model":          func(c *Config) { c.Omp.Model = " " },
-		"unknown forge":        func(c *Config) { c.Forge.Kind = "bitbucket" },
-		"empty label":          func(c *Config) { c.Forge.Labels.InProgress = "" },
-		"poll too often":       func(c *Config) { c.Daemon.PollInterval = time.Second },
-		"unknown red proof":    func(c *Config) { c.Gates.RedProof = "sometimes" },
-		"label with comma":     func(c *Config) { c.Forge.Labels.Ready = "a,b" }, // glab splits on commas
-		"unknown harness":      func(c *Config) { c.Agent.Harness = "codex" },
-		"empty claude model":   func(c *Config) { c.Agent.Harness = HarnessClaude; c.Claude.Model = " " },
-		"unknown effort":       func(c *Config) { c.Agent.Harness = HarnessClaude; c.Claude.Effort = "huge" },
-		"unknown permission":   func(c *Config) { c.Agent.Harness = HarnessClaude; c.Claude.PermissionMode = "plan" },
+		"zero iterations":             func(c *Config) { c.Pipeline.MaxIterations = 0 },
+		"zero parallel":               func(c *Config) { c.Pipeline.MaxParallel = 0 },
+		"zero prompt timeout":         func(c *Config) { c.Pipeline.PromptTimeout = 0 },
+		"unknown budget mode":         func(c *Config) { c.Budget.Mode = "credits" },
+		"negative budget":             func(c *Config) { c.Budget.PerIssue = -1 },
+		"soft ratio above one":        func(c *Config) { c.Budget.SoftRatio = 1.5 },
+		"soft ratio zero":             func(c *Config) { c.Budget.SoftRatio = 0 },
+		"unknown approval":            func(c *Config) { c.Omp.ApprovalMode = "auto" },
+		"empty model":                 func(c *Config) { c.Omp.Model = " " },
+		"unknown forge":               func(c *Config) { c.Forge.Kind = "bitbucket" },
+		"empty label":                 func(c *Config) { c.Forge.Labels.InProgress = "" },
+		"poll too often":              func(c *Config) { c.Daemon.PollInterval = time.Second },
+		"unknown red proof":           func(c *Config) { c.Gates.RedProof = "sometimes" },
+		"label with comma":            func(c *Config) { c.Forge.Labels.Ready = "a,b" }, // glab splits on commas
+		"unknown harness":             func(c *Config) { c.Agent.Harness = "codex" },
+		"empty claude model":          func(c *Config) { c.Agent.Harness = HarnessClaude; c.Claude.Model = " " },
+		"unknown effort":              func(c *Config) { c.Agent.Harness = HarnessClaude; c.Claude.Effort = "huge" },
+		"negative profile iterations": func(c *Config) { c.Complexity.High.MaxIterations = -1 },
+		"negative profile budget":     func(c *Config) { c.Complexity.Low.PerIssue = -1 },
+		"unknown permission":          func(c *Config) { c.Agent.Harness = HarnessClaude; c.Claude.PermissionMode = "plan" },
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -217,5 +219,32 @@ func TestLabelsShouldRejectAPrefixThatCannotNameThem(t *testing.T) {
 	file := "forge:\n  labels:\n    prefix: \"\"\n    ready: r\n    in_progress: i\n    mr_opened: m\n    needs_human: h\n    needs_info: n\n"
 	if cfg, err := Load(writeFile(t, file), noEnv); err != nil || cfg.Forge.Labels.InProgress != "i" {
 		t.Errorf("no prefix is fine when every label is set: %+v %v", cfg.Forge.Labels, err)
+	}
+}
+
+func TestLoadShouldReadComplexityProfiles(t *testing.T) {
+	p := writeFile(t, "complexity:\n  high:\n    max_iterations: 5\n    per_issue: 4000000\n")
+	cfg, err := Load(p, noEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	it, budget := cfg.Limits("high")
+	if it != 5 || budget != 4e6 {
+		t.Fatalf("Limits(high) = (%d, %v), want (5, 4e6)", it, budget)
+	}
+}
+
+func TestLimitsShouldInheritGlobalForZeroOrUnknown(t *testing.T) {
+	cfg := Default()
+	for _, level := range []string{"low", ""} {
+		it, budget := cfg.Limits(level)
+		if it != 3 || budget != 2e6 {
+			t.Fatalf("Limits(%q) = (%d, %v), want (3, 2e6)", level, it, budget)
+		}
+	}
+	cfg.Complexity.High = Profile{MaxIterations: 5}
+	it, budget := cfg.Limits("high")
+	if it != 5 || budget != 2e6 {
+		t.Fatalf("Limits(high) = (%d, %v), want (5, 2e6)", it, budget)
 	}
 }
