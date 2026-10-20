@@ -9,8 +9,12 @@ import (
 	"github.com/paraizo/delamain/internal/gitx"
 )
 
+// forgeLookup is where forgeFor reads the forge token; tests replace it.
+var forgeLookup forge.TokenLookup = forge.OSLookup{}
+
 // forgeFor picks the forge of the repository containing dir. A repository without origin has
-// none (work stays local) unless forge.kind names one explicitly, which is then an error.
+// none (work stays local) unless forge.kind names one explicitly, which is then an error. A
+// forge without a token is an error too: nothing can be opened on it.
 func forgeFor(ctx context.Context, cfg config.Config, dir string) (forge.Forge, error) {
 	if cfg.Forge.Kind == config.ForgeNone {
 		return nil, nil
@@ -34,5 +38,9 @@ func forgeFor(ctx context.Context, cfg config.Config, dir string) (forge.Forge, 
 	if err != nil {
 		return nil, err
 	}
-	return forge.NewExec(repo, forge.ExecRunner{Binary: forge.Binary(repo.Kind), Dir: top}), nil
+	token, _, err := forge.Token(ctx, repo.Kind, repo.Host, forgeLookup)
+	if err != nil {
+		return nil, fmt.Errorf("%w; %s", err, forge.TokenHint(repo.Kind, repo.Host))
+	}
+	return forge.New(repo, token, forge.WithUserAgent("delamain/"+Version))
 }

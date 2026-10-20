@@ -78,6 +78,15 @@ func Token(ctx context.Context, kind Kind, host string, lookup TokenLookup) (tok
 	return "", "", fmt.Errorf("no %s token for %s: %w", kind, host, ErrTokenNotFound)
 }
 
+// TokenHint tells how to provide a token for host: the variables Token reads and the CLI login.
+func TokenHint(kind Kind, host string) string {
+	cli := "gh auth login --hostname " + host
+	if kind == GitLab {
+		cli = "glab auth login --hostname " + host
+	}
+	return "set " + strings.Join(tokenVars(kind, host), " or ") + ", or run `" + cli + "`"
+}
+
 // tokenVars lists the variables gh/glab read for host, in their order of precedence.
 func tokenVars(kind Kind, host string) []string {
 	switch {
