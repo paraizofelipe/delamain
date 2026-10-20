@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/paraizo/delamain/internal/agent"
+	"github.com/paraizo/delamain/internal/gitx"
 )
 
 const (
@@ -37,7 +38,8 @@ type Options struct {
 	Binary string
 	Dir    string
 	Args   []string // claude arguments; StreamArgs are added
-	// Env is appended to the inherited environment; its keys win over inherited ones.
+	// Env is appended to the inherited environment, already stripped of credentials by
+	// gitx.AgentEnviron; its keys win over inherited ones.
 	Env        []string
 	Log        io.Writer // human-readable event log (what `delamain logs` and herdr show)
 	Stderr     io.Writer
@@ -145,7 +147,7 @@ func Start(_ context.Context, o Options) (*Client, error) {
 	args := append(append([]string{}, StreamArgs...), o.Args...)
 	cmd := exec.Command(o.Binary, args...) //nolint:gosec // configured binary
 	cmd.Dir = o.Dir
-	cmd.Env = append(os.Environ(), o.Env...) // exec keeps the last value of a duplicated key
+	cmd.Env = append(gitx.AgentEnviron(os.Environ()), o.Env...) // exec keeps the last value of a duplicated key
 	stderr := &lastLine{w: o.Stderr}
 	cmd.Stderr = stderr
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true} // Close kills claude and its tools together

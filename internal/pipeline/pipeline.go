@@ -19,10 +19,12 @@ import (
 	"github.com/paraizo/delamain/internal/agent"
 	"github.com/paraizo/delamain/internal/artifacts"
 	"github.com/paraizo/delamain/internal/budget"
+	"github.com/paraizo/delamain/internal/complexity"
 	"github.com/paraizo/delamain/internal/config"
 	"github.com/paraizo/delamain/internal/forge"
 	"github.com/paraizo/delamain/internal/gates"
 	"github.com/paraizo/delamain/internal/gitx"
+	"github.com/paraizo/delamain/internal/notify"
 	"github.com/paraizo/delamain/internal/omp"
 	"github.com/paraizo/delamain/internal/prompts"
 	"github.com/paraizo/delamain/internal/store"
@@ -65,6 +67,7 @@ type Result struct {
 	Worktree    string
 	WorkspaceID string
 	Iterations  int
+	Complexity  string // the plan's assessment, e.g. "high (12 arquivos; sinais altos: change, files)"
 	Commits     []string
 	RunDir      string
 	ReportPath  string
@@ -110,6 +113,8 @@ type Runner struct {
 	LookPath func(string) (string, error)
 	// Alive reports whether a run's owner process still exists (default: signal 0).
 	Alive func(pid int) bool
+	// Notify shows desktop toasts; nil sends none.
+	Notify notify.Notifier
 	// BudgetInterval paces the budget watcher during agent turns (default 10s).
 	BudgetInterval time.Duration
 }
@@ -137,7 +142,9 @@ type run struct {
 	plan     artifacts.Plan
 	res      *Result
 	issue    int // forge issue number; 0 for local tasks
+	// maxIter and perIssue start global; applyComplexity sizes them once the plan is classified.
 	maxIter  int
+	perIssue float64
 	// Read from the base checkout before any agent runs, so agents cannot weaken them.
 	repoCfg gates.RepoConfig
 	stack   gates.Stack
@@ -177,25 +184,27 @@ func (r *Runner) Run(ctx context.Context, t Task) (Result, error) {
 		return res, nil
 	}
 
-	rec, err := r.Store.CreateRun(ctx, repo, t.Ref, t.Title, string(r.Cfg.Agent.Harness), r.Cfg.Pipeline.MaxIterations, store.KindIssue)
+	rec, err := r.Store.CreateRun(ctx, repo, t.Ref, t.Title, string(r.Cfg.Agent.Harness), r.Cfg.Pipeline.MaxIterations, r.Cfg.Budget.PerIssue, store.KindIssue)
 	if err != nil {
 		return res, err
 	}
 	res.RunID = rec.ID
 	ru := &run{
-		rec:     rec,
-		task:    prompts.Issue{Ref: t.Ref, Title: t.Title, Body: t.Body, URL: t.URL, Kind: t.Kind},
-		dir:     r.runDir(repo, rec.ID),
-		agents:  map[string]Agent{},
-		res:     &res,
-		issue:   t.Issue,
-		maxIter: r.Cfg.Pipeline.MaxIterations,
-		budget:  day,
+		rec:      rec,
+		task:     prompts.Issue{Ref: t.Ref, Title: t.Title, Body: t.Body, URL: t.URL, Kind: t.Kind},
+		dir:      r.runDir(repo, rec.ID),
+		agents:   map[string]Agent{},
+		res:      &res,
+		issue:    t.Issue,
+		maxIter:  r.Cfg.Pipeline.MaxIterations,
+		perIssue: r.Cfg.Budget.PerIssue,
+		budget:   day,
 	}
 	ru.planPath, ru.planJSON = filepath.Join(ru.dir, "plan.md"), filepath.Join(ru.dir, "plan.json")
 	res.RunDir = ru.dir
 	r.openLog(ru)
 	defer ru.closeLog()
+	r.notify(ctx, ru.log, notify.FormatStarted(notifyRun(ru, t, rec.State)))
 	r.issueUpdate(ctx, t, &res, []string{r.Cfg.Forge.Labels.InProgress}, []string{r.Cfg.Forge.Labels.Ready}, "")
 
 	defer r.cleanup(context.WithoutCancel(ctx), ru) // safety net; finish normally stops agents first
@@ -216,6 +225,7 @@ func (r *Runner) Run(ctx context.Context, t Task) (Result, error) {
 // tally, agents stopped, delivery, removal of empty work, issue update and the report.
 func (r *Runner) finish(ctx context.Context, ru *run, t Task) error {
 	ctx = context.WithoutCancel(ctx)
+	state := ru.rec.State      // record moves it to recorded; the halted toast shows where it stopped
 	_ = r.checkBudget(ctx, ru) // final tally; the level no longer matters
 	r.cleanup(ctx, ru)         // agents stop before anything touches their worktree
 	if ru.repo.Worktree != "" {
@@ -224,7 +234,11 @@ func (r *Runner) finish(ctx context.Context, ru *run, t Task) error {
 	r.deliver(ctx, ru)
 	r.discardEmpty(ctx, ru)
 	r.announce(ctx, ru, t)
-	return r.record(ctx, ru)
+	err := r.record(ctx, ru) // writes report.md before a toast offers to open it
+	if !ru.recovered {       // the recover toast sums recovered runs up
+		r.notify(ctx, ru.log, outcomeToast(ru, t, state))
+	}
+	return err
 }
 
 func (r *Runner) runDir(repo string, id int64) string { return RunDir(r.Cfg.Paths.StateDir, repo, id) }
@@ -296,13 +310,15 @@ func (r *Runner) execute(ctx context.Context, ru *run, repo string, t Task) erro
 		return err
 	}
 	ru.plan = plan
+	if err := r.applyComplexity(ctx, ru); err != nil {
+		return err
+	}
 	r.stopAgent(ctx, ru, "planner") // its job is done: an idle agent is only a failure point
 	ru.cmds, ru.res.CommandSources = gates.Effective(ru.repoCfg.Commands, ru.stack.Commands, plan.Commands)
 	ru.log.Info("gate commands", "run", ru.rec.ID, "stack", ru.stack.Name, "sources", ru.res.CommandSources)
 
 	feedback := ""
-	maxIter := r.Cfg.Pipeline.MaxIterations
-	for iter := 1; iter <= maxIter; iter++ {
+	for iter := 1; iter <= ru.maxIter; iter++ {
 		it := Iteration{N: iter, Feedback: feedback}
 		ru.rec.Iteration, ru.res.Iterations = iter, iter
 		iterDir := filepath.Join(ru.dir, fmt.Sprintf("iter-%d", iter))
@@ -347,8 +363,22 @@ func (r *Runner) execute(ctx context.Context, ru *run, repo string, t Task) erro
 		feedback = reviewFeedback(review)
 	}
 	ru.res.Outcome = OutcomeExhausted
-	ru.res.Reason = fmt.Sprintf("%d iterações sem aprovação", maxIter)
+	ru.res.Reason = fmt.Sprintf("%d iterações sem aprovação", ru.maxIter)
 	return r.setState(ctx, ru, store.StateDeliverDraft)
+}
+
+// applyComplexity classifies the plan and sizes the run's iterations and per-issue budget by its
+// level. The budget is checked right away: planning may already have spent a smaller profile.
+func (r *Runner) applyComplexity(ctx context.Context, ru *run) error {
+	a := complexity.Classify(ru.plan)
+	ru.maxIter, ru.perIssue = r.Cfg.Limits(string(a.Level))
+	ru.rec.MaxIterations, ru.rec.PerIssue, ru.rec.Complexity = ru.maxIter, ru.perIssue, string(a.Level)
+	ru.res.Complexity = a.Summary()
+	ru.log.Info("complexity", "run", ru.rec.ID, "assessment", ru.res.Complexity, "max_iterations", ru.maxIter, "per_issue", ru.perIssue)
+	if err := r.Store.UpdateRun(ctx, ru.rec); err != nil {
+		return err
+	}
+	return r.checkBudget(ctx, ru)
 }
 
 func (r *Runner) setup(ctx context.Context, ru *run, repo string, t Task) error {
@@ -534,7 +564,7 @@ func stepArtifact[T validated](ctx context.Context, r *Runner, ru *run, role, st
 
 func (r *Runner) stageData(ru *run, iter int, artifact, feedback string) prompts.StageData {
 	return prompts.StageData{
-		Issue: ru.task, Repo: ru.repo, Iteration: iter, MaxIterations: r.Cfg.Pipeline.MaxIterations,
+		Issue: ru.task, Repo: ru.repo, Iteration: iter, MaxIterations: ru.maxIter,
 		ArtifactPath: artifact, PlanPath: ru.planPath, PlanJSONPath: ru.planJSON,
 		Feedback: feedback, BudgetLeft: ru.budget.Left(),
 	}

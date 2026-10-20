@@ -2,126 +2,207 @@ package forge
 
 import (
 	"context"
-	"encoding/json"
-	"regexp"
-	"strconv"
+	"errors"
+	"fmt"
+	"net/http"
 	"strings"
+	"time"
+
+	gogithub "github.com/google/go-github/v92/github"
 )
 
-type github struct {
-	repo Repo
-	run  Runner
+type githubClient struct {
+	caller
+	repo        Repo
+	owner, name string
+	api         *gogithub.Client
 }
 
-var ghPRURL = regexp.MustCompile(`(https?://\S+/pull/(\d+))`)
-
-func (g github) Repo() Repo { return g.repo }
-
-// rflag is the -R value: OWNER/REPO on github.com, HOST/OWNER/REPO on Enterprise.
-func (g github) rflag() string {
-	if g.repo.Host == "github.com" {
-		return g.repo.Path
+// newGitHub talks to api.github.com, or to https://<host>/api/v3/ on Enterprise.
+func newGitHub(repo Repo, token string, o options) (*githubClient, error) {
+	owner, name, _ := strings.Cut(repo.Path, "/")
+	copts := []gogithub.ClientOptionsFunc{
+		gogithub.WithHTTPClient(o.httpClient),
+		gogithub.WithAuthToken(token),
+		gogithub.WithUserAgent(o.userAgent),
 	}
-	return g.repo.String()
+	switch {
+	case o.baseURL != "":
+		copts = append(copts, gogithub.WithURLs(&o.baseURL, &o.baseURL))
+	case repo.Host != "github.com":
+		base := "https://" + repo.Host + "/"
+		copts = append(copts, gogithub.WithEnterpriseURLs(base, base))
+	}
+	api, err := gogithub.NewClient(copts...)
+	if err != nil {
+		return nil, fmt.Errorf("github client: %w", err)
+	}
+	return &githubClient{caller: caller{GitHub, token, o.backoff}, repo: repo, owner: owner, name: name, api: api}, nil
 }
 
-type ghIssue struct {
-	Number int    `json:"number"`
-	Title  string `json:"title"`
-	Body   string `json:"body"`
-	URL    string `json:"url"`
-	State  string `json:"state"`
-	Labels []struct {
-		Name string `json:"name"`
-	} `json:"labels"`
+// do runs one API call with retries. Besides gateway and network errors, GitHub's secondary
+// rate limit is transient: it says how long to wait in Retry-After.
+func (g *githubClient) do(ctx context.Context, op string, call func() (*gogithub.Response, error)) error {
+	return g.retry(ctx, func() (bool, time.Duration, error) {
+		resp, err := call()
+		if err == nil {
+			return false, 0, nil
+		}
+		status, msg := 0, ""
+		if resp != nil {
+			status = resp.StatusCode
+		}
+		if er, ok := errors.AsType[*gogithub.ErrorResponse](err); ok {
+			msg = er.Message
+		}
+		if rl, ok := errors.AsType[*gogithub.AbuseRateLimitError](err); ok {
+			return true, rl.GetRetryAfter(), g.fail(op, status, rl.Message, err)
+		}
+		if rl, ok := errors.AsType[*gogithub.RateLimitError](err); ok {
+			msg = rl.Message
+		}
+		return transient(ctx, status, err), 0, g.fail(op, status, msg, err)
+	})
 }
 
-func (v ghIssue) issue() Issue {
-	is := Issue{Number: v.Number, Title: v.Title, Body: v.Body, URL: v.URL, Open: v.State == "OPEN"}
+func (g *githubClient) Repo() Repo { return g.repo }
+
+func fromGitHub(v *gogithub.Issue) Issue {
+	is := Issue{Number: v.GetNumber(), Title: v.GetTitle(), Body: v.GetBody(), URL: v.GetHTMLURL(), Open: v.GetState() == "open"}
 	for _, l := range v.Labels {
-		is.Labels = append(is.Labels, l.Name)
+		is.Labels = append(is.Labels, l.GetName())
 	}
 	return is
 }
 
-const ghIssueFields = "number,title,body,url,state,labels"
-
-func (g github) Issue(ctx context.Context, n int) (Issue, error) {
-	out, err := g.run.Run(ctx, "", "issue", "view", strconv.Itoa(n), "-R", g.rflag(), "--json", ghIssueFields)
+func (g *githubClient) Issue(ctx context.Context, n int) (Issue, error) {
+	var v *gogithub.Issue
+	err := g.do(ctx, "issue", func() (resp *gogithub.Response, err error) {
+		v, resp, err = g.api.Issues.Get(ctx, g.owner, g.name, n)
+		return resp, err
+	})
 	if err != nil {
 		return Issue{}, err
 	}
-	var v ghIssue
-	if err := json.Unmarshal([]byte(out), &v); err != nil {
-		return Issue{}, err
-	}
-	return v.issue(), nil
+	return fromGitHub(v), nil
 }
 
-func (g github) ListReady(ctx context.Context, label string) ([]Issue, error) {
-	out, err := g.run.Run(ctx, "", "issue", "list", "-R", g.rflag(), "--label", label, "--state", "open", "--limit", "100", "--json", ghIssueFields)
+// ListReady drops pull requests: GitHub's issues endpoint returns them too.
+func (g *githubClient) ListReady(ctx context.Context, label string) ([]Issue, error) {
+	var vs []*gogithub.Issue
+	err := g.do(ctx, "list ready", func() (resp *gogithub.Response, err error) {
+		vs, resp, err = g.api.Issues.ListByRepo(ctx, g.owner, g.name, &gogithub.IssueListByRepoOptions{
+			State: "open", Labels: []string{label}, ListOptions: gogithub.ListOptions{PerPage: 100},
+		})
+		return resp, err
+	})
 	if err != nil {
-		return nil, err
-	}
-	var vs []ghIssue
-	if err := json.Unmarshal([]byte(out), &vs); err != nil {
 		return nil, err
 	}
 	is := make([]Issue, 0, len(vs))
 	for _, v := range vs {
-		is = append(is, v.issue())
+		if !v.IsPullRequest() {
+			is = append(is, fromGitHub(v))
+		}
 	}
 	return oldestFirst(is), nil
 }
 
-func (g github) OpenPR(ctx context.Context, head string) (*PR, error) {
-	out, err := g.run.Run(ctx, "", "pr", "list", "-R", g.rflag(), "--head", head, "--state", "open", "--json", "number,url,isDraft")
-	if err != nil {
+func (g *githubClient) OpenPR(ctx context.Context, head string) (*PR, error) {
+	var prs []*gogithub.PullRequest
+	err := g.do(ctx, "open pr", func() (resp *gogithub.Response, err error) {
+		prs, resp, err = g.api.PullRequests.List(ctx, g.owner, g.name, &gogithub.PullRequestListOptions{State: "open", Head: g.owner + ":" + head})
+		return resp, err
+	})
+	if err != nil || len(prs) == 0 {
 		return nil, err
 	}
-	var prs []struct {
-		Number  int    `json:"number"`
-		URL     string `json:"url"`
-		IsDraft bool   `json:"isDraft"`
-	}
-	if err := json.Unmarshal([]byte(out), &prs); err != nil || len(prs) == 0 {
-		return nil, err
-	}
-	return &PR{Number: prs[0].Number, URL: prs[0].URL, Draft: prs[0].IsDraft}, nil
+	return &PR{Number: prs[0].GetNumber(), URL: prs[0].GetHTMLURL(), Draft: prs[0].GetDraft()}, nil
 }
 
-func (g github) CreatePR(ctx context.Context, o PROptions) (PR, error) {
-	args := []string{"pr", "create", "-R", g.rflag(), "--head", o.Head, "--base", o.Base, "--title", o.Title, "--body-file", "-"}
-	if o.Draft {
-		args = append(args, "--draft")
-	}
-	out, err := g.run.Run(ctx, o.Body, args...)
+func (g *githubClient) CreatePR(ctx context.Context, o PROptions) (PR, error) {
+	var v *gogithub.PullRequest
+	tries := 0
+	err := g.do(ctx, "create pr", func() (resp *gogithub.Response, err error) {
+		tries++
+		v, resp, err = g.api.PullRequests.Create(ctx, g.owner, g.name, gogithub.CreatePullRequest{
+			Title: &o.Title, Head: o.Head, Base: o.Base, Body: &o.Body, Draft: &o.Draft,
+		})
+		return resp, err
+	})
 	if err != nil {
-		return PR{}, err
+		return createdAnyway(ctx, g, o.Head, tries, http.StatusUnprocessableEntity, err)
 	}
-	return prFromOutput(out, ghPRURL, o.Draft)
+	return PR{Number: v.GetNumber(), URL: v.GetHTMLURL(), Draft: v.GetDraft()}, nil
 }
 
-func (g github) Comment(ctx context.Context, n int, body string) error {
-	_, err := g.run.Run(ctx, body, "issue", "comment", strconv.Itoa(n), "-R", g.rflag(), "--body-file", "-")
-	return err
+// Comment is retried like any call: a retry after a lost answer may post the comment twice,
+// which is harmless next to losing the run's status comment.
+func (g *githubClient) Comment(ctx context.Context, n int, body string) error {
+	return g.do(ctx, "comment", func() (*gogithub.Response, error) {
+		_, resp, err := g.api.Issues.CreateComment(ctx, g.owner, g.name, n, gogithub.IssueCommentRequest{Body: body})
+		return resp, err
+	})
 }
 
 // Relabel creates missing labels first: GitHub rejects unknown labels on edit.
-func (g github) Relabel(ctx context.Context, n int, add, remove []string) error {
+func (g *githubClient) Relabel(ctx context.Context, n int, add, remove []string) error {
+	color, desc := "5319e7", "delamain"
 	for _, l := range append(append([]string{}, add...), remove...) {
-		_, err := g.run.Run(ctx, "", "label", "create", l, "-R", g.rflag(), "--color", "5319e7", "--description", "delamain")
-		if err != nil && !strings.Contains(err.Error(), "already exists") {
+		err := g.do(ctx, "relabel", func() (*gogithub.Response, error) {
+			_, resp, err := g.api.Issues.CreateLabel(ctx, g.owner, g.name, gogithub.CreateIssueLabelRequest{Name: l, Color: &color, Description: &desc})
+			if alreadyExists(err) {
+				return resp, nil
+			}
+			return resp, err
+		})
+		if err != nil {
 			return err
 		}
 	}
-	args := []string{"issue", "edit", strconv.Itoa(n), "-R", g.rflag()}
-	for _, l := range add {
-		args = append(args, "--add-label", l)
+	if len(add) > 0 {
+		err := g.do(ctx, "relabel", func() (*gogithub.Response, error) {
+			_, resp, err := g.api.Issues.AddLabelsToIssue(ctx, g.owner, g.name, n, add)
+			return resp, err
+		})
+		if err != nil {
+			return err
+		}
 	}
 	for _, l := range remove {
-		args = append(args, "--remove-label", l)
+		err := g.do(ctx, "relabel", func() (*gogithub.Response, error) {
+			resp, err := g.api.Issues.RemoveLabelForIssue(ctx, g.owner, g.name, n, l)
+			if resp != nil && resp.StatusCode == http.StatusNotFound {
+				return resp, nil // the issue does not carry the label, which is the state asked for
+			}
+			return resp, err
+		})
+		if err != nil {
+			return err
+		}
 	}
-	_, err := g.run.Run(ctx, "", args...)
-	return err
+	return nil
+}
+
+// alreadyExists recognizes GitHub's 422 for creating a label that is already there.
+func alreadyExists(err error) bool {
+	er, ok := errors.AsType[*gogithub.ErrorResponse](err)
+	if !ok {
+		return false
+	}
+	for _, e := range er.Errors {
+		if e.Code == "already_exists" {
+			return true
+		}
+	}
+	return false
+}
+
+func (g *githubClient) whoami(ctx context.Context) (string, error) {
+	var u *gogithub.User
+	err := g.do(ctx, "whoami", func() (resp *gogithub.Response, err error) {
+		u, resp, err = g.api.Users.Get(ctx, "")
+		return resp, err
+	})
+	return u.GetLogin(), err
 }

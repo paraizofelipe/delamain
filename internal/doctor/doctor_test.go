@@ -3,13 +3,17 @@ package doctor
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"testing/fstest"
 
 	"github.com/paraizo/delamain/internal/config"
+	"github.com/paraizo/delamain/internal/forge"
 	"github.com/paraizo/delamain/internal/herdr"
+	"github.com/paraizo/delamain/internal/notify"
 	"github.com/paraizo/delamain/internal/prompts"
 )
 
@@ -31,6 +35,9 @@ func healthy(t *testing.T) (config.Config, Deps) {
 		Version:  func(_ context.Context, b string) (string, error) { return filepath.Base(b) + " 1.0\nextra", nil },
 		OmpRPC:   func(context.Context, string) error { return nil },
 		Herdr:    fakeHerdr{sessions: []herdr.Session{{Name: "default", Default: true, Running: true}}},
+		ForgeAuth: func(context.Context, string) (ForgeIdentity, error) {
+			return ForgeIdentity{Kind: forge.GitHub, Host: "github.com", Login: "delamain-bot", Source: "env GH_TOKEN"}, nil
+		},
 	}
 }
 
@@ -194,16 +201,19 @@ func TestRunShouldNotRequireHerdrWhenItIsOff(t *testing.T) {
 
 func TestRunShouldReportEveryProblemInsteadOfStoppingAtFirst(t *testing.T) {
 	cfg, d := healthy(t)
+	d.ForgeAuth = func(context.Context, string) (ForgeIdentity, error) {
+		return ForgeIdentity{Kind: forge.GitHub, Host: "github.com"}, forge.ErrTokenNotFound
+	}
 	d.LookPath = func(b string) (string, error) { return "", errors.New("not found") }
 	d.Herdr = fakeHerdr{sessionsErr: errors.New("socket down")}
 	m := byName(Run(context.Background(), cfg, d))
-	for _, name := range []string{"herdr", "omp", "omp rpc", "git", "herdr server"} {
+	for _, name := range []string{"herdr", "omp", "omp rpc", "git", "herdr server", "forge auth"} {
 		if m[name].Status != Fail {
 			t.Errorf("%s should fail: %+v", name, m[name])
 		}
 	}
-	if m["forge cli"].Status != Warn || m["gitleaks"].Status != Warn {
-		t.Errorf("optional tools are warnings, not failures: %+v %+v", m["forge cli"], m["gitleaks"])
+	if m["gitleaks"].Status != Warn {
+		t.Errorf("optional tools are warnings, not failures: %+v", m["gitleaks"])
 	}
 }
 
@@ -274,5 +284,164 @@ func TestRunShouldWarnWhenInstalledPromptsAreOutdated(t *testing.T) {
 	}
 	if c := byName(Run(context.Background(), cfg, d))["prompts"]; c.Status != Warn {
 		t.Fatalf("outdated install is a warning: %+v", c)
+	}
+}
+
+func forgeAuthChecks(checks []Check) []Check {
+	var out []Check
+	for _, c := range checks {
+		if c.Name == "forge auth" {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+func TestRunShouldReportForgeAuthLoginHostAndSourceWithoutTheToken(t *testing.T) {
+	cfg, d := healthy(t)
+	got := forgeAuthChecks(Run(context.Background(), cfg, d))
+	if len(got) != 1 || got[0].Status != OK {
+		t.Fatalf("forge auth = %+v", got)
+	}
+	for _, want := range []string{"delamain-bot", "github.com", "env GH_TOKEN"} {
+		if !strings.Contains(got[0].Detail, want) {
+			t.Errorf("detail %q must mention %q", got[0].Detail, want)
+		}
+	}
+}
+
+func TestRunShouldFailWhenNoForgeTokenIsFound(t *testing.T) {
+	cfg, d := healthy(t)
+	d.ForgeAuth = func(context.Context, string) (ForgeIdentity, error) {
+		return ForgeIdentity{Kind: forge.GitHub, Host: "github.com"}, fmt.Errorf("no github token for github.com: %w; set GH_TOKEN or GITHUB_TOKEN", forge.ErrTokenNotFound)
+	}
+	got := forgeAuthChecks(Run(context.Background(), cfg, d))
+	if len(got) != 1 || got[0].Status != Fail {
+		t.Fatalf("a missing token fails: run and daemon stop on that repository without one: %+v", got)
+	}
+	for _, want := range []string{"GH_TOKEN", "Pull requests", "runs on this repository fail"} {
+		if !strings.Contains(got[0].Detail, want) {
+			t.Errorf("detail %q must explain how to provide a token (%q)", got[0].Detail, want)
+		}
+	}
+}
+
+func TestRunShouldFailWhenTheForgeRejectsTheToken(t *testing.T) {
+	cases := map[error]Status{
+		&forge.APIError{Forge: forge.GitLab, Op: "whoami", Status: 401, Message: "401 Unauthorized"}:   Fail,
+		&forge.APIError{Forge: forge.GitLab, Op: "whoami", Status: 403, Message: "insufficient_scope"}: Fail,
+		&forge.APIError{Forge: forge.GitLab, Op: "whoami", Status: 503, Message: "unavailable"}:        Warn,
+		errors.New("gitlab whoami: dial tcp: no such host"):                                            Warn,
+	}
+	for err, want := range cases {
+		cfg, d := healthy(t)
+		d.ForgeAuth = func(context.Context, string) (ForgeIdentity, error) {
+			return ForgeIdentity{Kind: forge.GitLab, Host: "gitlab.com", Source: "env GITLAB_TOKEN"}, err
+		}
+		got := forgeAuthChecks(Run(context.Background(), cfg, d))
+		if len(got) != 1 || got[0].Status != want {
+			t.Errorf("%v: forge auth = %+v, want %s", err, got, want)
+			continue
+		}
+		if want == Fail && !strings.Contains(got[0].Detail, "api scope") {
+			t.Errorf("a rejected token must say which permissions are needed: %q", got[0].Detail)
+		}
+	}
+}
+
+func TestRunShouldNotFailWithoutGhOrGlabInstalled(t *testing.T) {
+	cfg, d := healthy(t)
+	d.LookPath = func(b string) (string, error) {
+		if b == "gh" || b == "glab" {
+			return "", errors.New("not found")
+		}
+		return "/usr/bin/" + b, nil
+	}
+	checks := Run(context.Background(), cfg, d)
+	if Failed(checks) {
+		t.Fatalf("gh/glab are optional: %+v", checks)
+	}
+	for _, c := range checks {
+		if c.Status != OK {
+			t.Errorf("nothing should even warn about gh/glab: %+v", c)
+		}
+	}
+}
+
+func TestRunShouldCheckForgeAuthForEveryDaemonRepo(t *testing.T) {
+	cfg, d := healthy(t)
+	var asked []string
+	d.ForgeAuth = func(_ context.Context, dir string) (ForgeIdentity, error) {
+		asked = append(asked, dir)
+		if dir == "/srv/local" {
+			return ForgeIdentity{}, nil // no origin: work stays local
+		}
+		return ForgeIdentity{Kind: forge.GitHub, Host: "github.com", Login: "bot", Source: "gh auth token"}, nil
+	}
+	cfg.Daemon.Repos = []string{"/srv/api", "/srv/local"}
+	got := forgeAuthChecks(Run(context.Background(), cfg, d))
+	if strings.Join(asked, ",") != "/srv/api,/srv/local" || len(got) != 2 {
+		t.Fatalf("asked %v, checks %+v", asked, got)
+	}
+	if got[0].Status != OK || !strings.Contains(got[0].Detail, "/srv/api") || got[1].Status != OK || !strings.Contains(got[1].Detail, "local") {
+		t.Fatalf("checks = %+v", got)
+	}
+
+	asked = nil
+	cfg.Daemon.Repos = nil
+	Run(context.Background(), cfg, d)
+	if strings.Join(asked, ",") != "." {
+		t.Fatalf("without daemon repos the current directory is checked, asked %v", asked)
+	}
+}
+
+func TestRunShouldReportTheNotificationServerOrWarnWithoutOne(t *testing.T) {
+	cfg, d := healthy(t)
+	d.Notify = func(context.Context) notify.Probe {
+		return notify.Probe{Backend: "dbus", Server: "mako", Version: "1.9.0", Actions: true}
+	}
+	c := byName(Run(context.Background(), cfg, d))["notify"]
+	if c.Status != OK || c.Detail != "dbus: mako 1.9.0, actions supported" {
+		t.Fatalf("notify check = %+v", c)
+	}
+
+	d.Notify = func(context.Context) notify.Probe {
+		return notify.Probe{Backend: "dbus", Server: "dunst", Version: "1.11", Actions: false}
+	}
+	if c := byName(Run(context.Background(), cfg, d))["notify"]; c.Status != OK || c.Detail != "dbus: dunst 1.11, no actions (clicks disabled)" {
+		t.Fatalf("notify check = %+v", c)
+	}
+
+	d.Notify = func(context.Context) notify.Probe {
+		return notify.Probe{Backend: "dbus", Err: errors.New("org.freedesktop.Notifications: timeout")}
+	}
+	if c := byName(Run(context.Background(), cfg, d))["notify"]; c.Status != Warn || !strings.Contains(c.Detail, "did not answer: org.freedesktop.Notifications: timeout") {
+		t.Fatalf("a server that does not answer is a warning, not OK: %+v", c)
+	}
+
+	d.Notify = func(context.Context) notify.Probe { return notify.Probe{Backend: "none"} }
+	checks := Run(context.Background(), cfg, d)
+	if c := byName(checks)["notify"]; c.Status != Warn || c.Detail != "no desktop notification server; notifications disabled" {
+		t.Fatalf("without a server notify only warns: %+v", c)
+	}
+	if Failed(checks) {
+		t.Fatal("a missing notification server never fails doctor")
+	}
+}
+
+func TestRunShouldRemindToAllowNotificationsOnMacOS(t *testing.T) {
+	cfg, d := healthy(t)
+	d.Notify = func(context.Context) notify.Probe {
+		return notify.Probe{Backend: "macos", TerminalNotifier: "/opt/homebrew/bin/terminal-notifier"}
+	}
+	c := byName(Run(context.Background(), cfg, d))["notify"]
+	if c.Status != OK || !strings.Contains(c.Detail, "terminal-notifier (/opt/homebrew/bin/terminal-notifier)") || !strings.Contains(c.Detail, "allow notifications for terminal-notifier in System Settings") {
+		t.Fatalf("notify check = %+v", c)
+	}
+
+	d.Notify = func(context.Context) notify.Probe { return notify.Probe{Backend: "macos"} }
+	c = byName(Run(context.Background(), cfg, d))["notify"]
+	if c.Status != OK || !strings.Contains(c.Detail, "terminal-notifier not found") || !strings.Contains(c.Detail, "allow notifications for Script Editor in System Settings") {
+		t.Fatalf("notify check = %+v", c)
 	}
 }

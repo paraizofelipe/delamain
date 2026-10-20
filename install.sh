@@ -56,3 +56,5 @@ case ":$PATH:" in
   *) echo "aviso: $dir não está no PATH; adicione ao ~/.zshrc ou ~/.bashrc:" >&2
      echo "  export PATH=\"$dir:\$PATH\"" >&2 ;;
 esac
+
+echo "gh/glab são opcionais: basta GH_TOKEN (GitHub) ou GITLAB_TOKEN (GitLab); sem eles, o delamain só lê o token do login do gh/glab."

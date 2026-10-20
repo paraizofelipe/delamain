@@ -3,7 +3,9 @@ package doctor
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
@@ -11,7 +13,9 @@ import (
 	"strings"
 
 	"github.com/paraizo/delamain/internal/config"
+	"github.com/paraizo/delamain/internal/forge"
 	"github.com/paraizo/delamain/internal/herdr"
+	"github.com/paraizo/delamain/internal/notify"
 	"github.com/paraizo/delamain/internal/prompts"
 )
 
@@ -34,6 +38,14 @@ type Herdr interface {
 	Sessions(ctx context.Context) ([]herdr.Session, error)
 }
 
+// ForgeIdentity is who a repository's forge token authenticates as. It never holds the token.
+type ForgeIdentity struct {
+	Kind   forge.Kind
+	Host   string
+	Login  string
+	Source string // where the token came from, e.g. "env GH_TOKEN"
+}
+
 type Deps struct {
 	LookPath func(string) (string, error)
 	// Version runs "<bin> --version" and returns trimmed output.
@@ -43,9 +55,14 @@ type Deps struct {
 	// ClaudeAuth runs "<bin> auth status" and says why claude is not logged in, if it is not.
 	ClaudeAuth func(ctx context.Context, bin string) error
 	Herdr      Herdr
+	// ForgeAuth resolves the forge token of the repository at dir and asks the forge who it
+	// belongs to. A repository without forge returns a zero identity and no error.
+	ForgeAuth func(ctx context.Context, dir string) (ForgeIdentity, error)
 	// Prompts is optional; when set, doctor lints it and checks the installation is current.
 	Prompts       *prompts.Set
 	PromptsTarget prompts.Target
+	// Notify probes the desktop notification backend; nil skips the check.
+	Notify func(ctx context.Context) notify.Probe
 }
 
 // Run executes every check; it never stops at the first failure so the report is complete.
@@ -106,22 +123,22 @@ func Run(ctx context.Context, cfg config.Config, d Deps) []Check {
 		checks = append(checks, herdrServer(ctx, cfg, d.Herdr)...)
 	}
 
-	forges := 0
-	for _, bin := range []string{"gh", "glab"} {
-		if _, err := d.LookPath(bin); err == nil {
-			forges++
-		}
+	repos := cfg.Daemon.Repos
+	if len(repos) == 0 {
+		repos = []string{"."}
 	}
-	if forges == 0 {
-		add("forge cli", Warn, "neither gh nor glab found: delamain cannot push PRs/MRs (work stays local)")
-	} else {
-		add("forge cli", OK, "%d of gh/glab available", forges)
+	for _, dir := range repos {
+		checks = append(checks, forgeAuth(ctx, d, dir))
 	}
 
 	if _, err := d.LookPath("gitleaks"); err != nil {
 		add("gitleaks", Warn, "not installed; secret-scan gate will be reported as skipped")
 	} else {
 		add("gitleaks", OK, "available")
+	}
+
+	if d.Notify != nil {
+		checks = append(checks, notifyCheck(d.Notify(ctx)))
 	}
 
 	if d.Prompts != nil {
@@ -134,6 +151,50 @@ func Run(ctx context.Context, cfg config.Config, d Deps) []Check {
 		add("state dir", OK, "%s", cfg.Paths.StateDir)
 	}
 	return checks
+}
+
+// forgeAuth checks dir's forge token against the API. A missing token or one the forge rejects
+// is a failure: run and daemon stop on that repository until a token is provided.
+func forgeAuth(ctx context.Context, d Deps, dir string) Check {
+	where := ""
+	if dir != "." {
+		where = dir + ": "
+	}
+	id, err := d.ForgeAuth(ctx, dir)
+	var apiErr *forge.APIError
+	switch {
+	case err == nil && id.Host == "":
+		return Check{"forge auth", OK, where + "local (no forge)"}
+	case err == nil:
+		return Check{"forge auth", OK, fmt.Sprintf("%s%s on %s (token from %s)", where, id.Login, id.Host, id.Source)}
+	case errors.Is(err, forge.ErrTokenNotFound):
+		return Check{"forge auth", Fail, fmt.Sprintf("%s%v: runs on this repository fail until a token is provided; %s", where, err, forge.TokenPermissions(id.Kind))}
+	case errors.As(err, &apiErr) && (apiErr.Status == http.StatusUnauthorized || apiErr.Status == http.StatusForbidden):
+		return Check{"forge auth", Fail, fmt.Sprintf("%s%v (token from %s); %s", where, err, id.Source, forge.TokenPermissions(id.Kind))}
+	default:
+		return Check{"forge auth", Warn, fmt.Sprintf("%s%v", where, err)}
+	}
+}
+
+// notifyCheck reports the notification backend; without one it only warns: runs never need it.
+func notifyCheck(p notify.Probe) Check {
+	switch p.Backend {
+	case config.NotifyDBus:
+		if p.Err != nil {
+			return Check{"notify", Warn, fmt.Sprintf("dbus: notification server did not answer: %v", p.Err)}
+		}
+		actions := "actions supported"
+		if !p.Actions {
+			actions = "no actions (clicks disabled)"
+		}
+		return Check{"notify", OK, fmt.Sprintf("dbus: %s %s, %s", p.Server, p.Version, actions)}
+	case config.NotifyMacOS:
+		if p.TerminalNotifier != "" {
+			return Check{"notify", OK, fmt.Sprintf("macos: terminal-notifier (%s); allow notifications for terminal-notifier in System Settings > Notifications", p.TerminalNotifier)}
+		}
+		return Check{"notify", OK, "macos: osascript (terminal-notifier not found: no logo, no click); allow notifications for Script Editor in System Settings > Notifications"}
+	}
+	return Check{"notify", Warn, "no desktop notification server; notifications disabled"}
 }
 
 func promptChecks(set *prompts.Set, t prompts.Target) []Check {

@@ -24,7 +24,7 @@ const (
 "slices":[{"id":"S1","behavior":"Add sums","seam":"calc.Add","files":["calc.go"],"tests":["calc_test.go::TestAdd"]}],
 "acceptance":[{"criterion":"Add(2,3)=5","tests":["calc_test.go::TestAdd"],"flow":true}],
 "regression_tests":["calc_test.go::TestAdd"],
-"commands":{"test":"go test ./...","test_file":"","lint":"go vet ./...","typecheck":"","format_check":""},"risks":[]}`
+"commands":{"test":"go test ./...","test_file":"","lint":"go vet ./...","typecheck":"","format_check":""},"complexity":{"components":"single_module","change":"localized","dependencies":[],"tests":["unit"],"rationale":"um arquivo"},"risks":[]}`
 	implJSON = `{"slices":[{"id":"S1","status":"done","red":{"command":"go test","output":"want 5 got -1"},"green":{"command":"go test","output":"ok"},"commits":["abc"]}],
 "feedback_addressed":[],"full_suite":{"command":"go test ./...","passed":1,"failed":0,"skipped":0},"lint":{"command":"go vet","ok":true},"typecheck":{"command":"","ok":true},"pending":[]}`
 )
@@ -138,6 +138,9 @@ func TestRunShouldDeliverApprovedWorkInOneIteration(t *testing.T) {
 	if err != nil || !strings.Contains(string(report), "**approved**") {
 		t.Fatalf("report: %v\n%s", err, report)
 	}
+	if !strings.Contains(string(report), "| Complexidade | low") {
+		t.Fatalf("report must show the plan's complexity:\n%s", report)
+	}
 	if want := []string{"planner", "implementer", "reviewer"}; !slices.Equal(hs.h.tabs, want) {
 		t.Fatalf("one tab per agent, named after it, opened as it starts: got %v want %v", hs.h.tabs, want)
 	}
@@ -210,8 +213,52 @@ func TestRunShouldStopAfterMaxIterationsWhenReviewKeepsBlocking(t *testing.T) {
 	if !strings.Contains(hs.h.prompts["implementer"][1], "subtrai em vez de somar") {
 		t.Fatal("blocking review findings must be fed back to the implementer")
 	}
-	if rec := hs.finalRun(t, res.RunID); !strings.HasPrefix(rec.Reason, "exhausted") {
-		t.Fatalf("store reason = %q", rec.Reason)
+	if rec := hs.finalRun(t, res.RunID); !strings.HasPrefix(rec.Reason, "exhausted") || rec.Complexity != "low" {
+		t.Fatalf("store reason = %q, complexity = %q", rec.Reason, rec.Complexity)
+	}
+}
+
+// highPlan is planJSON with two high signals: the planner sized it as high.
+var highPlan = strings.Replace(planJSON, `"components":"single_module","change":"localized"`, `"components":"multiple_services","change":"architectural"`, 1)
+
+func TestRunShouldUseTheComplexityProfileForIterations(t *testing.T) {
+	hs := newHarness(t, func(role string, n int, text string) reply {
+		switch role {
+		case "planner":
+			return reply{write: highPlan}
+		case "reviewer":
+			return reply{write: reviewJSON("major")}
+		}
+		return happy(role, n, text)
+	})
+	hs.r.Cfg.Complexity.High.MaxIterations = 5
+	res := hs.run(t)
+	if res.Outcome != OutcomeExhausted || res.Iterations != 5 {
+		t.Fatalf("a high plan gets the high profile's 5 iterations: got %s after %d (%s)", res.Outcome, res.Iterations, res.Reason)
+	}
+	if !strings.Contains(hs.h.prompts["implementer"][1], "iteração 2 de 5") {
+		t.Fatalf("the implementer must be told the profile's tolerance:\n%s", hs.h.prompts["implementer"][1])
+	}
+	if rec := hs.finalRun(t, res.RunID); rec.MaxIterations != 5 || rec.Complexity != "high" {
+		t.Fatalf("store must record the profile: max_iterations=%d complexity=%q", rec.MaxIterations, rec.Complexity)
+	}
+}
+
+func TestRunShouldHaltBeforeImplementingWhenTheProfileBudgetIsAlreadySpent(t *testing.T) {
+	hs := newHarness(t, func(role string, n int, text string) reply {
+		rep := happy(role, n, text)
+		if role == "planner" {
+			rep.usage = 500
+		}
+		return rep
+	})
+	hs.r.Cfg.Complexity.Low.PerIssue = 1
+	res := hs.run(t)
+	if res.Outcome != OutcomeHalted || !strings.Contains(res.Reason, "budget da issue esgotado") {
+		t.Fatalf("planning already spent the low profile's budget: got %s: %s", res.Outcome, res.Reason)
+	}
+	if len(hs.h.prompts["implementer"]) != 0 {
+		t.Fatal("the implementer must not start once the profile's budget is spent")
 	}
 }
 
@@ -400,7 +447,7 @@ func TestRunShouldHaltWhenACheckNeverFinishes(t *testing.T) {
 
 func TestRunShouldRefuseSecondConcurrentRunForSameTask(t *testing.T) {
 	hs := newHarness(t, happy)
-	if _, err := hs.st.CreateRun(context.Background(), hs.task.Repo, hs.task.Ref, "x", "omp", 3, store.KindIssue); err != nil {
+	if _, err := hs.st.CreateRun(context.Background(), hs.task.Repo, hs.task.Ref, "x", "omp", 3, 0, store.KindIssue); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := hs.r.Run(context.Background(), hs.task); err == nil {

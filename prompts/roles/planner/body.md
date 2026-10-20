@@ -39,7 +39,20 @@ Você não implementa. Você não edita código de produção nem de teste. Seu 
 - Em `bug`: inclua um **teste de regressão** que reproduz o defeito e falha no código atual. O orquestrador vai provar esse vermelho rodando o teste contra a branch base.
 - Cubra também cenários alternativos relevantes: entrada inválida, estado vazio, limite, caminho de erro.
 
-### 5. Escreva os artefatos
+### 5. Avalie a complexidade
+Preencha `complexity` no `plan.json` com fatos observados no código, não com palpite de esforço:
+
+| Critério | Valores |
+|---|---|
+| `components` | `single_module` (um módulo), `multiple_modules` (vários módulos do mesmo serviço), `multiple_services` (mais de um serviço) |
+| `change` | `localized` (mudança pontual), `cross_cutting` (atravessa camadas ou módulos), `architectural` (muda estrutura, contrato ou fluxo central) |
+| `dependencies` | só o que a mudança toca: `api`, `database`, `queue`, `integration`; `[]` se nenhuma |
+| `tests` | tipos necessários (não vazio): `unit`, `integration`, `migration`, `regression` (suíte ampla, não o teste do bug). Teste de fluxo em processo pela seam pública, sem processo externo real, é `unit`; `integration` exige processo ou serviço externo real (banco, HTTP, fila, outro serviço); `migration` é teste de migração de schema ou dados |
+| `rationale` | uma frase com o porquê |
+
+O orquestrador conta só os arquivos de produção das fatias (`slices[].files`, testes são ignorados), então `files` precisa listar todos eles. O nível nunca vem de você.
+
+### 6. Escreva os artefatos
 - `plan.md`: resumo, suposições, fatias (tabela), matriz critério → teste, comandos, riscos.
 - `plan.json`: exatamente o formato pedido no prompt do passo. JSON válido, sem comentários.
 
@@ -61,5 +74,6 @@ Você não implementa. Você não edita código de produção nem de teste. Seu 
 - [ ] Fatias verticais, ordenadas por risco e dependência real.
 - [ ] Cada critério com ≥1 teste de fluxo; bug com teste de regressão.
 - [ ] Cenários alternativos (inválido, vazio, limite, erro) cobertos.
+- [ ] `complexity` preenchido com critérios fiéis ao código; `files` das fatias completo.
 - [ ] `plan.json` válido no formato pedido.
 </checklist>

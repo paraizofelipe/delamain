@@ -59,6 +59,7 @@ type RunView struct {
 	Iteration     int         `json:"iteration" yaml:"iteration"`
 	Harness       string      `json:"harness" yaml:"harness"`
 	MaxIterations int         `json:"max_iterations" yaml:"max_iterations"` // as recorded: 0 for runs from before it was
+	Complexity    string      `json:"complexity,omitempty" yaml:"complexity,omitempty"`
 	Branch        string      `json:"branch,omitempty" yaml:"branch,omitempty"`
 	Base          string      `json:"base,omitempty" yaml:"base,omitempty"`
 	Worktree      string      `json:"worktree,omitempty" yaml:"worktree,omitempty"`
@@ -144,11 +145,9 @@ func (in *inspector) view(ctx context.Context, rec store.Run) (RunView, error) {
 		PR: rec.MRURL, Owner: Process{PID: rec.OwnerPID, Alive: in.alive(rec.OwnerPID)},
 		RunDir:    pipeline.RunDir(in.cfg.Paths.StateDir, rec.Repo, rec.ID),
 		CreatedAt: rec.CreatedAt, UpdatedAt: rec.UpdatedAt, terminal: rec.State.Terminal(),
-		Harness: rec.Harness, MaxIterations: rec.MaxIterations, iterations: rec.MaxIterations, Agents: []AgentView{},
+		Harness: rec.Harness, MaxIterations: rec.MaxIterations, Complexity: rec.Complexity, Agents: []AgentView{},
 	}
-	if v.iterations == 0 { // runs from before the maximum was recorded
-		v.iterations = in.cfg.Pipeline.MaxIterations
-	}
+	v.iterations, _ = rec.Limits(in.cfg.Pipeline.MaxIterations, in.cfg.Budget.PerIssue)
 	if v.terminal {
 		v.Result = rec.Reason
 	}
@@ -199,7 +198,8 @@ func (in *inspector) status(ctx context.Context, id int64) (RunStatus, error) {
 	if err != nil {
 		return s, err
 	}
-	b := budget.Status{Mode: in.cfg.Budget.Mode, Usage: total, PerIssue: in.cfg.Budget.PerIssue, Run: float64(total.BudgetTokens())}
+	_, perIssue := rec.Limits(in.cfg.Pipeline.MaxIterations, in.cfg.Budget.PerIssue)
+	b := budget.Status{Mode: in.cfg.Budget.Mode, Usage: total, PerIssue: perIssue, Run: float64(total.BudgetTokens())}
 	if b.Mode == config.BudgetUSD {
 		b.Run = total.CostUSD
 	}
@@ -272,12 +272,24 @@ func listTable(w io.Writer, views []RunView, all bool) error {
 		return err
 	}
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "RUN\tKIND\tREPO\tISSUE\tSTATE\tITER\tBRANCH\tAGENTS\tOWNER\tUPDATED")
+	fmt.Fprintln(tw, "RUN\tKIND\tREPO\tISSUE\tSTATE\tITER\tCOMPLEXITY\tBRANCH\tAGENTS\tOWNER\tUPDATED")
 	for _, v := range views {
-		fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			v.ID, v.Kind, filepath.Base(v.Repo), v.Issue, v.State, v.iter(), orDash(v.Branch), runningAgents(v.Agents), v.owner(), ago(v.UpdatedAt))
+		fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			v.ID, v.Kind, filepath.Base(v.Repo), v.Issue, v.State, v.iter(), v.complexity(), orDash(v.Branch), runningAgents(v.Agents), v.owner(), ago(v.UpdatedAt))
 	}
 	return tw.Flush()
+}
+
+// complexity is the run's level, "wait" until the plan classifies it, or "-" for a run that
+// ended unclassified.
+func (v RunView) complexity() string {
+	switch {
+	case v.Complexity != "":
+		return v.Complexity
+	case v.terminal:
+		return "-"
+	}
+	return "wait"
 }
 
 func newStatusCmd(load func() (config.Config, error)) *cobra.Command {
@@ -325,6 +337,7 @@ func statusTable(w io.Writer, s RunStatus) error {
 	fmt.Fprintf(tw, "HARNESS\t%s\n", orDash(v.Harness))
 	fmt.Fprintf(tw, "STATE\t%s\n", v.State)
 	fmt.Fprintf(tw, "INTERACTIONS\t%s\n", v.iter())
+	fmt.Fprintf(tw, "COMPLEXITY\t%s\n", orDash(v.Complexity))
 	if v.Branch != "" {
 		fmt.Fprintf(tw, "BRANCH\t%s (base %s)\n", v.Branch, v.Base)
 		fmt.Fprintf(tw, "WORKTREE\t%s\n", v.Worktree)

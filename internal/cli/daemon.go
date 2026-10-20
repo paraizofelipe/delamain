@@ -5,9 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -15,6 +18,7 @@ import (
 	"github.com/paraizo/delamain/internal/config"
 	"github.com/paraizo/delamain/internal/daemon"
 	"github.com/paraizo/delamain/internal/forge"
+	"github.com/paraizo/delamain/internal/notify"
 	"github.com/paraizo/delamain/internal/pipeline"
 )
 
@@ -46,6 +50,7 @@ Only one instance runs per state_dir. Ctrl+C stops it: in-flight runs end as int
 			defer unlock()
 
 			var sources []daemon.Source
+			var hosts []string
 			for _, repo := range repos {
 				fg, err := forgeFor(ctx, cfg, repo)
 				if err != nil {
@@ -55,16 +60,21 @@ Only one instance runs per state_dir. Ctrl+C stops it: in-flight runs end as int
 					return fmt.Errorf("%s: the daemon requires a GitHub or GitLab origin", repo)
 				}
 				sources = append(sources, daemon.Source{Repo: repo, Forge: fg})
+				if h := fg.Repo().Host; !slices.Contains(hosts, h) {
+					hosts = append(hosts, h)
+				}
 			}
 			st, err := openStore(ctx, cfg)
 			if err != nil {
 				return err
 			}
 			defer func() { _ = st.Close() }()
-			base, err := newRunner(cfg, st)
+			// Only the daemon is interactive: its toasts open the PR, issue or report on click.
+			base, err := newRunner(cfg, st, notify.Options{Interactive: true, ForgeHosts: hosts})
 			if err != nil {
 				return err
 			}
+			defer func() { _ = base.Notify.Close() }()
 			if err := recoverRuns(c, cfg, base); err != nil {
 				return err
 			}
@@ -77,13 +87,7 @@ Only one instance runs per state_dir. Ctrl+C stops it: in-flight runs end as int
 					r.Forge = fg
 					return r.Run(ctx, t)
 				},
-				DayExhausted: func(ctx context.Context) (string, error) {
-					s, err := meter.Today(ctx)
-					if err != nil || s.Level != budget.Hard {
-						return "", err
-					}
-					return s.Reason, nil
-				},
+				DayExhausted: dayExhausted(meter.Today, &budgetAlert{notify: base.Notify, softRatio: cfg.Budget.SoftRatio, now: time.Now}),
 			})
 			base.Log.Info("daemon started", "repos", len(sources), "max_parallel", cfg.Pipeline.MaxParallel, "poll", cfg.Daemon.PollInterval)
 			return d.Serve(ctx)
@@ -108,10 +112,11 @@ func newRecoverCmd(load func() (config.Config, error)) *cobra.Command {
 				return err
 			}
 			defer func() { _ = st.Close() }()
-			base, err := newRunner(cfg, st)
+			base, err := newRunner(cfg, st, notify.Options{})
 			if err != nil {
 				return err
 			}
+			defer func() { _ = base.Notify.Close() }()
 			return recoverRuns(c, cfg, base)
 		},
 	}
@@ -127,11 +132,36 @@ func recoverRuns(c *cobra.Command, cfg config.Config, base *pipeline.Runner) err
 		fmt.Fprintln(c.OutOrStdout(), "no orphaned run to recover")
 		return nil
 	}
+	var recovered []notify.Recovered
 	for _, res := range results {
 		fmt.Fprintf(c.OutOrStdout(), "run %d recovered:\n", res.RunID)
 		printResult(c, res)
+		rec, err := base.Store.GetRun(ctx, res.RunID)
+		if err != nil { // the toast is a courtesy: it never fails the recovery
+			base.Log.Warn("recover toast: run not found", "run", res.RunID, "err", err)
+			continue
+		}
+		recovered = append(recovered, notify.Recovered{Repo: rec.Repo, Ref: rec.IssueRef, Result: recoveredResult(res)})
+	}
+	if base.Notify != nil && len(recovered) > 0 {
+		_ = base.Notify.Notify(ctx, notify.FormatRecover(recovered))
 	}
 	return nil
+}
+
+// recoveredResult says how a recovered run ended, in the recover toast's words.
+func recoveredResult(res pipeline.Result) string {
+	switch {
+	case res.PRURL != "" && !res.Draft:
+		return "PR opened"
+	case res.PRURL != "":
+		return "draft PR"
+	case res.Outcome == pipeline.OutcomeNeedsInfo:
+		return "needs info"
+	case res.Outcome == pipeline.OutcomeHalted:
+		return "halted"
+	}
+	return "needs review" // exhausted, or approved without a PR, as the needs_human toast
 }
 
 // lockDaemon allows one daemon per state dir: two schedulers would race for the same issues.
@@ -150,4 +180,47 @@ func lockDaemon(stateDir string) (func(), error) {
 	}
 	slog.Debug("daemon lock acquired", "path", path)
 	return func() { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN); f.Close() }, nil //nolint:gosec // fd fits in int
+}
+
+// dayExhausted evaluates the daily budget on each poll: it alerts on the soft and hard levels and
+// returns the reason to start no run once the hard one is reached.
+func dayExhausted(today func(context.Context) (budget.Status, error), alert *budgetAlert) func(context.Context) (string, error) {
+	return func(ctx context.Context) (string, error) {
+		s, err := today(ctx)
+		if err != nil {
+			return "", err
+		}
+		alert.observe(ctx, s)
+		if s.Level != budget.Hard {
+			return "", nil
+		}
+		return s.Reason, nil
+	}
+}
+
+// budgetAlert notifies each daily budget level at most once a day; it forgets at midnight.
+type budgetAlert struct {
+	notify    notify.Notifier
+	softRatio float64
+	now       func() time.Time
+	day       string
+	sent      map[budget.Level]bool
+}
+
+func (a *budgetAlert) observe(ctx context.Context, s budget.Status) {
+	if a.notify == nil || s.Level == budget.OK {
+		return
+	}
+	if day := a.now().Format(time.DateOnly); day != a.day {
+		a.day, a.sent = day, map[budget.Level]bool{}
+	}
+	if a.sent[s.Level] {
+		return
+	}
+	a.sent[s.Level] = true
+	_ = a.notify.Notify(ctx, notify.FormatBudget(notify.Budget{
+		Hard: s.Level == budget.Hard, Percent: int(math.Round(a.softRatio * 100)),
+		Used: budget.Format(s.Day, s.Mode), Limit: budget.Format(s.Daily, s.Mode),
+		CostUSD: s.DayUsage.CostUSD, USD: s.Mode == config.BudgetUSD,
+	}))
 }

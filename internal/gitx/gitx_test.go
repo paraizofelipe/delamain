@@ -353,3 +353,57 @@ func TestListWorktreesShouldReportEveryCheckoutWithItsBranch(t *testing.T) {
 		t.Fatalf("main checkout = %+v", w)
 	}
 }
+
+func envValue(env []string, key string) string {
+	v := ""
+	for _, kv := range env { // the last value wins, as in exec
+		if k, val, _ := strings.Cut(kv, "="); k == key {
+			v = val
+		}
+	}
+	return v
+}
+
+func TestAgentEnvironShouldStripForgeAndGenericTokens(t *testing.T) {
+	base := []string{
+		"PATH=/usr/bin", "HOME=/home/dev",
+		"GH_TOKEN=s-gh", "GITHUB_TOKEN=s-github", "GH_ENTERPRISE_TOKEN=s-ghe", "GITHUB_ENTERPRISE_TOKEN=s-github-e",
+		"GITLAB_TOKEN=s-gitlab", "GITLAB_ACCESS_TOKEN=s-gitlab-a", "OAUTH_TOKEN=s-oauth",
+		"NPM_TOKEN=s-npm", "DEPLOY_PAT=s-pat", "DB_SECRET=s-db", "lower_token=s-lower",
+		"OPENAI_API_KEY=k-openai", "ANTHROPIC_API_KEY=k-anthropic",
+	}
+	env := AgentEnviron(base)
+	for _, kv := range env {
+		if _, v, _ := strings.Cut(kv, "="); strings.HasPrefix(v, "s-") {
+			t.Errorf("credential reached the agent: %s", kv)
+		}
+	}
+	for key, want := range map[string]string{"PATH": "/usr/bin", "HOME": "/home/dev", "OPENAI_API_KEY": "k-openai", "ANTHROPIC_API_KEY": "k-anthropic"} {
+		if got := envValue(env, key); got != want {
+			t.Errorf("%s = %q, want %q: the agent's own keys must stay", key, got, want)
+		}
+	}
+}
+
+func TestAgentEnvironShouldKeepHarnessAllowlistedKeys(t *testing.T) {
+	env := AgentEnviron([]string{"CLAUDE_CODE_OAUTH_TOKEN=c-oauth", "ANTHROPIC_AUTH_TOKEN=a-auth", "GH_TOKEN=s-gh"})
+	for key, want := range map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "c-oauth", "ANTHROPIC_AUTH_TOKEN": "a-auth"} {
+		if got := envValue(env, key); got != want {
+			t.Errorf("%s = %q, want %q: the harness needs its own credential", key, got, want)
+		}
+	}
+}
+
+func TestAgentEnvironShouldStillBlockPushes(t *testing.T) {
+	ctx := context.Background()
+	r := repo(t)
+	bare := withOrigin(t, r)
+	cmd := exec.CommandContext(ctx, "git", "-C", r, "push", "origin", "main")
+	cmd.Env = append(AgentEnviron(os.Environ()), "GIT_TERMINAL_PROMPT=0")
+	if out, err := cmd.CombinedOutput(); err == nil {
+		t.Fatalf("agent push must fail: %s", out)
+	}
+	if out, err := exec.Command("git", "--git-dir", bare, "for-each-ref").Output(); err != nil || len(out) != 0 {
+		t.Fatalf("origin must stay empty, refs: %s %v", out, err)
+	}
+}

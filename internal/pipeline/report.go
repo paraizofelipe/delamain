@@ -32,6 +32,9 @@ func renderReport(res Result, task prompts.Issue) string {
 		fmt.Fprintf(&b, "| Motivo | %s |\n", strings.ReplaceAll(res.Reason, "|", `\|`))
 	}
 	fmt.Fprintf(&b, "| Branch | `%s` (base `%s`) |\n| Worktree | `%s` |\n| Iterações | %d |\n", res.Branch, res.Base, res.Worktree, res.Iterations)
+	if res.Complexity != "" {
+		fmt.Fprintf(&b, "| Complexidade | %s |\n", res.Complexity)
+	}
 	if res.PRURL != "" {
 		fmt.Fprintf(&b, "| PR/MR | %s%s |\n", res.PRURL, map[bool]string{true: " (draft)"}[res.Draft])
 	}
