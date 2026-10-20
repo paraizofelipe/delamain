@@ -118,7 +118,9 @@ type StageData struct {
 	PlanJSONPath  string
 	Feedback      string
 	Verify        string
-	BudgetLeft    string
+	// PrevReview digests the previous iteration's review so the next one does not move the bar.
+	PrevReview string
+	BudgetLeft string
 }
 
 // SampleStageData fills every field so lint can prove each template renders.
@@ -133,12 +135,13 @@ func SampleStageData() StageData {
 		PlanJSONPath:  "/tmp/run/plan.json",
 		Feedback:      "- go test: TestX failed",
 		Verify:        "lint ok · test 10 passed",
+		PrevReview:    "- [minor · standards · julgamento] calc.go:7 — nome misterioso",
 		BudgetLeft:    "1.2M tokens",
 	}
 }
 
 // Delimiter tags wrapping untrusted text inside stage templates.
-var delimiters = []string{"issue", "feedback", "verify"}
+var delimiters = []string{"issue", "feedback", "verify", "prev_review"}
 
 // neutralize stops untrusted text (issue bodies, tool output) from closing a delimiter
 // tag early and smuggling instructions outside it.
@@ -164,6 +167,7 @@ func (s *Set) Render(stage string, data StageData) (string, error) {
 	data.Issue.Body = neutralize(data.Issue.Body)
 	data.Feedback = neutralize(data.Feedback)
 	data.Verify = neutralize(data.Verify)
+	data.PrevReview = neutralize(data.PrevReview)
 	var out bytes.Buffer
 	if err := tmpl.Execute(&out, data); err != nil {
 		return "", fmt.Errorf("stage %s: %w", stage, err)
