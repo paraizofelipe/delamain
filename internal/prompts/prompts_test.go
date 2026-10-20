@@ -323,7 +323,7 @@ func TestEmbeddedReviewPRStageShouldRenderThePRThreadsAndMemory(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		d.ArtifactPath, "git -C " + d.Repo.Worktree + " diff " + d.PR.BaseSHA + "...HEAD", d.PR.HeadSHA, d.PR.URL,
+		d.ArtifactPath, "git -C " + d.Repo.Worktree + " diff --no-ext-diff --no-textconv " + d.PR.BaseSHA + "...HEAD", d.PR.HeadSHA, d.PR.URL,
 		d.PR.Title, d.PR.Body, d.PR.Author, d.LinkedIssues[0].Title, d.Threads, d.Memory,
 		"delamain-spec-reviewer", "delamain-standards-reviewer", "delamain-security-reviewer", "delamain-review-verifier",
 	} {

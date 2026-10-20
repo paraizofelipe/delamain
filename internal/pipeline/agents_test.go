@@ -95,10 +95,11 @@ func TestClaudeAgentsShouldConfineASessionToReadingItsCheckout(t *testing.T) {
 		}
 	}
 	// Exact commands only: a prefix rule ("diff:*") would allow --no-index (read any file) and
-	// --output=<path> (write any file).
+	// --output=<path> (write any file). The diff runs no external diff nor textconv: the PR's
+	// .gitattributes would pick which of the operator's drivers runs on its files.
 	want := []string{
 		"Read(//wt/review-pr-5-1/**)",
-		"Bash(git -C /wt/review-pr-5-1 diff b4se...HEAD)", "Bash(git -C /wt/review-pr-5-1 log b4se..HEAD --oneline)",
+		"Bash(git -C /wt/review-pr-5-1 diff --no-ext-diff --no-textconv b4se...HEAD)", "Bash(git -C /wt/review-pr-5-1 log b4se..HEAD --oneline)",
 		"Edit(//run/5/review.json)",
 	}
 	if len(allowed) != len(want) {

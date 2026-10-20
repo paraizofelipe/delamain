@@ -124,7 +124,7 @@ func TestRunReviewShouldPostCommentEventWithInlineAndSummary(t *testing.T) {
 		t.Fatalf("the cursor must remember the reviewed head: %+v %v", c, err)
 	}
 	prompt := strings.Join(rh.h.prompts["pr-reviewer"], "\n")
-	for _, want := range []string{" diff " + prBase + "...HEAD", "Add parse", "por que um novo pacote?"} {
+	for _, want := range []string{" diff --no-ext-diff --no-textconv " + prBase + "...HEAD", "Add parse", "por que um novo pacote?"} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("the pr-reviewer prompt must carry %q", want)
 		}
@@ -537,7 +537,7 @@ func TestRunReviewShouldStartThePRReviewerOutsideThePRCheckout(t *testing.T) {
 		t.Fatalf("the agent's cwd %s must be a delamain-owned dir under the run dir %s", start.Dir, res.RunDir)
 	}
 	prompt := strings.Join(rh.h.prompts["pr-reviewer"], "\n")
-	if !strings.Contains(prompt, "git -C "+res.Worktree+" diff "+prBase+"...HEAD") {
+	if !strings.Contains(prompt, "git -C "+res.Worktree+" diff --no-ext-diff --no-textconv "+prBase+"...HEAD") {
 		t.Fatalf("the prompt must point git at the PR checkout explicitly:\n%s", prompt)
 	}
 }
@@ -621,7 +621,7 @@ func TestRunReviewShouldConfineThePRReviewerToReadingTheCheckout(t *testing.T) {
 	}
 	// The only commands the confinement allows must be the ones the prompt asks for, verbatim.
 	prompt := strings.Join(rh.h.prompts["pr-reviewer"], "\n")
-	for _, cmd := range []string{"git -C " + res.Worktree + " diff " + prBase + "...HEAD", "git -C " + res.Worktree + " log " + prBase + "..HEAD --oneline"} {
+	for _, cmd := range []string{"git -C " + res.Worktree + " diff --no-ext-diff --no-textconv " + prBase + "...HEAD", "git -C " + res.Worktree + " log " + prBase + "..HEAD --oneline"} {
 		if !strings.Contains(prompt, "`"+cmd+"`") {
 			t.Errorf("the prompt must give %q exactly as the confinement allows it", cmd)
 		}
