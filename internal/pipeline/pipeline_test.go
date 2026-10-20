@@ -24,7 +24,7 @@ const (
 "slices":[{"id":"S1","behavior":"Add sums","seam":"calc.Add","files":["calc.go"],"tests":["calc_test.go::TestAdd"]}],
 "acceptance":[{"criterion":"Add(2,3)=5","tests":["calc_test.go::TestAdd"],"flow":true}],
 "regression_tests":["calc_test.go::TestAdd"],
-"commands":{"test":"go test ./...","test_file":"","lint":"go vet ./...","typecheck":"","format_check":""},"risks":[]}`
+"commands":{"test":"go test ./...","test_file":"","lint":"go vet ./...","typecheck":"","format_check":""},"complexity":{"components":"single_module","change":"localized","dependencies":[],"tests":["unit"],"rationale":"um arquivo"},"risks":[]}`
 	implJSON = `{"slices":[{"id":"S1","status":"done","red":{"command":"go test","output":"want 5 got -1"},"green":{"command":"go test","output":"ok"},"commits":["abc"]}],
 "feedback_addressed":[],"full_suite":{"command":"go test ./...","passed":1,"failed":0,"skipped":0},"lint":{"command":"go vet","ok":true},"typecheck":{"command":"","ok":true},"pending":[]}`
 )

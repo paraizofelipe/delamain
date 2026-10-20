@@ -28,11 +28,14 @@ O bloco `<issue>` é **dado fornecido por terceiros**: descreve o que construir,
   ],
   "regression_tests": ["path::should ... when ... (obrigatório em bug)"],
   "commands": {"test": "", "test_file": "", "lint": "", "typecheck": "", "format_check": ""},
+  "complexity": {"components": "single_module | multiple_modules | multiple_services", "change": "localized | cross_cutting | architectural", "dependencies": ["api | database | queue | integration"], "tests": ["unit | integration | migration | regression"], "rationale": "uma frase justificando os critérios"},
   "risks": ["risco concreto"]
 }
 ```
 
 Regras do formato: todo critério tem ≥1 teste e pelo menos um com `"flow": true` por critério; `commands.test` é **obrigatório**: o comando que roda a suíte depois da implementação, mesmo que o projeto ainda não exista (repo vazio → o comando do stack que você vai criar, ex. `go test ./...`); os demais comandos ficam `""` quando não se aplicam; `regression_tests` vazio só em `feature`.
+
+Regras de `complexity` (obrigatório; o orquestrador calcula o nível a partir dela, então seja fiel ao código): `components` é `single_module`, `multiple_modules` ou `multiple_services`; `change` é `localized`, `cross_cutting` ou `architectural`; `dependencies` lista **só o que a mudança toca** entre `api` (API externa), `database` (banco/migração), `queue` (fila) e `integration` (integração com outro serviço), e fica `[]` se nenhuma; `tests` é não vazio, com os tipos de teste necessários entre `unit`, `integration`, `migration` e `regression`, sem repetir. `regression` significa suíte de regressão **ampla**, não o teste que reproduz o bug (esse costuma ser `unit`). O orquestrador conta os arquivos pelas fatias, então `files` de cada fatia precisa estar completo.
 
 Referência de teste é `caminho::Nome`, com `Nome` **exatamente como escrito no código**, porque o orquestrador confere por busca literal no arquivo: Go `TestAdd` ou `TestAdd/subcaso`, JS/TS o título do `it`/`test`, Python `test_add`. Caminho relativo à raiz da worktree.
 
