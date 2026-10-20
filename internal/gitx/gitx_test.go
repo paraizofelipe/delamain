@@ -439,22 +439,22 @@ func commitFile(t *testing.T, dir, name, body string) string {
 
 // prOrigin gives a repository an origin holding main and a PR head under ref, as a forge
 // exposes PRs and fork PRs: the head commit is not on any branch of the repository.
-func prOrigin(t *testing.T, ref string) (r, bare, head string) {
+func prOrigin(t *testing.T, ref string) (r, head string) {
 	t.Helper()
 	r = repo(t)
-	bare = withOrigin(t, r)
+	withOrigin(t, r)
 	gitIn(t, r, "push", "-q", "origin", "main")
 	gitIn(t, r, "switch", "-q", "-c", "contributor")
 	head = commitFile(t, r, "feature.go", "package feature\n")
 	gitIn(t, r, "push", "-q", "origin", "HEAD:"+ref)
 	gitIn(t, r, "switch", "-q", "main")
 	gitIn(t, r, "branch", "-q", "-D", "contributor")
-	return r, bare, head
+	return r, head
 }
 
 func TestFetchPRHeadShouldFetchGitHubPullRefIntoDelamainRef(t *testing.T) {
 	g, ctx := New(), context.Background()
-	r, _, head := prOrigin(t, "refs/pull/7/head")
+	r, head := prOrigin(t, "refs/pull/7/head")
 	mainBefore := gitIn(t, r, "rev-parse", "main")
 
 	sha, err := g.FetchPRHead(ctx, r, forge.GitHub, 7)
@@ -477,7 +477,7 @@ func TestFetchPRHeadShouldFetchGitHubPullRefIntoDelamainRef(t *testing.T) {
 
 func TestFetchPRHeadShouldFetchGitLabMergeRequestRef(t *testing.T) {
 	g, ctx := New(), context.Background()
-	r, _, head := prOrigin(t, "refs/merge-requests/12/head")
+	r, head := prOrigin(t, "refs/merge-requests/12/head")
 
 	sha, err := g.FetchPRHead(ctx, r, forge.GitLab, 12)
 	if err != nil {
@@ -493,7 +493,7 @@ func TestFetchPRHeadShouldFetchGitLabMergeRequestRef(t *testing.T) {
 
 func TestFetchPRHeadShouldFollowAForcePushedPRHead(t *testing.T) {
 	g, ctx := New(), context.Background()
-	r, _, first := prOrigin(t, "refs/pull/7/head")
+	r, first := prOrigin(t, "refs/pull/7/head")
 	if _, err := g.FetchPRHead(ctx, r, forge.GitHub, 7); err != nil {
 		t.Fatal(err)
 	}
@@ -514,7 +514,7 @@ func TestFetchPRHeadShouldFollowAForcePushedPRHead(t *testing.T) {
 
 func TestFetchPRHeadShouldFailWhenThePRRefDoesNotExist(t *testing.T) {
 	g, ctx := New(), context.Background()
-	r, _, _ := prOrigin(t, "refs/pull/7/head")
+	r, _ := prOrigin(t, "refs/pull/7/head")
 	if sha, err := g.FetchPRHead(ctx, r, forge.GitHub, 8); err == nil {
 		t.Fatalf("a missing PR must fail, got %q", sha)
 	}
@@ -602,7 +602,7 @@ func TestChangedLinesShouldReturnOnlyAddedOrModifiedHunksOfTheHead(t *testing.T)
 
 func TestDeleteRefShouldRemoveThePRRef(t *testing.T) {
 	g, ctx := New(), context.Background()
-	r, _, _ := prOrigin(t, "refs/pull/7/head")
+	r, _ := prOrigin(t, "refs/pull/7/head")
 	if _, err := g.FetchPRHead(ctx, r, forge.GitHub, 7); err != nil {
 		t.Fatal(err)
 	}

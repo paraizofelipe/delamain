@@ -123,7 +123,7 @@ func renderReviewReport(res Result, p *prRun) string {
 		return b.String()
 	}
 	rv := p.review
-	fmt.Fprintf(&b, "## Resumo\n\nAderência: `%s` · veredito informativo: `%s`\n\n%s\n\n", rv.Adherence, rv.Verdict, rv.Summary)
+	fmt.Fprintf(&b, "## Resumo\n\nAderência: `%s` · veredito do agente: `%s`\n\n%s\n\n", rv.Adherence, rv.Verdict, rv.Summary)
 	b.WriteString("## Achados\n\n")
 	for _, a := range rv.Axes {
 		for _, f := range a.Findings {
