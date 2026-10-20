@@ -91,6 +91,45 @@ func renderReport(res Result, task prompts.Issue) string {
 	return b.String()
 }
 
+func renderReviewReport(res Result, p *prRun) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "# delamain review %d — PR/MR #%d %s\n\n", res.RunID, p.pr.Number, p.pr.Title)
+	fmt.Fprintf(&b, "| Campo | Valor |\n|---|---|\n")
+	fmt.Fprintf(&b, "| Resultado | **%s** |\n", res.Outcome)
+	if res.Reason != "" {
+		fmt.Fprintf(&b, "| Motivo | %s |\n", strings.ReplaceAll(res.Reason, "|", `\|`))
+	}
+	fmt.Fprintf(&b, "| PR/MR | %s |\n| Head | `%s` (base `%s` em `%s`) |\n", p.pr.URL, p.pr.HeadSHA, p.pr.BaseRef, p.pr.BaseSHA)
+	if res.Review != nil {
+		fmt.Fprintf(&b, "| Postado | %d inline · %d no resumo · %d descartados |\n", res.Review.Inline, res.Review.InSummary, res.Review.Dropped)
+	}
+	if res.Budget != "" {
+		fmt.Fprintf(&b, "| Budget | %s |\n", res.Budget)
+	}
+	b.WriteString("\n")
+	for _, w := range res.Warnings {
+		fmt.Fprintf(&b, "> ⚠️ %s\n", w)
+	}
+	if p.review == nil {
+		return b.String()
+	}
+	rv := p.review
+	fmt.Fprintf(&b, "## Resumo\n\nAderência: `%s` · veredito informativo: `%s`\n\n%s\n\n", rv.Adherence, rv.Verdict, rv.Summary)
+	b.WriteString("## Achados\n\n")
+	for _, a := range rv.Axes {
+		for _, f := range a.Findings {
+			b.WriteString(findingLine(a.Axis, f) + "\n")
+		}
+	}
+	if len(rv.Dropped) > 0 {
+		b.WriteString("\n## Descartados\n\n")
+		for _, d := range rv.Dropped {
+			fmt.Fprintf(&b, "- `%s:%d` — %s (motivo: %s)\n", d.File, d.Line, flat(d.Message), flat(d.Reason))
+		}
+	}
+	return b.String()
+}
+
 func forgePROptions(ru *run, draft bool) forge.PROptions {
 	return forge.PROptions{
 		Head: ru.repo.Branch, Base: strings.TrimPrefix(ru.repo.Base, "origin/"),

@@ -47,6 +47,11 @@ type Git interface {
 	RemoveWorktree(ctx context.Context, repo, path string) error
 	Push(ctx context.Context, dir, branch, base string) error
 	RemoteBranchExists(ctx context.Context, repo, branch string) (bool, error)
+	FetchPRHead(ctx context.Context, repo string, kind forge.Kind, n int) (string, error)
+	FetchRef(ctx context.Context, repo, ref string) error
+	ShowFile(ctx context.Context, repo, ref, path string) ([]byte, error)
+	ChangedLines(ctx context.Context, dir, base string) (map[string][]gitx.LineRange, error)
+	DeleteRef(ctx context.Context, repo, ref string) error
 }
 
 type Outcome string
@@ -56,6 +61,8 @@ const (
 	OutcomeExhausted Outcome = "exhausted"  // max iterations reached without approval
 	OutcomeHalted    Outcome = "halted"     // stopped by a guardrail or an infrastructure failure
 	OutcomeNeedsInfo Outcome = "needs_info" // preflight rejected the task; nothing was created
+	OutcomeReviewed  Outcome = "reviewed"   // the PR review is posted (or was already, comment by comment)
+	OutcomeSkipped   Outcome = "skipped"    // nothing to review: PR not open or head already reviewed
 )
 
 type Result struct {
@@ -81,6 +88,8 @@ type Result struct {
 	Budget string
 	// CommandSources says where each gate command came from: repo, detectado or planner.
 	CommandSources map[string]string
+	// Review is what a PR review posted; nil for issue runs.
+	Review *ReviewSummary
 }
 
 // Iteration records what happened in one implement → verify → review round.
@@ -152,6 +161,8 @@ type run struct {
 	budget  budget.Status
 	// recovered marks a run finalized by Recover after its process died.
 	recovered bool
+	// pr is set on PR review runs only.
+	pr *prRun
 }
 
 // Run executes the task end to end. A non-nil error means the run could not even be recorded;
@@ -627,7 +638,11 @@ func (r *Runner) record(ctx context.Context, ru *run) error {
 	if ru.dir != "" {
 		if err := os.MkdirAll(ru.dir, 0o700); err == nil {
 			res.ReportPath = filepath.Join(ru.dir, "report.md")
-			if err := os.WriteFile(res.ReportPath, []byte(renderReport(*res, ru.task)), 0o600); err != nil {
+			report := renderReport(*res, ru.task)
+			if ru.pr != nil {
+				report = renderReviewReport(*res, ru.pr)
+			}
+			if err := os.WriteFile(res.ReportPath, []byte(report), 0o600); err != nil {
 				ru.log.Warn("could not write report", "err", err)
 			}
 		}

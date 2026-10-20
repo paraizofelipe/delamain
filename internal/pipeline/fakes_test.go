@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -15,6 +16,7 @@ import (
 	"github.com/paraizo/delamain/internal/agent"
 	"github.com/paraizo/delamain/internal/budget"
 	"github.com/paraizo/delamain/internal/forge"
+	"github.com/paraizo/delamain/internal/gitx"
 	"github.com/paraizo/delamain/internal/herdr"
 	"github.com/paraizo/delamain/internal/notify"
 )
@@ -284,10 +286,20 @@ type fakeGit struct {
 	redproof    []string // log of red-proof git operations
 	discarded   []string
 	discardErr  error
+	// PR review state.
+	prHead     string                      // SHA FetchPRHead returns; "" returns head
+	fetchedPR  []string                    // "<kind> <n>" per FetchPRHead call
+	fetchedRef []string                    // FetchRef calls
+	detached   []string                    // refs AddDetachedWorktree checked out
+	onDetached func(path string)           // seeds a detached checkout (e.g. the PR's .delamain.yaml)
+	files      map[string]string           // "<ref>:<path>" -> content ShowFile returns
+	shown      []string                    // "<ref>:<path>" per ShowFile call
+	lines      map[string][]gitx.LineRange // ChangedLines result
+	deleted    []string                    // refs DeleteRef removed
 }
 
 func newFakeGit() *fakeGit {
-	return &fakeGit{head: "aaaaaaaa", existing: map[string]bool{}, remote: map[string]bool{}}
+	return &fakeGit{head: "aaaaaaaa", existing: map[string]bool{}, remote: map[string]bool{}, files: map[string]string{}}
 }
 
 func (g *fakeGit) commit(msg string) {
@@ -324,7 +336,14 @@ func (g *fakeGit) AddWorktree(_ context.Context, _, path, branch, _ string) erro
 
 func (g *fakeGit) AddDetachedWorktree(_ context.Context, _, path, ref string) error {
 	g.redproof = append(g.redproof, "add "+ref)
-	return os.MkdirAll(path, 0o700)
+	g.detached = append(g.detached, ref)
+	if err := os.MkdirAll(path, 0o700); err != nil {
+		return err
+	}
+	if g.onDetached != nil {
+		g.onDetached(path)
+	}
+	return nil
 }
 func (g *fakeGit) CheckoutFiles(_ context.Context, _, ref string, files []string) error {
 	g.redproof = append(g.redproof, "checkout "+ref+" "+strings.Join(files, ","))
@@ -369,6 +388,36 @@ func (g *fakeGit) Push(_ context.Context, _, branch, _ string) error {
 	return nil
 }
 
+func (g *fakeGit) FetchPRHead(_ context.Context, _ string, kind forge.Kind, n int) (string, error) {
+	g.fetchedPR = append(g.fetchedPR, fmt.Sprintf("%s %d", kind, n))
+	if g.prHead != "" {
+		return g.prHead, nil
+	}
+	return g.head, nil
+}
+
+func (g *fakeGit) FetchRef(_ context.Context, _, ref string) error {
+	g.fetchedRef = append(g.fetchedRef, ref)
+	return nil
+}
+
+func (g *fakeGit) ShowFile(_ context.Context, _, ref, path string) ([]byte, error) {
+	g.shown = append(g.shown, ref+":"+path)
+	if body, ok := g.files[ref+":"+path]; ok {
+		return []byte(body), nil
+	}
+	return nil, fs.ErrNotExist
+}
+
+func (g *fakeGit) ChangedLines(context.Context, string, string) (map[string][]gitx.LineRange, error) {
+	return g.lines, nil
+}
+
+func (g *fakeGit) DeleteRef(_ context.Context, _, ref string) error {
+	g.deleted = append(g.deleted, ref)
+	return nil
+}
+
 func (g *fakeGit) RemoteBranchExists(_ context.Context, _, branch string) (bool, error) {
 	return g.remote[branch], nil
 }
@@ -382,9 +431,18 @@ type fakeForge struct {
 	relabels   [][2][]string // {add, remove}
 	relabelErr error
 	issues     map[int]forge.Issue
+	// PR review state.
+	kind    forge.Kind // "" is GitHub
+	pr      forge.PRDetail
+	linked  []forge.Issue
+	threads []forge.Thread
+	posted  []forge.ReviewOptions
 }
 
 func (f *fakeForge) Repo() forge.Repo {
+	if f.kind == forge.GitLab {
+		return forge.Repo{Kind: forge.GitLab, Host: "gitlab.com", Path: "acme/api"}
+	}
 	return forge.Repo{Kind: forge.GitHub, Host: "github.com", Path: "acme/api"}
 }
 func (f *fakeForge) Issue(_ context.Context, n int) (forge.Issue, error) {
@@ -410,17 +468,23 @@ func (f *fakeForge) Relabel(_ context.Context, _ int, add, remove []string) erro
 	f.relabels = append(f.relabels, [2][]string{add, remove})
 	return f.relabelErr
 }
-func (f *fakeForge) PRView(context.Context, int) (forge.PRDetail, error) {
-	return forge.PRDetail{}, nil
+func (f *fakeForge) PRView(_ context.Context, n int) (forge.PRDetail, error) {
+	if f.pr.Number != n {
+		return forge.PRDetail{}, &forge.APIError{Status: 404}
+	}
+	return f.pr, nil
 }
-func (f *fakeForge) ListPRs(context.Context, string) ([]forge.PRDetail, error)  { return nil, nil }
-func (f *fakeForge) LinkedIssues(context.Context, int) ([]forge.Issue, error)   { return nil, nil }
-func (f *fakeForge) Threads(context.Context, int) ([]forge.Thread, error)       { return nil, nil }
-func (f *fakeForge) PostReview(context.Context, int, forge.ReviewOptions) error { return nil }
-func (f *fakeForge) PRComment(context.Context, int, string) error               { return nil }
-func (f *fakeForge) Reply(context.Context, int, string, string) error           { return nil }
-func (f *fakeForge) ResolveThread(context.Context, int, string) error           { return nil }
-func (f *fakeForge) RelabelPR(context.Context, int, []string, []string) error   { return nil }
+func (f *fakeForge) ListPRs(context.Context, string) ([]forge.PRDetail, error) { return nil, nil }
+func (f *fakeForge) LinkedIssues(context.Context, int) ([]forge.Issue, error)  { return f.linked, nil }
+func (f *fakeForge) Threads(context.Context, int) ([]forge.Thread, error)      { return f.threads, nil }
+func (f *fakeForge) PostReview(_ context.Context, _ int, o forge.ReviewOptions) error {
+	f.posted = append(f.posted, o)
+	return nil
+}
+func (f *fakeForge) PRComment(context.Context, int, string) error             { return nil }
+func (f *fakeForge) Reply(context.Context, int, string, string) error         { return nil }
+func (f *fakeForge) ResolveThread(context.Context, int, string) error         { return nil }
+func (f *fakeForge) RelabelPR(context.Context, int, []string, []string) error { return nil }
 
 // fakeNotifier records every toast and how many issue comments existed when it was sent.
 type fakeNotifier struct {
