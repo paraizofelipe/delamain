@@ -177,6 +177,9 @@ func (r *Runner) reviewPR(ctx context.Context, ru *run, p *prRun) error {
 		return haltf("não foi possível ler as discussões do PR/MR #%d: %v", pr.Number, err)
 	}
 	p.threads = threads
+	if r.ForgeUser == "" {
+		ru.log.Warn("forge user unknown: no comment counts as already posted", "pr", pr.Number)
+	}
 	linked, err := r.Forge.LinkedIssues(ctx, pr.Number)
 	if err != nil {
 		ru.log.Warn("could not read linked issues", "pr", pr.Number, "err", err)
@@ -224,7 +227,7 @@ func (r *Runner) reviewPR(ctx context.Context, ru *run, p *prRun) error {
 	if err := r.setState(ctx, ru, store.StateDeliver); err != nil {
 		return err
 	}
-	opts, sum := reviewOptions(ru.rec.ID, pr, review, lines, postedKeys(threads))
+	opts, sum := reviewOptions(ru.rec.ID, pr, review, lines, postedKeys(threads, r.ForgeUser))
 	if opts.Summary != "" || len(opts.Comments) > 0 {
 		if err := r.Forge.PostReview(ctx, pr.Number, opts); err != nil {
 			return haltf("falha ao postar a review no PR/MR #%d: %v", pr.Number, err)
@@ -318,11 +321,19 @@ func inDiff(ranges []gitx.LineRange, line int) bool {
 	return false
 }
 
-// postedKeys are the marker keys of every comment delamain already left on the PR.
-func postedKeys(ts []forge.Thread) map[string]bool {
+// postedKeys are the marker keys of the comments delamain (user) already left on the PR. Markers
+// are public and keys predictable, so a marker in anyone else's comment is ignored: it could
+// otherwise suppress the review. Without a known user nothing counts as posted.
+func postedKeys(ts []forge.Thread, user string) map[string]bool {
 	keys := map[string]bool{}
+	if user == "" {
+		return keys
+	}
 	for _, t := range ts {
 		for _, c := range t.Comments {
+			if !strings.EqualFold(c.Author, user) {
+				continue
+			}
 			if m, ok := forge.ParseMarker(c.Body); ok {
 				keys[m.Key] = true
 			}

@@ -117,7 +117,9 @@ type Runner struct {
 	PromptsTarget prompts.Target
 	// Forge opens the PR/MR and updates the issue; nil keeps the work local (repo without origin).
 	Forge forge.Forge
-	Log   *slog.Logger
+	// ForgeUser is the login Forge posts as; only its comments' markers count as already posted.
+	ForgeUser string
+	Log       *slog.Logger
 	// LookPath finds optional tools such as gitleaks (default exec.LookPath).
 	LookPath func(string) (string, error)
 	// Alive reports whether a run's owner process still exists (default: signal 0).

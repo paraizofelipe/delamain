@@ -56,7 +56,12 @@ Exit codes: 0 reviewed or skipped · 1 interrupted.`,
 			if fg == nil {
 				return errors.New("review requires a GitHub or GitLab origin")
 			}
-			res, err := reviewPR(c.Context(), cfg, repo, pr, fg)
+			// Only comments by this login count as delamain's own when deduplicating.
+			id, err := forgeAuth(c.Context(), cfg, repo)
+			if err != nil {
+				return fmt.Errorf("could not identify the forge user that posts the review: %w", err)
+			}
+			res, err := reviewPR(c.Context(), cfg, repo, pr, fg, id.Login)
 			if err != nil {
 				return err
 			}
@@ -75,7 +80,7 @@ Exit codes: 0 reviewed or skipped · 1 interrupted.`,
 	return cmd
 }
 
-func reviewPR(ctx context.Context, cfg config.Config, repo string, pr int, fg forge.Forge) (pipeline.Result, error) {
+func reviewPR(ctx context.Context, cfg config.Config, repo string, pr int, fg forge.Forge, user string) (pipeline.Result, error) {
 	st, err := openStore(ctx, cfg)
 	if err != nil {
 		return pipeline.Result{}, err
@@ -86,7 +91,7 @@ func reviewPR(ctx context.Context, cfg config.Config, repo string, pr int, fg fo
 		return pipeline.Result{}, err
 	}
 	defer func() { _ = r.Notify.Close() }()
-	r.Forge = fg
+	r.Forge, r.ForgeUser = fg, user
 	return r.RunReview(ctx, repo, pr)
 }
 

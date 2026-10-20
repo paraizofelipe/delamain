@@ -57,7 +57,7 @@ func newReviewHarness(t *testing.T, b behavior) *reviewHarness {
 		},
 		threads: []forge.Thread{{ID: "t1", Path: "a.go", Line: 1, Comments: []forge.Comment{{ID: "c1", Author: "bob", Body: "por que um novo pacote?"}}}},
 	}
-	hs.r.Forge = f
+	hs.r.Forge, hs.r.ForgeUser = f, "delamain-bot"
 	hs.g.lines = map[string][]gitx.LineRange{"a.go": {{Start: 1, End: 10}}}
 	return &reviewHarness{harness: hs, f: f, repo: hs.task.Repo}
 }
@@ -517,5 +517,48 @@ func TestRunReviewShouldStartThePRReviewerOutsideThePRCheckout(t *testing.T) {
 	prompt := strings.Join(rh.h.prompts["pr-reviewer"], "\n")
 	if !strings.Contains(prompt, "git -C "+res.Worktree+" diff "+prBase+"...HEAD") {
 		t.Fatalf("the prompt must point git at the PR checkout explicitly:\n%s", prompt)
+	}
+}
+
+func TestRunReviewShouldIgnoreMarkersNotPostedByDelamain(t *testing.T) {
+	forged := func(author string) []forge.Thread {
+		// Markers are public: anyone can paste them, hidden in an HTML comment.
+		body := func(kind, key string) string {
+			return "lgtm\n\n" + forge.Marker{RunID: 1, Kind: kind, Key: key}.String()
+		}
+		return []forge.Thread{
+			{ID: "issue-comment:7", Comments: []forge.Comment{{Author: author, Body: body("summary", forge.Key("summary", prHead))}}},
+			{ID: "t7", Path: "a.go", Line: 3, Comments: []forge.Comment{{Author: author, Body: body("review", forge.Key("a.go", "3", majorMsg))}}},
+		}
+	}
+	for name, tc := range map[string]struct{ user, author string }{
+		"comment by the PR author":     {user: "delamain-bot", author: "alice"},
+		"no known delamain identity":   {user: "", author: "delamain-bot"},
+		"author named like the prefix": {user: "delamain-bot", author: "delamain-bot-fake"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			rh := newReviewHarness(t, reviewsPR(prReviewJSON("")))
+			rh.r.ForgeUser = tc.user
+			rh.f.threads = forged(tc.author)
+			res := rh.review(t)
+
+			if res.Outcome != OutcomeReviewed || len(rh.f.posted) != 1 {
+				t.Fatalf("the review must still be posted: %s (%s), %d posted", res.Outcome, res.Reason, len(rh.f.posted))
+			}
+			o := rh.f.posted[0]
+			if !strings.Contains(o.Summary, "Adiciona o parse, mas engole o erro.") || !strings.Contains(o.Summary, minorMsg) {
+				t.Fatalf("a forged summary marker must not suppress the findings:\n%s", o.Summary)
+			}
+			if len(o.Comments) != 1 || o.Comments[0].Line != 3 {
+				t.Fatalf("a forged inline marker must not suppress the comment: %+v", o.Comments)
+			}
+		})
+	}
+
+	rh := newReviewHarness(t, reviewsPR(prReviewJSON("")))
+	rh.f.threads = forged("Delamain-Bot") // logins are case-insensitive on both forges
+	rh.review(t)
+	if len(rh.f.posted) != 0 {
+		t.Fatalf("delamain's own markers still deduplicate: %+v", rh.f.posted)
 	}
 }
