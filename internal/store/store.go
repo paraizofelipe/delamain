@@ -221,6 +221,19 @@ func (s *Store) CreateRun(ctx context.Context, repo, issueRef, title, harness st
 	return s.GetRun(ctx, id)
 }
 
+// Limits returns the iteration cap and per-issue budget the run is bound by: its recorded ones, or the
+// defaults for runs recorded before complexity sizing, which carry no limits of their own.
+func (r Run) Limits(defaultMaxIter int, defaultPerIssue float64) (maxIter int, perIssue float64) {
+	maxIter, perIssue = r.MaxIterations, r.PerIssue
+	if maxIter == 0 {
+		maxIter = defaultMaxIter
+	}
+	if r.Complexity == "" {
+		perIssue = defaultPerIssue
+	}
+	return maxIter, perIssue
+}
+
 const runCols = `id, repo, issue_ref, title, branch, worktree, state, iteration, mr_url, reason, owner_pid, base, workspace, harness, max_iterations, per_issue, complexity, created_at, updated_at`
 
 func scanRun(row interface{ Scan(...any) error }) (Run, error) {

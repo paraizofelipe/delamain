@@ -73,14 +73,7 @@ func (r *Runner) recoverRun(ctx context.Context, rec store.Run) (Result, error) 
 	if err != nil {
 		return res, err
 	}
-	// Runs recorded before complexity sizing carry no limits of their own: use the config's.
-	maxIter, perIssue := rec.MaxIterations, rec.PerIssue
-	if maxIter == 0 {
-		maxIter = r.Cfg.Pipeline.MaxIterations
-	}
-	if rec.Complexity == "" {
-		perIssue = r.Cfg.Budget.PerIssue
-	}
+	maxIter, perIssue := rec.Limits(r.Cfg.Pipeline.MaxIterations, r.Cfg.Budget.PerIssue)
 	ru := &run{
 		rec: rec, task: prompts.Issue{Ref: t.Ref, Title: t.Title, Kind: t.Kind},
 		dir: r.runDir(rec.Repo, rec.ID), agents: map[string]Agent{},

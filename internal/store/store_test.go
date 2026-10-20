@@ -324,3 +324,14 @@ func TestClaimRunShouldTransferOwnershipOnlyFromTheExpectedOwner(t *testing.T) {
 		t.Fatalf("owner = %d", got.OwnerPID)
 	}
 }
+
+func TestRunLimitsShouldFallBackToTheDefaultsUntilClassified(t *testing.T) {
+	old := Run{}
+	if it, pi := old.Limits(3, 2e6); it != 3 || pi != 2e6 {
+		t.Errorf("unclassified run = %d, %v; want the defaults", it, pi)
+	}
+	classified := Run{MaxIterations: 5, PerIssue: 4e6, Complexity: "high"}
+	if it, pi := classified.Limits(3, 2e6); it != 5 || pi != 4e6 {
+		t.Errorf("classified run = %d, %v; want the recorded values", it, pi)
+	}
+}

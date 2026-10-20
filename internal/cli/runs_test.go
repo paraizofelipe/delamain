@@ -12,6 +12,8 @@ import (
 
 	"go.yaml.in/yaml/v3"
 
+	"github.com/paraizo/delamain/internal/budget"
+	"github.com/paraizo/delamain/internal/config"
 	"github.com/paraizo/delamain/internal/gitx"
 	"github.com/paraizo/delamain/internal/store"
 )
@@ -348,5 +350,55 @@ func TestWithinShouldOnlyAcceptPathsStrictlyInsideTheDir(t *testing.T) {
 		if got := within("/wt/app", path); got != want {
 			t.Errorf("within(/wt/app, %s) = %v", path, got)
 		}
+	}
+}
+
+func TestStatusShouldShowTheComplexityAndItsPerIssueBudget(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	if err := os.WriteFile(f.cfgFile, []byte("paths:\n  state_dir: "+f.stateDir+"\n  worktrees_dir: "+f.wtDir+"\nbudget:\n  per_issue: 2000000\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rec, err := f.st.CreateRun(ctx, f.repo, "#1", "Fix #1", "omp", 3, 2e6)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec.State, rec.Iteration, rec.Complexity, rec.PerIssue, rec.MaxIterations = store.StateImplement, 1, "high", 4e6, 5
+	if err := f.st.UpdateRun(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+	plain, err := f.st.CreateRun(ctx, f.repo, "#2", "Fix #2", "omp", 3, 7e6)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain.State, plain.Iteration = store.StateImplement, 1
+	if err := f.st.UpdateRun(ctx, plain); err != nil {
+		t.Fatal(err)
+	}
+
+	out := f.exec(t, "status", "1")
+	if got := statusField(out, "COMPLEXITY"); got != "high" {
+		t.Errorf("COMPLEXITY = %q:\n%s", got, out)
+	}
+	if got, want := statusField(out, "BUDGET"), "de "+budget.Format(4e6, config.BudgetTokens); !strings.Contains(got, want) {
+		t.Errorf("BUDGET = %q, want it to contain %q", got, want)
+	}
+	var s RunStatus
+	if err := json.Unmarshal([]byte(f.exec(t, "status", "1", "-o", "json")), &s); err != nil {
+		t.Fatal(err)
+	}
+	if s.Run.Complexity != "high" || s.Budget.PerIssue != 4e6 {
+		t.Errorf("json = %q, %v", s.Run.Complexity, s.Budget.PerIssue)
+	}
+
+	out = f.exec(t, "status", "2")
+	if got := statusField(out, "COMPLEXITY"); got != "-" {
+		t.Errorf("COMPLEXITY = %q, want - for an unclassified run", got)
+	}
+	if err := json.Unmarshal([]byte(f.exec(t, "status", "2", "-o", "json")), &s); err != nil {
+		t.Fatal(err)
+	}
+	if s.Budget.PerIssue != 2e6 {
+		t.Errorf("per_issue = %v, want the config's", s.Budget.PerIssue)
 	}
 }
