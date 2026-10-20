@@ -7,14 +7,18 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"unicode"
 
 	"golang.org/x/text/unicode/norm"
+
+	"github.com/paraizo/delamain/internal/forge"
 )
 
 // Protected branches are never used as work branches.
@@ -159,6 +163,121 @@ func (g Git) AddDetachedWorktree(ctx context.Context, repo, path, ref string) er
 // RemoveWorktree drops a temporary worktree created by AddDetachedWorktree.
 func (g Git) RemoveWorktree(ctx context.Context, repo, path string) error {
 	_, err := g.run(ctx, repo, "worktree", "remove", "--force", path)
+	return err
+}
+
+// PRRef is the local ref a PR/MR head is fetched into.
+func PRRef(n int) string { return fmt.Sprintf("refs/delamain/pr/%d", n) }
+
+// FetchPRHead fetches the head of PR/MR n into PRRef(n) and returns its SHA. Only that ref is
+// forced ("+" on its refspec): a force-pushed PR moves it, and no other ref can change.
+func (g Git) FetchPRHead(ctx context.Context, repo string, kind forge.Kind, n int) (string, error) {
+	if n <= 0 {
+		return "", fmt.Errorf("invalid PR/MR number %d", n)
+	}
+	var src string
+	switch kind {
+	case forge.GitHub:
+		src = fmt.Sprintf("refs/pull/%d/head", n)
+	case forge.GitLab:
+		src = fmt.Sprintf("refs/merge-requests/%d/head", n)
+	default:
+		return "", fmt.Errorf("no PR/MR refspec for forge %q", kind)
+	}
+	if _, err := g.run(ctx, repo, "fetch", "--quiet", "--no-tags", "origin", "+"+src+":"+PRRef(n)); err != nil {
+		return "", err
+	}
+	return g.run(ctx, repo, "rev-parse", "--verify", PRRef(n)+"^{commit}")
+}
+
+// FetchRef fetches branch ref from origin, updating origin/<ref>.
+func (g Git) FetchRef(ctx context.Context, repo, ref string) error {
+	if ref == "" || strings.HasPrefix(ref, "-") {
+		return fmt.Errorf("invalid ref %q", ref)
+	}
+	_, err := g.run(ctx, repo, "fetch", "--quiet", "--no-tags", "origin", "refs/heads/"+ref+":refs/remotes/origin/"+ref)
+	return err
+}
+
+// ShowFile returns path at ref; a path missing at an existing ref is fs.ErrNotExist.
+func (g Git) ShowFile(ctx context.Context, repo, ref, path string) ([]byte, error) {
+	if _, err := g.run(ctx, repo, "rev-parse", "--verify", "--quiet", "--end-of-options", ref+"^{commit}"); err != nil {
+		return nil, fmt.Errorf("ref %s: %w", ref, err)
+	}
+	if _, err := g.run(ctx, repo, "cat-file", "-e", ref+":"+path); err != nil {
+		return nil, fmt.Errorf("%s at %s: %w", path, ref, fs.ErrNotExist)
+	}
+	var out, errb bytes.Buffer
+	cmd := exec.CommandContext(ctx, g.Binary, "-C", repo, "show", ref+":"+path) //nolint:gosec // ref verified above
+	cmd.Stdout, cmd.Stderr = &out, &errb
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("git show %s:%s: %w: %s", ref, path, err, strings.TrimSpace(errb.String()))
+	}
+	return out.Bytes(), nil
+}
+
+// LineRange is a closed range of lines of the new file.
+type LineRange struct{ Start, End int }
+
+var hunkHeader = regexp.MustCompile(`^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@`)
+
+// ChangedLines maps each file of base...HEAD to the lines added or modified on the head side,
+// by the head path. Removal-only hunks, deleted and binary files have no lines.
+func (g Git) ChangedLines(ctx context.Context, dir, base string) (map[string][]LineRange, error) {
+	out, err := g.run(ctx, dir, "-c", "core.quotePath=false", "diff", "--no-color", "--no-ext-diff", "--unified=0",
+		"--find-renames", "--src-prefix=a/", "--dst-prefix=b/", base+"...HEAD")
+	if err != nil {
+		return nil, err
+	}
+	lines := map[string][]LineRange{}
+	file, header := "", false // header: between "diff --git" and the first hunk
+	for _, l := range strings.Split(out, "\n") {
+		switch {
+		case strings.HasPrefix(l, "diff --git "):
+			file, header = "", true
+		case header && strings.HasPrefix(l, "+++ "):
+			file = diffPath(strings.TrimPrefix(l, "+++ "))
+		case strings.HasPrefix(l, "@@ "):
+			header = false
+			if file == "" {
+				continue
+			}
+			m := hunkHeader.FindStringSubmatch(l)
+			if m == nil {
+				return nil, fmt.Errorf("unexpected hunk header %q", l)
+			}
+			start, _ := strconv.Atoi(m[1])
+			count := 1
+			if m[2] != "" {
+				count, _ = strconv.Atoi(m[2])
+			}
+			if count > 0 {
+				lines[file] = append(lines[file], LineRange{Start: start, End: start + count - 1})
+			}
+		}
+	}
+	return lines, nil
+}
+
+// diffPath turns a "+++" target into the head path; /dev/null (a deletion) is "".
+func diffPath(p string) string {
+	p = strings.TrimSuffix(p, "\t")
+	if unq, err := strconv.Unquote(p); err == nil && strings.HasPrefix(p, `"`) {
+		p = unq
+	}
+	path, ok := strings.CutPrefix(p, "b/")
+	if !ok {
+		return ""
+	}
+	return path
+}
+
+// DeleteRef removes a ref delamain created under refs/delamain/; any other ref is refused.
+func (g Git) DeleteRef(ctx context.Context, repo, ref string) error {
+	if !strings.HasPrefix(ref, "refs/delamain/") {
+		return fmt.Errorf("refusing to delete %q: not a delamain ref", ref)
+	}
+	_, err := g.run(ctx, repo, "update-ref", "-d", ref)
 	return err
 }
 

