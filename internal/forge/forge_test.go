@@ -124,48 +124,6 @@ func TestGitHubShouldFailWhenCreateOutputHasNoPRURL(t *testing.T) {
 	}
 }
 
-func TestGitHubShouldUseHostQualifiedRepoForEnterprise(t *testing.T) {
-	run := &fakeRunner{out: map[string]string{"pr list": "[]"}}
-	if _, err := NewExec(Repo{GitHub, "ghe.corp.example", "team/api"}, run).OpenPR(context.Background(), "feat/x"); err != nil {
-		t.Fatal(err)
-	}
-	if !has(run.find(t, "pr list").args, "-R", "ghe.corp.example/team/api") {
-		t.Fatalf("enterprise host must be explicit: %v", run.calls[0].args)
-	}
-}
-
-func TestGitHubOpenPRShouldReturnNilWhenNoneIsOpen(t *testing.T) {
-	run := &fakeRunner{out: map[string]string{"pr list": "[]"}}
-	pr, err := NewExec(Repo{GitHub, "github.com", "acme/api"}, run).OpenPR(context.Background(), "feat/x")
-	if err != nil || pr != nil {
-		t.Fatalf("pr = %+v, err = %v", pr, err)
-	}
-	c := run.find(t, "pr list")
-	if !has(c.args, "--head", "feat/x") || !has(c.args, "--state", "open") {
-		t.Fatalf("must filter open PRs by head branch: %v", c.args)
-	}
-}
-
-func TestGitHubOpenPRShouldReturnTheExistingPR(t *testing.T) {
-	run := &fakeRunner{out: map[string]string{"pr list": `[{"number":9,"url":"https://github.com/acme/api/pull/9","isDraft":true}]`}}
-	pr, err := NewExec(Repo{GitHub, "github.com", "acme/api"}, run).OpenPR(context.Background(), "feat/x")
-	if err != nil || pr == nil || pr.Number != 9 || !pr.Draft {
-		t.Fatalf("pr = %+v, err = %v", pr, err)
-	}
-}
-
-func TestGitHubShouldReadIssue(t *testing.T) {
-	run := &fakeRunner{out: map[string]string{"issue view": `{"number":7,"title":"Fix add","body":"## Critérios","url":"https://github.com/acme/api/issues/7","state":"OPEN","labels":[{"name":"bug"},{"name":"delamain:ready"}]}`}}
-	is, err := NewExec(Repo{GitHub, "github.com", "acme/api"}, run).Issue(context.Background(), 7)
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := Issue{Number: 7, Title: "Fix add", Body: "## Critérios", URL: "https://github.com/acme/api/issues/7", Labels: []string{"bug", "delamain:ready"}, Open: true}
-	if is.Number != want.Number || is.Title != want.Title || is.Body != want.Body || is.URL != want.URL || !slices.Equal(is.Labels, want.Labels) || !is.Open {
-		t.Fatalf("issue = %+v", is)
-	}
-}
-
 func TestGitHubShouldEnsureLabelsExistBeforeRelabeling(t *testing.T) {
 	run := &fakeRunner{errs: map[string]error{"label create": errors.New(`label with name "delamain:ready" already exists; use --force to update`)}}
 	err := NewExec(Repo{GitHub, "github.com", "acme/api"}, run).Relabel(context.Background(), 7, []string{"delamain:in-progress"}, []string{"delamain:ready"})
@@ -349,21 +307,6 @@ func TestExecRunnerShouldStopRetryingWhenTheContextEnds(t *testing.T) {
 	defer cancel()
 	if _, err := r.Run(ctx, "", args...); err == nil || calls() != 1 {
 		t.Fatalf("shutdown must not wait out the backoff: err=%v calls=%d", err, calls())
-	}
-}
-
-func TestGitHubListReadyShouldReturnOpenLabeledIssuesOldestFirst(t *testing.T) {
-	run := &fakeRunner{out: map[string]string{"issue list": `[{"number":9,"title":"b","body":"x","url":"u9","state":"OPEN","labels":[{"name":"delamain:ready"}]},{"number":4,"title":"a","body":"y","url":"u4","state":"OPEN","labels":[]}]`}}
-	got, err := NewExec(Repo{GitHub, "github.com", "acme/api"}, run).ListReady(context.Background(), "delamain:ready")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got) != 2 || got[0].Number != 4 || got[1].Number != 9 || !got[0].Open || got[1].Labels[0] != "delamain:ready" {
-		t.Fatalf("FIFO by issue number, got %+v", got)
-	}
-	c := run.find(t, "issue list")
-	if !has(c.args, "--label", "delamain:ready") || !has(c.args, "--state", "open") {
-		t.Fatalf("args = %v", c.args)
 	}
 }
 
