@@ -271,12 +271,20 @@ func listTable(w io.Writer, views []RunView, all bool) error {
 		return err
 	}
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "RUN\tREPO\tISSUE\tSTATE\tITER\tBRANCH\tAGENTS\tOWNER\tUPDATED")
+	fmt.Fprintln(tw, "RUN\tREPO\tISSUE\tSTATE\tITER\tCOMPLEXITY\tBRANCH\tAGENTS\tOWNER\tUPDATED")
 	for _, v := range views {
-		fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			v.ID, filepath.Base(v.Repo), v.Issue, v.State, v.iter(), orDash(v.Branch), runningAgents(v.Agents), v.owner(), ago(v.UpdatedAt))
+		fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			v.ID, filepath.Base(v.Repo), v.Issue, v.State, v.iter(), v.complexity(), orDash(v.Branch), runningAgents(v.Agents), v.owner(), ago(v.UpdatedAt))
 	}
 	return tw.Flush()
+}
+
+// complexity is the run's level, or "wait" until the plan classifies it.
+func (v RunView) complexity() string {
+	if v.Complexity == "" {
+		return "wait"
+	}
+	return v.Complexity
 }
 
 func newStatusCmd(load func() (config.Config, error)) *cobra.Command {

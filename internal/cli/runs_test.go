@@ -98,13 +98,37 @@ func TestListShouldShowOnlyActiveRunsWithTheirRunningAgents(t *testing.T) {
 			t.Fatalf("%s: header + one active run:\n%s", cmd, out)
 		}
 		row := strings.Fields(lines[1])
-		if row[0] != "1" || row[1] != "app" || row[2] != "#1" || row[3] != "implement" || row[4] != "1/3" || row[5] != "fix/1-a" || row[6] != "implementer" || !strings.Contains(lines[1], "(alive)") {
+		if row[0] != "1" || row[1] != "app" || row[2] != "#1" || row[3] != "implement" || row[4] != "1/3" || row[5] != "wait" || row[6] != "fix/1-a" || row[7] != "implementer" || !strings.Contains(lines[1], "(alive)") {
 			t.Fatalf("%s: row = %q", cmd, lines[1])
 		}
 	}
 	all := f.exec(t, "ls", "--all")
 	if !strings.Contains(all, "fix/2-b") || !strings.Contains(all, "(finished)") || strings.Index(all, "fix/2-b") > strings.Index(all, "fix/1-a") {
 		t.Fatalf("--all includes finished runs, newest first:\n%s", all)
+	}
+}
+
+func TestListShouldShowTheComplexityOrWaitUntilThePlanClassifiesIt(t *testing.T) {
+	f := newFixture(t)
+	f.run(t, "#1", "fix/1-a", store.StatePlan)
+	classified := f.run(t, "#2", "fix/2-b", store.StateImplement)
+	classified.Complexity = "high"
+	if err := f.st.UpdateRun(context.Background(), classified); err != nil {
+		t.Fatal(err)
+	}
+
+	out := f.exec(t, "ls")
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if header := strings.Fields(lines[0]); len(header) < 6 || header[4] != "ITER" || header[5] != "COMPLEXITY" {
+		t.Fatalf("COMPLEXITY follows ITER:\n%s", out)
+	}
+	got := map[string]string{}
+	for _, l := range lines[1:] {
+		row := strings.Fields(l)
+		got[row[2]] = row[5]
+	}
+	if got["#1"] != "wait" || got["#2"] != "high" {
+		t.Fatalf("complexity per issue = %v, want #1 wait (still planning) and #2 high:\n%s", got, out)
 	}
 }
 
@@ -119,7 +143,7 @@ func TestListShouldFlagAnActiveRunWhoseOwnerDied(t *testing.T) {
 	if !strings.Contains(out, "dead: run delamain recover") {
 		t.Fatalf("a dead owner must be visible:\n%s", out)
 	}
-	if row := strings.Fields(strings.Split(strings.TrimSpace(out), "\n")[1]); row[6] != "-" {
+	if row := strings.Fields(strings.Split(strings.TrimSpace(out), "\n")[1]); row[7] != "-" {
 		t.Fatalf("an agent recorded as running died with its owner; none is running: %v", row)
 	}
 }
