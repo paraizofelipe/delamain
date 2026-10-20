@@ -29,10 +29,15 @@ type Git struct{ Binary string }
 func New() Git { return Git{Binary: "git"} }
 
 func (g Git) run(ctx context.Context, dir string, args ...string) (string, error) {
+	return g.runEnv(ctx, dir, nil, args...)
+}
+
+// runEnv is run with extra environment variables.
+func (g Git) runEnv(ctx context.Context, dir string, env []string, args ...string) (string, error) {
 	var out, errb bytes.Buffer
 	cmd := exec.CommandContext(ctx, g.Binary, append([]string{"-C", dir}, args...)...)
 	cmd.Stdout, cmd.Stderr = &out, &errb
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0") // fail instead of waiting for credentials
+	cmd.Env = append(append(os.Environ(), "GIT_TERMINAL_PROMPT=0"), env...) // fail instead of waiting for credentials
 	if err := cmd.Run(); err != nil {
 		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(errb.String()))
 	}
@@ -158,6 +163,57 @@ func (g Git) ListWorktrees(ctx context.Context, repo string) ([]Worktree, error)
 func (g Git) AddDetachedWorktree(ctx context.Context, repo, path, ref string) error {
 	_, err := g.run(ctx, repo, "worktree", "add", "--quiet", "--detach", path, ref)
 	return err
+}
+
+// AddUntrustedWorktree checks out ref, third-party code such as a fork's PR head, at path
+// without running anything the checkout could steer: no hooks (a relative core.hooksPath, as
+// husky sets, may resolve inside it), no fsmonitor and no filter driver its .gitattributes
+// names (git-lfs included).
+func (g Git) AddUntrustedWorktree(ctx context.Context, repo, path, ref string) error {
+	safe, err := g.untrustedConfig(ctx, repo)
+	if err != nil {
+		return err
+	}
+	_, err = g.runEnv(ctx, repo, []string{"GIT_LFS_SKIP_SMUDGE=1"}, append(safe, "worktree", "add", "--quiet", "--detach", path, ref)...)
+	return err
+}
+
+// UntrustedStatus is Status for a checkout made by AddUntrustedWorktree, with the same guards:
+// status may run fsmonitor and clean filters.
+func (g Git) UntrustedStatus(ctx context.Context, dir string) (string, error) {
+	safe, err := g.untrustedConfig(ctx, dir)
+	if err != nil {
+		return "", err
+	}
+	return g.runEnv(ctx, dir, []string{"GIT_LFS_SKIP_SMUDGE=1"}, append(safe, "status", "--porcelain")...)
+}
+
+// untrustedConfig is the -c overrides that turn off hooks, fsmonitor and every configured filter
+// driver (system, global or local) for one command.
+func (g Git) untrustedConfig(ctx context.Context, repo string) ([]string, error) {
+	safe := []string{"-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"}
+	out, err := g.run(ctx, repo, "config", "--name-only", "--get-regexp", `^filter\.`)
+	var exit *exec.ExitError
+	if err != nil && !(errors.As(err, &exit) && exit.ExitCode() == 1) { // 1: no filter configured
+		return nil, err
+	}
+	seen := map[string]bool{}
+	for _, key := range strings.Split(out, "\n") {
+		name := strings.TrimPrefix(key, "filter.")
+		i := strings.LastIndexByte(name, '.')
+		if i < 0 || seen[name[:i]] {
+			continue
+		}
+		name = name[:i]
+		if strings.Contains(name, "=") { // -c would split it: refuse rather than leave it active
+			return nil, fmt.Errorf("filter driver %q cannot be disabled", name)
+		}
+		seen[name] = true
+		for _, k := range []string{"smudge=", "clean=", "process=", "required=false"} {
+			safe = append(safe, "-c", "filter."+name+"."+k)
+		}
+	}
+	return safe, nil
 }
 
 // RemoveWorktree drops a temporary worktree created by AddDetachedWorktree.

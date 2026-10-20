@@ -42,6 +42,8 @@ type Git interface {
 	ChangedFiles(ctx context.Context, dir, base string) ([]string, error)
 	AddWorktree(ctx context.Context, repo, path, branch, base string) error
 	AddDetachedWorktree(ctx context.Context, repo, path, ref string) error
+	AddUntrustedWorktree(ctx context.Context, repo, path, ref string) error
+	UntrustedStatus(ctx context.Context, dir string) (string, error)
 	CheckoutFiles(ctx context.Context, dir, ref string, files []string) error
 	DiscardEmptyWork(ctx context.Context, repo, worktree, branch, base string) error
 	RemoveWorktree(ctx context.Context, repo, path string) error

@@ -297,6 +297,8 @@ type fakeGit struct {
 	lines      map[string][]gitx.LineRange // ChangedLines result
 	deleted    []string                    // refs DeleteRef removed
 	linesErr   error                       // ChangedLines failure
+	untrusted  []string                    // refs AddUntrustedWorktree checked out
+	safeStatus int                         // UntrustedStatus calls
 }
 
 func newFakeGit() *fakeGit {
@@ -346,6 +348,22 @@ func (g *fakeGit) AddDetachedWorktree(_ context.Context, _, path, ref string) er
 	}
 	return nil
 }
+func (g *fakeGit) AddUntrustedWorktree(_ context.Context, _, path, ref string) error {
+	g.untrusted = append(g.untrusted, ref)
+	if err := os.MkdirAll(path, 0o700); err != nil {
+		return err
+	}
+	if g.onDetached != nil {
+		g.onDetached(path)
+	}
+	return nil
+}
+
+func (g *fakeGit) UntrustedStatus(context.Context, string) (string, error) {
+	g.safeStatus++
+	return g.status, nil
+}
+
 func (g *fakeGit) CheckoutFiles(_ context.Context, _, ref string, files []string) error {
 	g.redproof = append(g.redproof, "checkout "+ref+" "+strings.Join(files, ","))
 	return nil

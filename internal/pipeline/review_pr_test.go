@@ -145,8 +145,8 @@ func TestRunReviewShouldFetchMergeRequestRefOnGitLab(t *testing.T) {
 	if len(rh.g.fetchedRef) != 1 || rh.g.fetchedRef[0] != "main" {
 		t.Fatalf("the base branch is fetched too: %v", rh.g.fetchedRef)
 	}
-	if len(rh.g.detached) != 1 || rh.g.detached[0] != gitx.PRRef(5) {
-		t.Fatalf("the worktree checks out the fetched PR ref: %v", rh.g.detached)
+	if len(rh.g.untrusted) != 1 || rh.g.untrusted[0] != gitx.PRRef(5) {
+		t.Fatalf("the worktree checks out the fetched PR ref: %v", rh.g.untrusted)
 	}
 }
 
@@ -279,7 +279,7 @@ func TestRunReviewShouldHaltWithoutPostingWhenFetchedHeadDiffersFromPR(t *testin
 	res := rh.review(t)
 
 	assertNothingPosted(t, rh, res, "dddddddd")
-	if len(rh.g.detached) != 0 || len(rh.h.prompts["pr-reviewer"]) != 0 {
+	if len(rh.g.untrusted)+len(rh.g.detached) != 0 || len(rh.h.prompts["pr-reviewer"]) != 0 {
 		t.Fatal("no worktree nor agent for a head that is not the PR's")
 	}
 	if len(rh.g.deleted) != 1 {
@@ -669,5 +669,20 @@ func TestRunReviewShouldRefuseAHarnessThatCannotConfineTheReviewer(t *testing.T)
 	}
 	if len(rh.g.fetchedPR)+len(rh.h.starts)+len(rh.f.posted) != 0 {
 		t.Fatal("nothing is fetched, started or posted")
+	}
+}
+
+func TestRunReviewShouldCheckOutThePRAsUntrustedCode(t *testing.T) {
+	rh := newReviewHarness(t, reviewsPR(prReviewJSON("")))
+	res := rh.review(t)
+	if res.Outcome != OutcomeReviewed {
+		t.Fatalf("got %s (%s)", res.Outcome, res.Reason)
+	}
+	// A plain checkout runs the operator's hooks and filters, which the PR's files can steer.
+	if len(rh.g.untrusted) != 1 || len(rh.g.detached) != 0 {
+		t.Fatalf("the PR head is checked out without hooks or filters: untrusted=%v plain=%v", rh.g.untrusted, rh.g.detached)
+	}
+	if rh.g.safeStatus != 2 {
+		t.Fatalf("the read-only proof reads the status of the PR checkout with the same guards (before and after), got %d", rh.g.safeStatus)
 	}
 }

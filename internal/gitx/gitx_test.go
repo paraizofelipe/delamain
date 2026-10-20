@@ -619,3 +619,65 @@ func TestDeleteRefShouldRemoveThePRRef(t *testing.T) {
 		t.Fatal("main must survive a refused delete")
 	}
 }
+
+// hostileCheckout gives repo r an operator config that runs commands on checkout, as husky's
+// relative core.hooksPath and a global smudge filter (git-lfs, say) do, and a branch "pr" whose
+// own files would be what runs. It returns the dir where those commands leave markers.
+func hostileCheckout(t *testing.T, r string) string {
+	t.Helper()
+	marks := t.TempDir()
+	gitIn(t, r, "switch", "-q", "-c", "pr")
+	hook := filepath.Join(r, ".husky", "post-checkout")
+	if err := os.MkdirAll(filepath.Dir(hook), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\ntouch "+filepath.Join(marks, "hook")+"\n"), 0o700); err != nil { //nolint:gosec // executable test hook
+		t.Fatal(err)
+	}
+	commitFile(t, r, ".gitattributes", "*.txt filter=evil\n")
+	gitIn(t, r, "add", ".husky/post-checkout")
+	commitFile(t, r, "a.txt", "raw\n")
+	gitIn(t, r, "switch", "-q", "main")
+	// Git versions differ on where a relative hooksPath resolves for a new worktree (its root or
+	// the repository's): the hook is in both.
+	if err := os.MkdirAll(filepath.Dir(hook), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\ntouch "+filepath.Join(marks, "hook")+"\n"), 0o700); err != nil { //nolint:gosec // executable test hook
+		t.Fatal(err)
+	}
+	gitIn(t, r, "config", "core.hooksPath", ".husky")
+	gitIn(t, r, "config", "filter.evil.smudge", "sh -c 'touch "+filepath.Join(marks, "smudge")+"; cat'")
+	gitIn(t, r, "config", "filter.evil.clean", "sh -c 'touch "+filepath.Join(marks, "clean")+"; cat'")
+	return marks
+}
+
+func TestAddUntrustedWorktreeShouldRunNoHookNorFilterOfTheCheckout(t *testing.T) {
+	g, ctx := New(), context.Background()
+	r := repo(t)
+	marks := hostileCheckout(t, r)
+
+	wt := filepath.Join(t.TempDir(), "review")
+	if err := g.AddUntrustedWorktree(ctx, r, wt, "pr"); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := os.ReadFile(filepath.Join(wt, "a.txt")); err != nil || string(b) != "raw\n" {
+		t.Fatalf("the PR's files are checked out as committed: %q %v", b, err)
+	}
+	if _, err := g.UntrustedStatus(ctx, wt); err != nil {
+		t.Fatal(err)
+	}
+	if ran, _ := os.ReadDir(marks); len(ran) != 0 {
+		t.Fatalf("checking out third-party code ran %v on the operator's machine", ran)
+	}
+
+	// Control: a plain checkout of the same branch does run them, so the fixture is hostile.
+	if err := g.AddDetachedWorktree(ctx, r, filepath.Join(t.TempDir(), "plain"), "pr"); err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range []string{"hook", "smudge"} {
+		if _, err := os.Stat(filepath.Join(marks, m)); err != nil {
+			t.Fatalf("the fixture's %s must run on a plain checkout: %v", m, err)
+		}
+	}
+}

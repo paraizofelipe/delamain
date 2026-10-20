@@ -161,7 +161,7 @@ func (r *Runner) reviewPR(ctx context.Context, ru *run, p *prRun) error {
 		return haltf("o head buscado (%s) difere do head do PR/MR #%d (%s); nada foi postado", short(fetched), pr.Number, short(pr.HeadSHA))
 	}
 	wt := filepath.Join(r.Cfg.Paths.WorktreesDir, filepath.Base(repo), fmt.Sprintf("review-pr-%d-%d", pr.Number, ru.rec.ID))
-	if err := r.Git.AddDetachedWorktree(ctx, repo, wt, p.ref); err != nil {
+	if err := r.Git.AddUntrustedWorktree(ctx, repo, wt, p.ref); err != nil {
 		return err
 	}
 	ru.repo = prompts.Repo{Worktree: wt, Base: base}
@@ -262,12 +262,12 @@ func (r *Runner) reviewPR(ctx context.Context, ru *run, p *prRun) error {
 	return nil
 }
 
-// worktreeState is the HEAD and `git status --porcelain` of a worktree.
+// worktreeState is the HEAD and `git status --porcelain` of a PR checkout.
 func (r *Runner) worktreeState(ctx context.Context, dir string) (head, status string, err error) {
 	if head, err = r.Git.Head(ctx, dir); err != nil {
 		return "", "", err
 	}
-	status, err = r.Git.Status(ctx, dir)
+	status, err = r.Git.UntrustedStatus(ctx, dir)
 	return head, status, err
 }
 
