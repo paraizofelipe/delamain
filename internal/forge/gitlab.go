@@ -99,6 +99,9 @@ func (g gitlab) CreatePR(ctx context.Context, o PROptions) (PR, error) {
 	if err != nil {
 		return PR{}, g.fail("createpr", err)
 	}
+	if v == nil {
+		return PR{}, g.fail("createpr", errEmpty)
+	}
 	return PR{Number: int(v.IID), URL: v.WebURL, Draft: v.Draft}, nil
 }
 

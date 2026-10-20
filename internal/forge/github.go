@@ -105,6 +105,9 @@ func (g github) CreatePR(ctx context.Context, o PROptions) (PR, error) {
 	if err != nil {
 		return PR{}, g.fail("createpr", err)
 	}
+	if v == nil {
+		return PR{}, g.fail("createpr", errEmpty)
+	}
 	return PR{Number: v.GetNumber(), URL: v.GetHTMLURL(), Draft: v.GetDraft()}, nil
 }
 

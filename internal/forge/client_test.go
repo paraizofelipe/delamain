@@ -188,6 +188,19 @@ func TestIssueShouldFailOnAnEmptyResponse(t *testing.T) {
 	}
 }
 
+// A 201 without a PR/MR in the body must not be reported as an opened PR/MR (nor crash the run).
+func TestCreatePRShouldFailOnAnEmptyResponse(t *testing.T) {
+	for _, body := range []string{"", "null"} {
+		for _, kind := range []Kind{GitHub, GitLab} {
+			base, _ := counted(t, func(_ int, w http.ResponseWriter, r *http.Request) { writeStatus(w, http.StatusCreated, body) })
+			pr, err := clients(t, base)[kind].CreatePR(context.Background(), PROptions{Head: "feat/x", Base: "main", Title: "t"})
+			if err == nil || !strings.HasPrefix(err.Error(), string(kind)+" createpr: ") {
+				t.Errorf("%s, body %q: an empty answer is not a PR: pr=%+v err=%v", kind, body, pr, err)
+			}
+		}
+	}
+}
+
 func TestErrorsShouldCarryForgeOperationAndStatus(t *testing.T) {
 	base, _ := counted(t, func(_ int, w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
