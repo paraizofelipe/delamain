@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 )
 
 type Kind string
@@ -48,6 +49,40 @@ type PR struct {
 	Draft  bool
 }
 
+// PRDetail is what a review needs to know about one PR/MR.
+type PRDetail struct {
+	Number   int
+	URL      string
+	Title    string
+	Body     string
+	Author   string
+	Draft    bool
+	Open     bool
+	Fork     bool   // head lives in another repository
+	BaseRef  string // target branch
+	HeadRef  string // source branch
+	BaseSHA  string
+	HeadSHA  string
+	StartSHA string // GitLab diff_refs.start_sha; GitHub: same as BaseSHA
+}
+
+// Comment is one note of a thread; Path/Line are empty for PR-level comments.
+type Comment struct {
+	ID        string
+	Author    string
+	Body      string
+	CreatedAt time.Time
+}
+
+// Thread is a review thread (inline) or a PR-level comment, oldest comment first.
+type Thread struct {
+	ID       string // GitHub: review thread node id or "issue-comment:<id>"; GitLab: discussion id
+	Path     string
+	Line     int
+	Resolved bool
+	Comments []Comment
+}
+
 type PROptions struct {
 	Head, Base  string
 	Title, Body string
@@ -65,6 +100,8 @@ type Forge interface {
 	CreatePR(ctx context.Context, o PROptions) (PR, error)
 	Comment(ctx context.Context, number int, body string) error
 	Relabel(ctx context.Context, number int, add, remove []string) error
+	// PRView reads one PR/MR; a missing one is an *APIError with Status 404.
+	PRView(ctx context.Context, number int) (PRDetail, error)
 }
 
 var scpLike = regexp.MustCompile(`^[\w.-]+@([\w.-]+):(.+)$`)

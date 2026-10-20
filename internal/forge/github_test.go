@@ -328,3 +328,35 @@ func TestGitHubWhoamiShouldReportARejectedToken(t *testing.T) {
 		t.Fatalf("want a 401 APIError, got %v", err)
 	}
 }
+
+func TestGitHubPRViewShouldParseRefsShasAndFork(t *testing.T) {
+	f, _ := githubAt(t, map[string]func(http.ResponseWriter, *http.Request){
+		"GET /repos/acme/api/pulls/5": reply(200, `{"number":5,"html_url":"https://github.com/acme/api/pull/5","title":"feat: x","body":"Closes #2",
+			"user":{"login":"ana"},"draft":true,"state":"open",
+			"base":{"ref":"main","sha":"b1","repo":{"full_name":"acme/api"}},
+			"head":{"ref":"feat/x","sha":"h1","repo":{"full_name":"acme/api"}}}`),
+		"GET /repos/acme/api/pulls/6": reply(200, `{"number":6,"state":"closed",
+			"base":{"ref":"main","sha":"b2","repo":{"full_name":"acme/api"}},
+			"head":{"ref":"patch-1","sha":"h2","repo":{"full_name":"bob/api"}}}`),
+		"GET /repos/acme/api/pulls/7": reply(200, `{"number":7,"state":"open",
+			"base":{"ref":"main","sha":"b3","repo":{"full_name":"acme/api"}},
+			"head":{"ref":"patch-2","sha":"h3","repo":null}}`),
+	})
+	ctx := context.Background()
+	pr, err := f.PRView(ctx, 5)
+	want := PRDetail{Number: 5, URL: "https://github.com/acme/api/pull/5", Title: "feat: x", Body: "Closes #2", Author: "ana",
+		Draft: true, Open: true, BaseRef: "main", HeadRef: "feat/x", BaseSHA: "b1", HeadSHA: "h1", StartSHA: "b1"}
+	if err != nil || pr != want {
+		t.Fatalf("pr = %+v, err = %v; want %+v", pr, err, want)
+	}
+
+	pr, err = f.PRView(ctx, 6)
+	if err != nil || !pr.Fork || pr.Open || pr.HeadRef != "patch-1" || pr.HeadSHA != "h2" || pr.StartSHA != "b2" {
+		t.Fatalf("a head in another repository is a fork: %+v %v", pr, err)
+	}
+
+	pr, err = f.PRView(ctx, 7)
+	if err != nil || !pr.Fork {
+		t.Fatalf("a head whose repository was deleted is a fork: %+v %v", pr, err)
+	}
+}

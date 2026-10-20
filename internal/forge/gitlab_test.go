@@ -180,3 +180,26 @@ func TestGitLabWhoamiShouldReturnTheUsernameFromGetUser(t *testing.T) {
 		t.Fatalf("GET /user must carry the token, got %q", got)
 	}
 }
+
+func TestGitLabPRViewShouldUseDiffRefsAndDetectFork(t *testing.T) {
+	f, _ := gitlabAt(t, map[string]func(http.ResponseWriter, *http.Request){
+		"GET " + glProject + "/merge_requests/5": reply(200, `{"iid":5,"web_url":"https://gitlab.com/grp/api/-/merge_requests/5","title":"feat: x",
+			"description":"Closes #2","author":{"username":"ana"},"draft":true,"state":"opened","sha":"h1",
+			"source_branch":"feat/x","target_branch":"main","source_project_id":10,"target_project_id":10,
+			"diff_refs":{"base_sha":"b1","head_sha":"h1","start_sha":"s1"}}`),
+		"GET " + glProject + "/merge_requests/6": reply(200, `{"iid":6,"state":"merged","source_branch":"patch-1","target_branch":"main",
+			"source_project_id":20,"target_project_id":10,"diff_refs":{"base_sha":"b2","head_sha":"h2","start_sha":"s2"}}`),
+	})
+	ctx := context.Background()
+	pr, err := f.PRView(ctx, 5)
+	want := PRDetail{Number: 5, URL: "https://gitlab.com/grp/api/-/merge_requests/5", Title: "feat: x", Body: "Closes #2", Author: "ana",
+		Draft: true, Open: true, BaseRef: "main", HeadRef: "feat/x", BaseSHA: "b1", HeadSHA: "h1", StartSHA: "s1"}
+	if err != nil || pr != want {
+		t.Fatalf("mr = %+v, err = %v; want %+v", pr, err, want)
+	}
+
+	pr, err = f.PRView(ctx, 6)
+	if err != nil || !pr.Fork || pr.Open || pr.HeadRef != "patch-1" || pr.BaseSHA != "b2" || pr.StartSHA != "s2" {
+		t.Fatalf("a source project other than the target is a fork: %+v %v", pr, err)
+	}
+}

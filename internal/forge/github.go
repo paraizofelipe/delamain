@@ -206,3 +206,22 @@ func (g *githubClient) whoami(ctx context.Context) (string, error) {
 	})
 	return u.GetLogin(), err
 }
+
+// PRView reads one PR. A head without repository is a fork whose repository was deleted.
+func (g *githubClient) PRView(ctx context.Context, n int) (PRDetail, error) {
+	var v *gogithub.PullRequest
+	err := g.do(ctx, "pr view", func() (resp *gogithub.Response, err error) {
+		v, resp, err = g.api.PullRequests.Get(ctx, g.owner, g.name, n)
+		return resp, err
+	})
+	if err != nil {
+		return PRDetail{}, err
+	}
+	head, base := v.GetHead(), v.GetBase()
+	return PRDetail{
+		Number: v.GetNumber(), URL: v.GetHTMLURL(), Title: v.GetTitle(), Body: v.GetBody(), Author: v.GetUser().GetLogin(),
+		Draft: v.GetDraft(), Open: v.GetState() == "open",
+		Fork:    head.GetRepo() == nil || head.GetRepo().GetFullName() != base.GetRepo().GetFullName(),
+		BaseRef: base.GetRef(), HeadRef: head.GetRef(), BaseSHA: base.GetSHA(), HeadSHA: head.GetSHA(), StartSHA: base.GetSHA(),
+	}, nil
+}

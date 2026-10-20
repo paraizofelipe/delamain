@@ -166,3 +166,30 @@ func (g *gitlabClient) whoami(ctx context.Context) (string, error) {
 	}
 	return u.Username, nil
 }
+
+func (g *gitlabClient) PRView(ctx context.Context, n int) (PRDetail, error) {
+	var v *gogitlab.MergeRequest
+	err := g.do(ctx, "pr view", func() (resp *gogitlab.Response, err error) {
+		v, resp, err = g.api.MergeRequests.GetMergeRequest(g.repo.Path, int64(n), nil, gogitlab.WithContext(ctx))
+		return resp, err
+	})
+	if err != nil {
+		return PRDetail{}, err
+	}
+	pr := fromGitLabMR(&v.BasicMergeRequest)
+	pr.BaseSHA, pr.HeadSHA, pr.StartSHA = v.DiffRefs.BaseSha, v.DiffRefs.HeadSha, v.DiffRefs.StartSha
+	return pr, nil
+}
+
+// fromGitLabMR maps what every MR payload carries; the SHAs need diff_refs, which only the
+// single MR endpoint returns.
+func fromGitLabMR(v *gogitlab.BasicMergeRequest) PRDetail {
+	pr := PRDetail{
+		Number: int(v.IID), URL: v.WebURL, Title: v.Title, Body: v.Description, Draft: v.Draft, Open: v.State == opened,
+		Fork: v.SourceProjectID != v.TargetProjectID, BaseRef: v.TargetBranch, HeadRef: v.SourceBranch,
+	}
+	if v.Author != nil {
+		pr.Author = v.Author.Username
+	}
+	return pr
+}

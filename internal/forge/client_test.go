@@ -288,3 +288,84 @@ func TestForgeShouldNeverCallMergeEndpoints(t *testing.T) {
 		}
 	}
 }
+
+func TestPRViewShouldFailWhenThePRDoesNotExist(t *testing.T) {
+	for _, fc := range bothForges {
+		f, _ := fc.at(t, map[string]func(http.ResponseWriter, *http.Request){})
+		_, err := f.PRView(context.Background(), 404)
+		var apiErr *APIError
+		if !errors.As(err, &apiErr) || apiErr.Status != http.StatusNotFound {
+			t.Errorf("%s: want an APIError with status 404, got %v", fc.name, err)
+		}
+	}
+}
+
+// readOnlyAPI answers every read a Forge makes with an empty but valid payload and records
+// each request, so a test can check that none of them writes.
+func readOnlyAPI(t *testing.T) (string, func() []request) {
+	t.Helper()
+	var (
+		mu   sync.Mutex
+		reqs []request
+	)
+	base := newServer(t, func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		reqs = append(reqs, request{method: r.Method, path: r.URL.EscapedPath(), body: string(b)})
+		mu.Unlock()
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/graphql":
+			reply(200, `{"data":{"repository":{"pullRequest":{"closingIssuesReferences":{"nodes":[]},"reviewThreads":{"nodes":[]}}}}}`)(w, r)
+		case r.Method != http.MethodGet:
+			reply(405, `{"message":"read only"}`)(w, r)
+		case strings.HasSuffix(r.URL.Path, "/1"):
+			reply(200, `{"number":1,"iid":1}`)(w, r)
+		default:
+			reply(200, `[]`)(w, r)
+		}
+	})
+	return base, func() []request {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]request(nil), reqs...)
+	}
+}
+
+// Review is read only: no new method may change anything on the forge.
+func TestReadMethodsShouldNeverWriteToTheForge(t *testing.T) {
+	for _, repo := range []Repo{{GitHub, "github.com", "acme/api"}, {GitLab, "gitlab.com", "grp/api"}} {
+		t.Run(string(repo.Kind), func(t *testing.T) {
+			srv, requests := readOnlyAPI(t)
+			f, err := New(repo, "tok", WithBaseURL(srv+"/"), WithBackoff(1))
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx := context.Background()
+			reads := map[string]func() error{
+				"PRView": func() error { _, err := f.PRView(ctx, 1); return err },
+			}
+			for name, read := range reads {
+				before := len(requests())
+				if err := read(); err != nil {
+					t.Errorf("%s: %v", name, err)
+				}
+				if len(requests()) == before {
+					t.Errorf("%s reached no endpoint of the fake", name)
+				}
+			}
+			for _, r := range requests() {
+				graphqlQuery := r.method == http.MethodPost && r.path == "/graphql" && !strings.HasPrefix(strings.TrimSpace(jsonQuery(t, r)), "mutation")
+				if r.method != http.MethodGet && !graphqlQuery {
+					t.Errorf("forbidden write %s %s %s", r.method, r.path, r.body)
+				}
+			}
+		})
+	}
+}
+
+// jsonQuery returns the GraphQL query a recorded request sent.
+func jsonQuery(t *testing.T, r request) string {
+	t.Helper()
+	q, _ := jsonBody(t, r)["query"].(string)
+	return q
+}
