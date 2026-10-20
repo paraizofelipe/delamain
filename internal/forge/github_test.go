@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -210,22 +211,57 @@ func TestGitHubCommentShouldPostBodyAsJSON(t *testing.T) {
 
 const ghAlreadyExists = `{"message":"Validation Failed","errors":[{"resource":"Label","code":"already_exists","field":"name"}]}`
 
+// The stub behaves like GitHub: applying a label the repository does not have is rejected, so
+// the relabel only succeeds when labels are created before they are applied.
 func TestGitHubShouldEnsureLabelsExistBeforeRelabeling(t *testing.T) {
 	rc := &recorder{}
+	var mu sync.Mutex
+	repoLabels := map[string]bool{"delamain:ready": true}
+	issueLabels := map[string]bool{"delamain:ready": true}
 	srv := serve(t, func(w http.ResponseWriter, r *http.Request) {
 		req := rc.add(r)
+		mu.Lock()
+		defer mu.Unlock()
 		switch {
-		case req.Method == http.MethodPost && req.Path == "/repos/acme/api/labels" && req.Body["name"] == "delamain:ready":
-			writeStatus(w, http.StatusUnprocessableEntity, ghAlreadyExists)
 		case req.Method == http.MethodPost && req.Path == "/repos/acme/api/labels":
-			writeStatus(w, http.StatusCreated, `{"name":"x"}`)
-		default:
+			name, _ := req.Body["name"].(string)
+			if repoLabels[name] {
+				writeStatus(w, http.StatusUnprocessableEntity, ghAlreadyExists)
+				return
+			}
+			repoLabels[name] = true
+			writeStatus(w, http.StatusCreated, `{"name":"`+name+`"}`)
+		case req.Method == http.MethodPost && req.Path == "/repos/acme/api/issues/7/labels":
+			for _, l := range req.List {
+				if name, _ := l.(string); !repoLabels[name] {
+					writeStatus(w, http.StatusUnprocessableEntity, `{"message":"Validation Failed","errors":[{"resource":"Label","code":"invalid","field":"name"}]}`)
+					return
+				}
+			}
+			for _, l := range req.List {
+				issueLabels[l.(string)] = true
+			}
 			writeJSON(w, `[]`)
+		case req.Method == http.MethodDelete && strings.HasPrefix(req.Path, "/repos/acme/api/issues/7/labels/"):
+			name := strings.TrimPrefix(req.Path, "/repos/acme/api/issues/7/labels/")
+			if !issueLabels[name] {
+				writeStatus(w, http.StatusNotFound, `{"message":"Label does not exist"}`)
+				return
+			}
+			delete(issueLabels, name)
+			writeJSON(w, `[]`)
+		default:
+			http.NotFound(w, r)
 		}
 	})
 	err := githubAt(t, srv).Relabel(context.Background(), 7, []string{"delamain:in-progress"}, []string{"delamain:ready"})
 	if err != nil {
-		t.Fatalf("an existing label is not an error: %v", err)
+		t.Fatalf("labels must be created (an existing one is fine) before they are applied: %v (requests %+v)", err, rc.reqs)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(issueLabels) != 1 || !issueLabels["delamain:in-progress"] {
+		t.Fatalf("issue labels = %v, want only delamain:in-progress", issueLabels)
 	}
 	created := rc.find(http.MethodPost, "/repos/acme/api/labels")
 	if len(created) != 2 {
@@ -235,17 +271,6 @@ func TestGitHubShouldEnsureLabelsExistBeforeRelabeling(t *testing.T) {
 		if c.Body["color"] != "5319e7" || c.Body["description"] != "delamain" {
 			t.Errorf("label payload = %v", c.Body)
 		}
-	}
-	added := rc.find(http.MethodPost, "/repos/acme/api/issues/7/labels")
-	if len(added) != 1 || len(added[0].List) != 1 || added[0].List[0] != "delamain:in-progress" {
-		t.Fatalf("add = %+v", added)
-	}
-	if removed := rc.find(http.MethodDelete, "/repos/acme/api/issues/7/labels/delamain:ready"); len(removed) != 1 {
-		t.Fatalf("remove = %+v", rc.reqs)
-	}
-	last := rc.reqs[len(rc.reqs)-1]
-	if last.Method != http.MethodDelete && last.Path != "/repos/acme/api/issues/7/labels" {
-		t.Fatalf("labels must exist before they are applied: %+v", rc.reqs)
 	}
 }
 
