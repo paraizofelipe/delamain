@@ -12,6 +12,8 @@ import (
 
 	"go.yaml.in/yaml/v3"
 
+	"github.com/paraizo/delamain/internal/budget"
+	"github.com/paraizo/delamain/internal/config"
 	"github.com/paraizo/delamain/internal/gitx"
 	"github.com/paraizo/delamain/internal/store"
 )
@@ -54,7 +56,7 @@ func newFixture(t *testing.T) *fixture {
 func (f *fixture) run(t *testing.T, ref, branch string, state store.RunState) store.Run {
 	t.Helper()
 	ctx := context.Background()
-	rec, err := f.st.CreateRun(ctx, f.repo, ref, "Fix "+ref, "omp", 3)
+	rec, err := f.st.CreateRun(ctx, f.repo, ref, "Fix "+ref, "omp", 3, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,13 +98,38 @@ func TestListShouldShowOnlyActiveRunsWithTheirRunningAgents(t *testing.T) {
 			t.Fatalf("%s: header + one active run:\n%s", cmd, out)
 		}
 		row := strings.Fields(lines[1])
-		if row[0] != "1" || row[1] != "app" || row[2] != "#1" || row[3] != "implement" || row[4] != "1/3" || row[5] != "fix/1-a" || row[6] != "implementer" || !strings.Contains(lines[1], "(alive)") {
+		if row[0] != "1" || row[1] != "app" || row[2] != "#1" || row[3] != "implement" || row[4] != "1/3" || row[5] != "wait" || row[6] != "fix/1-a" || row[7] != "implementer" || !strings.Contains(lines[1], "(alive)") {
 			t.Fatalf("%s: row = %q", cmd, lines[1])
 		}
 	}
 	all := f.exec(t, "ls", "--all")
 	if !strings.Contains(all, "fix/2-b") || !strings.Contains(all, "(finished)") || strings.Index(all, "fix/2-b") > strings.Index(all, "fix/1-a") {
 		t.Fatalf("--all includes finished runs, newest first:\n%s", all)
+	}
+}
+
+func TestListShouldShowTheComplexityOrWaitUntilThePlanClassifiesIt(t *testing.T) {
+	f := newFixture(t)
+	f.run(t, "#1", "fix/1-a", store.StatePlan)
+	classified := f.run(t, "#2", "fix/2-b", store.StateImplement)
+	classified.Complexity = "high"
+	if err := f.st.UpdateRun(context.Background(), classified); err != nil {
+		t.Fatal(err)
+	}
+	f.run(t, "#3", "fix/3-c", store.StateRecorded) // ended before any plan classified it
+
+	out := f.exec(t, "ls", "--all")
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if header := strings.Fields(lines[0]); len(header) < 6 || header[4] != "ITER" || header[5] != "COMPLEXITY" {
+		t.Fatalf("COMPLEXITY follows ITER:\n%s", out)
+	}
+	got := map[string]string{}
+	for _, l := range lines[1:] {
+		row := strings.Fields(l)
+		got[row[2]] = row[5]
+	}
+	if got["#1"] != "wait" || got["#2"] != "high" || got["#3"] != "-" {
+		t.Fatalf("complexity per issue = %v, want #1 wait (still planning), #2 high, #3 - (finished unclassified):\n%s", got, out)
 	}
 }
 
@@ -117,7 +144,7 @@ func TestListShouldFlagAnActiveRunWhoseOwnerDied(t *testing.T) {
 	if !strings.Contains(out, "dead: run delamain recover") {
 		t.Fatalf("a dead owner must be visible:\n%s", out)
 	}
-	if row := strings.Fields(strings.Split(strings.TrimSpace(out), "\n")[1]); row[6] != "-" {
+	if row := strings.Fields(strings.Split(strings.TrimSpace(out), "\n")[1]); row[7] != "-" {
 		t.Fatalf("an agent recorded as running died with its owner; none is running: %v", row)
 	}
 }
@@ -180,7 +207,7 @@ func TestStatusShouldShowTheHarnessAndMaxIterationsRecordedOnTheRun(t *testing.T
 	f := newFixture(t)
 	ctx := context.Background()
 	// The fixture's config says omp and 3 iterations; the run was started under claude with 5.
-	rec, err := f.st.CreateRun(ctx, f.repo, "#1", "Fix #1", "claude", 5)
+	rec, err := f.st.CreateRun(ctx, f.repo, "#1", "Fix #1", "claude", 5, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,7 +229,7 @@ func TestStatusShouldFallBackForRunsWithoutHarness(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
 	// Runs created before the harness was recorded read back as "" and 0.
-	rec, err := f.st.CreateRun(ctx, f.repo, "#1", "Fix #1", "", 0)
+	rec, err := f.st.CreateRun(ctx, f.repo, "#1", "Fix #1", "", 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -225,7 +252,7 @@ func TestStatusShouldFallBackForRunsWithoutHarness(t *testing.T) {
 
 func TestStatusShouldShowNoInteractionBeforeTheFirstIteration(t *testing.T) {
 	f := newFixture(t)
-	if _, err := f.st.CreateRun(context.Background(), f.repo, "#1", "Fix #1", "claude", 5); err != nil {
+	if _, err := f.st.CreateRun(context.Background(), f.repo, "#1", "Fix #1", "claude", 5, 0); err != nil {
 		t.Fatal(err)
 	}
 	out := f.exec(t, "status", "1")
@@ -348,5 +375,55 @@ func TestWithinShouldOnlyAcceptPathsStrictlyInsideTheDir(t *testing.T) {
 		if got := within("/wt/app", path); got != want {
 			t.Errorf("within(/wt/app, %s) = %v", path, got)
 		}
+	}
+}
+
+func TestStatusShouldShowTheComplexityAndItsPerIssueBudget(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	if err := os.WriteFile(f.cfgFile, []byte("paths:\n  state_dir: "+f.stateDir+"\n  worktrees_dir: "+f.wtDir+"\nbudget:\n  per_issue: 2000000\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rec, err := f.st.CreateRun(ctx, f.repo, "#1", "Fix #1", "omp", 3, 2e6)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec.State, rec.Iteration, rec.Complexity, rec.PerIssue, rec.MaxIterations = store.StateImplement, 1, "high", 4e6, 5
+	if err := f.st.UpdateRun(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+	plain, err := f.st.CreateRun(ctx, f.repo, "#2", "Fix #2", "omp", 3, 7e6)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain.State, plain.Iteration = store.StateImplement, 1
+	if err := f.st.UpdateRun(ctx, plain); err != nil {
+		t.Fatal(err)
+	}
+
+	out := f.exec(t, "status", "1")
+	if got := statusField(out, "COMPLEXITY"); got != "high" {
+		t.Errorf("COMPLEXITY = %q:\n%s", got, out)
+	}
+	if got, want := statusField(out, "BUDGET"), "de "+budget.Format(4e6, config.BudgetTokens); !strings.Contains(got, want) {
+		t.Errorf("BUDGET = %q, want it to contain %q", got, want)
+	}
+	var s RunStatus
+	if err := json.Unmarshal([]byte(f.exec(t, "status", "1", "-o", "json")), &s); err != nil {
+		t.Fatal(err)
+	}
+	if s.Run.Complexity != "high" || s.Budget.PerIssue != 4e6 {
+		t.Errorf("json = %q, %v", s.Run.Complexity, s.Budget.PerIssue)
+	}
+
+	out = f.exec(t, "status", "2")
+	if got := statusField(out, "COMPLEXITY"); got != "-" {
+		t.Errorf("COMPLEXITY = %q, want - for an unclassified run", got)
+	}
+	if err := json.Unmarshal([]byte(f.exec(t, "status", "2", "-o", "json")), &s); err != nil {
+		t.Fatal(err)
+	}
+	if s.Budget.PerIssue != 2e6 {
+		t.Errorf("per_issue = %v, want the config's", s.Budget.PerIssue)
 	}
 }

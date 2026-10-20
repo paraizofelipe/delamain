@@ -20,6 +20,7 @@ import (
 	"github.com/paraizo/delamain/internal/config"
 	"github.com/paraizo/delamain/internal/doctor"
 	"github.com/paraizo/delamain/internal/herdr"
+	"github.com/paraizo/delamain/internal/notify"
 	"github.com/paraizo/delamain/internal/omp/rpc"
 )
 
@@ -76,6 +77,7 @@ func NewRoot() *cobra.Command {
 					LookPath: exec.LookPath, Version: binVersion, OmpRPC: ompRPCReady, ClaudeAuth: claudeAuth, Herdr: h,
 					Prompts: set, PromptsTarget: promptsTarget(cfg),
 					ForgeAuth: func(ctx context.Context, dir string) (doctor.ForgeIdentity, error) { return forgeAuth(ctx, cfg, dir) },
+					Notify:    func(ctx context.Context) notify.Probe { return notify.Diagnose(ctx, cfg.Notify) },
 				})
 				if err := printChecks(cmd.OutOrStdout(), checks); err != nil {
 					return err
@@ -90,6 +92,7 @@ func NewRoot() *cobra.Command {
 		newRunCmd(load),
 		newDaemonCmd(load),
 		newRecoverCmd(load),
+		newNotifyCmd(load),
 		newListCmd(load),
 		newStatusCmd(load),
 		newLogsCmd(load),

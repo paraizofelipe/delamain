@@ -29,6 +29,7 @@ func (l Level) String() string { return [...]string{"ok", "soft", "hard"}[l] }
 type Status struct {
 	Mode            config.BudgetMode
 	Usage           store.Usage // the run's raw usage, cacheRead included
+	DayUsage        store.Usage // the day's raw usage over all runs
 	Run, Day        float64
 	PerIssue, Daily float64
 	Level           Level
@@ -122,7 +123,7 @@ func (m Meter) Today(ctx context.Context) (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
-	s := Status{Mode: m.Cfg.Mode, Day: m.spent(day), PerIssue: m.Cfg.PerIssue, Daily: m.Cfg.Daily}
+	s := Status{Mode: m.Cfg.Mode, Day: m.spent(day), DayUsage: day, PerIssue: m.Cfg.PerIssue, Daily: m.Cfg.Daily}
 	s.evaluate(m.Cfg.SoftRatio)
 	return s, nil
 }

@@ -15,6 +15,7 @@ import (
 	"github.com/paraizo/delamain/internal/config"
 	"github.com/paraizo/delamain/internal/forge"
 	"github.com/paraizo/delamain/internal/herdr"
+	"github.com/paraizo/delamain/internal/notify"
 	"github.com/paraizo/delamain/internal/prompts"
 )
 
@@ -60,6 +61,8 @@ type Deps struct {
 	// Prompts is optional; when set, doctor lints it and checks the installation is current.
 	Prompts       *prompts.Set
 	PromptsTarget prompts.Target
+	// Notify probes the desktop notification backend; nil skips the check.
+	Notify func(ctx context.Context) notify.Probe
 }
 
 // Run executes every check; it never stops at the first failure so the report is complete.
@@ -134,6 +137,10 @@ func Run(ctx context.Context, cfg config.Config, d Deps) []Check {
 		add("gitleaks", OK, "available")
 	}
 
+	if d.Notify != nil {
+		checks = append(checks, notifyCheck(d.Notify(ctx)))
+	}
+
 	if d.Prompts != nil {
 		checks = append(checks, promptChecks(d.Prompts, d.PromptsTarget)...)
 	}
@@ -167,6 +174,27 @@ func forgeAuth(ctx context.Context, d Deps, dir string) Check {
 	default:
 		return Check{"forge auth", Warn, fmt.Sprintf("%s%v", where, err)}
 	}
+}
+
+// notifyCheck reports the notification backend; without one it only warns: runs never need it.
+func notifyCheck(p notify.Probe) Check {
+	switch p.Backend {
+	case config.NotifyDBus:
+		if p.Err != nil {
+			return Check{"notify", Warn, fmt.Sprintf("dbus: notification server did not answer: %v", p.Err)}
+		}
+		actions := "actions supported"
+		if !p.Actions {
+			actions = "no actions (clicks disabled)"
+		}
+		return Check{"notify", OK, fmt.Sprintf("dbus: %s %s, %s", p.Server, p.Version, actions)}
+	case config.NotifyMacOS:
+		if p.TerminalNotifier != "" {
+			return Check{"notify", OK, fmt.Sprintf("macos: terminal-notifier (%s); allow notifications for terminal-notifier in System Settings > Notifications", p.TerminalNotifier)}
+		}
+		return Check{"notify", OK, "macos: osascript (terminal-notifier not found: no logo, no click); allow notifications for Script Editor in System Settings > Notifications"}
+	}
+	return Check{"notify", Warn, "no desktop notification server; notifications disabled"}
 }
 
 func promptChecks(set *prompts.Set, t prompts.Target) []Check {

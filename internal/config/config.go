@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -34,6 +35,44 @@ type Config struct {
 	Gates    Gates    `yaml:"gates"`
 	Daemon   Daemon   `yaml:"daemon"`
 	Paths    Paths    `yaml:"paths"`
+	Notify   Notify   `yaml:"notify"`
+	// Complexity holds optional per-level limits applied once the plan is classified.
+	Complexity Complexity `yaml:"complexity"`
+}
+
+// Profile overrides the run's limits once the plan is classified. Zero inherits the global value.
+type Profile struct {
+	MaxIterations int     `yaml:"max_iterations"`
+	PerIssue      float64 `yaml:"per_issue"`
+}
+
+// Complexity maps each complexity level to its Profile.
+type Complexity struct {
+	Low    Profile `yaml:"low"`
+	Medium Profile `yaml:"medium"`
+	High   Profile `yaml:"high"`
+}
+
+// Limits returns the effective limits for level ("low"|"medium"|"high"); unknown levels and
+// zero fields fall back to the global pipeline.max_iterations and budget.per_issue.
+func (c Config) Limits(level string) (maxIterations int, perIssue float64) {
+	maxIterations, perIssue = c.Pipeline.MaxIterations, c.Budget.PerIssue
+	var p Profile
+	switch level {
+	case "low":
+		p = c.Complexity.Low
+	case "medium":
+		p = c.Complexity.Medium
+	case "high":
+		p = c.Complexity.High
+	}
+	if p.MaxIterations != 0 {
+		maxIterations = p.MaxIterations
+	}
+	if p.PerIssue != 0 {
+		perIssue = p.PerIssue
+	}
+	return maxIterations, perIssue
 }
 
 // Herdr optionally shows runs in herdr workspaces. Off by default: the orchestrator drives
@@ -131,6 +170,26 @@ type Daemon struct {
 	PollInterval time.Duration `yaml:"poll_interval"`
 }
 
+// Notification backends. NotifyAuto picks macos on darwin, else dbus when a server owns the name.
+const (
+	NotifyAuto  = "auto"
+	NotifyDBus  = "dbus"
+	NotifyMacOS = "macos"
+	NotifyNone  = "none"
+)
+
+// NotifyEvents are the events that can raise a toast; "started" is off by default.
+var NotifyEvents = []string{"started", "pr_opened", "needs_human", "halted", "needs_info", "budget", "recover"}
+
+// Notify configures desktop notifications (D-Bus on Linux, Notification Center on macOS).
+type Notify struct {
+	Enabled bool `yaml:"enabled"`
+	// Backend is auto | dbus | macos | none.
+	Backend string `yaml:"backend"`
+	// Events lists the events that raise a toast.
+	Events []string `yaml:"events"`
+}
+
 type Paths struct {
 	StateDir string `yaml:"state_dir"`
 	// WorktreesDir holds every run's worktree, as <worktrees_dir>/<repo>/<branch>; `delamain
@@ -190,6 +249,10 @@ func defaults() Config {
 		Forge:    Forge{Kind: ForgeAuto, Labels: Labels{Prefix: DefaultLabelPrefix}},
 		Gates:    Gates{RedProof: "bug", RequireTests: true},
 		Daemon:   Daemon{PollInterval: 5 * time.Minute},
+		Notify: Notify{
+			Enabled: true, Backend: NotifyAuto,
+			Events: []string{"pr_opened", "needs_human", "halted", "needs_info", "budget", "recover"},
+		},
 		Paths: Paths{
 			StateDir:     "~/.local/state/delamain",
 			WorktreesDir: "~/projects/.worktrees",
@@ -237,14 +300,15 @@ func Load(path string, getenv func(string) string) (Config, error) {
 
 func applyEnv(cfg *Config, getenv func(string) string) error {
 	strs := map[string]*string{
-		"DELAMAIN_AGENT_HARNESS": (*string)(&cfg.Agent.Harness),
-		"DELAMAIN_CLAUDE_MODEL":  &cfg.Claude.Model,
-		"DELAMAIN_HERDR_SESSION": &cfg.Herdr.Session,
-		"DELAMAIN_OMP_MODEL":     &cfg.Omp.Model,
-		"DELAMAIN_OMP_AGENT_DIR": &cfg.Omp.AgentDir,
-		"DELAMAIN_STATE_DIR":     &cfg.Paths.StateDir,
-		"DELAMAIN_PROMPTS_DIR":   &cfg.Paths.PromptsDir,
-		"DELAMAIN_LABEL_PREFIX":  &cfg.Forge.Labels.Prefix,
+		"DELAMAIN_AGENT_HARNESS":  (*string)(&cfg.Agent.Harness),
+		"DELAMAIN_CLAUDE_MODEL":   &cfg.Claude.Model,
+		"DELAMAIN_HERDR_SESSION":  &cfg.Herdr.Session,
+		"DELAMAIN_OMP_MODEL":      &cfg.Omp.Model,
+		"DELAMAIN_OMP_AGENT_DIR":  &cfg.Omp.AgentDir,
+		"DELAMAIN_STATE_DIR":      &cfg.Paths.StateDir,
+		"DELAMAIN_PROMPTS_DIR":    &cfg.Paths.PromptsDir,
+		"DELAMAIN_LABEL_PREFIX":   &cfg.Forge.Labels.Prefix,
+		"DELAMAIN_NOTIFY_BACKEND": &cfg.Notify.Backend,
 	}
 	for key, dst := range strs {
 		if v := getenv(key); v != "" {
@@ -257,6 +321,21 @@ func applyEnv(cfg *Config, getenv func(string) string) error {
 			return fmt.Errorf("DELAMAIN_HERDR: %q is not a boolean", v)
 		}
 		cfg.Herdr.Enabled = b
+	}
+	if v := getenv("DELAMAIN_NOTIFY_ENABLED"); v != "" {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			return fmt.Errorf("DELAMAIN_NOTIFY_ENABLED: %q is not a boolean", v)
+		}
+		cfg.Notify.Enabled = b
+	}
+	if v := getenv("DELAMAIN_NOTIFY_EVENTS"); v != "" {
+		cfg.Notify.Events = nil
+		for e := range strings.SplitSeq(v, ",") {
+			if e = strings.TrimSpace(e); e != "" {
+				cfg.Notify.Events = append(cfg.Notify.Events, e)
+			}
+		}
 	}
 	ints := map[string]*int{
 		"DELAMAIN_MAX_ITERATIONS": &cfg.Pipeline.MaxIterations,
@@ -300,6 +379,14 @@ func (c Config) Validate() error {
 	if c.Budget.SoftRatio <= 0 || c.Budget.SoftRatio > 1 {
 		errs = append(errs, errors.New("budget.soft_ratio must be in (0, 1]"))
 	}
+	for _, lp := range []struct {
+		level string
+		p     Profile
+	}{{"low", c.Complexity.Low}, {"medium", c.Complexity.Medium}, {"high", c.Complexity.High}} {
+		if lp.p.MaxIterations < 0 || lp.p.PerIssue < 0 {
+			errs = append(errs, fmt.Errorf("complexity.%s: max_iterations and per_issue must be >= 0", lp.level))
+		}
+	}
 	switch c.Agent.Harness {
 	case HarnessOmp:
 		errs = append(errs, c.Omp.validate()...)
@@ -330,7 +417,23 @@ func (c Config) Validate() error {
 	default:
 		errs = append(errs, fmt.Errorf("gates.red_proof %q is not one of bug|always|never", c.Gates.RedProof))
 	}
+	errs = append(errs, c.Notify.validate()...)
 	return errors.Join(errs...)
+}
+
+func (n Notify) validate() []error {
+	var errs []error
+	switch n.Backend {
+	case NotifyAuto, NotifyDBus, NotifyMacOS, NotifyNone:
+	default:
+		errs = append(errs, fmt.Errorf("notify.backend %q is not one of auto|dbus|macos|none", n.Backend))
+	}
+	for _, e := range n.Events {
+		if !slices.Contains(NotifyEvents, e) {
+			errs = append(errs, fmt.Errorf("notify.events: %q is not one of %s", e, strings.Join(NotifyEvents, "|")))
+		}
+	}
+	return errs
 }
 
 func (o Omp) validate() []error {

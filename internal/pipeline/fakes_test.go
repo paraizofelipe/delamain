@@ -16,6 +16,7 @@ import (
 	"github.com/paraizo/delamain/internal/budget"
 	"github.com/paraizo/delamain/internal/forge"
 	"github.com/paraizo/delamain/internal/herdr"
+	"github.com/paraizo/delamain/internal/notify"
 )
 
 // reply is what a simulated agent does for one prompt.
@@ -374,12 +375,13 @@ func (g *fakeGit) RemoteBranchExists(_ context.Context, _, branch string) (bool,
 
 // fakeForge records deliveries and issue updates.
 type fakeForge struct {
-	open      *forge.PR
-	created   []forge.PROptions
-	createErr error
-	comments  []string
-	relabels  [][2][]string // {add, remove}
-	issues    map[int]forge.Issue
+	open       *forge.PR
+	created    []forge.PROptions
+	createErr  error
+	comments   []string
+	relabels   [][2][]string // {add, remove}
+	relabelErr error
+	issues     map[int]forge.Issue
 }
 
 func (f *fakeForge) Repo() forge.Repo {
@@ -406,5 +408,46 @@ func (f *fakeForge) Comment(_ context.Context, _ int, body string) error {
 }
 func (f *fakeForge) Relabel(_ context.Context, _ int, add, remove []string) error {
 	f.relabels = append(f.relabels, [2][]string{add, remove})
-	return nil
+	return f.relabelErr
+}
+
+// fakeNotifier records every toast and how many issue comments existed when it was sent.
+type fakeNotifier struct {
+	mu       sync.Mutex
+	sent     []notify.Message
+	comments []int
+	forge    *fakeForge
+	err      error
+	onSend   func(notify.Message) // inspects the world as the toast goes out
+}
+
+func (n *fakeNotifier) Notify(_ context.Context, m notify.Message) error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.sent = append(n.sent, m)
+	seen := 0
+	if n.forge != nil {
+		seen = len(n.forge.comments)
+	}
+	n.comments = append(n.comments, seen)
+	if n.onSend != nil {
+		n.onSend(m)
+	}
+	return n.err
+}
+
+func (n *fakeNotifier) Close() error { return nil }
+
+// of returns the toasts of one event, with the comment count seen by each.
+func (n *fakeNotifier) of(e notify.Event) ([]notify.Message, []int) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	var out []notify.Message
+	var seen []int
+	for i, m := range n.sent {
+		if m.Event == e {
+			out, seen = append(out, m), append(seen, n.comments[i])
+		}
+	}
+	return out, seen
 }
