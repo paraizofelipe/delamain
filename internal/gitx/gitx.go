@@ -7,14 +7,18 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"unicode"
 
 	"golang.org/x/text/unicode/norm"
+
+	"github.com/paraizo/delamain/internal/forge"
 )
 
 // Protected branches are never used as work branches.
@@ -25,10 +29,15 @@ type Git struct{ Binary string }
 func New() Git { return Git{Binary: "git"} }
 
 func (g Git) run(ctx context.Context, dir string, args ...string) (string, error) {
+	return g.runEnv(ctx, dir, nil, args...)
+}
+
+// runEnv is run with extra environment variables.
+func (g Git) runEnv(ctx context.Context, dir string, env []string, args ...string) (string, error) {
 	var out, errb bytes.Buffer
 	cmd := exec.CommandContext(ctx, g.Binary, append([]string{"-C", dir}, args...)...)
 	cmd.Stdout, cmd.Stderr = &out, &errb
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0") // fail instead of waiting for credentials
+	cmd.Env = append(append(os.Environ(), "GIT_TERMINAL_PROMPT=0"), env...) // fail instead of waiting for credentials
 	if err := cmd.Run(); err != nil {
 		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(errb.String()))
 	}
@@ -156,9 +165,180 @@ func (g Git) AddDetachedWorktree(ctx context.Context, repo, path, ref string) er
 	return err
 }
 
+// AddUntrustedWorktree checks out ref, third-party code such as a fork's PR head, at path
+// without running anything the checkout could steer: no hooks (a relative core.hooksPath, as
+// husky sets, may resolve inside it), no fsmonitor and no filter driver its .gitattributes
+// names (git-lfs included).
+func (g Git) AddUntrustedWorktree(ctx context.Context, repo, path, ref string) error {
+	safe, err := g.untrustedConfig(ctx, repo)
+	if err != nil {
+		return err
+	}
+	_, err = g.runEnv(ctx, repo, []string{"GIT_LFS_SKIP_SMUDGE=1"}, append(safe, "worktree", "add", "--quiet", "--detach", path, ref)...)
+	return err
+}
+
+// UntrustedStatus is Status for a checkout made by AddUntrustedWorktree, with the same guards:
+// status may run fsmonitor and clean filters.
+func (g Git) UntrustedStatus(ctx context.Context, dir string) (string, error) {
+	safe, err := g.untrustedConfig(ctx, dir)
+	if err != nil {
+		return "", err
+	}
+	return g.runEnv(ctx, dir, []string{"GIT_LFS_SKIP_SMUDGE=1"}, append(safe, "status", "--porcelain")...)
+}
+
+// untrustedConfig is the -c overrides that turn off hooks, fsmonitor and every configured filter
+// driver (system, global or local) for one command.
+func (g Git) untrustedConfig(ctx context.Context, repo string) ([]string, error) {
+	safe := []string{"-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"}
+	out, err := g.run(ctx, repo, "config", "--name-only", "--get-regexp", `^filter\.`)
+	var exit *exec.ExitError
+	noFilter := errors.As(err, &exit) && exit.ExitCode() == 1
+	if err != nil && !noFilter {
+		return nil, err
+	}
+	seen := map[string]bool{}
+	for _, key := range strings.Split(out, "\n") {
+		name := strings.TrimPrefix(key, "filter.")
+		i := strings.LastIndexByte(name, '.')
+		if i < 0 || seen[name[:i]] {
+			continue
+		}
+		name = name[:i]
+		if strings.Contains(name, "=") { // -c would split it: refuse rather than leave it active
+			return nil, fmt.Errorf("filter driver %q cannot be disabled", name)
+		}
+		seen[name] = true
+		for _, k := range []string{"smudge=", "clean=", "process=", "required=false"} {
+			safe = append(safe, "-c", "filter."+name+"."+k)
+		}
+	}
+	return safe, nil
+}
+
 // RemoveWorktree drops a temporary worktree created by AddDetachedWorktree.
 func (g Git) RemoveWorktree(ctx context.Context, repo, path string) error {
 	_, err := g.run(ctx, repo, "worktree", "remove", "--force", path)
+	return err
+}
+
+// PRRef is the local ref a PR/MR head is fetched into.
+func PRRef(n int) string { return fmt.Sprintf("refs/delamain/pr/%d", n) }
+
+// FetchPRHead fetches the head of PR/MR n into PRRef(n) and returns its SHA. Only that ref is
+// forced ("+" on its refspec): a force-pushed PR moves it, and no other ref can change.
+func (g Git) FetchPRHead(ctx context.Context, repo string, kind forge.Kind, n int) (string, error) {
+	if n <= 0 {
+		return "", fmt.Errorf("invalid PR/MR number %d", n)
+	}
+	var src string
+	switch kind {
+	case forge.GitHub:
+		src = fmt.Sprintf("refs/pull/%d/head", n)
+	case forge.GitLab:
+		src = fmt.Sprintf("refs/merge-requests/%d/head", n)
+	default:
+		return "", fmt.Errorf("no PR/MR refspec for forge %q", kind)
+	}
+	if _, err := g.run(ctx, repo, "fetch", "--quiet", "--no-tags", "origin", "+"+src+":"+PRRef(n)); err != nil {
+		return "", err
+	}
+	return g.run(ctx, repo, "rev-parse", "--verify", PRRef(n)+"^{commit}")
+}
+
+// FetchRef fetches branch ref from origin, updating origin/<ref>. The refspec is forced, as
+// git's own remote.origin.fetch is: a base that was rebased or reset on the origin would
+// otherwise be rejected as non-fast-forward and stop every review against it. Only the remote
+// tracking ref moves; no local branch is touched.
+func (g Git) FetchRef(ctx context.Context, repo, ref string) error {
+	if ref == "" || strings.HasPrefix(ref, "-") {
+		return fmt.Errorf("invalid ref %q", ref)
+	}
+	_, err := g.run(ctx, repo, "fetch", "--quiet", "--no-tags", "origin", "+refs/heads/"+ref+":refs/remotes/origin/"+ref)
+	return err
+}
+
+// ShowFile returns path at ref; a path missing at an existing ref is fs.ErrNotExist.
+func (g Git) ShowFile(ctx context.Context, repo, ref, path string) ([]byte, error) {
+	if _, err := g.run(ctx, repo, "rev-parse", "--verify", "--quiet", "--end-of-options", ref+"^{commit}"); err != nil {
+		return nil, fmt.Errorf("ref %s: %w", ref, err)
+	}
+	if _, err := g.run(ctx, repo, "cat-file", "-e", ref+":"+path); err != nil {
+		return nil, fmt.Errorf("%s at %s: %w", path, ref, fs.ErrNotExist)
+	}
+	var out, errb bytes.Buffer
+	cmd := exec.CommandContext(ctx, g.Binary, "-C", repo, "show", ref+":"+path) //nolint:gosec // ref verified above
+	cmd.Stdout, cmd.Stderr = &out, &errb
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("git show %s:%s: %w: %s", ref, path, err, strings.TrimSpace(errb.String()))
+	}
+	return out.Bytes(), nil
+}
+
+// LineRange is a closed range of lines of the new file.
+type LineRange struct{ Start, End int }
+
+var hunkHeader = regexp.MustCompile(`^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@`)
+
+// ChangedLines maps each file of base...HEAD to the lines added or modified on the head side,
+// by the head path. Removal-only hunks, deleted and binary files have no lines. No external diff
+// or textconv runs: the checkout's .gitattributes would pick which driver handles its files.
+func (g Git) ChangedLines(ctx context.Context, dir, base string) (map[string][]LineRange, error) {
+	out, err := g.run(ctx, dir, "-c", "core.quotePath=false", "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--unified=0",
+		"--find-renames", "--src-prefix=a/", "--dst-prefix=b/", base+"...HEAD")
+	if err != nil {
+		return nil, err
+	}
+	lines := map[string][]LineRange{}
+	file, header := "", false // header: between "diff --git" and the first hunk
+	for _, l := range strings.Split(out, "\n") {
+		switch {
+		case strings.HasPrefix(l, "diff --git "):
+			file, header = "", true
+		case header && strings.HasPrefix(l, "+++ "):
+			file = diffPath(strings.TrimPrefix(l, "+++ "))
+		case strings.HasPrefix(l, "@@ "):
+			header = false
+			if file == "" {
+				continue
+			}
+			m := hunkHeader.FindStringSubmatch(l)
+			if m == nil {
+				return nil, fmt.Errorf("unexpected hunk header %q", l)
+			}
+			start, _ := strconv.Atoi(m[1])
+			count := 1
+			if m[2] != "" {
+				count, _ = strconv.Atoi(m[2])
+			}
+			if count > 0 {
+				lines[file] = append(lines[file], LineRange{Start: start, End: start + count - 1})
+			}
+		}
+	}
+	return lines, nil
+}
+
+// diffPath turns a "+++" target into the head path; /dev/null (a deletion) is "".
+func diffPath(p string) string {
+	p = strings.TrimSuffix(p, "\t")
+	if unq, err := strconv.Unquote(p); err == nil && strings.HasPrefix(p, `"`) {
+		p = unq
+	}
+	path, ok := strings.CutPrefix(p, "b/")
+	if !ok {
+		return ""
+	}
+	return path
+}
+
+// DeleteRef removes a ref delamain created under refs/delamain/; any other ref is refused.
+func (g Git) DeleteRef(ctx context.Context, repo, ref string) error {
+	if !strings.HasPrefix(ref, "refs/delamain/") {
+		return fmt.Errorf("refusing to delete %q: not a delamain ref", ref)
+	}
+	_, err := g.run(ctx, repo, "update-ref", "-d", ref)
 	return err
 }
 

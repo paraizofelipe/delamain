@@ -41,6 +41,8 @@ type Issue struct {
 	URL    string
 	Labels []string
 	Open   bool
+	// Confidential issues (GitLab) are visible to fewer people than the PRs that may cite them.
+	Confidential bool
 }
 
 // PR is a GitHub pull request or a GitLab merge request.
@@ -73,6 +75,7 @@ type Comment struct {
 	Author    string
 	Body      string
 	CreatedAt time.Time
+	Internal  bool // GitLab internal note: hidden from who only sees the MR
 }
 
 // Thread is a review thread (inline) or a PR-level comment, oldest comment first.

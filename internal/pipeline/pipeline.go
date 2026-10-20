@@ -42,11 +42,18 @@ type Git interface {
 	ChangedFiles(ctx context.Context, dir, base string) ([]string, error)
 	AddWorktree(ctx context.Context, repo, path, branch, base string) error
 	AddDetachedWorktree(ctx context.Context, repo, path, ref string) error
+	AddUntrustedWorktree(ctx context.Context, repo, path, ref string) error
+	UntrustedStatus(ctx context.Context, dir string) (string, error)
 	CheckoutFiles(ctx context.Context, dir, ref string, files []string) error
 	DiscardEmptyWork(ctx context.Context, repo, worktree, branch, base string) error
 	RemoveWorktree(ctx context.Context, repo, path string) error
 	Push(ctx context.Context, dir, branch, base string) error
 	RemoteBranchExists(ctx context.Context, repo, branch string) (bool, error)
+	FetchPRHead(ctx context.Context, repo string, kind forge.Kind, n int) (string, error)
+	FetchRef(ctx context.Context, repo, ref string) error
+	ShowFile(ctx context.Context, repo, ref, path string) ([]byte, error)
+	ChangedLines(ctx context.Context, dir, base string) (map[string][]gitx.LineRange, error)
+	DeleteRef(ctx context.Context, repo, ref string) error
 }
 
 type Outcome string
@@ -56,6 +63,8 @@ const (
 	OutcomeExhausted Outcome = "exhausted"  // max iterations reached without approval
 	OutcomeHalted    Outcome = "halted"     // stopped by a guardrail or an infrastructure failure
 	OutcomeNeedsInfo Outcome = "needs_info" // preflight rejected the task; nothing was created
+	OutcomeReviewed  Outcome = "reviewed"   // the PR review is posted (or was already, comment by comment)
+	OutcomeSkipped   Outcome = "skipped"    // nothing to review: PR not open or head already reviewed
 )
 
 type Result struct {
@@ -81,6 +90,8 @@ type Result struct {
 	Budget string
 	// CommandSources says where each gate command came from: repo, detectado or planner.
 	CommandSources map[string]string
+	// Review is what a PR review posted; nil for issue runs.
+	Review *ReviewSummary
 }
 
 // Iteration records what happened in one implement → verify → review round.
@@ -108,7 +119,9 @@ type Runner struct {
 	PromptsTarget prompts.Target
 	// Forge opens the PR/MR and updates the issue; nil keeps the work local (repo without origin).
 	Forge forge.Forge
-	Log   *slog.Logger
+	// ForgeUser is the login Forge posts as; only its comments' markers count as already posted.
+	ForgeUser string
+	Log       *slog.Logger
 	// LookPath finds optional tools such as gitleaks (default exec.LookPath).
 	LookPath func(string) (string, error)
 	// Alive reports whether a run's owner process still exists (default: signal 0).
@@ -152,6 +165,12 @@ type run struct {
 	budget  budget.Status
 	// recovered marks a run finalized by Recover after its process died.
 	recovered bool
+	// pr is set on PR review runs only.
+	pr *prRun
+	// agentDir is the agents' cwd when it must not be the worktree (default: the worktree).
+	agentDir string
+	// confine restricts agents that read third-party code; nil for issue runs.
+	confine *Confinement
 }
 
 // Run executes the task end to end. A non-nil error means the run could not even be recorded;
@@ -515,12 +534,17 @@ func (r *Runner) startAgent(ctx context.Context, ru *run, role string) error {
 		return err
 	}
 	ru.viewDo("show "+role, func(v View) error { return v.Show(ctx, role, logPath) })
+	dir := ru.repo.Worktree
+	if ru.agentDir != "" {
+		dir = ru.agentDir
+	}
 	agent, err := r.Agents.Start(ctx, AgentOptions{
-		Name: fmt.Sprintf("%s-r%d", role, ru.rec.ID), Dir: ru.repo.Worktree,
+		Name: fmt.Sprintf("%s-r%d", role, ru.rec.ID), Dir: dir,
 		SessionDir: sessDir, SystemPrompt: r.PromptsTarget.RolePath(role),
 		// Only the orchestrator publishes work: the agent gets an env where push fails.
 		Env:     gitx.AgentEnv(),
 		LogPath: logPath, ErrPath: filepath.Join(logDir, role+".stderr"),
+		Confine: ru.confine,
 	})
 	if err != nil {
 		return haltf("o agente %s não subiu: %v", role, err)
@@ -672,7 +696,11 @@ func (r *Runner) record(ctx context.Context, ru *run) error {
 	if ru.dir != "" {
 		if err := os.MkdirAll(ru.dir, 0o700); err == nil {
 			res.ReportPath = filepath.Join(ru.dir, "report.md")
-			if err := os.WriteFile(res.ReportPath, []byte(renderReport(*res, ru.task)), 0o600); err != nil {
+			report := renderReport(*res, ru.task)
+			if ru.pr != nil {
+				report = renderReviewReport(*res, ru.pr)
+			}
+			if err := os.WriteFile(res.ReportPath, []byte(report), 0o600); err != nil {
 				ru.log.Warn("could not write report", "err", err)
 			}
 		}

@@ -292,6 +292,70 @@ func (r Review) Blocking() []Finding {
 	return out
 }
 
+// Dropped is a finding the review verifier could not confirm, with why.
+type Dropped struct {
+	File    string `json:"file"`
+	Line    int    `json:"line"`
+	Message string `json:"message"`
+	Reason  string `json:"reason"`
+}
+
+// PRReview is the artifact of a PR/MR review: findings to post, never a verdict to act on.
+type PRReview struct {
+	Verdict   string    `json:"verdict"`   // comment | concerns (informative)
+	Adherence string    `json:"adherence"` // matches | partial | diverges
+	Summary   string    `json:"summary"`
+	Axes      []Axis    `json:"axes"`
+	Dropped   []Dropped `json:"dropped"`
+	Learnings []string  `json:"learnings"`
+}
+
+var (
+	validPRVerdicts = map[string]bool{"comment": true, "concerns": true}
+	validAdherence  = map[string]bool{"matches": true, "partial": true, "diverges": true}
+)
+
+// Validate checks the shape; ValidateLimit checks the size against review.max_comments.
+func (r PRReview) Validate() error {
+	var errs []error
+	if !validPRVerdicts[r.Verdict] {
+		errs = append(errs, fmt.Errorf("verdict must be comment or concerns, got %q", r.Verdict))
+	}
+	if !validAdherence[r.Adherence] {
+		errs = append(errs, fmt.Errorf("adherence must be matches, partial or diverges, got %q", r.Adherence))
+	}
+	if strings.TrimSpace(r.Summary) == "" {
+		errs = append(errs, errors.New("summary is empty"))
+	}
+	if err := (Review{Axes: r.Axes}).Validate(); err != nil {
+		errs = append(errs, err)
+	}
+	for _, a := range r.Axes {
+		for _, f := range a.Findings {
+			if f.File != "" && f.Line <= 0 {
+				errs = append(errs, fmt.Errorf("axis %s: finding in %s needs a line > 0, got %d", a.Axis, f.File, f.Line))
+			}
+		}
+	}
+	for _, d := range r.Dropped {
+		if d.File != "" && d.Line <= 0 {
+			errs = append(errs, fmt.Errorf("dropped finding in %s needs a line > 0, got %d", d.File, d.Line))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// ValidateLimit rejects more critical/major findings than max (review.max_comments).
+func (r PRReview) ValidateLimit(max int) error {
+	if n := len(r.Blocking()); n > max {
+		return fmt.Errorf("%d critical/major findings exceed review.max_comments (%d)", n, max)
+	}
+	return nil
+}
+
+// Blocking returns critical and major findings across all axes, in report order.
+func (r PRReview) Blocking() []Finding { return Review{Axes: r.Axes}.Blocking() }
+
 type validator interface{ Validate() error }
 
 // Read decodes path strictly (unknown fields rejected) and validates it.

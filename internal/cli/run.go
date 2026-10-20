@@ -26,12 +26,14 @@ type ExitError struct{ Code int }
 
 func (e ExitError) Error() string { return fmt.Sprintf("exit %d", e.Code) }
 
-// Exit codes of `delamain run`, so scripts can branch on the outcome.
+// Exit codes of `delamain run` and `delamain review`, so scripts can branch on the outcome.
 var outcomeExit = map[pipeline.Outcome]int{
 	pipeline.OutcomeApproved:  0,
 	pipeline.OutcomeHalted:    1,
 	pipeline.OutcomeExhausted: 3,
 	pipeline.OutcomeNeedsInfo: 4,
+	pipeline.OutcomeReviewed:  0,
+	pipeline.OutcomeSkipped:   0,
 }
 
 func newRunCmd(load func() (config.Config, error)) *cobra.Command {

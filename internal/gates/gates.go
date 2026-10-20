@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path"
 	"path/filepath"
@@ -136,17 +137,25 @@ const RepoConfigFile = ".delamain.yaml"
 
 // LoadRepoConfig reads dir/.delamain.yaml; a missing file is an empty config.
 func LoadRepoConfig(dir string) (RepoConfig, error) {
-	var rc RepoConfig
 	raw, err := os.ReadFile(filepath.Join(dir, RepoConfigFile)) //nolint:gosec // repository config
 	if errors.Is(err, os.ErrNotExist) {
-		return rc, nil
+		return RepoConfig{}, nil
 	}
 	if err != nil {
-		return rc, err
+		return RepoConfig{}, err
 	}
+	return ParseRepoConfig(raw)
+}
+
+// ParseRepoConfig decodes a .delamain.yaml strictly (unknown keys fail); empty input is an
+// empty config. It serves configs read elsewhere, e.g. from a git ref.
+func ParseRepoConfig(raw []byte) (RepoConfig, error) {
+	var rc RepoConfig
 	dec := yaml.NewDecoder(bytes.NewReader(raw))
 	dec.KnownFields(true)
-	if err := dec.Decode(&rc); err != nil {
+	if err := dec.Decode(&rc); errors.Is(err, io.EOF) {
+		return RepoConfig{}, nil
+	} else if err != nil {
 		return rc, fmt.Errorf("%s: %w", RepoConfigFile, err)
 	}
 	if err := ValidRedProof(rc.Gates.RedProof); rc.Gates.RedProof != "" && err != nil {

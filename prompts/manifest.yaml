@@ -13,6 +13,7 @@ roles:
   - planner
   - implementer
   - reviewer
+  - pr-reviewer
 
 # Subagentes do omp (tool `task`). Instalados como ~/.omp/agent/agents/delamain-<nome>.md.
 agents:
@@ -20,6 +21,7 @@ agents:
   - spec-reviewer
   - standards-reviewer
   - security-reviewer
+  - review-verifier
 
 # Skills do omp. Instaladas como ~/.omp/agent/skills/delamain-<nome>/ (com references/).
 skills:
@@ -32,3 +34,4 @@ stages:
   - plan
   - implement
   - review
+  - review-pr

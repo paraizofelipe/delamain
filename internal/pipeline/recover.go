@@ -9,6 +9,7 @@ import (
 	"syscall"
 
 	"github.com/paraizo/delamain/internal/forge"
+	"github.com/paraizo/delamain/internal/gitx"
 	"github.com/paraizo/delamain/internal/prompts"
 	"github.com/paraizo/delamain/internal/store"
 )
@@ -102,7 +103,10 @@ func (r *Runner) recoverRun(ctx context.Context, rec store.Run) (Result, error) 
 }
 
 // haltUnresumable closes a review or address run whose process died: it has nothing to deliver,
-// so only its worktree and agents are cleaned up before it is recorded as halted.
+// so only what it fetched is cleaned up before it is recorded as halted. It drops the same two
+// things finishReview does — the worktree and the PR ref — because a ref left behind keeps the
+// PR's commits reachable, and git never collects them: for a fork, that is third-party code
+// kept in the repository after the PR itself is gone.
 func (r *Runner) haltUnresumable(ctx context.Context, ru *run) error {
 	rec := ru.rec
 	ru.log.Warn("halting interrupted run", "run", rec.ID, "kind", rec.Kind, "state", rec.State)
@@ -111,6 +115,11 @@ func (r *Runner) haltUnresumable(ctx context.Context, ru *run) error {
 			if err := r.Git.RemoveWorktree(ctx, rec.Repo, rec.Worktree); err != nil {
 				ru.log.Warn("could not remove the worktree", "worktree", rec.Worktree, "err", err)
 			}
+		}
+	}
+	if n := prNumber(rec.IssueRef); n > 0 {
+		if err := r.Git.DeleteRef(ctx, rec.Repo, gitx.PRRef(n)); err != nil {
+			ru.log.Warn("could not remove the PR ref", "ref", gitx.PRRef(n), "err", err)
 		}
 	}
 	if _, err := r.Store.FailRunningAgents(ctx, rec.ID); err != nil {

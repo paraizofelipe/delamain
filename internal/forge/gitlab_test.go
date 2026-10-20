@@ -376,3 +376,29 @@ func TestGitLabPostReviewShouldPostOnlyTheMovedCommentWhenTheSummaryIsEmpty(t *t
 		t.Fatalf("summary = %q, want just the moved comment", b)
 	}
 }
+
+func TestGitLabShouldMarkConfidentialIssuesAndInternalNotes(t *testing.T) {
+	f, _ := gitlabAt(t, map[string]func(http.ResponseWriter, *http.Request){
+		"GET " + glProject + "/issues/8": reply(200, `{"iid":8,"title":"leak","description":"customer data","state":"opened","confidential":true}`),
+		"GET " + glProject + "/issues/7": reply(200, `{"iid":7,"title":"public","state":"opened"}`),
+		"GET " + glProject + "/merge_requests/12/discussions": reply(200, `[
+			{"id":"d1","notes":[
+				{"id":1,"author":{"username":"ana"},"body":"public note","created_at":"2026-01-01T10:00:00Z"},
+				{"id":2,"author":{"username":"bob"},"body":"internal note","created_at":"2026-01-01T11:00:00Z","internal":true},
+				{"id":3,"author":{"username":"eve"},"body":"old confidential note","created_at":"2026-01-01T12:00:00Z","confidential":true}]}]`),
+	})
+	ctx := context.Background()
+	if is, err := f.Issue(ctx, 8); err != nil || !is.Confidential {
+		t.Fatalf("a confidential issue must say so: %+v %v", is, err)
+	}
+	if is, err := f.Issue(ctx, 7); err != nil || is.Confidential {
+		t.Fatalf("a public issue is not confidential: %+v %v", is, err)
+	}
+	ts, err := f.Threads(ctx, 12)
+	if err != nil || len(ts) != 1 || len(ts[0].Comments) != 3 {
+		t.Fatalf("threads: %+v %v", ts, err)
+	}
+	if c := ts[0].Comments; c[0].Internal || !c[1].Internal || !c[2].Internal {
+		t.Fatalf("internal notes (and the deprecated confidential flag) must be marked: %+v", c)
+	}
+}

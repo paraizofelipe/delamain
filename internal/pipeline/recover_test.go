@@ -279,6 +279,11 @@ func TestRecoverShouldHaltReviewRunsWithoutDelivering(t *testing.T) {
 	if _, err := os.Stat(rec.Worktree); !os.IsNotExist(err) {
 		t.Fatalf("worktree %s still exists: %v", rec.Worktree, err)
 	}
+	// The ref the run fetched goes with the worktree. Left behind, it keeps the PR's commits
+	// reachable and git never collects them — for a fork, third-party code kept after the PR.
+	if !slices.Contains(hs.g.deleted, "refs/delamain/pr/9") {
+		t.Fatalf("the PR ref must be removed too, deleted=%v", hs.g.deleted)
+	}
 	if len(hs.h.closed) != 0 {
 		t.Fatalf("only the worktree and the agents are cleaned up, closed=%v", hs.h.closed)
 	}
@@ -292,6 +297,25 @@ func TestRecoverShouldHaltReviewRunsWithoutDelivering(t *testing.T) {
 	}
 	if left, _ := hs.st.UnfinishedRuns(ctx); len(left) != 0 {
 		t.Fatalf("a closed review is not recovered again on the next restart: %+v", left)
+	}
+}
+
+func TestPRNumberShouldReadOnlyTheRefOfAPRRun(t *testing.T) {
+	for ref, want := range map[string]int{
+		"pr:9":    9,
+		"pr:1234": 1234,
+		"#9":      0, // an issue run fetched no PR ref
+		"":        0, // a local task file
+		"pr:":     0,
+		"pr:0":    0,
+		"pr:-1":   0, // never becomes refs/delamain/pr/-1
+		"pr:abc":  0,
+		"pr: 9":   0,
+		"PR:9":    0,
+	} {
+		if got := prNumber(ref); got != want {
+			t.Errorf("prNumber(%q) = %d, want %d", ref, got, want)
+		}
 	}
 }
 
