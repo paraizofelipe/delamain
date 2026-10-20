@@ -299,6 +299,8 @@ type fakeGit struct {
 	linesErr   error                       // ChangedLines failure
 	untrusted  []string                    // refs AddUntrustedWorktree checked out
 	safeStatus int                         // UntrustedStatus calls
+	// removedFiles is every file a removed worktree held, path -> content.
+	removedFiles map[string]string
 }
 
 func newFakeGit() *fakeGit {
@@ -370,6 +372,18 @@ func (g *fakeGit) CheckoutFiles(_ context.Context, _, ref string, files []string
 }
 func (g *fakeGit) RemoveWorktree(_ context.Context, _, path string) error {
 	g.redproof = append(g.redproof, "remove")
+	// Keep what the worktree held when it went away: tests check nothing leaked into it.
+	_ = filepath.WalkDir(path, func(p string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			if b, rerr := os.ReadFile(p); rerr == nil { //nolint:gosec // test temp dir
+				if g.removedFiles == nil {
+					g.removedFiles = map[string]string{}
+				}
+				g.removedFiles[p] = string(b)
+			}
+		}
+		return nil
+	})
 	return os.RemoveAll(path)
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -475,13 +476,31 @@ func TestRunReviewShouldAppendLearningsToMemoryOutsideTheWorktree(t *testing.T) 
 	if res.Outcome != OutcomeReviewed {
 		t.Fatalf("got %s (%s)", res.Outcome, res.Reason)
 	}
-	path := filepath.Join(rh.r.Cfg.Paths.StateDir, "memory", "github.com", "acme", "api.md")
-	b, err := os.ReadFile(path)
-	if err != nil || !strings.Contains(string(b), "Os testes usam fakes em fakes_test.go") || !strings.Contains(string(b), "pr #5") {
-		t.Fatalf("learnings go to <state_dir>/memory: %v\n%s", err, b)
+	const learning = "Os testes usam fakes em fakes_test.go"
+	// Where the learning ended up, as RunReview left the disk: the only copies besides the
+	// agent's own artifact must be the repository's memory file.
+	var holders []string
+	root := filepath.Dir(rh.r.Cfg.Paths.StateDir)
+	_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() && p != filepath.Join(res.RunDir, "review.json") {
+			if b, rerr := os.ReadFile(p); rerr == nil && strings.Contains(string(b), learning) { //nolint:gosec // test temp dir
+				holders = append(holders, p)
+			}
+		}
+		return nil
+	})
+	want := filepath.Join(rh.r.Cfg.Paths.StateDir, "memory", "github.com", "acme", "api.md")
+	if len(holders) != 1 || holders[0] != want {
+		t.Fatalf("the learnings go only to <state_dir>/memory (%s), found in %v", want, holders)
 	}
-	if strings.HasPrefix(path, rh.r.Cfg.Paths.WorktreesDir) {
-		t.Fatal("the memory never lives in a worktree")
+	if b, _ := os.ReadFile(want); !strings.Contains(string(b), "pr #5") {
+		t.Fatalf("each learning records its PR:\n%s", b)
+	}
+	// The worktree is removed at the end: what it held then is what RunReview wrote into it.
+	for p, body := range rh.g.removedFiles {
+		if strings.Contains(body, learning) {
+			t.Fatalf("the PR checkout received the learnings at %s", p)
+		}
 	}
 
 	halted := newReviewHarness(t, reviewsPR(prReviewJSON("")))
