@@ -55,9 +55,6 @@ func TestKeyShouldBeStableAndDifferForDifferentParts(t *testing.T) {
 	if got := Key("a.go", "12", "nil deref"); got != want {
 		t.Fatalf("Key = %q, want %q", got, want)
 	}
-	if Key("a.go", "12", "nil deref") != Key("a.go", "12", "nil deref") {
-		t.Fatal("Key must be stable")
-	}
 	if Key("ab", "c") == Key("a", "bc") {
 		t.Fatal("the separator must keep different parts apart")
 	}
