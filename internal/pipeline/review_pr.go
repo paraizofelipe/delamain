@@ -7,6 +7,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -231,6 +233,11 @@ func (r *Runner) reviewPR(ctx context.Context, ru *run, p *prRun) error {
 	}
 	opts, sum := reviewOptions(ru.rec.ID, pr, review, lines, postedKeys(threads, r.ForgeUser))
 	if opts.Summary != "" || len(opts.Comments) > 0 {
+		// The bodies are the agent's words, posted publicly as the operator: a prompt injection
+		// could have it quote a local credential.
+		if kind := leakedSecret(reviewBodies(opts), os.Environ()); kind != "" {
+			return haltf("a review contém o que parece um segredo (%s); nada foi postado", kind)
+		}
 		if err := r.Forge.PostReview(ctx, pr.Number, opts); err != nil {
 			return haltf("falha ao postar a review no PR/MR #%d: %v", pr.Number, err)
 		}
@@ -321,6 +328,58 @@ func inDiff(ranges []gitx.LineRange, line int) bool {
 		}
 	}
 	return false
+}
+
+// secretPatterns are credential shapes that must never reach a public comment.
+var secretPatterns = []struct {
+	name string
+	re   *regexp.Regexp
+}{
+	{"chave privada", regexp.MustCompile(`-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----`)},
+	{"token do GitHub", regexp.MustCompile(`\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{22,})`)},
+	{"token do GitLab", regexp.MustCompile(`\bglpat-[A-Za-z0-9_-]{20,}`)},
+	{"chave da AWS", regexp.MustCompile(`\b(?:AKIA|ASIA)[0-9A-Z]{16}\b`)},
+	{"token do Slack", regexp.MustCompile(`\bxox[abposr]-[A-Za-z0-9-]{10,}`)},
+	{"chave de API de LLM", regexp.MustCompile(`\bsk-(?:ant|proj)-[A-Za-z0-9_-]{20,}`)},
+	{"chave do Google", regexp.MustCompile(`\bAIza[0-9A-Za-z_-]{35}`)},
+}
+
+// secretEnvSuffixes mark the variables whose values are credentials of this machine.
+var secretEnvSuffixes = []string{"_TOKEN", "_KEY", "_SECRET", "_PAT", "_PASSWORD"}
+
+// minSecretValue skips short values (flags, "true") that would match ordinary text.
+const minSecretValue = 12
+
+// leakedSecret names the first secret in bodies, a known credential shape or the value of a
+// secret-looking variable of environ, without repeating it; "" when there is none.
+func leakedSecret(bodies, environ []string) string {
+	for _, b := range bodies {
+		for _, p := range secretPatterns {
+			if p.re.MatchString(b) {
+				return p.name
+			}
+		}
+	}
+	for _, kv := range environ {
+		key, val, _ := strings.Cut(kv, "=")
+		if len(val) < minSecretValue || !slices.ContainsFunc(secretEnvSuffixes, func(s string) bool { return strings.HasSuffix(strings.ToUpper(key), s) }) {
+			continue
+		}
+		for _, b := range bodies {
+			if strings.Contains(b, val) {
+				return "valor de " + key
+			}
+		}
+	}
+	return ""
+}
+
+func reviewBodies(o forge.ReviewOptions) []string {
+	bodies := []string{o.Summary}
+	for _, c := range o.Comments {
+		bodies = append(bodies, c.Body)
+	}
+	return bodies
 }
 
 // postedKeys are the marker keys of the comments delamain (user) already left on the PR. Markers

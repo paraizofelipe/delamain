@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -604,5 +605,45 @@ func TestRunReviewShouldConfineThePRReviewerToReadingTheCheckout(t *testing.T) {
 		if o.Confine != nil {
 			t.Errorf("%s works on delamain's own branch and keeps its tools: %+v", name, o.Confine)
 		}
+	}
+}
+
+func TestRunReviewShouldHaltWithoutPostingWhenTheReviewLeaksASecret(t *testing.T) {
+	// Built at runtime so no secret-shaped literal lives in the repository.
+	ghToken := "ghp_" + strings.Repeat("a1B2c3D4e5", 4)
+	privateKey := "-----BEGIN " + "OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAA\n-----END " + "OPENSSH PRIVATE KEY-----"
+	localSecret := "loc4l-" + strings.Repeat("Zq9", 6)
+	quote := func(s string) string { b, _ := json.Marshal(s); return string(b[1 : len(b)-1]) }
+
+	for name, tc := range map[string]struct {
+		artifact, secret string
+		env              map[string]string
+	}{
+		"private key in an inline comment": {
+			artifact: strings.Replace(prReviewJSON(""), majorMsg, quote("a chave é "+privateKey), 1), secret: "b3BlbnNzaC1rZXktdjEAAAAA",
+		},
+		"forge token in the summary": {
+			artifact: strings.Replace(prReviewJSON(""), "Adiciona o parse, mas engole o erro.", "token: "+ghToken, 1), secret: ghToken,
+		},
+		"local credential in a dropped reason": {
+			artifact: strings.Replace(prReviewJSON(""), "verificado via grep=nil: já tratado", "achei "+localSecret, 1), secret: localSecret,
+			env: map[string]string{"DELAMAIN_FAKE_API_KEY": localSecret},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			if !strings.Contains(tc.artifact, quote(tc.secret)) {
+				t.Fatal("fixture replacement did not apply")
+			}
+			rh := newReviewHarness(t, reviewsPR(tc.artifact))
+			res := rh.review(t)
+
+			assertNothingPosted(t, rh, res, "segredo")
+			if strings.Contains(res.Reason, tc.secret) {
+				t.Fatalf("the reason must not repeat the secret: %s", res.Reason)
+			}
+		})
 	}
 }
