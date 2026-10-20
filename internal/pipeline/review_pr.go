@@ -203,6 +203,12 @@ func (r *Runner) reviewPR(ctx context.Context, ru *run, p *prRun) error {
 		BaseRef: pr.BaseRef, HeadRef: pr.HeadRef, BaseSHA: pr.BaseSHA, HeadSHA: pr.HeadSHA,
 	}
 	for _, is := range linked {
+		// The review is posted where every reader of the PR sees it; a confidential issue the
+		// PR's author linked could be quoted into it.
+		if is.Confidential {
+			ru.log.Info("confidential linked issue left out of the prompt", "pr", pr.Number, "issue", is.Number)
+			continue
+		}
 		data.LinkedIssues = append(data.LinkedIssues, prompts.Issue{Ref: "#" + strconv.Itoa(is.Number), Title: is.Title, Body: is.Body, URL: is.URL})
 	}
 	data.Threads = renderThreads(threads)
@@ -441,11 +447,9 @@ func summaryBody(rv artifacts.PRReview, others, outside []string) string {
 
 func flat(s string) string { return strings.Join(strings.Fields(s), " ") }
 
-// renderThreads is the compact view of a PR's discussions the pr-reviewer reads.
+// renderThreads is the compact view of a PR's discussions the pr-reviewer reads, internal notes
+// left out.
 func renderThreads(ts []forge.Thread) string {
-	if len(ts) == 0 {
-		return "Nenhuma discussão."
-	}
 	var b strings.Builder
 	for _, t := range ts {
 		where := "PR"
@@ -456,10 +460,20 @@ func renderThreads(ts []forge.Thread) string {
 		if t.Resolved {
 			state = "resolvida"
 		}
-		fmt.Fprintf(&b, "- %s · %s · %s\n", t.ID, where, state)
+		var lines []string
 		for _, c := range t.Comments {
-			fmt.Fprintf(&b, "  - %s: %s\n", c.Author, truncate(flat(c.Body), 500))
+			if c.Internal { // not visible to who reads the review
+				continue
+			}
+			lines = append(lines, fmt.Sprintf("  - %s: %s\n", c.Author, truncate(flat(c.Body), 500)))
 		}
+		if len(lines) == 0 {
+			continue
+		}
+		fmt.Fprintf(&b, "- %s · %s · %s\n%s", t.ID, where, state, strings.Join(lines, ""))
+	}
+	if b.Len() == 0 {
+		return "Nenhuma discussão."
 	}
 	return strings.TrimRight(b.String(), "\n")
 }

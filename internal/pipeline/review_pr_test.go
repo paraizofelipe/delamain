@@ -686,3 +686,31 @@ func TestRunReviewShouldCheckOutThePRAsUntrustedCode(t *testing.T) {
 		t.Fatalf("the read-only proof reads the status of the PR checkout with the same guards (before and after), got %d", rh.g.safeStatus)
 	}
 }
+
+func TestRunReviewShouldKeepConfidentialIssuesAndInternalNotesOutOfThePrompt(t *testing.T) {
+	rh := newReviewHarness(t, reviewsPR(prReviewJSON("")))
+	rh.f.kind = forge.GitLab
+	// The MR's author picks what "Closes #n" links; the reviewer's text is posted publicly.
+	rh.f.linked = []forge.Issue{
+		{Number: 3, Title: "issue publica", Body: "criterio publico"},
+		{Number: 8, Title: "incidente do cliente", Body: "dados restritos do cliente", Confidential: true},
+	}
+	rh.f.threads = []forge.Thread{{ID: "d1", Comments: []forge.Comment{
+		{ID: "1", Author: "ana", Body: "comentario aberto"},
+		{ID: "2", Author: "bob", Body: "nota interna da equipe", Internal: true},
+	}}}
+	if res := rh.review(t); res.Outcome != OutcomeReviewed {
+		t.Fatalf("got %s (%s)", res.Outcome, res.Reason)
+	}
+	prompt := strings.Join(rh.h.prompts["pr-reviewer"], "\n")
+	for _, want := range []string{"criterio publico", "comentario aberto"} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("the prompt keeps what the MR's readers see: missing %q", want)
+		}
+	}
+	for _, hidden := range []string{"incidente do cliente", "dados restritos do cliente", "nota interna da equipe"} {
+		if strings.Contains(prompt, hidden) {
+			t.Errorf("confidential text %q must never reach a reviewer whose words are posted publicly", hidden)
+		}
+	}
+}

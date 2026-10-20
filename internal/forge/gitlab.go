@@ -63,7 +63,7 @@ func (g *gitlabClient) do(ctx context.Context, op string, call func() (*gogitlab
 func (g *gitlabClient) Repo() Repo { return g.repo }
 
 func fromGitLab(v *gogitlab.Issue) Issue {
-	return Issue{Number: int(v.IID), Title: v.Title, Body: v.Description, URL: v.WebURL, Labels: v.Labels, Open: v.State == opened}
+	return Issue{Number: int(v.IID), Title: v.Title, Body: v.Description, URL: v.WebURL, Labels: v.Labels, Open: v.State == opened, Confidential: v.Confidential}
 }
 
 func (g *gitlabClient) Issue(ctx context.Context, n int) (Issue, error) {
@@ -273,7 +273,7 @@ func (g *gitlabClient) Threads(ctx context.Context, n int) ([]Thread, error) {
 			if !resolvable && v.Resolvable {
 				resolvable, t.Resolved = true, v.Resolved
 			}
-			c := Comment{ID: strconv.FormatInt(v.ID, 10), Author: v.Author.Username, Body: v.Body}
+			c := Comment{ID: strconv.FormatInt(v.ID, 10), Author: v.Author.Username, Body: v.Body, Internal: v.Internal || v.Confidential} //nolint:staticcheck // Confidential: older GitLab
 			if v.CreatedAt != nil {
 				c.CreatedAt = *v.CreatedAt
 			}
