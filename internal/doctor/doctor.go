@@ -153,8 +153,8 @@ func Run(ctx context.Context, cfg config.Config, d Deps) []Check {
 	return checks
 }
 
-// forgeAuth checks dir's forge token against the API. Without a token work stays local, so
-// that is a warning; a token the forge rejects is a failure.
+// forgeAuth checks dir's forge token against the API. A missing token or one the forge rejects
+// is a failure: run and daemon stop on that repository until a token is provided.
 func forgeAuth(ctx context.Context, d Deps, dir string) Check {
 	where := ""
 	if dir != "." {
@@ -168,7 +168,7 @@ func forgeAuth(ctx context.Context, d Deps, dir string) Check {
 	case err == nil:
 		return Check{"forge auth", OK, fmt.Sprintf("%s%s on %s (token from %s)", where, id.Login, id.Host, id.Source)}
 	case errors.Is(err, forge.ErrTokenNotFound):
-		return Check{"forge auth", Warn, fmt.Sprintf("%s%v: PRs/MRs cannot be opened (work stays local); %s", where, err, forge.TokenPermissions(id.Kind))}
+		return Check{"forge auth", Fail, fmt.Sprintf("%s%v: runs on this repository fail until a token is provided; %s", where, err, forge.TokenPermissions(id.Kind))}
 	case errors.As(err, &apiErr) && (apiErr.Status == http.StatusUnauthorized || apiErr.Status == http.StatusForbidden):
 		return Check{"forge auth", Fail, fmt.Sprintf("%s%v (token from %s); %s", where, err, id.Source, forge.TokenPermissions(id.Kind))}
 	default:

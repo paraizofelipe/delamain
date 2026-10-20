@@ -92,6 +92,46 @@ func TestClientShouldRetryTransientErrorsThreeTimes(t *testing.T) {
 	}
 }
 
+func TestCreatePRShouldReturnThePRAnEarlierAttemptCreated(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		at     func(*testing.T, map[string]func(http.ResponseWriter, *http.Request), ...Option) (Forge, *fakeAPI)
+		create string
+		exists func(http.ResponseWriter, *http.Request)
+		open   string
+		found  func(http.ResponseWriter, *http.Request)
+		url    string
+	}{
+		{"github", githubAt, "/repos/acme/api/pulls", reply(422, `{"message":"A pull request already exists for acme:feat/x."}`),
+			"/repos/acme/api/pulls", reply(200, `[{"number":42,"html_url":"https://github.com/acme/api/pull/42"}]`), "https://github.com/acme/api/pull/42"},
+		{"gitlab", gitlabAt, glProject + "/merge_requests", reply(409, `{"message":["Another open merge request already exists for this source branch: !42"]}`),
+			glProject + "/merge_requests", reply(200, `[{"iid":42,"web_url":"https://gitlab.com/grp/api/-/merge_requests/42"}]`), "https://gitlab.com/grp/api/-/merge_requests/42"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, api := tc.at(t, map[string]func(http.ResponseWriter, *http.Request){
+				"POST " + tc.create: sequence(hangUp, tc.exists), // the first answer is lost, the PR was created
+				"GET " + tc.open:    tc.found,
+			})
+			pr, err := f.CreatePR(context.Background(), PROptions{Title: "t", Head: "feat/x", Base: "main"})
+			if err != nil || pr.URL != tc.url {
+				t.Fatalf("the retry finds the PR the lost attempt created: %+v %v", pr, err)
+			}
+			if n := posts(api, tc.create); n != 2 {
+				t.Fatalf("attempts = %d, want 2", n)
+			}
+
+			f, _ = tc.at(t, map[string]func(http.ResponseWriter, *http.Request){
+				"POST " + tc.create: tc.exists,
+				"GET " + tc.open:    tc.found,
+			})
+			var apiErr *APIError
+			if _, err := f.CreatePR(context.Background(), PROptions{Title: "t", Head: "feat/x", Base: "main"}); !errors.As(err, &apiErr) {
+				t.Fatalf("on the first attempt, exists is somebody else's PR and stays an error: %v", err)
+			}
+		})
+	}
+}
+
 func TestClientShouldNotRetryClientErrors(t *testing.T) {
 	for _, fc := range bothForges {
 		for _, status := range []int{400, 401, 403, 404, 422, 429, 500} {

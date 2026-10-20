@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -12,6 +13,22 @@ func githubClientAt(t *testing.T, routes map[string]func(http.ResponseWriter, *h
 	t.Helper()
 	f, api := githubAt(t, routes)
 	return f.(*githubClient), api
+}
+
+func TestGraphQLShouldUseApiGraphQLOnGitHubEnterprise(t *testing.T) {
+	api := &fakeAPI{routes: map[string]func(http.ResponseWriter, *http.Request){
+		"POST /api/graphql": reply(200, `{"data":{"viewer":{"login":"bot"}}}`),
+	}}
+	srv := httptest.NewTLSServer(api)
+	t.Cleanup(srv.Close)
+	f, err := New(Repo{GitHub, strings.TrimPrefix(srv.URL, "https://"), "team/api"}, "tok", WithHTTPClient(srv.Client()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out struct{ Viewer struct{ Login string } }
+	if err := f.(*githubClient).graphql(context.Background(), `query{viewer{login}}`, nil, &out); err != nil || out.Viewer.Login != "bot" {
+		t.Fatalf("enterprise GraphQL lives at https://<host>/api/graphql, not /api/v3/graphql: %v %+v (requests %+v)", err, out, api.requests())
+	}
 }
 
 func TestGraphQLShouldPostQueryAndDecodeData(t *testing.T) {

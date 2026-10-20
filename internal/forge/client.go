@@ -122,6 +122,23 @@ func transient(ctx context.Context, status int, err error) bool {
 	return false
 }
 
+// createdAnyway handles a CreatePR that failed with exists (GitHub 422, GitLab 409) after a
+// retry: the earlier attempt reached the forge before its answer was lost, so the PR/MR of head
+// is returned instead of the error.
+func createdAnyway(ctx context.Context, f interface {
+	OpenPR(context.Context, string) (*PR, error)
+}, head string, tries, exists int, err error) (PR, error) {
+	var apiErr *APIError
+	if tries < 2 || !errors.As(err, &apiErr) || apiErr.Status != exists {
+		return PR{}, err
+	}
+	pr, openErr := f.OpenPR(ctx, head)
+	if openErr != nil || pr == nil {
+		return PR{}, err
+	}
+	return *pr, nil
+}
+
 // truncate cuts s to n characters, never inside a UTF-8 sequence.
 func truncate(s string, n int) string {
 	if utf8.RuneCountInString(s) <= n {

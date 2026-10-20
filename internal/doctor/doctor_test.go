@@ -207,13 +207,13 @@ func TestRunShouldReportEveryProblemInsteadOfStoppingAtFirst(t *testing.T) {
 	d.LookPath = func(b string) (string, error) { return "", errors.New("not found") }
 	d.Herdr = fakeHerdr{sessionsErr: errors.New("socket down")}
 	m := byName(Run(context.Background(), cfg, d))
-	for _, name := range []string{"herdr", "omp", "omp rpc", "git", "herdr server"} {
+	for _, name := range []string{"herdr", "omp", "omp rpc", "git", "herdr server", "forge auth"} {
 		if m[name].Status != Fail {
 			t.Errorf("%s should fail: %+v", name, m[name])
 		}
 	}
-	if m["forge auth"].Status != Warn || m["gitleaks"].Status != Warn {
-		t.Errorf("optional tools are warnings, not failures: %+v %+v", m["forge auth"], m["gitleaks"])
+	if m["gitleaks"].Status != Warn {
+		t.Errorf("optional tools are warnings, not failures: %+v", m["gitleaks"])
 	}
 }
 
@@ -310,16 +310,16 @@ func TestRunShouldReportForgeAuthLoginHostAndSourceWithoutTheToken(t *testing.T)
 	}
 }
 
-func TestRunShouldWarnWhenNoForgeTokenIsFound(t *testing.T) {
+func TestRunShouldFailWhenNoForgeTokenIsFound(t *testing.T) {
 	cfg, d := healthy(t)
 	d.ForgeAuth = func(context.Context, string) (ForgeIdentity, error) {
 		return ForgeIdentity{Kind: forge.GitHub, Host: "github.com"}, fmt.Errorf("no github token for github.com: %w; set GH_TOKEN or GITHUB_TOKEN", forge.ErrTokenNotFound)
 	}
 	got := forgeAuthChecks(Run(context.Background(), cfg, d))
-	if len(got) != 1 || got[0].Status != Warn {
-		t.Fatalf("a missing token is a warning (work stays local): %+v", got)
+	if len(got) != 1 || got[0].Status != Fail {
+		t.Fatalf("a missing token fails: run and daemon stop on that repository without one: %+v", got)
 	}
-	for _, want := range []string{"GH_TOKEN", "Pull requests"} {
+	for _, want := range []string{"GH_TOKEN", "Pull requests", "runs on this repository fail"} {
 		if !strings.Contains(got[0].Detail, want) {
 			t.Errorf("detail %q must explain how to provide a token (%q)", got[0].Detail, want)
 		}

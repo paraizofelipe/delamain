@@ -18,8 +18,14 @@ func (g *githubClient) graphql(ctx context.Context, query string, vars map[strin
 			Message string `json:"message"`
 		} `json:"errors"`
 	}
+	endpoint := "graphql"
+	if base := g.api.BaseURL(); strings.HasSuffix(base, "/api/v3/") {
+		// GitHub Enterprise serves https://<host>/api/graphql, not /api/v3/graphql; go-github
+		// rejects "..", so the URL is absolute.
+		endpoint = strings.TrimSuffix(base, "v3/") + "graphql"
+	}
 	err := g.do(ctx, "graphql", func() (*gogithub.Response, error) {
-		req, err := g.api.NewRequest(ctx, "POST", "graphql", map[string]any{"query": query, "variables": vars})
+		req, err := g.api.NewRequest(ctx, "POST", endpoint, map[string]any{"query": query, "variables": vars})
 		if err != nil {
 			return nil, err
 		}

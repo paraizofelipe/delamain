@@ -122,18 +122,22 @@ func (g *githubClient) OpenPR(ctx context.Context, head string) (*PR, error) {
 
 func (g *githubClient) CreatePR(ctx context.Context, o PROptions) (PR, error) {
 	var v *gogithub.PullRequest
+	tries := 0
 	err := g.do(ctx, "create pr", func() (resp *gogithub.Response, err error) {
+		tries++
 		v, resp, err = g.api.PullRequests.Create(ctx, g.owner, g.name, gogithub.CreatePullRequest{
 			Title: &o.Title, Head: o.Head, Base: o.Base, Body: &o.Body, Draft: &o.Draft,
 		})
 		return resp, err
 	})
 	if err != nil {
-		return PR{}, err
+		return createdAnyway(ctx, g, o.Head, tries, http.StatusUnprocessableEntity, err)
 	}
 	return PR{Number: v.GetNumber(), URL: v.GetHTMLURL(), Draft: v.GetDraft()}, nil
 }
 
+// Comment is retried like any call: a retry after a lost answer may post the comment twice,
+// which is harmless next to losing the run's status comment.
 func (g *githubClient) Comment(ctx context.Context, n int, body string) error {
 	return g.do(ctx, "comment", func() (*gogithub.Response, error) {
 		_, resp, err := g.api.Issues.CreateComment(ctx, g.owner, g.name, n, gogithub.IssueCommentRequest{Body: body})

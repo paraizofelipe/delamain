@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"time"
 
 	gogitlab "gitlab.com/gitlab-org/api/client-go/v3"
@@ -116,18 +117,22 @@ func (g *gitlabClient) CreatePR(ctx context.Context, o PROptions) (PR, error) {
 		title = "Draft: " + title
 	}
 	var v *gogitlab.MergeRequest
+	tries := 0
 	err := g.do(ctx, "create pr", func() (resp *gogitlab.Response, err error) {
+		tries++
 		v, resp, err = g.api.MergeRequests.CreateMergeRequest(g.repo.Path, &gogitlab.CreateMergeRequestOptions{
 			Title: &title, Description: &o.Body, SourceBranch: &o.Head, TargetBranch: &o.Base,
 		}, gogitlab.WithContext(ctx))
 		return resp, err
 	})
 	if err != nil {
-		return PR{}, err
+		return createdAnyway(ctx, g, o.Head, tries, http.StatusConflict, err)
 	}
 	return PR{Number: int(v.IID), URL: v.WebURL, Draft: v.Draft}, nil
 }
 
+// Comment is retried like any call: a retry after a lost answer may post the comment twice,
+// which is harmless next to losing the run's status comment.
 func (g *gitlabClient) Comment(ctx context.Context, n int, body string) error {
 	return g.do(ctx, "comment", func() (*gogitlab.Response, error) {
 		_, resp, err := g.api.Notes.CreateIssueNote(g.repo.Path, int64(n), &gogitlab.CreateIssueNoteOptions{Body: &body}, gogitlab.WithContext(ctx))
