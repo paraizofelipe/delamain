@@ -413,6 +413,7 @@ func (f *fakeForge) Relabel(_ context.Context, _ int, add, remove []string) erro
 func (f *fakeForge) PRView(context.Context, int) (forge.PRDetail, error) {
 	return forge.PRDetail{}, nil
 }
+func (f *fakeForge) ListPRs(context.Context, string) ([]forge.PRDetail, error) { return nil, nil }
 
 // fakeNotifier records every toast and how many issue comments existed when it was sent.
 type fakeNotifier struct {

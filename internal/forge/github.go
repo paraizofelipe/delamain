@@ -225,3 +225,30 @@ func (g *githubClient) PRView(ctx context.Context, n int) (PRDetail, error) {
 		BaseRef: base.GetRef(), HeadRef: head.GetRef(), BaseSHA: base.GetSHA(), HeadSHA: head.GetSHA(), StartSHA: base.GetSHA(),
 	}, nil
 }
+
+// ListPRs filters by label on the issues endpoint, since the pulls one cannot, and reads each
+// PR it finds. Only the first 100 labeled issues are seen.
+func (g *githubClient) ListPRs(ctx context.Context, label string) ([]PRDetail, error) {
+	var vs []*gogithub.Issue
+	err := g.do(ctx, "list prs", func() (resp *gogithub.Response, err error) {
+		vs, resp, err = g.api.Issues.ListByRepo(ctx, g.owner, g.name, &gogithub.IssueListByRepoOptions{
+			State: "open", Labels: []string{label}, ListOptions: gogithub.ListOptions{PerPage: 100},
+		})
+		return resp, err
+	})
+	if err != nil {
+		return nil, err
+	}
+	prs := make([]PRDetail, 0, len(vs))
+	for _, v := range vs {
+		if !v.IsPullRequest() {
+			continue
+		}
+		pr, err := g.PRView(ctx, v.GetNumber())
+		if err != nil {
+			return nil, err
+		}
+		prs = append(prs, pr)
+	}
+	return oldestPRsFirst(prs), nil
+}

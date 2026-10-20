@@ -102,6 +102,8 @@ type Forge interface {
 	Relabel(ctx context.Context, number int, add, remove []string) error
 	// PRView reads one PR/MR; a missing one is an *APIError with Status 404.
 	PRView(ctx context.Context, number int) (PRDetail, error)
+	// ListPRs returns open PRs/MRs carrying label, oldest (lowest number) first.
+	ListPRs(ctx context.Context, label string) ([]PRDetail, error)
 }
 
 var scpLike = regexp.MustCompile(`^[\w.-]+@([\w.-]+):(.+)$`)
@@ -166,4 +168,9 @@ func redact(raw, token string) string {
 func oldestFirst(is []Issue) []Issue {
 	slices.SortFunc(is, func(a, b Issue) int { return a.Number - b.Number })
 	return is
+}
+
+func oldestPRsFirst(prs []PRDetail) []PRDetail {
+	slices.SortFunc(prs, func(a, b PRDetail) int { return a.Number - b.Number })
+	return prs
 }

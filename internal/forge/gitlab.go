@@ -193,3 +193,26 @@ func fromGitLabMR(v *gogitlab.BasicMergeRequest) PRDetail {
 	}
 	return pr
 }
+
+// ListPRs sees only the first 100 labeled MRs. The listing has no diff_refs: HeadSHA is the
+// MR's sha and BaseSHA/StartSHA stay empty; PRView has them all.
+func (g *gitlabClient) ListPRs(ctx context.Context, label string) ([]PRDetail, error) {
+	var mrs []*gogitlab.BasicMergeRequest
+	state := opened
+	err := g.do(ctx, "list prs", func() (resp *gogitlab.Response, err error) {
+		mrs, resp, err = g.api.MergeRequests.ListProjectMergeRequests(g.repo.Path, &gogitlab.ListProjectMergeRequestsOptions{
+			State: &state, Labels: &gogitlab.LabelOptions{label}, ListOptions: gogitlab.ListOptions{PerPage: 100},
+		}, gogitlab.WithContext(ctx))
+		return resp, err
+	})
+	if err != nil {
+		return nil, err
+	}
+	prs := make([]PRDetail, 0, len(mrs))
+	for _, v := range mrs {
+		pr := fromGitLabMR(v)
+		pr.HeadSHA = v.SHA
+		prs = append(prs, pr)
+	}
+	return oldestPRsFirst(prs), nil
+}

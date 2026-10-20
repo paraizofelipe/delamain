@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -342,7 +343,8 @@ func TestReadMethodsShouldNeverWriteToTheForge(t *testing.T) {
 			}
 			ctx := context.Background()
 			reads := map[string]func() error{
-				"PRView": func() error { _, err := f.PRView(ctx, 1); return err },
+				"PRView":  func() error { _, err := f.PRView(ctx, 1); return err },
+				"ListPRs": func() error { _, err := f.ListPRs(ctx, "review"); return err },
 			}
 			for name, read := range reads {
 				before := len(requests())
@@ -368,4 +370,68 @@ func jsonQuery(t *testing.T, r request) string {
 	t.Helper()
 	q, _ := jsonBody(t, r)["query"].(string)
 	return q
+}
+
+// listPRsCase is a PR listing on one forge: the routes it serves and the query it must send.
+type listPRsCase struct {
+	name  string
+	at    func(*testing.T, map[string]func(http.ResponseWriter, *http.Request), ...Option) (Forge, *fakeAPI)
+	list  string // the listing endpoint
+	state string // the forge's word for open
+}
+
+var listPRsCases = []listPRsCase{
+	{"github", githubAt, "/repos/acme/api/issues", "open"},
+	{"gitlab", gitlabAt, glProject + "/merge_requests", "opened"},
+}
+
+func TestListPRsShouldReturnOpenPRsWithLabelOldestFirst(t *testing.T) {
+	routes := map[string]map[string]func(http.ResponseWriter, *http.Request){
+		"github": {
+			// the issues endpoint is the one that filters by label; it mixes issues and PRs
+			"GET /repos/acme/api/issues": reply(200, `[
+				{"number":9,"state":"open","pull_request":{"url":"https://api.github.com/repos/acme/api/pulls/9"}},
+				{"number":4,"state":"open"},
+				{"number":5,"state":"open","pull_request":{"url":"https://api.github.com/repos/acme/api/pulls/5"}}]`),
+			"GET /repos/acme/api/pulls/9": reply(200, `{"number":9,"title":"nine","state":"open","head":{"ref":"feat/nine","sha":"h9"}}`),
+			"GET /repos/acme/api/pulls/5": reply(200, `{"number":5,"title":"five","state":"open","head":{"ref":"feat/five","sha":"h5"}}`),
+		},
+		"gitlab": {
+			"GET " + glProject + "/merge_requests": reply(200, `[
+				{"iid":9,"title":"nine","state":"opened","source_branch":"feat/nine","sha":"h9"},
+				{"iid":5,"title":"five","state":"opened","source_branch":"feat/five","sha":"h5"}]`),
+		},
+	}
+	for _, tc := range listPRsCases {
+		t.Run(tc.name, func(t *testing.T) {
+			f, api := tc.at(t, routes[tc.name])
+			prs, err := f.ListPRs(context.Background(), "delamain:review")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(prs) != 2 || prs[0].Number != 5 || prs[1].Number != 9 {
+				t.Fatalf("want PRs 5 then 9 and no plain issue, got %+v", prs)
+			}
+			if prs[0].Title != "five" || prs[0].HeadRef != "feat/five" || prs[0].HeadSHA != "h5" || !prs[0].Open {
+				t.Fatalf("each PR carries its detail: %+v", prs[0])
+			}
+			q, _ := url.ParseQuery(api.find(t, "GET", tc.list).query)
+			if q.Get("state") != tc.state || q.Get("labels") != "delamain:review" || q.Get("per_page") != "100" {
+				t.Fatalf("must list open PRs by label, up to 100: %v", q)
+			}
+		})
+	}
+}
+
+func TestListPRsShouldReturnEmptyWhenNoPRHasTheLabel(t *testing.T) {
+	for _, tc := range listPRsCases {
+		t.Run(tc.name, func(t *testing.T) {
+			f, api := tc.at(t, map[string]func(http.ResponseWriter, *http.Request){"GET " + tc.list: reply(200, `[]`)})
+			prs, err := f.ListPRs(context.Background(), "delamain:review")
+			if err != nil || len(prs) != 0 {
+				t.Fatalf("prs = %+v, err = %v", prs, err)
+			}
+			api.find(t, "GET", tc.list)
+		})
+	}
 }
