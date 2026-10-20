@@ -41,7 +41,7 @@ func TestReviewShouldFailWhenReviewIsDisabled(t *testing.T) {
 }
 
 func TestReviewShouldFailWithoutForge(t *testing.T) {
-	cfg := reviewConfig(t, "review:\n  enabled: true\nforge:\n  kind: none\n")
+	cfg := reviewConfig(t, "review:\n  enabled: true\nagent:\n  harness: claude\nforge:\n  kind: none\n")
 	_, err := execute(t, "--config", cfg, "review", "--pr", "5", "--repo", t.TempDir())
 	if err == nil || !strings.Contains(err.Error(), "review requires a GitHub or GitLab origin") {
 		t.Fatalf("got %v", err)
@@ -93,5 +93,13 @@ func TestPrintReviewResultShouldShowCountsLinkAndReportInEveryFormat(t *testing.
 	}
 	if !strings.Contains(skipped.String(), "skipped") || !strings.Contains(skipped.String(), "o head já foi revisado") {
 		t.Fatalf("a skip shows why:\n%s", skipped.String())
+	}
+}
+
+func TestReviewShouldRefuseAHarnessThatCannotConfineTheReviewer(t *testing.T) {
+	cfg := reviewConfig(t, "review:\n  enabled: true\nagent:\n  harness: omp\nforge:\n  kind: none\n")
+	_, err := execute(t, "--config", cfg, "review", "--pr", "5", "--repo", t.TempDir())
+	if err == nil || !strings.Contains(err.Error(), "agent.harness: claude") {
+		t.Fatalf("a review on omp is refused before any forge call: %v", err)
 	}
 }

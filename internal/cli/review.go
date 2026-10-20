@@ -41,6 +41,9 @@ Exit codes: 0 reviewed or skipped · 1 interrupted.`,
 			if !cfg.Review.Enabled {
 				return errors.New("review is disabled: set review.enabled: true in the config")
 			}
+			if cfg.Agent.Harness != config.HarnessClaude {
+				return fmt.Errorf("review requires agent.harness: claude, the only harness that confines the reviewer to reading the PR (got %q)", cfg.Agent.Harness)
+			}
 			if !slices.Contains(outputFormats, output) {
 				return fmt.Errorf("invalid format %q: use %s", output, strings.Join(outputFormats, "|"))
 			}
