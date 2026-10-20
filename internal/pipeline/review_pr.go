@@ -265,10 +265,18 @@ func (r *Runner) reviewPR(ctx context.Context, ru *run, p *prRun) error {
 		return err
 	}
 	ru.res.Outcome = OutcomeReviewed
-	if n, err := mem.Append(fr.Host, fr.Path, ru.rec.ID, pr.Number, review.Learnings, time.Now()); err != nil {
-		ru.log.Warn("could not update the repository memory", "err", err)
-	} else {
-		ru.log.Info("repository memory", "run", ru.rec.ID, "learnings", n)
+	// The memory is read into every later review of this repository, so what goes in has to
+	// come from a trusted head. A fork's author steers the code and text the reviewer read,
+	// and could plant a durable "fact" that silences findings in other people's PRs.
+	switch {
+	case pr.Fork:
+		ru.log.Info("learnings of a fork left out of the repository memory", "run", ru.rec.ID, "pr", pr.Number, "dropped", len(review.Learnings))
+	default:
+		if n, err := mem.Append(fr.Host, fr.Path, ru.rec.ID, pr.Number, review.Learnings, time.Now()); err != nil {
+			ru.log.Warn("could not update the repository memory", "err", err)
+		} else {
+			ru.log.Info("repository memory", "run", ru.rec.ID, "learnings", n)
+		}
 	}
 	return nil
 }

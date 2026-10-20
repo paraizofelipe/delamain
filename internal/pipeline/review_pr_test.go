@@ -515,6 +515,20 @@ func TestRunReviewShouldAppendLearningsToMemoryOutsideTheWorktree(t *testing.T) 
 	}
 }
 
+// The memory is read into every later review of the repository, so a fork's author must not be
+// able to leave a durable "fact" there that silences findings in someone else's PR.
+func TestRunReviewShouldNotStoreTheLearningsOfAForkPR(t *testing.T) {
+	rh := newReviewHarness(t, reviewsPR(prReviewJSON("")))
+	rh.fromFork()
+	res := rh.review(t)
+	if res.Outcome != OutcomeReviewed {
+		t.Fatalf("got %s (%s)", res.Outcome, res.Reason)
+	}
+	if _, err := os.Stat(filepath.Join(rh.r.Cfg.Paths.MemoryDir(), "github.com", "acme", "api.md")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a fork's learnings must not reach the repository memory: %v", err)
+	}
+}
+
 func TestRunReviewShouldStartThePRReviewerOutsideThePRCheckout(t *testing.T) {
 	rh := newReviewHarness(t, reviewsPR(prReviewJSON("")))
 	rh.g.onDetached = func(path string) {
