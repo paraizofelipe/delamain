@@ -420,6 +420,7 @@ func (f *fakeForge) PostReview(context.Context, int, forge.ReviewOptions) error 
 func (f *fakeForge) PRComment(context.Context, int, string) error               { return nil }
 func (f *fakeForge) Reply(context.Context, int, string, string) error           { return nil }
 func (f *fakeForge) ResolveThread(context.Context, int, string) error           { return nil }
+func (f *fakeForge) RelabelPR(context.Context, int, []string, []string) error   { return nil }
 
 // fakeNotifier records every toast and how many issue comments existed when it was sent.
 type fakeNotifier struct {

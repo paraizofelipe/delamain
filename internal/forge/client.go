@@ -2,6 +2,7 @@ package forge
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -137,6 +138,38 @@ func createdAnyway(ctx context.Context, f interface {
 		return PR{}, err
 	}
 	return *pr, nil
+}
+
+// hide stars out of err the bodies a write sent, as is or JSON-escaped: a forge may quote what
+// it rejected, and bodies never reach errors or logs.
+func hide(err error, bodies ...string) error {
+	if err == nil {
+		return nil
+	}
+	scrub := func(s string) string {
+		for _, b := range bodies {
+			if b == "" {
+				continue
+			}
+			s = strings.ReplaceAll(s, b, "***")
+			var esc strings.Builder
+			enc := json.NewEncoder(&esc)
+			enc.SetEscapeHTML(false)
+			if enc.Encode(b) == nil {
+				quoted := strings.TrimSpace(esc.String())
+				s = strings.ReplaceAll(s, quoted[1:len(quoted)-1], "***")
+			}
+		}
+		return s
+	}
+	if apiErr, ok := errors.AsType[*APIError](err); ok {
+		apiErr.Message = scrub(apiErr.Message)
+		return err
+	}
+	if msg := scrub(err.Error()); msg != err.Error() {
+		return errors.New(msg)
+	}
+	return err
 }
 
 // truncate cuts s to n characters, never inside a UTF-8 sequence.

@@ -365,21 +365,23 @@ const reviewEvent = "COMMENT"
 func (g *githubClient) PostReview(ctx context.Context, n int, o ReviewOptions) error {
 	event, side := reviewEvent, "RIGHT"
 	req := &gogithub.PullRequestReviewRequest{CommitID: &o.HeadSHA, Body: &o.Summary, Event: &event}
+	bodies := []string{o.Summary}
 	for _, c := range o.Comments {
 		req.Comments = append(req.Comments, &gogithub.DraftReviewComment{Path: &c.Path, Line: &c.Line, Side: &side, Body: &c.Body})
+		bodies = append(bodies, c.Body)
 	}
-	return g.do(ctx, "post review", func() (*gogithub.Response, error) {
+	return hide(g.do(ctx, "post review", func() (*gogithub.Response, error) {
 		_, resp, err := g.api.PullRequests.CreateReview(ctx, g.owner, g.name, n, req)
 		return resp, err
-	})
+	}), bodies...)
 }
 
 // PRComment uses the issues endpoint: on GitHub's API a PR is an issue.
 func (g *githubClient) PRComment(ctx context.Context, n int, body string) error {
-	return g.do(ctx, "pr comment", func() (*gogithub.Response, error) {
+	return hide(g.do(ctx, "pr comment", func() (*gogithub.Response, error) {
 		_, resp, err := g.api.Issues.CreateComment(ctx, g.owner, g.name, n, gogithub.IssueCommentRequest{Body: body})
 		return resp, err
-	})
+	}), body)
 }
 
 const firstThreadCommentQuery = `query($id:ID!){node(id:$id){... on PullRequestReviewThread{comments(first:1){nodes{databaseId}}}}}`
@@ -401,10 +403,10 @@ func (g *githubClient) Reply(ctx context.Context, n int, threadID, body string) 
 	if out.Node == nil || len(out.Node.Comments.Nodes) == 0 {
 		return fmt.Errorf("github reply: thread %q has no comment to reply to", threadID)
 	}
-	return g.do(ctx, "reply", func() (*gogithub.Response, error) {
+	return hide(g.do(ctx, "reply", func() (*gogithub.Response, error) {
 		_, resp, err := g.api.PullRequests.CreateCommentInReplyTo(ctx, g.owner, g.name, n, body, out.Node.Comments.Nodes[0].DatabaseID)
 		return resp, err
-	})
+	}), body)
 }
 
 const resolveThreadMutation = `mutation($threadId:ID!){resolveReviewThread(input:{threadId:$threadId}){thread{isResolved}}}`
@@ -416,4 +418,9 @@ func (g *githubClient) ResolveThread(ctx context.Context, _ int, threadID string
 	}
 	var out struct{}
 	return g.graphql(ctx, resolveThreadMutation, map[string]any{"threadId": threadID}, &out)
+}
+
+// RelabelPR is Relabel: on GitHub's API a PR is an issue.
+func (g *githubClient) RelabelPR(ctx context.Context, n int, add, remove []string) error {
+	return g.Relabel(ctx, n, add, remove)
 }

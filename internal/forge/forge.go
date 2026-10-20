@@ -132,6 +132,8 @@ type Forge interface {
 	Reply(ctx context.Context, number int, threadID, body string) error
 	// ResolveThread marks a thread Threads returned as resolved.
 	ResolveThread(ctx context.Context, number int, threadID string) error
+	// RelabelPR adds and removes labels on a PR/MR.
+	RelabelPR(ctx context.Context, number int, add, remove []string) error
 }
 
 var scpLike = regexp.MustCompile(`^[\w.-]+@([\w.-]+):(.+)$`)

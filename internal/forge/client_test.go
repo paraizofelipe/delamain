@@ -284,7 +284,13 @@ func TestForgeShouldNeverCallMergeEndpoints(t *testing.T) {
 		_, _ = f.ListPRs(ctx, "review")
 		_, _ = f.LinkedIssues(ctx, 1)
 		_, _ = f.Threads(ctx, 1)
-		if len(paths) < 10 {
+		_ = f.PostReview(ctx, 1, ReviewOptions{HeadSHA: "h", Summary: "s", Comments: []InlineComment{{Path: "a.go", Line: 1, Body: "c"}}})
+		_ = f.PRComment(ctx, 1, "c")
+		_ = f.Reply(ctx, 1, "RT_1", "c")
+		_ = f.Reply(ctx, 1, "issue-comment:1", "c")
+		_ = f.ResolveThread(ctx, 1, "RT_1")
+		_ = f.RelabelPR(ctx, 1, []string{"a"}, []string{"b"})
+		if len(paths) < 17 {
 			t.Fatalf("%s: only %d requests reached the fake: %v", repo.Kind, len(paths), paths)
 		}
 		for _, p := range paths {
@@ -762,4 +768,95 @@ func TestReplyShouldPostIntoTheThread(t *testing.T) {
 			t.Fatalf("body = %v", b)
 		}
 	})
+}
+
+func TestRelabelPRShouldAddAndRemoveLabels(t *testing.T) {
+	t.Run("github", func(t *testing.T) {
+		f, api := githubAt(t, map[string]func(http.ResponseWriter, *http.Request){
+			"POST /repos/acme/api/labels":                            reply(422, ghLabelExists),
+			"POST /repos/acme/api/issues/9/labels":                   reply(200, `[]`),
+			"DELETE /repos/acme/api/issues/9/labels/delamain:review": reply(200, `[]`),
+		})
+		if err := f.RelabelPR(context.Background(), 9, []string{"delamain:reviewed"}, []string{"delamain:review"}); err != nil {
+			t.Fatal(err)
+		}
+		if n := posts(api, "/repos/acme/api/labels"); n != 2 {
+			t.Fatalf("labels ensured = %d, want the added and the removed one", n)
+		}
+		var added []string
+		if err := json.Unmarshal([]byte(api.find(t, "POST", "/repos/acme/api/issues/9/labels").body), &added); err != nil || !slices.Equal(added, []string{"delamain:reviewed"}) {
+			t.Fatalf("added = %v %v", added, err)
+		}
+		api.find(t, "DELETE", "/repos/acme/api/issues/9/labels/delamain:review")
+	})
+	t.Run("gitlab", func(t *testing.T) {
+		path := glProject + "/merge_requests/9"
+		f, api := gitlabAt(t, map[string]func(http.ResponseWriter, *http.Request){
+			"PUT " + path: reply(200, `{"iid":9}`),
+		})
+		if err := f.RelabelPR(context.Background(), 9, []string{"delamain:reviewed", "x"}, []string{"delamain:review"}); err != nil {
+			t.Fatal(err)
+		}
+		if b := jsonBody(t, api.find(t, "PUT", path)); b["add_labels"] != "delamain:reviewed,x" || b["remove_labels"] != "delamain:review" {
+			t.Fatalf("update body = %v", b)
+		}
+
+		f, api = gitlabAt(t, map[string]func(http.ResponseWriter, *http.Request){
+			"PUT " + path: reply(200, `{"iid":9}`),
+		})
+		if err := f.RelabelPR(context.Background(), 9, nil, []string{"delamain:review"}); err != nil {
+			t.Fatal(err)
+		}
+		if b := jsonBody(t, api.find(t, "PUT", path)); b["remove_labels"] != "delamain:review" {
+			t.Fatalf("update body = %v", b)
+		} else if _, ok := b["add_labels"]; ok {
+			t.Fatalf("an empty addition must not be sent: %v", b)
+		}
+	})
+}
+
+// A forge may quote what it rejected; the bodies delamain posts must still stay out of errors.
+func TestWriteMethodsShouldNeverPutBodiesInErrors(t *testing.T) {
+	for _, repo := range []Repo{{GitHub, "github.com", "acme/api"}, {GitLab, "gitlab.com", "grp/api"}} {
+		for _, status := range []int{http.StatusBadRequest, http.StatusUnprocessableEntity} {
+			t.Run(string(repo.Kind)+"/"+strconv.Itoa(status), func(t *testing.T) {
+				srv := newServer(t, func(w http.ResponseWriter, r *http.Request) {
+					b, _ := io.ReadAll(r.Body)
+					if r.URL.Path == "/graphql" {
+						reply(200, `{"data":{"node":{"comments":{"nodes":[{"databaseId":5}]}}}}`)(w, r)
+						return
+					}
+					msg, _ := json.Marshal(map[string]string{"message": "rejected " + string(b)})
+					reply(status, string(msg))(w, r)
+				})
+				f, err := New(repo, "tok", WithBaseURL(srv+"/"), WithBackoff(1))
+				if err != nil {
+					t.Fatal(err)
+				}
+				ctx := context.Background()
+				writes := map[string]func() error{
+					"PostReview": func() error {
+						return f.PostReview(ctx, 9, ReviewOptions{HeadSHA: "h", BaseSHA: "b", StartSHA: "b", Summary: "BODY-summary",
+							Comments: []InlineComment{{Path: "a.go", Line: 1, Body: "BODY-inline"}}})
+					},
+					"PRComment":           func() error { return f.PRComment(ctx, 9, "BODY-comment") },
+					"Reply":               func() error { return f.Reply(ctx, 9, "RT_1", "BODY-reply") },
+					"Reply issue comment": func() error { return f.Reply(ctx, 9, "issue-comment:1", "BODY-reply") },
+				}
+				for name, write := range writes {
+					err := write()
+					if err == nil {
+						t.Errorf("%s: the forge rejected it, want an error", name)
+						continue
+					}
+					if strings.Contains(err.Error(), "BODY-") {
+						t.Errorf("%s: error leaks a body: %v", name, err)
+					}
+					if !strings.Contains(err.Error(), strconv.Itoa(status)) {
+						t.Errorf("%s: error must keep the status: %v", name, err)
+					}
+				}
+			})
+		}
+	}
 }
