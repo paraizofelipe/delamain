@@ -370,3 +370,11 @@ func (g *githubClient) PostReview(ctx context.Context, n int, o ReviewOptions) e
 		return resp, err
 	})
 }
+
+// PRComment uses the issues endpoint: on GitHub's API a PR is an issue.
+func (g *githubClient) PRComment(ctx context.Context, n int, body string) error {
+	return g.do(ctx, "pr comment", func() (*gogithub.Response, error) {
+		_, resp, err := g.api.Issues.CreateComment(ctx, g.owner, g.name, n, gogithub.IssueCommentRequest{Body: body})
+		return resp, err
+	})
+}

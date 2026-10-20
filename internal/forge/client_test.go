@@ -661,3 +661,59 @@ func TestLinkedIssuesShouldFailWhenTheFallbackCannotReadThePR(t *testing.T) {
 		})
 	}
 }
+
+// writeCase is a PR/MR write on one forge: the endpoints the fake serves.
+type writeCase struct {
+	name    string
+	at      func(*testing.T, map[string]func(http.ResponseWriter, *http.Request), ...Option) (Forge, *fakeAPI)
+	comment string // where a PR-level comment goes
+	review  string // where a review with no inline comments goes
+}
+
+var writeCases = []writeCase{
+	{"github", githubAt, "/repos/acme/api/issues/9/comments", "/repos/acme/api/pulls/9/reviews"},
+	{"gitlab", gitlabAt, glProject + "/merge_requests/9/notes", glProject + "/merge_requests/9/notes"},
+}
+
+func TestPRCommentShouldPostOnThePullRequest(t *testing.T) {
+	for _, wc := range writeCases {
+		t.Run(wc.name, func(t *testing.T) {
+			f, api := wc.at(t, map[string]func(http.ResponseWriter, *http.Request){
+				"POST " + wc.comment: reply(201, `{"id":1}`),
+			})
+			if err := f.PRComment(context.Background(), 9, "olá <!-- delamain:run=1 kind=summary key=ab -->"); err != nil {
+				t.Fatal(err)
+			}
+			if n := len(api.requests()); n != 1 {
+				t.Fatalf("requests = %+v, want one comment", api.requests())
+			}
+			if b := jsonBody(t, api.find(t, "POST", wc.comment))["body"]; b != "olá <!-- delamain:run=1 kind=summary key=ab -->" {
+				t.Fatalf("body = %v", b)
+			}
+		})
+	}
+}
+
+func TestPostReviewWithoutInlineCommentsShouldPostOnlyTheSummary(t *testing.T) {
+	for _, wc := range writeCases {
+		t.Run(wc.name, func(t *testing.T) {
+			f, api := wc.at(t, map[string]func(http.ResponseWriter, *http.Request){
+				"POST " + wc.review: reply(201, `{"id":1}`),
+			})
+			if err := f.PostReview(context.Background(), 9, ReviewOptions{HeadSHA: "h", BaseSHA: "b", StartSHA: "b", Summary: "all good"}); err != nil {
+				t.Fatal(err)
+			}
+			rs := api.requests()
+			if len(rs) != 1 {
+				t.Fatalf("requests = %+v, want only the summary", rs)
+			}
+			b := jsonBody(t, api.find(t, "POST", wc.review))
+			if b["body"] != "all good" {
+				t.Fatalf("summary body = %v", b)
+			}
+			if cs, ok := b["comments"].([]any); ok && len(cs) > 0 {
+				t.Fatalf("no inline comment was asked for: %v", cs)
+			}
+		})
+	}
+}

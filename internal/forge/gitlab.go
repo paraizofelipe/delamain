@@ -286,6 +286,33 @@ func (g *gitlabClient) Threads(ctx context.Context, n int) ([]Thread, error) {
 	return byFirstComment(ts), nil
 }
 
+// PostReview opens one discussion per inline comment, then posts the summary as a note.
+// GitLab has no review object to send them all at once.
 func (g *gitlabClient) PostReview(ctx context.Context, n int, o ReviewOptions) error {
-	return errors.New("gitlab post review: not implemented")
+	text := "text"
+	for _, c := range o.Comments {
+		line := int64(c.Line)
+		opt := &gogitlab.CreateMergeRequestDiscussionOptions{Body: &c.Body, Position: &gogitlab.PositionOptions{
+			PositionType: &text, BaseSHA: &o.BaseSHA, StartSHA: &o.StartSHA, HeadSHA: &o.HeadSHA,
+			NewPath: &c.Path, OldPath: &c.Path, NewLine: &line,
+		}}
+		err := g.do(ctx, "post review", func() (*gogitlab.Response, error) {
+			_, resp, err := g.api.Discussions.CreateMergeRequestDiscussion(g.repo.Path, int64(n), opt, gogitlab.WithContext(ctx))
+			return resp, err
+		})
+		if err != nil {
+			return err
+		}
+	}
+	if o.Summary == "" {
+		return nil
+	}
+	return g.PRComment(ctx, n, o.Summary)
+}
+
+func (g *gitlabClient) PRComment(ctx context.Context, n int, body string) error {
+	return g.do(ctx, "pr comment", func() (*gogitlab.Response, error) {
+		_, resp, err := g.api.Notes.CreateMergeRequestNote(g.repo.Path, int64(n), &gogitlab.CreateMergeRequestNoteOptions{Body: &body}, gogitlab.WithContext(ctx))
+		return resp, err
+	})
 }

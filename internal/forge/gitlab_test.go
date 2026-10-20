@@ -239,3 +239,43 @@ func TestGitLabThreadsShouldSkipSystemNotes(t *testing.T) {
 		t.Fatalf("must read up to 100 discussions: %v", q)
 	}
 }
+
+func TestGitLabPostReviewShouldCreateOneDiscussionPerCommentWithPosition(t *testing.T) {
+	discussions, notes := glProject+"/merge_requests/9/discussions", glProject+"/merge_requests/9/notes"
+	f, api := gitlabAt(t, map[string]func(http.ResponseWriter, *http.Request){
+		"POST " + discussions: reply(201, `{"id":"d1"}`),
+		"POST " + notes:       reply(201, `{"id":1}`),
+	})
+	err := f.PostReview(context.Background(), 9, ReviewOptions{
+		HeadSHA: "head1", BaseSHA: "base1", StartSHA: "start1", Summary: "summary",
+		Comments: []InlineComment{{Path: "a.go", Line: 12, Body: "nil deref"}, {Path: "b/c.go", Line: 3, Body: "typo"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []map[string]any
+	for _, r := range api.requests() {
+		if r.method == http.MethodPost && r.path == discussions {
+			got = append(got, jsonBody(t, r))
+		}
+	}
+	position := func(path string, line int) map[string]any {
+		return map[string]any{
+			"position_type": "text", "base_sha": "base1", "start_sha": "start1", "head_sha": "head1",
+			"new_path": path, "old_path": path, "new_line": float64(line),
+		}
+	}
+	want := []map[string]any{
+		{"body": "nil deref", "position": position("a.go", 12)},
+		{"body": "typo", "position": position("b/c.go", 3)},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("discussions = %v\nwant %v", got, want)
+	}
+	if b := jsonBody(t, api.find(t, "POST", notes))["body"]; b != "summary" {
+		t.Fatalf("summary note = %v", b)
+	}
+	if rs := api.requests(); rs[len(rs)-1].path != notes {
+		t.Fatalf("the summary goes after the inline comments: %+v", rs)
+	}
+}
