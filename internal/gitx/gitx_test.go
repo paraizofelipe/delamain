@@ -562,6 +562,40 @@ func TestShowFileShouldReadTheFileAtTheGivenRef(t *testing.T) {
 	}
 }
 
+func TestFetchRefShouldUpdateTheTrackingRefWhenTheBaseWasRewritten(t *testing.T) {
+	g, ctx := New(), context.Background()
+	r := repo(t)
+	withOrigin(t, r)
+	base := commitFile(t, r, "a.txt", "one\n")
+	tracked := commitFile(t, r, "a.txt", "two\n")
+	gitIn(t, r, "push", "-q", "origin", "main")
+	if err := g.FetchRef(ctx, r, "main"); err != nil {
+		t.Fatal(err)
+	}
+	// The base is rewritten on the origin: a force push leaves main on a commit that is not a
+	// descendant of what this clone tracks.
+	gitIn(t, r, "checkout", "-q", "-b", "rewritten", base)
+	commitFile(t, r, "a.txt", "rewritten\n")
+	gitIn(t, r, "push", "-q", "--force", "origin", "rewritten:main")
+	// Put the tracking ref back where the clone had it, the state a review starts from.
+	gitIn(t, r, "update-ref", "refs/remotes/origin/main", tracked)
+
+	if err := g.FetchRef(ctx, r, "main"); err != nil {
+		t.Fatalf("a rewritten base must still update origin/main, or every review against it stops: %v", err)
+	}
+	got, err := g.ShowFile(ctx, r, "origin/main", "a.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "rewritten\n" {
+		t.Fatalf("origin/main must hold the rewritten base, got %q", got)
+	}
+	// Only the tracking ref moved: no local branch was rewritten under the operator.
+	if head := gitIn(t, r, "rev-parse", "refs/heads/main"); head != tracked {
+		t.Fatalf("local main must stay at %s, got %s", tracked, head)
+	}
+}
+
 func TestChangedLinesShouldReturnOnlyAddedOrModifiedHunksOfTheHead(t *testing.T) {
 	g, ctx := New(), context.Background()
 	r := repo(t)

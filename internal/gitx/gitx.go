@@ -247,12 +247,15 @@ func (g Git) FetchPRHead(ctx context.Context, repo string, kind forge.Kind, n in
 	return g.run(ctx, repo, "rev-parse", "--verify", PRRef(n)+"^{commit}")
 }
 
-// FetchRef fetches branch ref from origin, updating origin/<ref>.
+// FetchRef fetches branch ref from origin, updating origin/<ref>. The refspec is forced, as
+// git's own remote.origin.fetch is: a base that was rebased or reset on the origin would
+// otherwise be rejected as non-fast-forward and stop every review against it. Only the remote
+// tracking ref moves; no local branch is touched.
 func (g Git) FetchRef(ctx context.Context, repo, ref string) error {
 	if ref == "" || strings.HasPrefix(ref, "-") {
 		return fmt.Errorf("invalid ref %q", ref)
 	}
-	_, err := g.run(ctx, repo, "fetch", "--quiet", "--no-tags", "origin", "refs/heads/"+ref+":refs/remotes/origin/"+ref)
+	_, err := g.run(ctx, repo, "fetch", "--quiet", "--no-tags", "origin", "+refs/heads/"+ref+":refs/remotes/origin/"+ref)
 	return err
 }
 
