@@ -319,3 +319,95 @@ func TestRunReviewShouldStopOnPerReviewBudget(t *testing.T) {
 		t.Fatalf("the run is metered against review.per_review, got %v", rec.PerIssue)
 	}
 }
+
+func TestRunReviewShouldMoveFindingsOutsideTheDiffToSummary(t *testing.T) {
+	findings := `[{"severity":"major","category":"erro","file":"a.go","line":3,"evidence":"x","rule":"r","message":"` + majorMsg + `"},
+{"severity":"major","category":"erro","file":"a.go","line":30,"evidence":"x","rule":"r","message":"linha fora do hunk"},
+{"severity":"critical","category":"segredo","file":"config.go","line":2,"evidence":"x","rule":"r","message":"arquivo fora do diff"},
+{"severity":"major","category":"faltando","file":"","line":0,"evidence":"x","rule":"r","message":"sem teste para o parse"}]`
+	rh := newReviewHarness(t, reviewsPR(prReviewJSON(findings)))
+	rh.g.lines = map[string][]gitx.LineRange{"a.go": {{Start: 1, End: 5}}, "b.go": {{Start: 30, End: 30}}}
+	res := rh.review(t)
+
+	if res.Outcome != OutcomeReviewed || len(rh.f.posted) != 1 {
+		t.Fatalf("want one review, got %s (%s), %d posted", res.Outcome, res.Reason, len(rh.f.posted))
+	}
+	o := rh.f.posted[0]
+	if len(o.Comments) != 1 || o.Comments[0].Path != "a.go" || o.Comments[0].Line != 3 {
+		t.Fatalf("only a finding on a changed line of the head goes inline: %+v", o.Comments)
+	}
+	for _, want := range []string{"linha fora do hunk", "`a.go:30`", "arquivo fora do diff", "`config.go:2`", "sem teste para o parse"} {
+		if !strings.Contains(o.Summary, want) {
+			t.Errorf("a finding the forge cannot anchor goes to the summary; missing %q:\n%s", want, o.Summary)
+		}
+	}
+	if res.Review.Inline != 1 || res.Review.InSummary != 3 {
+		t.Fatalf("counts: %+v", res.Review)
+	}
+}
+
+func TestRunReviewShouldNotRepostCommentsWithSameMarkerKey(t *testing.T) {
+	findings := `[{"severity":"major","category":"erro","file":"a.go","line":3,"evidence":"x","rule":"r","message":"` + majorMsg + `"},
+{"severity":"major","category":"erro","file":"a.go","line":5,"evidence":"y","rule":"r","message":"achado novo"}]`
+	posted := func(kind, key string) forge.Comment {
+		return forge.Comment{Author: "delamain-bot", Body: "corpo antigo\n\n" + forge.Marker{RunID: 99, Kind: kind, Key: key}.String()}
+	}
+	inline := forge.Thread{ID: "t9", Path: "a.go", Line: 3, Comments: []forge.Comment{posted("review", forge.Key("a.go", "3", majorMsg))}}
+
+	t.Run("only the new comment is posted", func(t *testing.T) {
+		rh := newReviewHarness(t, reviewsPR(prReviewJSON(findings)))
+		rh.f.threads = append(rh.f.threads, inline)
+		res := rh.review(t)
+
+		if res.Outcome != OutcomeReviewed || len(rh.f.posted) != 1 {
+			t.Fatalf("got %s (%s), %d posted", res.Outcome, res.Reason, len(rh.f.posted))
+		}
+		o := rh.f.posted[0]
+		if len(o.Comments) != 1 || !strings.Contains(o.Comments[0].Body, "achado novo") {
+			t.Fatalf("a comment whose key is already on the PR is not posted again: %+v", o.Comments)
+		}
+		if marker(t, o.Summary).Kind != "summary" {
+			t.Fatal("the summary is still new and is posted")
+		}
+	})
+
+	t.Run("nothing new posts nothing", func(t *testing.T) {
+		rh := newReviewHarness(t, reviewsPR(prReviewJSON(findings)))
+		again := inline
+		again.ID, again.Line = "t10", 5
+		again.Comments = []forge.Comment{posted("review", forge.Key("a.go", "5", "achado novo"))}
+		summary := forge.Thread{ID: "issue-comment:1", Comments: []forge.Comment{posted("summary", forge.Key("summary", prHead))}}
+		rh.f.threads = append(rh.f.threads, inline, again, summary)
+		res := rh.review(t)
+
+		if res.Outcome != OutcomeReviewed || len(rh.f.posted) != 0 {
+			t.Fatalf("a review already on the PR is not posted again: %s (%s), %+v", res.Outcome, res.Reason, rh.f.posted)
+		}
+		if c, err := rh.st.Cursor(context.Background(), rh.repo, 5); err != nil || c.LastHeadSHA != prHead {
+			t.Fatalf("the head still counts as reviewed: %+v %v", c, err)
+		}
+	})
+}
+
+func TestRunReviewShouldSkipWhenHeadAlreadyReviewed(t *testing.T) {
+	rh := newReviewHarness(t, reviewsPR(prReviewJSON("")))
+	if first := rh.review(t); first.Outcome != OutcomeReviewed {
+		t.Fatalf("first review: %s (%s)", first.Outcome, first.Reason)
+	}
+	second := rh.review(t)
+	if second.Outcome != OutcomeSkipped || !strings.Contains(second.Reason, prHead) {
+		t.Fatalf("the same head is reviewed once: %s (%s)", second.Outcome, second.Reason)
+	}
+	if len(rh.f.posted) != 1 || len(rh.g.fetchedPR) != 1 || len(rh.h.prompts["pr-reviewer"]) != 1 {
+		t.Fatalf("the second run posts, fetches and prompts nothing: posted=%d fetched=%v prompts=%d",
+			len(rh.f.posted), rh.g.fetchedPR, len(rh.h.prompts["pr-reviewer"]))
+	}
+	if rec := rh.finalRun(t, second.RunID); rec.State != store.StateRecorded || !strings.HasPrefix(rec.Reason, "skipped") {
+		t.Fatalf("the skip is recorded: %+v", rec)
+	}
+
+	rh.f.pr.HeadSHA, rh.g.head = "ffffffff", "ffffffff" // the author pushed
+	if third := rh.review(t); third.Outcome != OutcomeReviewed || len(rh.f.posted) != 2 {
+		t.Fatalf("a new head is reviewed again: %s (%s), %d posted", third.Outcome, third.Reason, len(rh.f.posted))
+	}
+}

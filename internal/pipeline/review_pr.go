@@ -107,6 +107,14 @@ func (r *Runner) reviewPR(ctx context.Context, ru *run, p *prRun) error {
 	if err := r.setState(ctx, ru, store.StateSetup); err != nil {
 		return err
 	}
+	prev, err := r.Store.Cursor(ctx, repo, pr.Number)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		return err
+	}
+	if prev.LastHeadSHA == pr.HeadSHA {
+		ru.res.Outcome, ru.res.Reason = OutcomeSkipped, fmt.Sprintf("o head %s do PR/MR #%d já foi revisado", pr.HeadSHA, pr.Number)
+		return nil
+	}
 	if err := os.MkdirAll(filepath.Join(ru.dir, "sessions"), 0o700); err != nil {
 		return err
 	}
@@ -182,18 +190,23 @@ func (r *Runner) reviewPR(ctx context.Context, ru *run, p *prRun) error {
 	}
 	p.review = &review
 
+	lines, err := r.Git.ChangedLines(ctx, wt, pr.BaseSHA)
+	if err != nil {
+		return haltf("não foi possível ler as linhas do diff: %v; nada foi postado", err)
+	}
+
 	if err := r.setState(ctx, ru, store.StateDeliver); err != nil {
 		return err
 	}
-	opts, sum := reviewOptions(ru.rec.ID, pr, review)
-	if err := r.Forge.PostReview(ctx, pr.Number, opts); err != nil {
-		return haltf("falha ao postar a review no PR/MR #%d: %v", pr.Number, err)
+	opts, sum := reviewOptions(ru.rec.ID, pr, review, lines, postedKeys(threads))
+	if opts.Summary != "" || len(opts.Comments) > 0 {
+		if err := r.Forge.PostReview(ctx, pr.Number, opts); err != nil {
+			return haltf("falha ao postar a review no PR/MR #%d: %v", pr.Number, err)
+		}
+	} else {
+		ru.log.Info("review already posted", "run", ru.rec.ID, "pr", pr.Number)
 	}
 	ru.res.Review = &sum
-	prev, err := r.Store.Cursor(ctx, repo, pr.Number)
-	if err != nil && !errors.Is(err, store.ErrNotFound) {
-		return err
-	}
 	if err := r.Store.SaveCursor(ctx, store.ReviewCursor{Repo: repo, PR: pr.Number, LastSeenAt: time.Now(), Rounds: prev.Rounds + 1, LastHeadSHA: pr.HeadSHA}); err != nil {
 		return err
 	}
@@ -229,25 +242,62 @@ func (r *Runner) finishReview(ctx context.Context, ru *run, p *prRun) error {
 	return r.record(ctx, ru)
 }
 
-// reviewOptions splits the findings: critical/major go inline, everything else to the summary.
-func reviewOptions(runID int64, pr forge.PRDetail, rv artifacts.PRReview) (forge.ReviewOptions, ReviewSummary) {
+// reviewOptions splits the findings: critical/major on a line the head added or changed go
+// inline, everything else to the summary. Comments whose marker key is already on the PR are
+// left out; with nothing new at all, both Summary and Comments are empty.
+func reviewOptions(runID int64, pr forge.PRDetail, rv artifacts.PRReview, lines map[string][]gitx.LineRange, posted map[string]bool) (forge.ReviewOptions, ReviewSummary) {
 	o := forge.ReviewOptions{HeadSHA: pr.HeadSHA, BaseSHA: pr.BaseSHA, StartSHA: pr.StartSHA}
 	sum := ReviewSummary{PRURL: pr.URL, Dropped: len(rv.Dropped)}
-	var others []string
+	var others, outside []string
 	for _, a := range rv.Axes {
 		for _, f := range a.Findings {
-			if f.Blocking() && f.File != "" {
+			switch {
+			case !f.Blocking() || f.File == "":
+				others = append(others, findingLine(a.Axis, f))
+			case !inDiff(lines[f.File], f.Line):
+				outside = append(outside, findingLine(a.Axis, f))
+			default:
 				m := forge.Marker{RunID: runID, Kind: "review", Key: forge.Key(f.File, strconv.Itoa(f.Line), f.Message)}
+				if posted[m.Key] {
+					continue
+				}
 				o.Comments = append(o.Comments, forge.InlineComment{Path: f.File, Line: f.Line, Body: inlineBody(a.Axis, f) + "\n\n" + m.String()})
-				continue
 			}
-			others = append(others, findingLine(a.Axis, f))
 		}
 	}
-	sum.Inline, sum.InSummary = len(o.Comments), len(others)
+	sum.Inline, sum.InSummary = len(o.Comments), len(others)+len(outside)
 	m := forge.Marker{RunID: runID, Kind: "summary", Key: forge.Key("summary", pr.HeadSHA)}
-	o.Summary = summaryBody(rv, others) + "\n\n" + m.String()
+	switch {
+	case !posted[m.Key]:
+		o.Summary = summaryBody(rv, others, outside) + "\n\n" + m.String()
+	case len(o.Comments) > 0:
+		// The summary is already on the PR; the forge still wants a review body.
+		o.Summary = "🤖 **delamain review**: comentários que faltavam desta review.\n\n" + m.String()
+	}
 	return o, sum
+}
+
+// inDiff reports whether line is one the head added or changed, so the forge can anchor it.
+func inDiff(ranges []gitx.LineRange, line int) bool {
+	for _, lr := range ranges {
+		if line >= lr.Start && line <= lr.End {
+			return true
+		}
+	}
+	return false
+}
+
+// postedKeys are the marker keys of every comment delamain already left on the PR.
+func postedKeys(ts []forge.Thread) map[string]bool {
+	keys := map[string]bool{}
+	for _, t := range ts {
+		for _, c := range t.Comments {
+			if m, ok := forge.ParseMarker(c.Body); ok {
+				keys[m.Key] = true
+			}
+		}
+	}
+	return keys
 }
 
 func inlineBody(axis string, f artifacts.Finding) string {
@@ -262,9 +312,12 @@ func findingLine(axis string, f artifacts.Finding) string {
 	return fmt.Sprintf("- **%s** · %s · %s — %s", f.Severity, axis, where, flat(f.Message))
 }
 
-func summaryBody(rv artifacts.PRReview, others []string) string {
+func summaryBody(rv artifacts.PRReview, others, outside []string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "🤖 **delamain review** · aderência: `%s`\n\n%s\n", rv.Adherence, rv.Summary)
+	if len(outside) > 0 {
+		b.WriteString("\n### Fora das linhas alteradas\n\n" + strings.Join(outside, "\n") + "\n")
+	}
 	if len(others) > 0 {
 		b.WriteString("\n### Outros achados\n\n" + strings.Join(others, "\n") + "\n")
 	}
