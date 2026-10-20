@@ -10,6 +10,8 @@ Implemente o plano com a skill `delamain-implement` (e `delamain-tdd` em cada fa
 
 O orquestrador reprovou a iteração anterior pelos motivos abaixo. Corrija cada item antes de qualquer outra coisa; não reescreva o que não foi apontado.
 
+Corrija com a **menor** mudança que resolve o item. Se a correção mínima exigiria sair do plano (subsistema novo, pré-condição nova, dependência nova, perda de capacidade, mudança de contrato público), faça o mínimo e registre a decisão maior em `pending` — não a tome sozinho.
+
 <feedback>
 {{.Feedback}}
 </feedback>
