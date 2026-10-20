@@ -38,6 +38,20 @@ func issueNumber(ref string) int {
 	return n
 }
 
+// prNumber parses the "pr:12" a review or address run is recorded under back into 12, so a run
+// recovered from a dead process can clean up what it fetched. An issue run's ref gives 0.
+func prNumber(ref string) int {
+	const prefix = "pr:"
+	if !strings.HasPrefix(ref, prefix) {
+		return 0
+	}
+	n, err := strconv.Atoi(strings.TrimPrefix(ref, prefix))
+	if err != nil || n <= 0 {
+		return 0
+	}
+	return n
+}
+
 // ParseTaskFile reads a markdown task: the first "# " heading is the title, the rest is the body.
 func ParseTaskFile(path string) (title, body string, err error) {
 	raw, err := os.ReadFile(path) //nolint:gosec // the user points delamain at their own task file
