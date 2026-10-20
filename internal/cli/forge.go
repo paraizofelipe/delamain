@@ -34,5 +34,5 @@ func forgeFor(ctx context.Context, cfg config.Config, dir string) (forge.Forge, 
 	if err != nil {
 		return nil, err
 	}
-	return forge.New(repo, forge.ExecRunner{Binary: forge.Binary(repo.Kind), Dir: top}), nil
+	return forge.NewExec(repo, forge.ExecRunner{Binary: forge.Binary(repo.Kind), Dir: top}), nil
 }

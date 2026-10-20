@@ -87,7 +87,7 @@ func TestDetectShouldRejectUnknownHostsAndMalformedURLs(t *testing.T) {
 
 func TestGitHubShouldCreateDraftPRWithBodyOnStdin(t *testing.T) {
 	run := &fakeRunner{out: map[string]string{"pr create": "https://github.com/acme/api/pull/42\n"}}
-	f := New(Repo{GitHub, "github.com", "acme/api"}, run)
+	f := NewExec(Repo{GitHub, "github.com", "acme/api"}, run)
 
 	pr, err := f.CreatePR(context.Background(), PROptions{Head: "fix/7-add", Base: "main", Title: "fix: add", Body: "Closes #7", Draft: true})
 	if err != nil {
@@ -109,7 +109,7 @@ func TestGitHubShouldCreateDraftPRWithBodyOnStdin(t *testing.T) {
 
 func TestGitHubShouldOpenReadyPRWhenNotDraft(t *testing.T) {
 	run := &fakeRunner{out: map[string]string{"pr create": "https://github.com/acme/api/pull/1"}}
-	if _, err := New(Repo{GitHub, "github.com", "acme/api"}, run).CreatePR(context.Background(), PROptions{Head: "feat/x", Base: "main", Title: "feat: x"}); err != nil {
+	if _, err := NewExec(Repo{GitHub, "github.com", "acme/api"}, run).CreatePR(context.Background(), PROptions{Head: "feat/x", Base: "main", Title: "feat: x"}); err != nil {
 		t.Fatal(err)
 	}
 	if has(run.find(t, "pr create").args, "--draft", "") {
@@ -119,14 +119,14 @@ func TestGitHubShouldOpenReadyPRWhenNotDraft(t *testing.T) {
 
 func TestGitHubShouldFailWhenCreateOutputHasNoPRURL(t *testing.T) {
 	run := &fakeRunner{out: map[string]string{"pr create": "something unexpected"}}
-	if _, err := New(Repo{GitHub, "github.com", "acme/api"}, run).CreatePR(context.Background(), PROptions{Head: "feat/x", Base: "main", Title: "t"}); err == nil {
+	if _, err := NewExec(Repo{GitHub, "github.com", "acme/api"}, run).CreatePR(context.Background(), PROptions{Head: "feat/x", Base: "main", Title: "t"}); err == nil {
 		t.Fatal("an unparseable result must not be reported as an opened PR")
 	}
 }
 
 func TestGitHubShouldUseHostQualifiedRepoForEnterprise(t *testing.T) {
 	run := &fakeRunner{out: map[string]string{"pr list": "[]"}}
-	if _, err := New(Repo{GitHub, "ghe.corp.example", "team/api"}, run).OpenPR(context.Background(), "feat/x"); err != nil {
+	if _, err := NewExec(Repo{GitHub, "ghe.corp.example", "team/api"}, run).OpenPR(context.Background(), "feat/x"); err != nil {
 		t.Fatal(err)
 	}
 	if !has(run.find(t, "pr list").args, "-R", "ghe.corp.example/team/api") {
@@ -136,7 +136,7 @@ func TestGitHubShouldUseHostQualifiedRepoForEnterprise(t *testing.T) {
 
 func TestGitHubOpenPRShouldReturnNilWhenNoneIsOpen(t *testing.T) {
 	run := &fakeRunner{out: map[string]string{"pr list": "[]"}}
-	pr, err := New(Repo{GitHub, "github.com", "acme/api"}, run).OpenPR(context.Background(), "feat/x")
+	pr, err := NewExec(Repo{GitHub, "github.com", "acme/api"}, run).OpenPR(context.Background(), "feat/x")
 	if err != nil || pr != nil {
 		t.Fatalf("pr = %+v, err = %v", pr, err)
 	}
@@ -148,7 +148,7 @@ func TestGitHubOpenPRShouldReturnNilWhenNoneIsOpen(t *testing.T) {
 
 func TestGitHubOpenPRShouldReturnTheExistingPR(t *testing.T) {
 	run := &fakeRunner{out: map[string]string{"pr list": `[{"number":9,"url":"https://github.com/acme/api/pull/9","isDraft":true}]`}}
-	pr, err := New(Repo{GitHub, "github.com", "acme/api"}, run).OpenPR(context.Background(), "feat/x")
+	pr, err := NewExec(Repo{GitHub, "github.com", "acme/api"}, run).OpenPR(context.Background(), "feat/x")
 	if err != nil || pr == nil || pr.Number != 9 || !pr.Draft {
 		t.Fatalf("pr = %+v, err = %v", pr, err)
 	}
@@ -156,7 +156,7 @@ func TestGitHubOpenPRShouldReturnTheExistingPR(t *testing.T) {
 
 func TestGitHubShouldReadIssue(t *testing.T) {
 	run := &fakeRunner{out: map[string]string{"issue view": `{"number":7,"title":"Fix add","body":"## Critérios","url":"https://github.com/acme/api/issues/7","state":"OPEN","labels":[{"name":"bug"},{"name":"delamain:ready"}]}`}}
-	is, err := New(Repo{GitHub, "github.com", "acme/api"}, run).Issue(context.Background(), 7)
+	is, err := NewExec(Repo{GitHub, "github.com", "acme/api"}, run).Issue(context.Background(), 7)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,7 +168,7 @@ func TestGitHubShouldReadIssue(t *testing.T) {
 
 func TestGitHubShouldEnsureLabelsExistBeforeRelabeling(t *testing.T) {
 	run := &fakeRunner{errs: map[string]error{"label create": errors.New(`label with name "delamain:ready" already exists; use --force to update`)}}
-	err := New(Repo{GitHub, "github.com", "acme/api"}, run).Relabel(context.Background(), 7, []string{"delamain:in-progress"}, []string{"delamain:ready"})
+	err := NewExec(Repo{GitHub, "github.com", "acme/api"}, run).Relabel(context.Background(), 7, []string{"delamain:in-progress"}, []string{"delamain:ready"})
 	if err != nil {
 		t.Fatalf("an existing label is not an error: %v", err)
 	}
@@ -192,14 +192,14 @@ func TestGitHubShouldEnsureLabelsExistBeforeRelabeling(t *testing.T) {
 
 func TestGitHubRelabelShouldPropagateRealLabelErrors(t *testing.T) {
 	run := &fakeRunner{errs: map[string]error{"label create": errors.New("HTTP 403: Resource not accessible")}}
-	if err := New(Repo{GitHub, "github.com", "acme/api"}, run).Relabel(context.Background(), 7, []string{"x"}, nil); err == nil {
+	if err := NewExec(Repo{GitHub, "github.com", "acme/api"}, run).Relabel(context.Background(), 7, []string{"x"}, nil); err == nil {
 		t.Fatal("a permission error must not be swallowed")
 	}
 }
 
 func TestGitHubCommentShouldSendBodyOnStdin(t *testing.T) {
 	run := &fakeRunner{}
-	if err := New(Repo{GitHub, "github.com", "acme/api"}, run).Comment(context.Background(), 7, "olá"); err != nil {
+	if err := NewExec(Repo{GitHub, "github.com", "acme/api"}, run).Comment(context.Background(), 7, "olá"); err != nil {
 		t.Fatal(err)
 	}
 	c := run.find(t, "issue comment")
@@ -210,7 +210,7 @@ func TestGitHubCommentShouldSendBodyOnStdin(t *testing.T) {
 
 func TestGitLabShouldCreateDraftMRNonInteractively(t *testing.T) {
 	run := &fakeRunner{out: map[string]string{"mr create": "\nCreating merge request for fix/7-add into main in grp/api\n\nhttps://gitlab.com/grp/api/-/merge_requests/15\n"}}
-	f := New(Repo{GitLab, "gitlab.com", "grp/api"}, run)
+	f := NewExec(Repo{GitLab, "gitlab.com", "grp/api"}, run)
 	pr, err := f.CreatePR(context.Background(), PROptions{Head: "fix/7-add", Base: "main", Title: "fix: add", Body: "Closes #7", Draft: true})
 	if err != nil {
 		t.Fatal(err)
@@ -237,7 +237,7 @@ func TestGitLabShouldReadIssueAndOpenMR(t *testing.T) {
 		"issue view": `{"iid":3,"title":"Add login","description":"- [ ] ok","web_url":"https://gitlab.com/grp/api/-/issues/3","state":"opened","labels":["delamain:ready"]}`,
 		"mr list":    `[{"iid":5,"web_url":"https://gitlab.com/grp/api/-/merge_requests/5","draft":false}]`,
 	}}
-	f := New(Repo{GitLab, "gitlab.com", "grp/api"}, run)
+	f := NewExec(Repo{GitLab, "gitlab.com", "grp/api"}, run)
 	is, err := f.Issue(context.Background(), 3)
 	if err != nil || is.Number != 3 || is.Body != "- [ ] ok" || !is.Open || !slices.Equal(is.Labels, []string{"delamain:ready"}) {
 		t.Fatalf("issue = %+v, err = %v", is, err)
@@ -253,7 +253,7 @@ func TestGitLabShouldReadIssueAndOpenMR(t *testing.T) {
 
 func TestGitLabShouldRelabelAndCommentWithoutEmptyFlags(t *testing.T) {
 	run := &fakeRunner{}
-	f := New(Repo{GitLab, "gitlab.com", "grp/api"}, run)
+	f := NewExec(Repo{GitLab, "gitlab.com", "grp/api"}, run)
 	if err := f.Relabel(context.Background(), 3, []string{"a", "b"}, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -276,7 +276,7 @@ func TestForgeShouldNeverIssueMergeCommands(t *testing.T) {
 			"pr create": "https://github.com/acme/api/pull/1", "mr create": "https://gitlab.com/grp/api/-/merge_requests/1",
 			"pr list": "[]", "mr list": "[]", "issue view": "{}",
 		}}
-		f := New(repo, run)
+		f := NewExec(repo, run)
 		ctx := context.Background()
 		_, _ = f.Issue(ctx, 1)
 		_, _ = f.OpenPR(ctx, "feat/x")
@@ -354,7 +354,7 @@ func TestExecRunnerShouldStopRetryingWhenTheContextEnds(t *testing.T) {
 
 func TestGitHubListReadyShouldReturnOpenLabeledIssuesOldestFirst(t *testing.T) {
 	run := &fakeRunner{out: map[string]string{"issue list": `[{"number":9,"title":"b","body":"x","url":"u9","state":"OPEN","labels":[{"name":"delamain:ready"}]},{"number":4,"title":"a","body":"y","url":"u4","state":"OPEN","labels":[]}]`}}
-	got, err := New(Repo{GitHub, "github.com", "acme/api"}, run).ListReady(context.Background(), "delamain:ready")
+	got, err := NewExec(Repo{GitHub, "github.com", "acme/api"}, run).ListReady(context.Background(), "delamain:ready")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -369,7 +369,7 @@ func TestGitHubListReadyShouldReturnOpenLabeledIssuesOldestFirst(t *testing.T) {
 
 func TestGitLabListReadyShouldReturnOpenLabeledIssuesOldestFirst(t *testing.T) {
 	run := &fakeRunner{out: map[string]string{"issue list": `[{"iid":12,"title":"b","description":"x","web_url":"u12","state":"opened","labels":["delamain:ready"]},{"iid":3,"title":"a","description":"y","web_url":"u3","state":"opened","labels":["delamain:ready"]}]`}}
-	got, err := New(Repo{GitLab, "gitlab.com", "grp/api"}, run).ListReady(context.Background(), "delamain:ready")
+	got, err := NewExec(Repo{GitLab, "gitlab.com", "grp/api"}, run).ListReady(context.Background(), "delamain:ready")
 	if err != nil {
 		t.Fatal(err)
 	}
