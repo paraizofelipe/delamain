@@ -19,7 +19,8 @@ import (
 type Event string
 
 const (
-	EventStarted    Event = "started" // off by default
+	EventStarted    Event = "started"   // off by default
+	EventIteration  Event = "iteration" // off by default
 	EventPROpened   Event = "pr_opened"
 	EventNeedsHuman Event = "needs_human"
 	EventHalted     Event = "halted"

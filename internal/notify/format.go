@@ -60,6 +60,21 @@ func FormatStarted(r Run) Message {
 	}
 }
 
+// FormatIteration is the toast of a run starting iteration r.Iterations; r.Reason says why the previous one failed.
+func FormatIteration(r Run) Message {
+	facts := fmt.Sprintf("run %d · %s tokens", r.ID, r.Tokens)
+	if r.CostUSD > 0 {
+		facts += fmt.Sprintf(" · US$ %.2f", r.CostUSD)
+	}
+	return Message{
+		Event: EventIteration, RunID: r.ID,
+		Title:   title(fmt.Sprintf("🔁 Iteration %d/%d", r.Iterations, r.MaxIterations), r),
+		Body:    body(r.Title, facts, r.Reason),
+		Urgency: Low, Expire: expire, Category: "x-delamain.iteration",
+		Actions: actions(open("default", "Open issue", r.IssueURL), open("open-issue", "Open issue", r.IssueURL)),
+	}
+}
+
 // FormatNeedsHuman is the toast of work a human must finish: a draft PR, or no PR at all.
 func FormatNeedsHuman(r Run) Message {
 	pr := "No PR"
