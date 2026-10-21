@@ -11,6 +11,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 	"go.yaml.in/yaml/v3"
 
@@ -329,43 +330,48 @@ func runID(arg string) (int64, error) {
 }
 
 func statusTable(w io.Writer, s RunStatus) error {
+	return renderStatus(w, s, newStyles(lipgloss.NewRenderer(w)))
+}
+
+func renderStatus(w io.Writer, s RunStatus, st styles) error {
 	v := s.Run
-	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintf(tw, "RUN\t%d · %s %s\n", v.ID, v.Issue, v.Title)
-	fmt.Fprintf(tw, "KIND\t%s\n", v.Kind)
-	fmt.Fprintf(tw, "REPO\t%s\n", v.Repo)
-	fmt.Fprintf(tw, "HARNESS\t%s\n", orDash(v.Harness))
-	fmt.Fprintf(tw, "STATE\t%s\n", v.State)
-	fmt.Fprintf(tw, "INTERACTIONS\t%s\n", v.iter())
-	fmt.Fprintf(tw, "COMPLEXITY\t%s\n", orDash(v.Complexity))
-	if v.Branch != "" {
-		fmt.Fprintf(tw, "BRANCH\t%s (base %s)\n", v.Branch, v.Base)
-		fmt.Fprintf(tw, "WORKTREE\t%s\n", v.Worktree)
+	field := func(label string, value cell) []cell { return []cell{styled(st.label, label), value} }
+	rows := [][]cell{
+		field("RUN", plain(fmt.Sprintf("%d · %s %s", v.ID, v.Issue, v.Title))),
+		field("KIND", plain(v.Kind)),
+		field("REPO", plain(v.Repo)),
+		field("HARNESS", plain(orDash(v.Harness))),
+		field("STATE", plain(v.State)),
+		field("INTERACTIONS", plain(v.iter())),
+		field("COMPLEXITY", plain(orDash(v.Complexity))),
 	}
-	fmt.Fprintf(tw, "OWNER\t%s\n", v.owner())
-	fmt.Fprintf(tw, "BUDGET\t%s\n", s.Budget.Summary)
+	if v.Branch != "" {
+		rows = append(rows,
+			field("BRANCH", plain(fmt.Sprintf("%s (base %s)", v.Branch, v.Base))),
+			field("WORKTREE", plain(v.Worktree)))
+	}
+	rows = append(rows, field("OWNER", plain(v.owner())), field("BUDGET", plain(s.Budget.Summary)))
 	if v.PR != "" {
-		fmt.Fprintf(tw, "PR/MR\t%s\n", v.PR)
+		rows = append(rows, field("PR/MR", plain(v.PR)))
 	}
 	if v.Workspace != "" {
-		fmt.Fprintf(tw, "HERDR\t%s\n", v.Workspace)
+		rows = append(rows, field("HERDR", plain(v.Workspace)))
 	}
 	if v.Result != "" {
-		fmt.Fprintf(tw, "RESULT\t%s\n", v.Result)
+		rows = append(rows, field("RESULT", plain(v.Result)))
 	}
-	fmt.Fprintf(tw, "LOGS\t%s (delamain logs %d -f)\n", filepath.Join(v.RunDir, "logs"), v.ID)
-	if err := tw.Flush(); err != nil {
+	rows = append(rows, field("LOGS", plain(fmt.Sprintf("%s (delamain logs %d -f)", filepath.Join(v.RunDir, "logs"), v.ID))))
+	if err := writeTable(w, rows); err != nil {
 		return err
 	}
 
-	fmt.Fprintf(w, "\nWORKTREES in %s\n", s.WorktreesDir)
+	fmt.Fprintf(w, "\n%s in %s\n", st.heading.Render("WORKTREES"), s.WorktreesDir)
 	if s.WorktreesError != "" {
 		fmt.Fprintf(w, "  not listed: %s\n", s.WorktreesError)
 	} else if len(s.Worktrees) == 0 {
 		fmt.Fprintln(w, "  none")
 	} else {
-		tw = tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(tw, "\tBRANCH\tHEAD\tPATH")
+		rows = [][]cell{{plain(""), styled(st.header, "BRANCH"), styled(st.header, "HEAD"), styled(st.header, "PATH")}}
 		for _, wt := range s.Worktrees {
 			mark := ""
 			if wt.ThisRun {
@@ -375,29 +381,31 @@ func statusTable(w io.Writer, s RunStatus) error {
 			if wt.Detached {
 				branch = "(detached)"
 			}
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", mark, branch, short(wt.Head), wt.Path)
+			rows = append(rows, []cell{plain(mark), plain(branch), plain(short(wt.Head)), plain(wt.Path)})
 		}
-		if err := tw.Flush(); err != nil {
+		if err := writeTable(w, rows); err != nil {
 			return err
 		}
 	}
 
-	fmt.Fprintln(w, "\nAGENTS")
+	fmt.Fprintf(w, "\n%s\n", st.heading.Render("AGENTS"))
 	if len(v.Agents) == 0 {
 		_, err := fmt.Fprintln(w, "  none started")
 		return err
 	}
-	tw = tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "ROLE\tSTATE\tPID\tALIVE\tDURATION\tTOKENS\tUS$")
+	rows = [][]cell{{}}
+	for _, h := range []string{"ROLE", "STATE", "PID", "ALIVE", "DURATION", "TOKENS", "US$"} {
+		rows[0] = append(rows[0], styled(st.header, h))
+	}
 	for _, a := range v.Agents {
 		end := time.Now()
 		if a.EndedAt != nil {
 			end = *a.EndedAt
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%s\t%s\t%.2f\n", a.Role, a.State, a.Process.PID, yesNo(a.Process.Alive),
-			end.Sub(a.StartedAt).Round(time.Second), budget.Format(float64(a.Tokens), config.BudgetTokens), a.CostUSD)
+		rows = append(rows, []cell{plain(a.Role), plain(a.State), plain(strconv.Itoa(a.Process.PID)), plain(yesNo(a.Process.Alive)),
+			plain(end.Sub(a.StartedAt).Round(time.Second).String()), plain(budget.Format(float64(a.Tokens), config.BudgetTokens)), plain(fmt.Sprintf("%.2f", a.CostUSD))})
 	}
-	return tw.Flush()
+	return writeTable(w, rows)
 }
 
 func (v RunView) iter() string {
