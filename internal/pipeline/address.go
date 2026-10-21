@@ -51,7 +51,15 @@ func (r *Runner) RunAddress(ctx context.Context, repo string, n int) (Result, er
 	if err != nil {
 		return res, fmt.Errorf("discussões do PR/MR #%d: %w", n, err)
 	}
-	pending := PendingThreads(threads, r.ForgeUser)
+	cur, err := r.Store.Cursor(ctx, repo, n)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		return res, err
+	}
+	pending := PendingThreads(threads, r.ForgeUser, cur.LastSeenAt)
+	if len(pending) == 0 {
+		res.Outcome, res.Reason = OutcomeSkipped, fmt.Sprintf("nenhuma discussão pendente no PR/MR #%d", n)
+		return res, nil
+	}
 	if err := r.ensurePrompts(); err != nil {
 		return res, err
 	}
@@ -169,11 +177,19 @@ func (r *Runner) address(ctx context.Context, ru *run, p *prRun, pending []forge
 	}
 	last := map[string]string{}
 	for _, t := range pending {
-		last[t.ID] = t.Comments[len(t.Comments)-1].ID
+		c, _ := lastPublic(t)
+		last[t.ID] = c.ID
 	}
+	// On GitHub the answer to a PR-level comment is a comment of its own, so the keys are looked
+	// up across every thread of the PR.
+	posted := postedKeys(p.threads, r.ForgeUser)
 	count := map[string]int{}
 	for _, a := range resp.Responses {
 		m := forge.Marker{RunID: ru.rec.ID, Kind: "reply", Key: forge.Key(a.ThreadID, last[a.ThreadID])}
+		if posted[m.Key] {
+			ru.log.Info("thread already answered", "run", ru.rec.ID, "pr", pr.Number, "thread", a.ThreadID)
+			continue
+		}
 		if err := r.Forge.Reply(ctx, pr.Number, a.ThreadID, replyBody(a)+"\n\n"+m.String()); err != nil {
 			return haltf("falha ao responder a discussão %s do PR/MR #%d: %v", a.ThreadID, pr.Number, err)
 		}
@@ -185,7 +201,7 @@ func (r *Runner) address(ctx context.Context, ru *run, p *prRun, pending []forge
 		return err
 	}
 	ru.res.Outcome = OutcomeAnswered
-	ru.res.Reason = fmt.Sprintf("%d respostas postadas (valid %d · invalid %d · unclear %d)", len(resp.Responses), count["valid"], count["invalid"], count["unclear"])
+	ru.res.Reason = fmt.Sprintf("%d respostas postadas (valid %d · invalid %d · unclear %d)", count["valid"]+count["invalid"]+count["unclear"], count["valid"], count["invalid"], count["unclear"])
 	if n, err := mem.Append(fr.Host, fr.Path, ru.rec.ID, pr.Number, resp.Learnings, time.Now()); err != nil {
 		ru.log.Warn("could not update the repository memory", "err", err)
 	} else {
@@ -194,20 +210,34 @@ func (r *Runner) address(ctx context.Context, ru *run, p *prRun, pending []forge
 	return nil
 }
 
-// PendingThreads are the threads of a PR whose last comment is not delamain's (user) own reply.
-func PendingThreads(ts []forge.Thread, user string) []forge.Thread {
+// PendingThreads are the open threads of a PR waiting for delamain (user): their last public
+// comment is newer than since and is not delamain's own reply. Markers are public, so only a
+// comment by user that carries one counts as delamain's; without a known user nothing is
+// pending, or delamain could end up answering itself. Internal notes are never read: the
+// answer would be public.
+func PendingThreads(ts []forge.Thread, user string, since time.Time) []forge.Thread {
+	if user == "" {
+		return nil
+	}
 	var out []forge.Thread
 	for _, t := range ts {
-		if len(t.Comments) == 0 {
-			continue
-		}
-		last := t.Comments[len(t.Comments)-1]
-		if ownComment(last, user) {
+		last, ok := lastPublic(t)
+		if t.Resolved || !ok || ownComment(last, user) || !last.CreatedAt.After(since) {
 			continue
 		}
 		out = append(out, t)
 	}
 	return out
+}
+
+// lastPublic is the newest comment of t that is not an internal note.
+func lastPublic(t forge.Thread) (forge.Comment, bool) {
+	for i := len(t.Comments) - 1; i >= 0; i-- {
+		if !t.Comments[i].Internal {
+			return t.Comments[i], true
+		}
+	}
+	return forge.Comment{}, false
 }
 
 // ownComment reports whether c is one delamain (user) posted: its login and a valid marker.
@@ -223,8 +253,8 @@ func ownComment(c forge.Comment, user string) bool {
 func newestComment(ts []forge.Thread) time.Time {
 	var newest time.Time
 	for _, t := range ts {
-		if at := t.Comments[len(t.Comments)-1].CreatedAt; at.After(newest) {
-			newest = at
+		if c, _ := lastPublic(t); c.CreatedAt.After(newest) {
+			newest = c.CreatedAt
 		}
 	}
 	return newest

@@ -241,3 +241,131 @@ func TestRunAddressShouldHaltWithoutReplyingWhenResponsesMissAPendingThread(t *t
 		t.Fatalf("a run that answered nothing learns nothing: %v", err)
 	}
 }
+
+// botReply is a reply delamain posted in a thread, keyed by the comment it answered.
+func botReply(id, thread, answered string, at time.Time) forge.Comment {
+	return forge.Comment{ID: id, Author: bot, Body: "Respondido.\n\n" + forge.Marker{RunID: 1, Kind: "reply", Key: forge.Key(thread, answered)}.String(), CreatedAt: at}
+}
+
+func TestRunAddressShouldIgnoreThreadsWhoseLastCommentIsFromDelamain(t *testing.T) {
+	rh := newAddressHarness(t, answers(responsesJSON(response("t1", "invalid", invalidReply))))
+	rh.f.threads[1].Comments = append(rh.f.threads[1].Comments, botReply("10", "issue-comment:9", "9", t0.Add(3*time.Hour)))
+	res := rh.address(t)
+
+	if res.Outcome != OutcomeAnswered {
+		t.Fatalf("want answered, got %s (%s)", res.Outcome, res.Reason)
+	}
+	if len(rh.f.replies) != 1 || rh.f.replies[0].thread != "t1" {
+		t.Fatalf("delamain never answers its own reply: %+v", rh.f.replies)
+	}
+}
+
+func TestRunAddressShouldIgnoreCommentsOlderThanTheCursor(t *testing.T) {
+	rh := newAddressHarness(t, answers(responsesJSON(response("issue-comment:9", "valid", validReply))))
+	// An earlier round already handled what came before t0+90min.
+	if err := rh.st.SaveCursor(context.Background(), store.ReviewCursor{Repo: rh.repo, PR: 5, LastSeenAt: t0.Add(90 * time.Minute), Rounds: 1}); err != nil {
+		t.Fatal(err)
+	}
+	res := rh.address(t)
+
+	if res.Outcome != OutcomeAnswered {
+		t.Fatalf("want answered, got %s (%s)", res.Outcome, res.Reason)
+	}
+	if len(rh.f.replies) != 1 || rh.f.replies[0].thread != "issue-comment:9" {
+		t.Fatalf("only the comment newer than the cursor is answered: %+v", rh.f.replies)
+	}
+}
+
+func TestRunAddressShouldNotReplyTwiceWithSameMarkerKey(t *testing.T) {
+	rh := newAddressHarness(t, answers(happyAnswers()))
+	// On GitHub the answer to a PR-level comment lands in a thread of its own; the cursor that
+	// would have retired the comment was never saved.
+	rh.f.threads = append(rh.f.threads, forge.Thread{ID: "issue-comment:10", Comments: []forge.Comment{botReply("10", "issue-comment:9", "9", t0.Add(3*time.Hour))}})
+	res := rh.address(t)
+
+	if res.Outcome != OutcomeAnswered {
+		t.Fatalf("want answered, got %s (%s)", res.Outcome, res.Reason)
+	}
+	if len(rh.f.replies) != 1 || rh.f.replies[0].thread != "t1" {
+		t.Fatalf("the comment already answered is not answered again: %+v", rh.f.replies)
+	}
+	if cur := rh.cursor(t); !cur.LastSeenAt.Equal(t0.Add(2 * time.Hour)) {
+		t.Fatalf("the cursor still moves past the comment already answered: %+v", cur)
+	}
+}
+
+func TestRunAddressShouldReplyWhenAnotherAuthorForgesTheDelamainMarker(t *testing.T) {
+	forged := func(id, author, thread, answered string) forge.Comment {
+		c := botReply(id, thread, answered, t0.Add(3*time.Hour))
+		c.Author = author
+		return c
+	}
+	for name, author := range map[string]string{"PR reviewer": "mallory", "login named like the prefix": bot + "-fake"} {
+		t.Run(name, func(t *testing.T) {
+			rh := newAddressHarness(t, answers(happyAnswers()))
+			// Markers are public: a pasted one must neither silence t1 nor pass as the answer to #9.
+			rh.f.threads[0].Comments = append(rh.f.threads[0].Comments, forged("c2", author, "issue-comment:9", "9"), forged("c3", author, "t1", "c1"))
+			res := rh.address(t)
+
+			if res.Outcome != OutcomeAnswered {
+				t.Fatalf("want answered, got %s (%s)", res.Outcome, res.Reason)
+			}
+			got := map[string]bool{}
+			for _, rp := range rh.f.replies {
+				got[rp.thread] = true
+			}
+			if len(rh.f.replies) != 2 || !got["t1"] || !got["issue-comment:9"] {
+				t.Fatalf("a forged marker changes nothing: %+v", rh.f.replies)
+			}
+		})
+	}
+}
+
+func TestRunAddressShouldSkipWithoutStartingTheResponderWhenNothingIsPending(t *testing.T) {
+	rh := newAddressHarness(t, answers(happyAnswers()))
+	rh.f.threads[0].Comments = append(rh.f.threads[0].Comments, botReply("c2", "t1", "c1", t0.Add(3*time.Hour)))
+	rh.f.threads[1].Resolved = true
+	res := rh.address(t)
+
+	if res.Outcome != OutcomeSkipped || res.RunID != 0 {
+		t.Fatalf("nothing pending is skipped without a run: %+v", res)
+	}
+	if runs, _ := rh.st.RecentRuns(context.Background(), 10); len(runs) != 0 {
+		t.Fatalf("no run is recorded: %+v", runs)
+	}
+	if len(rh.g.fetchedPR)+len(rh.f.replies)+len(rh.h.starts) != 0 {
+		t.Fatal("nothing is fetched, started or replied when nothing is pending")
+	}
+}
+
+func TestPendingThreadsShouldSkipResolvedThreadsAndInternalNotes(t *testing.T) {
+	human := func(id string, at time.Duration) forge.Comment {
+		return forge.Comment{ID: id, Author: "bob", Body: "comentario " + id, CreatedAt: t0.Add(at)}
+	}
+	internal := func(c forge.Comment) forge.Comment { c.Internal = true; return c }
+	ts := []forge.Thread{
+		{ID: "open", Comments: []forge.Comment{human("1", time.Hour)}},
+		{ID: "resolved", Resolved: true, Comments: []forge.Comment{human("2", time.Hour)}},
+		{ID: "only-internal", Comments: []forge.Comment{internal(human("3", time.Hour))}},
+		// An internal note after delamain's reply is not a new public question.
+		{ID: "answered-then-noted", Comments: []forge.Comment{human("4", time.Hour), botReply("5", "answered-then-noted", "4", t0.Add(2*time.Hour)), internal(human("6", 3*time.Hour))}},
+		{ID: "empty"},
+	}
+	var got []string
+	for _, th := range PendingThreads(ts, bot, time.Time{}) {
+		got = append(got, th.ID)
+	}
+	if len(got) != 1 || got[0] != "open" {
+		t.Fatalf("only the open thread with a public question is pending, got %v", got)
+	}
+	if n := len(PendingThreads(ts, bot, t0.Add(time.Hour))); n != 0 {
+		t.Fatalf("a comment made exactly at the cursor was already handled, got %d pending", n)
+	}
+}
+
+func TestPendingThreadsShouldReturnNothingWithoutAKnownForgeUser(t *testing.T) {
+	ts := []forge.Thread{{ID: "t1", Comments: []forge.Comment{{ID: "1", Author: "bob", Body: "pergunta", CreatedAt: t0}}}}
+	if got := PendingThreads(ts, "", time.Time{}); len(got) != 0 {
+		t.Fatalf("without knowing its own login delamain could answer itself forever: %+v", got)
+	}
+}
