@@ -59,6 +59,17 @@ func iterationToast(ru *run, t Task, why string) notify.Message {
 	return notify.FormatIteration(n)
 }
 
+// verifyReason names the checks that failed, in order; a skipped check did not fail.
+func verifyReason(cs []CheckResult) string {
+	var failed []string
+	for _, c := range cs {
+		if !c.Passed() && !c.Skipped {
+			failed = append(failed, c.Name)
+		}
+	}
+	return "verify failed: " + strings.Join(failed, ", ")
+}
+
 // reviewReason counts the review's blocking findings and names the axes that have one, in order.
 func reviewReason(r artifacts.Review) string {
 	count, axes := 0, []string{}

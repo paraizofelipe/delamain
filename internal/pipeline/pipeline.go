@@ -375,7 +375,7 @@ func (r *Runner) execute(ctx context.Context, ru *run, repo string, t Task) erro
 		}
 		it.Checks, it.Verified = checks, allPassed(checks)
 		if !it.Verified {
-			feedback = verifyFeedback(checks)
+			feedback, why = verifyFeedback(checks), verifyReason(checks)
 			ru.res.History = append(ru.res.History, it)
 			continue
 		}

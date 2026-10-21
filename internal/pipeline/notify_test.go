@@ -303,3 +303,36 @@ func TestReviewReasonShouldCountBlockingFindingsPerAxisInOrder(t *testing.T) {
 		t.Fatalf("one finding is singular:\n got %q\nwant %q", got, want)
 	}
 }
+
+func TestIterationShouldNotifyWhenVerifyFails(t *testing.T) {
+	hs := newHarness(t, happy)
+	hs.h.checks = func(name string, n int) int {
+		if name == "test" && n == 1 {
+			return 1
+		}
+		return defaultChecks(name, n)
+	}
+	n := withNotifier(hs)
+	res := hs.run(t)
+	if res.Outcome != OutcomeApproved || res.Iterations != 2 {
+		t.Fatalf("want approved on iteration 2, got %s after %d (%s)", res.Outcome, res.Iterations, res.Reason)
+	}
+
+	m, _ := only(t, n, notify.EventIteration)
+	lines := strings.Split(m.Body, "\n")
+	if m.Title != "🔁 Iteration 2/3 · repo #7" || len(lines) != 3 || !strings.HasPrefix(lines[2], "verify failed: ") || !strings.Contains(lines[2], "test") {
+		t.Fatalf("the toast names the check that failed: %q / %q", m.Title, m.Body)
+	}
+}
+
+func TestVerifyReasonShouldListOnlyFailedChecksInOrder(t *testing.T) {
+	checks := []CheckResult{
+		{Name: "lint", ExitCode: 1},
+		{Name: "test", ExitCode: 0},
+		{Name: "secrets", ExitCode: 127, Skipped: true},
+		{Name: "redproof", ExitCode: 2},
+	}
+	if got, want := verifyReason(checks), "verify failed: lint, redproof"; got != want {
+		t.Fatalf("passed and skipped checks are not failures:\n got %q\nwant %q", got, want)
+	}
+}
