@@ -551,9 +551,14 @@ func (r *Runner) publishFix(ctx context.Context, ru *run, fix *fixRun) error {
 	}
 	ok, detail := gates.Commits(fix.commits, ru.repoCfg.Gates.SubjectLimit)
 	checks := []CheckResult{gitCheck("commits", ok, detail)}
-	// The commit messages are published with the push.
-	leak := leakedSecret(fix.commits, os.Environ())
-	checks = append(checks, gitCheck("segredos-commits", leak == "", "um assunto de commit parece conter um segredo ("+leak+")"))
+	// The commit messages, bodies included, are published with the push; gitleaks scans only
+	// the patches.
+	msgs, err := r.Git.CommitMessages(ctx, ru.repo.Worktree, fix.expected)
+	if err != nil {
+		return err
+	}
+	leak := leakedSecret(msgs, os.Environ())
+	checks = append(checks, gitCheck("segredos-commits", leak == "", "uma mensagem de commit parece conter um segredo ("+leak+")"))
 	cmds, err := r.commandChecks(ctx, ru, dir)
 	if err != nil {
 		return err

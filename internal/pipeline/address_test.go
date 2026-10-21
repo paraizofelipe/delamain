@@ -926,6 +926,24 @@ func TestRunAddressWithPushShouldNotPushWhenTheCommitsLeakASecret(t *testing.T) 
 			t.Fatal("the secret is never repeated")
 		}
 	})
+	t.Run("a commit body carries a token", func(t *testing.T) {
+		// With commit -F the responder writes the whole message: gitleaks scans patches, not it.
+		rh := newFixHarness(t, func(string, int, string) reply {
+			return reply{
+				write: responsesJSON(response("t1", "invalid", invalidReply), fixedAnswer()),
+				mutate: func(g *fakeGit) {
+					g.commit("fix: rename x to count (review)")
+					g.bodies = map[string]string{g.head: "context for the reviewer\n" + ghToken}
+				},
+			}
+		})
+		res := rh.address(t)
+
+		assertFixNotSent(t, rh, res, "não passou nos checks")
+		if strings.Contains(res.Reason, ghToken) || strings.Contains(replyTo(t, rh, "issue-comment:9"), ghToken) {
+			t.Fatal("the secret is never repeated")
+		}
+	})
 }
 
 func TestRunAddressWithPushShouldNotPushWhenRemoteMovedDuringTheRun(t *testing.T) {

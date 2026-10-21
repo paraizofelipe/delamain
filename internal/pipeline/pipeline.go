@@ -58,6 +58,7 @@ type Git interface {
 	RemoteSHA(ctx context.Context, repo, branch string) (string, error)
 	AddWorktreeOnBranch(ctx context.Context, repo, path, branch, base string) error
 	IsAncestor(ctx context.Context, dir, ancestor, ref string) (bool, error)
+	CommitMessages(ctx context.Context, dir, base string) ([]string, error)
 	PushFastForward(ctx context.Context, dir, branch, base, expected string) error
 }
 
