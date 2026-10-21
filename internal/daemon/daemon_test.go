@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/paraizo/delamain/internal/forge"
 	"github.com/paraizo/delamain/internal/pipeline"
@@ -23,12 +24,36 @@ type stubForge struct {
 	ready []forge.Issue
 	prs   []forge.PRDetail
 	err   error
+	// What addressing reads of each PR/MR, by number.
+	views      map[int]forge.PRDetail
+	viewErr    map[int]error
+	threads    map[int][]forge.Thread
+	threadsErr map[int]error
 }
 
 func (s *stubForge) ListReady(context.Context, string) ([]forge.Issue, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return slices.Clone(s.ready), s.err
+}
+
+func (s *stubForge) PRView(_ context.Context, n int) (forge.PRDetail, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.viewErr[n]; err != nil {
+		return forge.PRDetail{}, err
+	}
+	v, ok := s.views[n]
+	if !ok {
+		return forge.PRDetail{}, &forge.APIError{Status: 404}
+	}
+	return v, nil
+}
+
+func (s *stubForge) Threads(_ context.Context, n int) ([]forge.Thread, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.threads[n]), s.threadsErr[n]
 }
 
 func (s *stubForge) ListPRs(_ context.Context, label string) ([]forge.PRDetail, error) {
@@ -96,7 +121,7 @@ var discard = slog.New(slog.NewTextHandler(io.Discard, nil))
 func newDaemon(r *runner, parallel int, sources ...Source) *Daemon {
 	return New(Options{
 		Sources: sources, MaxParallel: parallel, Log: discard,
-		Producers: Producers(discard, IssueJobs{Label: "delamain:ready", Run: r.run}, ReviewJobs{}),
+		Producers: Producers(discard, IssueJobs{Label: "delamain:ready", Run: r.run}, ReviewJobs{}, AddressJobs{}),
 	})
 }
 
@@ -147,7 +172,7 @@ func reviewDaemon(r *runner, parallel int, state map[string]ReviewState, sources
 	}
 	return New(Options{
 		Sources: sources, MaxParallel: parallel, Log: discard,
-		Producers: Producers(discard, IssueJobs{Label: "delamain:ready", Run: r.run}, reviews),
+		Producers: Producers(discard, IssueJobs{Label: "delamain:ready", Run: r.run}, reviews, AddressJobs{}),
 	})
 }
 
@@ -218,7 +243,7 @@ func TestPollShouldNotStartReviewsOfForkPRsWhenTheHarnessCannotConfineTheReviewe
 	d.opts.Producers = Producers(discard, IssueJobs{Label: "delamain:ready", Run: r.run}, ReviewJobs{
 		Enabled: true, Label: reviewLabel, Run: r.review, RefuseForks: true,
 		State: func(context.Context, string, int) (ReviewState, error) { return ReviewState{}, nil },
-	})
+	}, AddressJobs{})
 	if n := d.Poll(context.Background()); n != 1 {
 		t.Fatalf("started %d, want only the PR whose head lives in this repository", n)
 	}
@@ -268,7 +293,7 @@ func TestPollShouldNotStartReviewsWhenTheLastHeadCannotBeRead(t *testing.T) {
 			}
 			return ReviewState{}, nil
 		},
-	})
+	}, AddressJobs{})
 	d.Poll(context.Background())
 	close(r.release)
 	d.Wait()
@@ -285,7 +310,7 @@ func TestPollShouldNotStartReviewJobsWhenReviewDisabled(t *testing.T) {
 	d.opts.Producers = Producers(discard, IssueJobs{Label: "delamain:ready", Run: r.run}, ReviewJobs{
 		Enabled: false, Label: reviewLabel, Run: r.review,
 		State: func(context.Context, string, int) (ReviewState, error) { return ReviewState{}, nil },
-	})
+	}, AddressJobs{})
 	d.Poll(context.Background())
 	close(r.release)
 	d.Wait()
@@ -339,7 +364,7 @@ func TestPollShouldNotStartTheSameReviewTwiceWhileInflight(t *testing.T) {
 
 func TestPollShouldContinueWhenOneProducerFails(t *testing.T) {
 	r := newRunner()
-	issueJobs := Producers(discard, IssueJobs{Label: "delamain:ready", Run: r.run}, ReviewJobs{})
+	issueJobs := Producers(discard, IssueJobs{Label: "delamain:ready", Run: r.run}, ReviewJobs{}, AddressJobs{})
 	failing := func(context.Context, Source) ([]Job, error) { return nil, errors.New("HTTP 502") }
 	d := New(Options{
 		Sources:   []Source{{Repo: "/a", Forge: &stubForge{ready: issues(4)}}},
@@ -363,7 +388,7 @@ func TestPollShouldSkipAllJobsWhenDailyBudgetIsExhausted(t *testing.T) {
 	reason := "budget diário esgotado"
 	d := New(Options{
 		Sources:     []Source{{Repo: "/a", Forge: &stubForge{ready: issues(1)}}},
-		Producers:   append(Producers(discard, IssueJobs{Label: "delamain:ready", Run: r.run}, ReviewJobs{}), other),
+		Producers:   append(Producers(discard, IssueJobs{Label: "delamain:ready", Run: r.run}, ReviewJobs{}, AddressJobs{}), other),
 		MaxParallel: 4, Log: discard,
 		DayExhausted: func(context.Context) (string, error) { return reason, nil },
 	})
@@ -483,5 +508,149 @@ func TestServeShouldWaitForRunsAfterCancellation(t *testing.T) {
 	defer r.mu.Unlock()
 	if r.active != 0 {
 		t.Fatal("Serve must not return while runs are still executing")
+	}
+}
+
+const botLogin = "delamain-bot"
+
+func (r *runner) address(ctx context.Context, repo string, n int, _ forge.Forge) (pipeline.Result, error) {
+	return r.run(ctx, pipeline.Task{Repo: repo, Ref: "#addr:" + strconv.Itoa(n)}, nil)
+}
+
+// question is a thread whose last comment, by a human, waits for delamain.
+func question(id string) []forge.Thread {
+	return []forge.Thread{{ID: id, Comments: []forge.Comment{{ID: id, Author: "bob", Body: "por que?", CreatedAt: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)}}}}
+}
+
+// answered is a thread delamain already replied to.
+func answered(id string) []forge.Thread {
+	ts := question(id)
+	ts[0].Comments = append(ts[0].Comments, forge.Comment{ID: id + "r", Author: botLogin, Body: "ok\n\n" + forge.Marker{RunID: 1, Kind: "reply", Key: forge.Key(id, id)}.String(), CreatedAt: time.Date(2026, 10, 2, 0, 0, 0, 0, time.UTC)})
+	return ts
+}
+
+// delamainPRs is a forge whose PRs/MRs ns are open, each with the given threads.
+func delamainPRs(threads map[int][]forge.Thread) *stubForge {
+	views := map[int]forge.PRDetail{}
+	for n := range threads {
+		views[n] = forge.PRDetail{Number: n, Open: true}
+	}
+	return &stubForge{views: views, threads: threads}
+}
+
+// addressDaemon answers the threads of the PRs/MRs whose URLs opened lists per repository.
+func addressDaemon(r *runner, opened map[string][]string, review, address bool, sources ...Source) *Daemon {
+	addresses := AddressJobs{
+		Enabled: address, Run: r.address,
+		PRs:   func(_ context.Context, repo string) ([]string, error) { return opened[repo], nil },
+		Since: func(context.Context, string, int) (time.Time, error) { return time.Time{}, nil },
+		User:  func(string) string { return botLogin },
+	}
+	reviews := ReviewJobs{Enabled: review, Label: "nothing-labeled", Run: r.review,
+		State: func(context.Context, string, int) (ReviewState, error) { return ReviewState{}, nil }}
+	return New(Options{
+		Sources: sources, MaxParallel: 4, Log: discard,
+		Producers: Producers(discard, IssueJobs{Label: "delamain:ready", Run: r.run}, reviews, addresses),
+	})
+}
+
+func pollAll(t *testing.T, r *runner, d *Daemon) []string {
+	t.Helper()
+	d.Poll(context.Background())
+	close(r.release)
+	d.Wait()
+	got := r.snapshot()
+	slices.Sort(got)
+	return got
+}
+
+func TestPollShouldStartAddressJobsOnlyForDelamainPRsWithPendingThreads(t *testing.T) {
+	r := newRunner()
+	gh := delamainPRs(map[int][]forge.Thread{4: question("t4"), 6: answered("t6"), 9: question("t9")})
+	gl := delamainPRs(map[int][]forge.Thread{8: question("d8")})
+	opened := map[string][]string{
+		// #9 has a pending thread, but delamain never opened it: someone else's PR.
+		"/a": {"https://github.com/acme/api/pull/4", "https://github.com/acme/api/pull/6", "https://github.com/acme/api/pull/4"},
+		"/b": {"https://gitlab.com/acme/api/-/merge_requests/8"},
+	}
+	d := addressDaemon(r, opened, true, true, Source{Repo: "/a", Forge: gh}, Source{Repo: "/b", Forge: gl})
+	if got, want := pollAll(t, r, d), []string{"/a#addr:4", "/b#addr:8"}; !slices.Equal(got, want) {
+		t.Fatalf("address jobs = %v, want one per delamain PR/MR with a pending thread %v", got, want)
+	}
+}
+
+func TestPollShouldNotStartAddressJobsWhenAddressDisabled(t *testing.T) {
+	r := newRunner()
+	d := addressDaemon(r, map[string][]string{"/a": {"https://github.com/acme/api/pull/4"}}, true, false,
+		Source{Repo: "/a", Forge: delamainPRs(map[int][]forge.Thread{4: question("t4")})})
+	if got := pollAll(t, r, d); len(got) != 0 {
+		t.Fatalf("with review.address.enabled false nothing is answered: %v", got)
+	}
+}
+
+func TestPollShouldNotStartAddressJobsWhenReviewDisabled(t *testing.T) {
+	r := newRunner()
+	d := addressDaemon(r, map[string][]string{"/a": {"https://github.com/acme/api/pull/4"}}, false, true,
+		Source{Repo: "/a", Forge: delamainPRs(map[int][]forge.Thread{4: question("t4")})})
+	if got := pollAll(t, r, d); len(got) != 0 {
+		t.Fatalf("with review.enabled false nothing is answered: %v", got)
+	}
+}
+
+func TestPollShouldSkipClosedPRsWhenAddressing(t *testing.T) {
+	r := newRunner()
+	src := delamainPRs(map[int][]forge.Thread{4: question("t4"), 6: question("t6")})
+	closed := src.views[4]
+	closed.Open = false
+	src.views[4] = closed
+	d := addressDaemon(r, map[string][]string{"/a": {"https://github.com/acme/api/pull/4", "https://github.com/acme/api/pull/6"}}, true, true, Source{Repo: "/a", Forge: src})
+	if got := pollAll(t, r, d); !slices.Equal(got, []string{"/a#addr:6"}) {
+		t.Fatalf("a merged or closed PR is not answered: %v", got)
+	}
+}
+
+func TestPollShouldSkipAPRWhoseThreadsCannotBeReadWhenAddressing(t *testing.T) {
+	r := newRunner()
+	src := delamainPRs(map[int][]forge.Thread{4: question("t4"), 6: question("t6"), 7: question("t7")})
+	src.threadsErr = map[int]error{4: errors.New("HTTP 502")}
+	src.viewErr = map[int]error{7: errors.New("HTTP 500")}
+	urls := []string{"https://github.com/acme/api/pull/4", "https://github.com/acme/api/pull/6", "https://github.com/acme/api/pull/7"}
+	d := addressDaemon(r, map[string][]string{"/a": urls}, true, true, Source{Repo: "/a", Forge: src})
+	if got := pollAll(t, r, d); !slices.Equal(got, []string{"/a#addr:6"}) {
+		t.Fatalf("an unreadable PR is skipped alone, the others still answered: %v", got)
+	}
+}
+
+func TestPollShouldNotStartTheSameAddressJobTwiceWhileInflight(t *testing.T) {
+	r := newRunner()
+	d := addressDaemon(r, map[string][]string{"/a": {"https://github.com/acme/api/pull/4"}}, true, true,
+		Source{Repo: "/a", Forge: delamainPRs(map[int][]forge.Thread{4: question("t4")})})
+	d.Poll(context.Background())
+	<-r.began
+	if n := d.Poll(context.Background()); n != 0 {
+		t.Fatalf("PR #4 is still being answered, second poll started %d", n)
+	}
+	close(r.release)
+	d.Wait()
+	if got := r.snapshot(); !slices.Equal(got, []string{"/a#addr:4"}) {
+		t.Fatalf("runs = %v", got)
+	}
+}
+
+func TestPRNumberShouldParseGitHubAndGitLabURLs(t *testing.T) {
+	for url, want := range map[string]int{
+		"https://github.com/acme/api/pull/42":                     42,
+		"https://gitlab.com/grp/sub/api/-/merge_requests/7":       7,
+		"https://git.corp.example/grp/api/-/merge_requests/1300/": 1300,
+		"https://github.com/acme/api/issues/42":                   0,
+		"https://github.com/acme/api/pull/":                       0,
+		"https://github.com/acme/api/pull/abc":                    0,
+		"https://github.com/acme/api/pull/0":                      0,
+		"":                                                        0,
+	} {
+		got, ok := PRNumber(url)
+		if got != want || ok != (want > 0) {
+			t.Errorf("PRNumber(%q) = %d, %v; want %d", url, got, ok, want)
+		}
 	}
 }
