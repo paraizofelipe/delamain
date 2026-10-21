@@ -375,3 +375,23 @@ func Read[T validator](path string) (T, error) {
 	}
 	return v, nil
 }
+
+// Response is the responder's answer to one pending review thread.
+type Response struct {
+	ThreadID string `json:"thread_id"`
+	Verdict  string `json:"verdict"` // valid | invalid | unclear
+	Reply    string `json:"reply"`
+	Fixed    bool   `json:"fixed"` // always false while addressing only replies
+}
+
+// Responses is the artifact of the address stage: one reply per pending thread, plus the
+// learnings of the comments that turned out to be false positives.
+type Responses struct {
+	Responses []Response `json:"responses"`
+	Learnings []string   `json:"learnings"`
+}
+
+// Validate checks the shape; ValidatePending checks the replies against the threads sent.
+func (r Responses) Validate() error {
+	return nil
+}
