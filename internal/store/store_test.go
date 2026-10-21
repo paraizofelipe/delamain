@@ -473,3 +473,37 @@ func TestRunLimitsShouldFallBackToTheDefaultsUntilClassified(t *testing.T) {
 		t.Errorf("classified run = %d, %v; want the recorded values", it, pi)
 	}
 }
+
+func TestRunsWithMRShouldListOnlyIssueRunsOfTheRepoWithAnMRURL(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	mk := func(repo, ref, mr string, kind RunKind) Run {
+		t.Helper()
+		r, err := s.CreateRun(ctx, repo, ref, "t", "omp", 3, 0, kind)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.MRURL, r.State = mr, StateRecorded
+		if err := s.UpdateRun(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	first := mk("/a", "#1", "https://github.com/acme/api/pull/10", KindIssue)
+	mk("/a", "#2", "", KindIssue)                                           // never opened a PR
+	mk("/b", "#3", "https://github.com/acme/other/pull/11", KindIssue)      // another repository
+	mk("/a", "pr:12", "https://github.com/acme/api/pull/12", KindReview)    // someone else's PR, reviewed
+	mk("/a", "addr:10", "https://github.com/acme/api/pull/10", KindAddress) // answering a PR, not opening it
+	second := mk("/a", "#4", "https://github.com/acme/api/pull/13", KindIssue)
+
+	got, err := s.RunsWithMR(ctx, "/a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].ID != first.ID || got[1].ID != second.ID {
+		t.Fatalf("want the issue runs of /a that opened a PR/MR, oldest first, got %+v", got)
+	}
+	if none, err := s.RunsWithMR(ctx, "/empty"); err != nil || len(none) != 0 {
+		t.Fatalf("a repository without runs has none: %+v %v", none, err)
+	}
+}
