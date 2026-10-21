@@ -447,8 +447,9 @@ func (r *Runner) fixTarget(ctx context.Context, ru *run, pr forge.PRDetail) (*fi
 }
 
 // fixWorktree records the branch's origin head and checks the branch out at it. The issue run's
-// worktree at the same path is reused only when clean, on the branch and at that head;
-// otherwise it is recreated from origin.
+// worktree at the same path is reused when clean, on the branch and at that head, and recreated
+// from origin only when clean and holding no commit origin lacks; anything else is someone's work,
+// so the run halts without touching it.
 func (r *Runner) fixWorktree(ctx context.Context, ru *run, pr forge.PRDetail, fix *fixRun, base string) (string, error) {
 	repo := ru.rec.Repo
 	expected, err := r.Git.RemoteSHA(ctx, repo, fix.branch)
@@ -461,9 +462,28 @@ func (r *Runner) fixWorktree(ctx context.Context, ru *run, pr forge.PRDetail, fi
 	fix.expected = expected
 	wt := filepath.Join(r.Cfg.Paths.WorktreesDir, filepath.Base(repo), fix.branch)
 	if _, err := os.Stat(wt); err == nil {
-		if r.reusable(ctx, wt, fix) {
+		branch, err := r.Git.CurrentBranch(ctx, wt)
+		if err != nil {
+			return "", err
+		}
+		head, status, err := r.worktreeState(ctx, wt)
+		if err != nil {
+			return "", err
+		}
+		if branch == fix.branch && head == expected && status == "" {
 			ru.log.Info("reusing the branch worktree", "path", wt, "branch", fix.branch, "head", expected)
 			return wt, nil
+		}
+		if status != "" {
+			return "", haltf("a worktree %s tem mudanças fora de commit; nada foi tocado nem postado", wt)
+		}
+		if err := r.Git.FetchRef(ctx, repo, fix.branch); err != nil {
+			return "", err
+		}
+		if ok, err := r.Git.IsAncestor(ctx, wt, head, expected); err != nil {
+			return "", err
+		} else if !ok {
+			return "", haltf("a worktree %s tem commits que não estão em origin/%s; nada foi tocado nem postado", wt, fix.branch)
 		}
 		ru.log.Info("recreating the branch worktree", "path", wt, "branch", fix.branch)
 		if err := r.Git.RemoveWorktree(ctx, repo, wt); err != nil {
@@ -471,16 +491,6 @@ func (r *Runner) fixWorktree(ctx context.Context, ru *run, pr forge.PRDetail, fi
 		}
 	}
 	return wt, r.Git.AddWorktreeOnBranch(ctx, repo, wt, fix.branch, base)
-}
-
-// reusable reports whether wt is a clean checkout of the branch at its recorded origin head.
-func (r *Runner) reusable(ctx context.Context, wt string, fix *fixRun) bool {
-	branch, err := r.Git.CurrentBranch(ctx, wt)
-	if err != nil || branch != fix.branch {
-		return false
-	}
-	head, status, err := r.worktreeState(ctx, wt)
-	return err == nil && head == fix.expected && status == ""
 }
 
 // checkFix holds the responder to its contract before anything is published: everything

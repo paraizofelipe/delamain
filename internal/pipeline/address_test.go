@@ -1130,8 +1130,7 @@ func TestRunAddressWithPushShouldReuseTheIssueWorktreeOnlyWhenCleanAtTheRemoteHe
 		reuse                bool
 	}{
 		"clean at the remote head": {branch: fixBranch, head: prHead, reuse: true},
-		"dirty":                    {branch: fixBranch, head: prHead, status: " M a.go"},
-		"behind or ahead":          {branch: fixBranch, head: "dddddddd"},
+		"clean and behind":         {branch: fixBranch, head: "dddddddd"},
 		"on another branch":        {branch: "feat/other", head: prHead},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -1155,6 +1154,43 @@ func TestRunAddressWithPushShouldReuseTheIssueWorktreeOnlyWhenCleanAtTheRemoteHe
 			// finishReview always removes the worktree; a recreated one is removed first too.
 			if removals := strings.Count(strings.Join(rh.g.redproof, ","), "remove"); removals != map[bool]int{true: 1, false: 2}[tc.reuse] {
 				t.Fatalf("worktree removals %d (reuse=%v): %v", removals, tc.reuse, rh.g.redproof)
+			}
+		})
+	}
+}
+
+func TestRunAddressWithPushShouldLeaveAnUnsafeIssueWorktreeAlone(t *testing.T) {
+	for name, tc := range map[string]struct {
+		head, status, reason string
+		unpushed             bool
+	}{
+		// Someone's fix in progress, or work a halted run kept on purpose.
+		"uncommitted changes": {head: prHead, status: " M a.go", reason: "fora de commit"},
+		// Recreating the branch from origin would orphan them.
+		"commits not on origin": {head: "dddddddd", unpushed: true, reason: "não estão em origin"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			rh := newFixHarness(t, fixAnswers())
+			rh.g.remoteHead, rh.g.prHead = prHead, prHead
+			wt := filepath.Join(rh.r.Cfg.Paths.WorktreesDir, "repo", fixBranch)
+			if err := os.MkdirAll(wt, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			rh.g.branch, rh.g.head, rh.g.status, rh.g.wt = fixBranch, tc.head, tc.status, wt
+			if tc.unpushed {
+				rh.g.unpushed = map[string]bool{tc.head: true}
+			}
+			res := rh.address(t)
+
+			assertNothingAnswered(t, rh, res, tc.reason)
+			if !strings.Contains(res.Reason, wt) {
+				t.Errorf("the halt names the worktree left alone: %s", res.Reason)
+			}
+			if strings.Contains(strings.Join(rh.g.redproof, ","), "remove") || len(rh.g.onBranch)+len(rh.h.starts) != 0 {
+				t.Fatalf("the worktree is neither removed nor checked out again, and no agent runs: %v %v", rh.g.redproof, rh.g.onBranch)
+			}
+			if _, err := os.Stat(wt); err != nil {
+				t.Fatalf("the worktree stays where it was: %v", err)
 			}
 		})
 	}

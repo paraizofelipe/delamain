@@ -305,8 +305,9 @@ type fakeGit struct {
 	remoteHead string   // RemoteSHA of every branch; "" is head
 	onBranch   []string // "<branch> <path>" per AddWorktreeOnBranch
 	ffPushes   []ffPush
-	ffErr      error // PushFastForward failure
-	rewritten  bool  // the new commits do not descend from the recorded origin head
+	ffErr      error           // PushFastForward failure
+	rewritten  bool            // the new commits do not descend from the recorded origin head
+	unpushed   map[string]bool // local commits origin does not have
 }
 
 // ffPush is one PushFastForward call and the HEAD it would publish.
@@ -451,8 +452,8 @@ func (g *fakeGit) AddWorktreeOnBranch(ctx context.Context, repo, path, branch, _
 	return nil
 }
 
-func (g *fakeGit) IsAncestor(context.Context, string, string, string) (bool, error) {
-	return !g.rewritten, nil
+func (g *fakeGit) IsAncestor(_ context.Context, _, ancestor, _ string) (bool, error) {
+	return !g.rewritten && !g.unpushed[ancestor], nil
 }
 
 func (g *fakeGit) PushFastForward(_ context.Context, _, branch, base, expected string) error {
