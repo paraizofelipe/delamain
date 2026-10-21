@@ -979,3 +979,100 @@ func TestRunAddressWithPushShouldHaltWhenTheBranchIsNotAtThePRHead(t *testing.T)
 		t.Fatal("no checkout nor agent for a branch that is not at the PR head")
 	}
 }
+
+func TestRunAddressWithPushShouldRejectFixedWithoutCommit(t *testing.T) {
+	rh := newFixHarness(t, answers(responsesJSON(response("t1", "invalid", invalidReply), fixed("issue-comment:9", fixReply))))
+	res := rh.address(t)
+
+	assertNothingAnswered(t, rh, res, "sem nenhum commit")
+	if len(rh.g.ffPushes)+len(rh.f.resolved) != 0 {
+		t.Fatal("a fix nobody committed is neither pushed nor resolved")
+	}
+}
+
+func TestRunAddressWithPushShouldHaltOnUncommittedChanges(t *testing.T) {
+	for name, tc := range map[string]struct {
+		artifact string
+		mutate   func(g *fakeGit)
+		reason   string
+	}{
+		"change left out of a commit": {
+			artifact: responsesJSON(response("t1", "invalid", invalidReply), fixed("issue-comment:9", fixReply)),
+			mutate:   func(g *fakeGit) { g.commit("fix: rename x to count (review)"); g.status = " M a.go" },
+			reason:   "fora de commit",
+		},
+		"commit no thread declares": {
+			artifact: happyAnswers(),
+			mutate:   func(g *fakeGit) { g.commit("feat: something nobody asked for") },
+			reason:   "sem marcar",
+		},
+		"commit on another branch": {
+			artifact: responsesJSON(response("t1", "invalid", invalidReply), fixed("issue-comment:9", fixReply)),
+			mutate:   func(g *fakeGit) { g.commit("fix: rename x to count (review)"); g.branch = "main" },
+			reason:   "saiu da branch",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			rh := newFixHarness(t, func(string, int, string) reply { return reply{write: tc.artifact, mutate: tc.mutate} })
+			res := rh.address(t)
+
+			assertNothingAnswered(t, rh, res, tc.reason)
+			if len(rh.g.ffPushes)+len(rh.f.resolved)+len(rh.h.checkCalls) != 0 {
+				t.Fatal("nothing is checked, pushed or resolved")
+			}
+		})
+	}
+}
+
+func TestRunAddressWithPushShouldNeverResolveInvalidOrUnclearThreads(t *testing.T) {
+	t.Run("only the fixed valid thread is resolved", func(t *testing.T) {
+		rh := newFixHarness(t, func(string, int, string) reply {
+			return reply{
+				write: responsesJSON(response("t1", "invalid", invalidReply), fixed("issue-comment:9", fixReply),
+					response("t3", "unclear", "Qual entrada falha?"), response("t4", "valid", validReply)),
+				mutate: func(g *fakeGit) { g.commit("fix: rename x to count (review)") },
+			}
+		})
+		for _, id := range []string{"t3", "t4"} {
+			rh.f.threads = append(rh.f.threads, forge.Thread{ID: id, Comments: []forge.Comment{{ID: id + "c", Author: "dave", Body: "e isto?", CreatedAt: t0.Add(time.Hour)}}})
+		}
+		res := rh.address(t)
+
+		if res.Outcome != OutcomeAnswered || len(rh.g.ffPushes) != 1 {
+			t.Fatalf("the fix is pushed: %s (%s), %+v", res.Outcome, res.Reason, rh.g.ffPushes)
+		}
+		if len(rh.f.resolved) != 1 || rh.f.resolved[0] != "issue-comment:9" {
+			t.Fatalf("invalid, unclear and unfixed threads stay open: resolved %v", rh.f.resolved)
+		}
+	})
+	for _, verdict := range []string{"invalid", "unclear"} {
+		t.Run("fixed on an "+verdict+" thread", func(t *testing.T) {
+			bad := strings.Replace(response("t1", verdict, invalidReply), `"fixed":false`, `"fixed":true`, 1)
+			rh := newFixHarness(t, func(string, int, string) reply {
+				return reply{
+					write:  responsesJSON(bad, response("issue-comment:9", "valid", validReply)),
+					mutate: func(g *fakeGit) { g.commit("fix: rename x to count (review)") },
+				}
+			})
+			res := rh.address(t)
+
+			assertNothingAnswered(t, rh, res, "fixed")
+			if len(rh.g.ffPushes)+len(rh.f.resolved) != 0 {
+				t.Fatal("a fix of a thread that does not hold is never sent nor resolved")
+			}
+		})
+	}
+}
+
+func TestRunAddressWithPushShouldHaltWhenResolvingFailsAfterThePush(t *testing.T) {
+	rh := newFixHarness(t, fixAnswers())
+	rh.f.resolveErr = errors.New("HTTP 502")
+	res := rh.address(t)
+
+	if res.Outcome != OutcomeHalted || !strings.Contains(res.Reason, "issue-comment:9") || !strings.Contains(res.Reason, "00000001") {
+		t.Fatalf("the halt names the thread left open and the pushed commit: %s (%s)", res.Outcome, res.Reason)
+	}
+	if len(rh.g.ffPushes) != 1 || len(rh.f.replies) != 2 {
+		t.Fatalf("the push and the replies already happened: %+v %+v", rh.g.ffPushes, rh.f.replies)
+	}
+}
