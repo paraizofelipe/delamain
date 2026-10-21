@@ -420,3 +420,38 @@ func TestRenderShouldKeepAPreviousReviewInsideItsDelimiter(t *testing.T) {
 		t.Fatalf("a previous review must not open or close delimiters:\n%s", out)
 	}
 }
+
+func TestAddressStageShouldAskForFixesOnlyWhenCanFix(t *testing.T) {
+	s := mustLoad(t, embedded.FS)
+	d := SampleStageData()
+	d.CanFix = true
+	out, err := s.Render("address", d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commit := "git -C " + d.Repo.Worktree + " -c core.hooksPath=/dev/null commit -m"
+	for _, want := range []string{"push habilitado", "fix: <assunto> (review)", commit, "git -C " + d.Repo.Worktree + " add -A", `"fixed": true`, "um commit por discussão"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("with push enabled the address stage must say %q", want)
+		}
+	}
+	if strings.Contains(out, "push desabilitado") || strings.Contains(out, "Nesta fase você **só responde**") {
+		t.Errorf("with push enabled the stage must not forbid fixing:\n%s", out)
+	}
+
+	d.CanFix = false
+	out, err = s.Render("address", d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"push desabilitado", "Nesta fase você **só responde**", "`fixed` é sempre `false`"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("with push disabled the address stage must say %q", want)
+		}
+	}
+	for _, unwanted := range []string{"push habilitado", "commit -m", "add -A", "(review)"} {
+		if strings.Contains(out, unwanted) {
+			t.Errorf("with push disabled the stage must not mention %q", unwanted)
+		}
+	}
+}

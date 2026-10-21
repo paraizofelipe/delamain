@@ -384,7 +384,7 @@ type Response struct {
 	ThreadID string `json:"thread_id"`
 	Verdict  string `json:"verdict"` // valid | invalid | unclear
 	Reply    string `json:"reply"`
-	Fixed    bool   `json:"fixed"` // always false while addressing only replies
+	Fixed    bool   `json:"fixed"` // only on valid threads, and only when the responder may fix
 }
 
 // Responses is the artifact of the address stage: one reply per pending thread, plus the
@@ -405,7 +405,10 @@ var (
 const MaxReplyRunes = 2000
 
 // Validate checks the shape; ValidatePending checks the replies against the threads sent.
-func (r Responses) Validate() error {
+func (r Responses) Validate() error { return r.validate(false) }
+
+// validate checks the shape; canFix allows fixed on valid threads.
+func (r Responses) validate(canFix bool) error {
 	var errs []error
 	seen := map[string]bool{}
 	for i, a := range r.Responses {
@@ -425,11 +428,25 @@ func (r Responses) Validate() error {
 		if delamainMarker.MatchString(a.Reply) {
 			errs = append(errs, fmt.Errorf("thread %s: reply carries a delamain marker; the orchestrator adds its own", a.ThreadID))
 		}
-		if a.Fixed {
+		switch {
+		case a.Fixed && !canFix:
 			errs = append(errs, fmt.Errorf("thread %s: fixed must be false, nothing is fixed while only replying", a.ThreadID))
+		case a.Fixed && a.Verdict != "valid":
+			errs = append(errs, fmt.Errorf("thread %s: fixed must be false on a %s thread, only valid threads are fixed", a.ThreadID, a.Verdict))
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// FixResponses is the address artifact when the responder may fix: the same JSON, with fixed
+// allowed on valid threads only.
+type FixResponses Responses
+
+func (r FixResponses) Validate() error { return Responses(r).validate(true) }
+
+// ValidatePending is Responses.ValidatePending.
+func (r FixResponses) ValidatePending(pending []string) error {
+	return Responses(r).ValidatePending(pending)
 }
 
 // ValidatePending requires exactly one reply per pending thread and none for any other thread.

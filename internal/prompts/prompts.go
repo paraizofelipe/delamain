@@ -140,6 +140,7 @@ type StageData struct {
 	Threads      string // compact render of the PR's threads
 	Memory       string // the repository's stored learnings
 	MaxComments  int    // cap of critical/major findings a review may post
+	CanFix       bool   // address only: the responder may commit fixes that the orchestrator pushes
 }
 
 // SampleStageData fills every field so lint can prove each template renders.
@@ -164,6 +165,7 @@ func SampleStageData() StageData {
 		Threads:      "- t1 · a.go:3 · alice · aberta: rename this",
 		Memory:       "- 2026-01-01 run 1 PR #40: tests use fakes in fakes_test.go",
 		MaxComments:  15,
+		CanFix:       true,
 	}
 }
 
