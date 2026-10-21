@@ -15,6 +15,7 @@ import (
 	"github.com/paraizo/delamain/internal/budget"
 	"github.com/paraizo/delamain/internal/config"
 	"github.com/paraizo/delamain/internal/forge"
+	"github.com/paraizo/delamain/internal/gates"
 	"github.com/paraizo/delamain/internal/gitx"
 	"github.com/paraizo/delamain/internal/memory"
 	"github.com/paraizo/delamain/internal/prompts"
@@ -29,8 +30,10 @@ const (
 )
 
 // RunAddress answers the pending review threads of delamain's PR/MR n of repo: one reply per
-// thread, never a commit, a push or a resolved thread. Like RunReview, a non-nil error means
-// the run could not even be recorded; guardrail stops are OutcomeHalted.
+// thread. With review.address.push on, the responder may also commit fixes for the valid threads
+// of a PR an issue run opened; the orchestrator checks and pushes them as a fast-forward, then
+// resolves those threads (see fixRun). Like RunReview, a non-nil error means the run could not
+// even be recorded; guardrail stops are OutcomeHalted.
 func (r *Runner) RunAddress(ctx context.Context, repo string, n int) (Result, error) {
 	res := Result{}
 	if r.Forge == nil {
@@ -198,14 +201,27 @@ func (r *Runner) address(ctx context.Context, ru *run, p *prRun, pending []forge
 	if fetched != pr.HeadSHA {
 		return haltf("o head buscado (%s) difere do head do PR/MR #%d (%s); nada foi postado", short(fetched), pr.Number, short(pr.HeadSHA))
 	}
-	wt := filepath.Join(r.Cfg.Paths.WorktreesDir, filepath.Base(repo), fmt.Sprintf("address-pr-%d-%d", pr.Number, ru.rec.ID))
-	if err := r.Git.AddUntrustedWorktree(ctx, repo, wt, p.ref); err != nil {
+	base := "origin/" + pr.BaseRef
+	fix, err := r.fixTarget(ctx, ru, pr)
+	if err != nil {
 		return err
 	}
-	base := "origin/" + pr.BaseRef
+	var wt string
+	if fix != nil {
+		wt, err = r.fixWorktree(ctx, ru, pr, fix, base)
+	} else {
+		wt = filepath.Join(r.Cfg.Paths.WorktreesDir, filepath.Base(repo), fmt.Sprintf("address-pr-%d-%d", pr.Number, ru.rec.ID))
+		err = r.Git.AddUntrustedWorktree(ctx, repo, wt, p.ref)
+	}
+	if err != nil {
+		return err
+	}
 	ru.repo = prompts.Repo{Worktree: wt, Base: base}
 	ru.rec.Worktree, ru.rec.Base = wt, base
 	ru.res.Worktree, ru.res.Base = wt, base
+	if fix != nil {
+		ru.repo.Branch, ru.rec.Branch, ru.res.Branch = fix.branch, fix.branch, fix.branch
+	}
 	ru.log.Info("address worktree", "run", ru.rec.ID, "path", wt, "pr", pr.Number, "head", pr.HeadSHA)
 	if err := r.Store.UpdateRun(ctx, ru.rec); err != nil {
 		return err
@@ -217,6 +233,13 @@ func (r *Runner) address(ctx context.Context, ru *run, p *prRun, pending []forge
 	if head != pr.HeadSHA {
 		return haltf("a worktree está em %s, não no head do PR/MR #%d (%s); nada foi postado", short(head), pr.Number, short(pr.HeadSHA))
 	}
+	if fix != nil {
+		// The gates come from the branch as it is now: nothing the responder edits can change them.
+		if err := r.loadGates(ru); err != nil {
+			return err
+		}
+		ru.cmds, ru.res.CommandSources = gates.Effective(ru.repoCfg.Commands, ru.stack.Commands, artifacts.Commands{})
+	}
 	linked, err := r.Forge.LinkedIssues(ctx, pr.Number)
 	if err != nil {
 		ru.log.Warn("could not read linked issues", "pr", pr.Number, "err", err)
@@ -226,8 +249,9 @@ func (r *Runner) address(ctx context.Context, ru *run, p *prRun, pending []forge
 		return err
 	}
 	artifact := filepath.Join(ru.dir, "responses.json")
-	ru.confine = &Confinement{Checkout: wt, Base: pr.BaseSHA, Artifact: artifact}
+	ru.confine = &Confinement{Checkout: wt, Base: pr.BaseSHA, Artifact: artifact, Fix: fix != nil}
 	data := r.stageData(ru, 0, artifact, "")
+	data.CanFix = fix != nil
 	data.PR = prompts.PR{
 		Number: pr.Number, URL: pr.URL, Title: pr.Title, Body: pr.Body, Author: pr.Author,
 		BaseRef: pr.BaseRef, HeadRef: pr.HeadRef, BaseSHA: pr.BaseSHA, HeadSHA: pr.HeadSHA,
@@ -245,17 +269,28 @@ func (r *Runner) address(ctx context.Context, ru *run, p *prRun, pending []forge
 	if data.Memory, err = mem.Read(fr.Host, fr.Path, memoryPromptBytes); err != nil {
 		ru.log.Warn("could not read the repository memory", "err", err)
 	}
-	resp, err := stepArtifact[artifacts.Responses](ctx, r, ru, "responder", "address", data)
-	if err != nil {
-		return err
-	}
-	// The responder only replies by contract; prove it.
-	head2, status2, err := r.worktreeState(ctx, wt)
-	if err != nil {
-		return err
-	}
-	if head2 != head || status2 != status {
-		return haltf("o responder alterou a worktree (HEAD %s→%s); respostas descartadas, nada foi postado", short(head), short(head2))
+	var resp artifacts.Responses
+	if fix != nil {
+		fr, err := stepArtifact[artifacts.FixResponses](ctx, r, ru, "responder", "address", data)
+		if err != nil {
+			return err
+		}
+		resp = artifacts.Responses(fr)
+		if err := r.checkFix(ctx, ru, fix, resp); err != nil {
+			return err
+		}
+	} else {
+		if resp, err = stepArtifact[artifacts.Responses](ctx, r, ru, "responder", "address", data); err != nil {
+			return err
+		}
+		// The responder only replies by contract; prove it.
+		head2, status2, err := r.worktreeState(ctx, wt)
+		if err != nil {
+			return err
+		}
+		if head2 != head || status2 != status {
+			return haltf("o responder alterou a worktree (HEAD %s→%s); respostas descartadas, nada foi postado", short(head), short(head2))
+		}
 	}
 	ids := make([]string, 0, len(pending))
 	for _, t := range pending {
@@ -277,6 +312,11 @@ func (r *Runner) address(ctx context.Context, ru *run, p *prRun, pending []forge
 	if err := r.setState(ctx, ru, store.StateDeliver); err != nil {
 		return err
 	}
+	if fix != nil && len(fix.commits) > 0 {
+		if err := r.publishFix(ctx, ru, fix); err != nil {
+			return err
+		}
+	}
 	last := map[string]string{}
 	for _, t := range pending {
 		c, _ := lastPublic(t)
@@ -292,10 +332,14 @@ func (r *Runner) address(ctx context.Context, ru *run, p *prRun, pending []forge
 			ru.log.Info("thread already answered", "run", ru.rec.ID, "pr", pr.Number, "thread", a.ThreadID)
 			continue
 		}
-		if err := r.Forge.Reply(ctx, pr.Number, a.ThreadID, replyBody(a)+"\n\n"+m.String()); err != nil {
+		if err := r.Forge.Reply(ctx, pr.Number, a.ThreadID, fix.replyBody(a)+"\n\n"+m.String()); err != nil {
 			return haltf("falha ao responder a discussão %s do PR/MR #%d: %v", a.ThreadID, pr.Number, err)
 		}
 		count[a.Verdict]++
+	}
+	resolved, err := r.resolveFixed(ctx, ru, fix, resp)
+	if err != nil {
+		return err
 	}
 	c := prev
 	c.Repo, c.PR, c.LastSeenAt, c.Rounds = repo, pr.Number, newestComment(pending), prev.Rounds+1
@@ -303,7 +347,7 @@ func (r *Runner) address(ctx context.Context, ru *run, p *prRun, pending []forge
 		return err
 	}
 	ru.res.Outcome = OutcomeAnswered
-	ru.res.Reason = fmt.Sprintf("%d respostas postadas (valid %d · invalid %d · unclear %d)", count["valid"]+count["invalid"]+count["unclear"], count["valid"], count["invalid"], count["unclear"])
+	ru.res.Reason = fmt.Sprintf("%d respostas postadas (valid %d · invalid %d · unclear %d)", count["valid"]+count["invalid"]+count["unclear"], count["valid"], count["invalid"], count["unclear"]) + fix.summary(resolved)
 	if n, err := mem.Append(fr.Host, fr.Path, ru.rec.ID, pr.Number, resp.Learnings, time.Now()); err != nil {
 		ru.log.Warn("could not update the repository memory", "err", err)
 	} else {
@@ -360,6 +404,226 @@ func newestComment(ts []forge.Thread) time.Time {
 		}
 	}
 	return newest
+}
+
+// fixState is what became of the responder's commits.
+type fixState int
+
+const (
+	fixNone         fixState = iota // no commit to publish
+	fixPushed                       // checked and pushed as a fast-forward
+	fixChecksFailed                 // a check failed: nothing pushed
+	fixRemoteMoved                  // the branch moved on origin during the run: nothing pushed
+)
+
+// fixRun is the fixing side of an address run on a PR an issue run opened from branch.
+type fixRun struct {
+	branch   string
+	expected string   // origin head of branch, recorded before the responder starts
+	commits  []string // the responder's commits, expected..HEAD
+	state    fixState
+	sha      string   // HEAD pushed
+	failed   []string // checks that failed
+}
+
+// fixTarget is the PR's fixing side when the responder may fix it: review.address.push on and a
+// PR that an issue run of delamain opened from its own branch, not a fork. Anything else only
+// gets replies (nil): fixing a branch delamain does not own is out of scope.
+func (r *Runner) fixTarget(ctx context.Context, ru *run, pr forge.PRDetail) (*fixRun, error) {
+	if !r.Cfg.Review.Address.Push {
+		return nil, nil
+	}
+	runs, err := r.Store.RunsWithMR(ctx, ru.rec.Repo)
+	if err != nil {
+		return nil, err
+	}
+	for _, rec := range runs {
+		if rec.MRURL == pr.URL && rec.Branch != "" && rec.Branch == pr.HeadRef && !pr.Fork {
+			return &fixRun{branch: rec.Branch}, nil
+		}
+	}
+	ru.log.Info("PR/MR not opened from a branch of delamain: only replying", "pr", pr.Number, "head", pr.HeadRef, "fork", pr.Fork)
+	return nil, nil
+}
+
+// fixWorktree records the branch's origin head and checks the branch out at it. The issue run's
+// worktree at the same path is reused only when clean, on the branch and at that head;
+// otherwise it is recreated from origin.
+func (r *Runner) fixWorktree(ctx context.Context, ru *run, pr forge.PRDetail, fix *fixRun, base string) (string, error) {
+	repo := ru.rec.Repo
+	expected, err := r.Git.RemoteSHA(ctx, repo, fix.branch)
+	if err != nil {
+		return "", err
+	}
+	if expected != pr.HeadSHA {
+		return "", haltf("a branch %s está em %s no remoto, não no head do PR/MR #%d (%s); nada foi postado", fix.branch, short(expected), pr.Number, short(pr.HeadSHA))
+	}
+	fix.expected = expected
+	wt := filepath.Join(r.Cfg.Paths.WorktreesDir, filepath.Base(repo), fix.branch)
+	if _, err := os.Stat(wt); err == nil {
+		if r.reusable(ctx, wt, fix) {
+			ru.log.Info("reusing the branch worktree", "path", wt, "branch", fix.branch, "head", expected)
+			return wt, nil
+		}
+		ru.log.Info("recreating the branch worktree", "path", wt, "branch", fix.branch)
+		if err := r.Git.RemoveWorktree(ctx, repo, wt); err != nil {
+			return "", err
+		}
+	}
+	return wt, r.Git.AddWorktreeOnBranch(ctx, repo, wt, fix.branch, base)
+}
+
+// reusable reports whether wt is a clean checkout of the branch at its recorded origin head.
+func (r *Runner) reusable(ctx context.Context, wt string, fix *fixRun) bool {
+	branch, err := r.Git.CurrentBranch(ctx, wt)
+	if err != nil || branch != fix.branch {
+		return false
+	}
+	head, status, err := r.worktreeState(ctx, wt)
+	return err == nil && head == fix.expected && status == ""
+}
+
+// checkFix holds the responder to its contract before anything is published: everything
+// committed, on the branch, on top of the recorded head, and commits if and only if a thread
+// says fixed.
+func (r *Runner) checkFix(ctx context.Context, ru *run, fix *fixRun, resp artifacts.Responses) error {
+	wt := ru.repo.Worktree
+	branch, err := r.Git.CurrentBranch(ctx, wt)
+	if err != nil {
+		return err
+	}
+	if branch != fix.branch {
+		return haltf("o responder saiu da branch %s (%s); nada foi enviado nem postado", fix.branch, branch)
+	}
+	_, status, err := r.worktreeState(ctx, wt)
+	if err != nil {
+		return err
+	}
+	if status != "" {
+		return haltf("o responder deixou mudanças fora de commit; nada foi enviado nem postado")
+	}
+	ok, err := r.Git.IsAncestor(ctx, wt, fix.expected, "HEAD")
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return haltf("os commits do responder não descendem de %s, o head do remoto; nada foi enviado nem postado", short(fix.expected))
+	}
+	if fix.commits, err = r.Git.CommitsSince(ctx, wt, fix.expected); err != nil {
+		return err
+	}
+	fixed := 0
+	for _, a := range resp.Responses {
+		if a.Fixed {
+			fixed++
+		}
+	}
+	switch {
+	case fixed > 0 && len(fix.commits) == 0:
+		return haltf("o responder marcou %d discussão(ões) como corrigida(s) sem nenhum commit; nada foi postado", fixed)
+	case fixed == 0 && len(fix.commits) > 0:
+		return haltf("o responder fez %d commit(s) sem marcar nenhuma discussão como corrigida; nada foi enviado nem postado", len(fix.commits))
+	}
+	return nil
+}
+
+// publishFix runs the checks on the responder's commits and pushes them only when all pass,
+// as a fast-forward of the recorded head. A failed check or a moved origin is not a halt: the
+// replies still go out, saying the fix was not sent. Any other push failure is.
+func (r *Runner) publishFix(ctx context.Context, ru *run, fix *fixRun) error {
+	dir := filepath.Join(ru.dir, "fix")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	ok, detail := gates.Commits(fix.commits, ru.repoCfg.Gates.SubjectLimit)
+	checks := []CheckResult{gitCheck("commits", ok, detail)}
+	// The commit messages are published with the push.
+	leak := leakedSecret(fix.commits, os.Environ())
+	checks = append(checks, gitCheck("segredos-commits", leak == "", "um assunto de commit parece conter um segredo ("+leak+")"))
+	cmds, err := r.commandChecks(ctx, ru, dir)
+	if err != nil {
+		return err
+	}
+	sec, err := r.secrets(ctx, ru, dir, fix.expected)
+	if err != nil {
+		return err
+	}
+	for _, c := range append(append(checks, cmds...), sec) {
+		if !c.Passed() {
+			fix.failed = append(fix.failed, c.Name)
+		}
+	}
+	if len(fix.failed) > 0 {
+		fix.state = fixChecksFailed
+		ru.log.Warn("fix not pushed: checks failed", "run", ru.rec.ID, "failed", fix.failed)
+		return nil
+	}
+	head, err := r.Git.Head(ctx, ru.repo.Worktree)
+	if err != nil {
+		return err
+	}
+	err = r.Git.PushFastForward(ctx, ru.repo.Worktree, fix.branch, ru.repo.Base, fix.expected)
+	switch {
+	case errors.Is(err, gitx.ErrRemoteMoved):
+		fix.state = fixRemoteMoved
+		ru.log.Warn("fix not pushed: the branch moved on origin", "run", ru.rec.ID, "branch", fix.branch, "err", err)
+		return nil
+	case err != nil:
+		return haltf("push da correção para %s recusado: %v; nada foi postado", fix.branch, err)
+	}
+	fix.state, fix.sha = fixPushed, head
+	ru.log.Info("fix pushed", "run", ru.rec.ID, "branch", fix.branch, "from", fix.expected, "to", head)
+	return nil
+}
+
+// resolveFixed resolves the threads whose fix was pushed, and only those.
+func (r *Runner) resolveFixed(ctx context.Context, ru *run, fix *fixRun, resp artifacts.Responses) (int, error) {
+	if fix == nil || fix.state != fixPushed {
+		return 0, nil
+	}
+	n := 0
+	for _, a := range resp.Responses {
+		if !a.Fixed || a.Verdict != "valid" {
+			continue
+		}
+		if err := r.Forge.ResolveThread(ctx, ru.pr.pr.Number, a.ThreadID); err != nil {
+			return n, haltf("correção enviada em %s, mas falha ao resolver a discussão %s do PR/MR #%d: %v", short(fix.sha), a.ThreadID, ru.pr.pr.Number, err)
+		}
+		n++
+	}
+	return n, nil
+}
+
+// replyBody is the reply to a, telling what became of its fix when it has one.
+func (fix *fixRun) replyBody(a artifacts.Response) string {
+	if fix == nil || !a.Fixed {
+		return replyBody(a)
+	}
+	switch fix.state {
+	case fixPushed:
+		return replyBody(a) + fmt.Sprintf("\n\nCorreção enviada em `%s`.", short(fix.sha))
+	case fixChecksFailed:
+		a.Reply = fmt.Sprintf("A correção desta discussão não passou nos checks (%s) e não foi enviada; fica para revisão humana.", strings.Join(fix.failed, ", "))
+	case fixRemoteMoved:
+		a.Reply = "A correção desta discussão não foi enviada: a branch mudou no remoto durante a run. Fica para revisão humana."
+	}
+	return replyBody(a)
+}
+
+// summary is what the outcome says about the fix; "" without one.
+func (fix *fixRun) summary(resolved int) string {
+	if fix == nil {
+		return ""
+	}
+	switch fix.state {
+	case fixPushed:
+		return fmt.Sprintf("; correção enviada em %s, %d discussão(ões) resolvida(s)", short(fix.sha), resolved)
+	case fixChecksFailed:
+		return fmt.Sprintf("; correções não enviadas: checks reprovados (%s)", strings.Join(fix.failed, ", "))
+	case fixRemoteMoved:
+		return fmt.Sprintf("; correções não enviadas: a branch %s mudou no remoto durante a run", fix.branch)
+	}
+	return ""
 }
 
 func replyBody(a artifacts.Response) string {

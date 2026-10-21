@@ -301,7 +301,16 @@ type fakeGit struct {
 	safeStatus int                         // UntrustedStatus calls
 	// removedFiles is every file a removed worktree held, path -> content.
 	removedFiles map[string]string
+	// Fixing the branch of delamain's own PR.
+	remoteHead string   // RemoteSHA of every branch; "" is head
+	onBranch   []string // "<branch> <path>" per AddWorktreeOnBranch
+	ffPushes   []ffPush
+	ffErr      error // PushFastForward failure
+	rewritten  bool  // the new commits do not descend from the recorded origin head
 }
+
+// ffPush is one PushFastForward call and the HEAD it would publish.
+type ffPush struct{ branch, base, expected, head string }
 
 func newFakeGit() *fakeGit {
 	return &fakeGit{head: "aaaaaaaa", existing: map[string]bool{}, remote: map[string]bool{}, files: map[string]string{}}
@@ -421,6 +430,39 @@ func (g *fakeGit) Push(_ context.Context, _, branch, _ string) error {
 	return nil
 }
 
+func (g *fakeGit) RemoteSHA(context.Context, string, string) (string, error) {
+	if g.remoteHead != "" {
+		return g.remoteHead, nil
+	}
+	return g.head, nil
+}
+
+// AddWorktreeOnBranch checks the branch out at the origin head, with no commit of its own yet.
+func (g *fakeGit) AddWorktreeOnBranch(ctx context.Context, repo, path, branch, _ string) error {
+	g.onBranch = append(g.onBranch, branch+" "+path)
+	if err := os.MkdirAll(path, 0o700); err != nil {
+		return err
+	}
+	g.head, _ = g.RemoteSHA(ctx, repo, branch)
+	g.branch, g.wt, g.commits, g.status = branch, path, nil, ""
+	if g.onWorktree != nil {
+		g.onWorktree(path)
+	}
+	return nil
+}
+
+func (g *fakeGit) IsAncestor(context.Context, string, string, string) (bool, error) {
+	return !g.rewritten, nil
+}
+
+func (g *fakeGit) PushFastForward(_ context.Context, _, branch, base, expected string) error {
+	if g.ffErr != nil {
+		return g.ffErr
+	}
+	g.ffPushes = append(g.ffPushes, ffPush{branch, base, expected, g.head})
+	return nil
+}
+
 func (g *fakeGit) FetchPRHead(_ context.Context, _ string, kind forge.Kind, n int) (string, error) {
 	g.fetchedPR = append(g.fetchedPR, fmt.Sprintf("%s %d", kind, n))
 	if g.prHead != "" {
@@ -476,7 +518,7 @@ type fakeForge struct {
 	resolved   []string
 	prRelabels [][2][]string // {add, remove}
 	// Failures of the review calls.
-	threadsErr, postErr, replyErr error
+	threadsErr, postErr, replyErr, resolveErr error
 }
 
 // threadReply is one answer posted inside a thread.
@@ -541,6 +583,9 @@ func (f *fakeForge) Reply(_ context.Context, _ int, thread, body string) error {
 	return nil
 }
 func (f *fakeForge) ResolveThread(_ context.Context, _ int, thread string) error {
+	if f.resolveErr != nil {
+		return f.resolveErr
+	}
 	f.resolved = append(f.resolved, thread)
 	return nil
 }

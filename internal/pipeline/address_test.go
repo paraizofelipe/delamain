@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -675,5 +676,161 @@ func TestRunAddressShouldRefuseAHarnessThatCannotConfineTheResponder(t *testing.
 	}
 	if len(rh.g.fetchedPR)+len(rh.h.starts)+len(rh.f.replies) != 0 {
 		t.Fatal("nothing is fetched, started or replied")
+	}
+}
+
+const (
+	fixReply = "Procede: renomeei x para count."
+	// fixBranch is the branch the issue run pushed and PR #5 merges.
+	fixBranch = "feat/parse"
+)
+
+// fixed is a responder answer whose fix the responder committed.
+func fixed(thread, text string) string {
+	return strings.Replace(response(thread, "valid", text), `"fixed":false`, `"fixed":true`, 1)
+}
+
+// fixAnswers is the responder fixing the PR-level thread with one commit: t1 does not hold.
+func fixAnswers() behavior {
+	return func(string, int, string) reply {
+		return reply{
+			write:  responsesJSON(response("t1", "invalid", invalidReply), fixed("issue-comment:9", fixReply)),
+			mutate: func(g *fakeGit) { g.commit("fix: rename x to count (review)") },
+		}
+	}
+}
+
+// newFixHarness is newAddressHarness with review.address.push on, for the PR that an issue run
+// of delamain opened from fixBranch; the branch carries a .delamain.yaml with its gates.
+func newFixHarness(t *testing.T, b behavior) *reviewHarness {
+	t.Helper()
+	rh := newAddressHarness(t, b)
+	rh.r.Cfg.Review.Address.Push = true
+	rh.f.pr.HeadRef = fixBranch
+	ctx := context.Background()
+	rec, err := rh.st.CreateRun(ctx, rh.repo, "#3", "Add parse", "claude", 3, 0, store.KindIssue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec.Branch, rec.MRURL, rec.State = fixBranch, rh.f.pr.URL, store.StateRecorded
+	if err := rh.st.UpdateRun(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+	rh.g.onWorktree = func(path string) {
+		_ = os.WriteFile(filepath.Join(path, ".delamain.yaml"), []byte("commands:\n  lint: make lint\n  test: make test\n"), 0o600)
+	}
+	return rh
+}
+
+// orderedGit, orderedForge and orderedChecks log the publishing steps in the order they happen.
+type orderedGit struct {
+	Git
+	log *[]string
+}
+
+func (o orderedGit) PushFastForward(ctx context.Context, dir, branch, base, expected string) error {
+	*o.log = append(*o.log, "push")
+	return o.Git.PushFastForward(ctx, dir, branch, base, expected)
+}
+
+type orderedForge struct {
+	forge.Forge
+	log *[]string
+}
+
+func (o orderedForge) Reply(ctx context.Context, n int, thread, body string) error {
+	*o.log = append(*o.log, "reply "+thread)
+	return o.Forge.Reply(ctx, n, thread, body)
+}
+
+func (o orderedForge) ResolveThread(ctx context.Context, n int, thread string) error {
+	*o.log = append(*o.log, "resolve "+thread)
+	return o.Forge.ResolveThread(ctx, n, thread)
+}
+
+type orderedChecks struct {
+	Checks
+	log *[]string
+}
+
+func (o orderedChecks) Run(ctx context.Context, c Check) (int, error) {
+	*o.log = append(*o.log, "check "+c.Name)
+	return o.Checks.Run(ctx, c)
+}
+
+func TestRunAddressWithPushShouldCommitVerifyPushAndResolveValidThreads(t *testing.T) {
+	rh := newFixHarness(t, fixAnswers())
+	var steps []string
+	rh.r.Git, rh.r.Forge, rh.r.Checks = orderedGit{rh.g, &steps}, orderedForge{rh.f, &steps}, orderedChecks{rh.h, &steps}
+	res := rh.address(t)
+
+	if res.Outcome != OutcomeAnswered {
+		t.Fatalf("want answered, got %s (%s)", res.Outcome, res.Reason)
+	}
+	wt := filepath.Join(rh.r.Cfg.Paths.WorktreesDir, "repo", fixBranch)
+	if len(rh.g.onBranch) != 1 || rh.g.onBranch[0] != fixBranch+" "+wt || res.Worktree != wt {
+		t.Fatalf("the fix happens on the PR branch checked out at %s: %v (%s)", wt, rh.g.onBranch, res.Worktree)
+	}
+	fix := "00000001" // the fake's first commit
+	want := ffPush{branch: fixBranch, base: "origin/main", expected: prHead, head: fix}
+	if len(rh.g.ffPushes) != 1 || rh.g.ffPushes[0] != want {
+		t.Fatalf("one fast-forward push of the fix from the head recorded before the agent: %+v", rh.g.ffPushes)
+	}
+	wantSteps := []string{"check lint", "check test", "push", "reply t1", "reply issue-comment:9", "resolve issue-comment:9"}
+	if strings.Join(steps, ",") != strings.Join(wantSteps, ",") {
+		t.Fatalf("checks, then push, then replies, then resolve:\n got %v\nwant %v", steps, wantSteps)
+	}
+	for _, rp := range rh.f.replies {
+		if rp.thread == "issue-comment:9" && (!strings.Contains(rp.body, fixReply) || !strings.Contains(rp.body, fix)) {
+			t.Errorf("the reply to the fixed thread cites the pushed commit %s:\n%s", fix, rp.body)
+		}
+		if rp.thread == "t1" && strings.Contains(rp.body, fix) {
+			t.Errorf("an invalid thread cites no fix:\n%s", rp.body)
+		}
+	}
+	if len(rh.f.resolved) != 1 || rh.f.resolved[0] != "issue-comment:9" {
+		t.Fatalf("only the fixed thread is resolved: %v", rh.f.resolved)
+	}
+	if !strings.Contains(res.Reason, fix) {
+		t.Errorf("the outcome records the pushed commit: %s", res.Reason)
+	}
+	if _, err := os.Stat(wt); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the worktree is removed at the end: %v", err)
+	}
+	if cur := rh.cursor(t); cur.Rounds != 1 || !cur.LastSeenAt.Equal(t0.Add(2*time.Hour)) {
+		t.Fatalf("a fixing round is a round: %+v", cur)
+	}
+}
+
+func TestRunAddressWithPushShouldGiveTheResponderTheFixingConfinement(t *testing.T) {
+	rh := newFixHarness(t, fixAnswers())
+	res := rh.address(t)
+	if res.Outcome != OutcomeAnswered {
+		t.Fatalf("got %s (%s)", res.Outcome, res.Reason)
+	}
+	start := rh.h.starts["responder-r"+strconv.FormatInt(res.RunID, 10)]
+	want := Confinement{Checkout: res.Worktree, Base: prBase, Artifact: filepath.Join(res.RunDir, "responses.json"), Fix: true}
+	if start.Confine == nil || *start.Confine != want {
+		t.Fatalf("the responder edits and commits only in the checkout: want %+v, got %+v", want, start.Confine)
+	}
+	if rel, err := filepath.Rel(res.Worktree, start.Dir); err == nil && filepath.IsLocal(rel) || start.Dir == res.Worktree {
+		t.Fatalf("the agent's cwd %s is inside the checkout %s", start.Dir, res.Worktree)
+	}
+	for _, kv := range gitx.AgentEnv() {
+		if !slices.Contains(start.Env, kv) {
+			t.Fatalf("the responder runs with the push block (%s): only the orchestrator publishes", kv)
+		}
+	}
+	prompt := strings.Join(rh.h.prompts["responder"], "\n")
+	for _, cmd := range []string{
+		"git -C " + res.Worktree + " status --porcelain", "git -C " + res.Worktree + " add -A",
+		"git -C " + res.Worktree + " -c core.hooksPath=/dev/null commit -m",
+	} {
+		if !strings.Contains(prompt, "`"+cmd) {
+			t.Errorf("the prompt must give %q as the confinement allows it", cmd)
+		}
+	}
+	if !strings.Contains(prompt, "push habilitado") {
+		t.Error("the prompt says the push is enabled")
 	}
 }
