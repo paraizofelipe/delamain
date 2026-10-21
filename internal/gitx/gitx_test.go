@@ -874,3 +874,41 @@ func TestPushFastForwardShouldRefuseProtectedAndBaseBranches(t *testing.T) {
 		t.Fatalf("main must not move on origin, got %s", got)
 	}
 }
+
+func TestAddWorktreeOnBranchShouldCheckOutTheRemoteHeadOfTheBranch(t *testing.T) {
+	g, ctx := New(), context.Background()
+	r, _ := pushedBranch(t, "feat/x")
+	// The branch moves on origin after the local clone last saw it.
+	other := filepath.Join(t.TempDir(), "other")
+	gitIn(t, r, "worktree", "add", "-q", "--detach", other, "feat/x")
+	remote := commitFile(t, other, "b.txt", "two\n")
+	gitIn(t, other, "push", "-q", "origin", "HEAD:refs/heads/feat/x")
+	gitIn(t, r, "worktree", "remove", "--force", other)
+	gitIn(t, r, "switch", "-q", "main")
+	wt := filepath.Join(t.TempDir(), "wts", "repo", "feat", "x")
+	if err := g.AddWorktreeOnBranch(ctx, r, wt, "feat/x", "origin/main"); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := g.CurrentBranch(ctx, wt); b != "feat/x" {
+		t.Fatalf("worktree must be on the branch, got %q", b)
+	}
+	if head, _ := g.Head(ctx, wt); head != remote {
+		t.Fatalf("worktree must start at the origin head %s, got %s", remote, head)
+	}
+}
+
+func TestAddWorktreeOnBranchShouldRefuseBaseAndMain(t *testing.T) {
+	g, ctx := New(), context.Background()
+	r := repo(t)
+	withOrigin(t, r)
+	gitIn(t, r, "push", "-q", "origin", "main")
+	for _, b := range []string{"main", "master", "develop"} {
+		wt := filepath.Join(t.TempDir(), "wt")
+		if err := g.AddWorktreeOnBranch(ctx, r, wt, b, "origin/develop"); err == nil {
+			t.Errorf("a worktree on %q must be refused", b)
+		}
+		if _, err := os.Stat(wt); !os.IsNotExist(err) {
+			t.Errorf("nothing is created when %q is refused", b)
+		}
+	}
+}

@@ -122,6 +122,19 @@ func (g Git) AddWorktree(ctx context.Context, repo, path, branch, base string) e
 	return err
 }
 
+// AddWorktreeOnBranch fetches branch from origin and checks it out at path, the local branch
+// reset to the origin head. Protected and base branches are refused before any git command.
+func (g Git) AddWorktreeOnBranch(ctx context.Context, repo, path, branch, base string) error {
+	if err := GuardWorkBranch(branch, base); err != nil {
+		return err
+	}
+	if err := g.FetchRef(ctx, repo, branch); err != nil {
+		return err
+	}
+	_, err := g.run(ctx, repo, "worktree", "add", "--quiet", "-B", branch, path, "refs/remotes/origin/"+branch)
+	return err
+}
+
 // Worktree is one checkout of a repository, as listed by `git worktree list`.
 type Worktree struct {
 	Path     string `json:"path" yaml:"path"`
