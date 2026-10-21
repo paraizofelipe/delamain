@@ -99,7 +99,6 @@ in-flight runs end as interrupted.`,
 			}}
 			reviews := daemon.ReviewJobs{
 				Enabled: cfg.Review.Enabled, Label: cfg.Forge.Labels.Review,
-				RefuseForks: cfg.Agent.Harness != config.HarnessClaude,
 				// The review records its cursor under the repository's toplevel, not the path given.
 				State: func(ctx context.Context, repo string, pr int) (daemon.ReviewState, error) {
 					top, err := base.Git.Toplevel(ctx, repo)
@@ -121,50 +120,8 @@ in-flight runs end as interrupted.`,
 					return r.RunReview(ctx, repo, pr)
 				},
 			}
-			// Runs and cursors are recorded under the repository's toplevel, not the path given.
-			// RunAddress refuses a harness that cannot confine the responder, so no job is made
-			// that would fail on every poll.
-			canAddress := cfg.Agent.Harness == config.HarnessClaude
-			if cfg.Review.Enabled && cfg.Review.Address.Enabled && !canAddress {
-				base.Log.Warn("review.address needs agent.harness: claude to confine the responder; not answering threads", "harness", cfg.Agent.Harness)
-			}
-			addresses := daemon.AddressJobs{
-				Enabled: cfg.Review.Address.Enabled && canAddress,
-				PRs: func(ctx context.Context, repo string) ([]string, error) {
-					top, err := base.Git.Toplevel(ctx, repo)
-					if err != nil {
-						return nil, err
-					}
-					runs, err := st.RunsWithMR(ctx, top)
-					if err != nil {
-						return nil, err
-					}
-					urls := make([]string, 0, len(runs))
-					for _, rec := range runs {
-						urls = append(urls, rec.MRURL)
-					}
-					return urls, nil
-				},
-				Since: func(ctx context.Context, repo string, pr int) (time.Time, error) {
-					top, err := base.Git.Toplevel(ctx, repo)
-					if err != nil {
-						return time.Time{}, err
-					}
-					cur, err := st.Cursor(ctx, top, pr)
-					if errors.Is(err, store.ErrNotFound) {
-						return time.Time{}, nil
-					}
-					return cur.LastSeenAt, err
-				},
-				User: func(repo string) string { return users[repo] },
-				Run: func(ctx context.Context, repo string, pr int, fg forge.Forge) (pipeline.Result, error) {
-					r := *base
-					r.Forge, r.ForgeUser = fg, users[repo]
-					return r.RunAddress(ctx, repo, pr)
-				},
-			}
 			d := daemon.New(daemon.Options{
-				Sources: sources, Producers: daemon.Producers(base.Log, issues, reviews, addresses),
+				Sources: sources, Producers: daemon.Producers(base.Log, issues, reviews),
 				MaxParallel: cfg.Pipeline.MaxParallel, Interval: cfg.Daemon.PollInterval, Log: base.Log,
 				DayExhausted: dayExhausted(meter.Today, &budgetAlert{notify: base.Notify, softRatio: cfg.Budget.SoftRatio, now: time.Now}),
 			})
@@ -306,15 +263,10 @@ func (a *budgetAlert) observe(ctx context.Context, s budget.Status) {
 }
 
 // reviewStartup says whether the daemon reviews PRs/MRs, for the startup log. Review runs on
-// either harness; only a PR/MR from a fork brings third-party code into the checkout, and that
-// one RunReview refuses unless the harness confines the reviewer.
+// either harness; a PR/MR whose head is in a fork is never reviewed, on any of them.
 func reviewStartup(cfg config.Config) string {
 	if !cfg.Review.Enabled {
 		return "review: disabled"
 	}
-	if cfg.Agent.Harness != config.HarnessClaude {
-		return fmt.Sprintf("review: enabled (label %s; PRs/MRs from a fork are refused on harness %s)",
-			cfg.Forge.Labels.Review, cfg.Agent.Harness)
-	}
-	return fmt.Sprintf("review: enabled (label %s)", cfg.Forge.Labels.Review)
+	return fmt.Sprintf("review: enabled (label %s; PRs/MRs from a fork are not reviewed)", cfg.Forge.Labels.Review)
 }

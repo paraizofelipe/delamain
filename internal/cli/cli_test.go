@@ -103,12 +103,8 @@ func TestConfigShouldPrintTheReviewSection(t *testing.T) {
 		Review struct {
 			Enabled     bool    `yaml:"enabled"`
 			MaxComments int     `yaml:"max_comments"`
-			MaxRounds   int     `yaml:"max_rounds"`
 			PerReview   float64 `yaml:"per_review"`
-			Address     struct {
-				Enabled bool `yaml:"enabled"`
-				Push    bool `yaml:"push"`
-			} `yaml:"address"`
+			Fix         bool    `yaml:"fix"`
 		} `yaml:"review"`
 		Forge struct {
 			Labels struct {
@@ -120,7 +116,7 @@ func TestConfigShouldPrintTheReviewSection(t *testing.T) {
 		t.Fatalf("%v:\n%s", err, out)
 	}
 	r := printed.Review
-	if r.Enabled || r.MaxComments != 9 || r.MaxRounds != 3 || r.PerReview != 500_000 || r.Address.Enabled || r.Address.Push {
+	if r.Enabled || r.MaxComments != 9 || r.PerReview != 500_000 || !r.Fix {
 		t.Errorf("review section = %+v:\n%s", r, out)
 	}
 	if printed.Forge.Labels.Review != "delamain:review" {

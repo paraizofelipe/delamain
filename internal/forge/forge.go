@@ -206,6 +206,19 @@ func oldestFirst(is []Issue) []Issue {
 // maxLinkedIssues caps LinkedIssues.
 const maxLinkedIssues = 5
 
+// prURL matches the number at the end of a GitHub PR or GitLab MR URL.
+var prURL = regexp.MustCompile(`/(?:pull|-/merge_requests)/(\d+)/?$`)
+
+// PRNumber is the number of a GitHub PR or GitLab MR URL.
+func PRNumber(url string) (int, bool) {
+	m := prURL.FindStringSubmatch(url)
+	if m == nil {
+		return 0, false
+	}
+	n, err := strconv.Atoi(m[1])
+	return n, err == nil && n > 0
+}
+
 // closingKeyword is a whole closing keyword ("fixes", not "prefix") with an optional colon.
 var closingKeyword = regexp.MustCompile(`(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?\s+#(\d+)\b`)
 

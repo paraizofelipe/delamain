@@ -133,21 +133,17 @@ type Budget struct {
 	SoftRatio float64 `yaml:"soft_ratio"`
 }
 
-// Review configures the runs that review pull requests and address their review comments.
+// Review configures the runs that review pull requests and answer their review comments.
 type Review struct {
 	Enabled bool `yaml:"enabled"`
-	// MaxComments caps the comments one review posts; MaxRounds caps the reviews of one PR.
+	// MaxComments caps the critical/major findings one review may carry: above it, a review is
+	// a comment bomb and nothing is posted.
 	MaxComments int `yaml:"max_comments"`
-	MaxRounds   int `yaml:"max_rounds"`
 	// PerReview is the budget of one review run, in the unit of budget.mode.
-	PerReview float64       `yaml:"per_review"`
-	Address   ReviewAddress `yaml:"address"`
-}
-
-// ReviewAddress lets delamain answer the review comments on its own PRs.
-type ReviewAddress struct {
-	Enabled bool `yaml:"enabled"`
-	Push    bool `yaml:"push"`
+	PerReview float64 `yaml:"per_review"`
+	// Fix lets the responder commit the fixes of the review comments that hold on delamain's own
+	// PRs, which the orchestrator pushes once the checks pass. Off, it only answers the threads.
+	Fix bool `yaml:"fix"`
 }
 
 // Forge kinds. ForgeAuto detects GitHub/GitLab from the origin URL; ForgeNone delivers locally only.
@@ -265,7 +261,7 @@ func defaults() Config {
 		Claude:   Claude{Binary: "claude", Model: "opus", Effort: "high", PermissionMode: "bypassPermissions"},
 		Pipeline: Pipeline{MaxIterations: 3, MaxParallel: 1, PromptTimeout: 30 * time.Minute, CheckTimeout: 20 * time.Minute},
 		Budget:   Budget{Mode: BudgetTokens, PerIssue: 2_000_000, Daily: 10_000_000, SoftRatio: 0.8},
-		Review:   Review{MaxComments: 15, MaxRounds: 3, PerReview: 500_000},
+		Review:   Review{MaxComments: 15, PerReview: 500_000, Fix: true},
 		Forge:    Forge{Kind: ForgeAuto, Labels: Labels{Prefix: DefaultLabelPrefix}},
 		Gates:    Gates{RedProof: "bug", RequireTests: true},
 		Daemon:   Daemon{PollInterval: 5 * time.Minute},
@@ -336,10 +332,9 @@ func applyEnv(cfg *Config, getenv func(string) string) error {
 		}
 	}
 	bools := map[string]*bool{
-		"DELAMAIN_HERDR":                  &cfg.Herdr.Enabled,
-		"DELAMAIN_REVIEW_ENABLED":         &cfg.Review.Enabled,
-		"DELAMAIN_REVIEW_ADDRESS_ENABLED": &cfg.Review.Address.Enabled,
-		"DELAMAIN_REVIEW_ADDRESS_PUSH":    &cfg.Review.Address.Push,
+		"DELAMAIN_HERDR":          &cfg.Herdr.Enabled,
+		"DELAMAIN_REVIEW_ENABLED": &cfg.Review.Enabled,
+		"DELAMAIN_REVIEW_FIX":     &cfg.Review.Fix,
 	}
 	for key, dst := range bools {
 		v := getenv(key)
@@ -371,7 +366,6 @@ func applyEnv(cfg *Config, getenv func(string) string) error {
 		"DELAMAIN_MAX_ITERATIONS":      &cfg.Pipeline.MaxIterations,
 		"DELAMAIN_MAX_PARALLEL":        &cfg.Pipeline.MaxParallel,
 		"DELAMAIN_REVIEW_MAX_COMMENTS": &cfg.Review.MaxComments,
-		"DELAMAIN_REVIEW_MAX_ROUNDS":   &cfg.Review.MaxRounds,
 	}
 	for key, dst := range ints {
 		v := getenv(key)
@@ -420,9 +414,6 @@ func (c Config) Validate() error {
 	}
 	if c.Review.MaxComments < 1 {
 		errs = append(errs, errors.New("review.max_comments must be >= 1"))
-	}
-	if c.Review.MaxRounds < 1 {
-		errs = append(errs, errors.New("review.max_rounds must be >= 1"))
 	}
 	if c.Review.PerReview <= 0 {
 		errs = append(errs, errors.New("review.per_review must be > 0"))

@@ -15,7 +15,6 @@ import (
 
 	"github.com/paraizo/delamain/internal/artifacts"
 	"github.com/paraizo/delamain/internal/budget"
-	"github.com/paraizo/delamain/internal/config"
 	"github.com/paraizo/delamain/internal/forge"
 	"github.com/paraizo/delamain/internal/gates"
 	"github.com/paraizo/delamain/internal/gitx"
@@ -65,12 +64,13 @@ func (r *Runner) RunReview(ctx context.Context, repo string, n int) (Result, err
 		res.Outcome, res.Reason = OutcomeSkipped, fmt.Sprintf("o PR/MR #%d não está aberto", n)
 		return res, nil
 	}
-	// Only a head in another repository brings third-party code, and confining the reviewer
-	// that reads it still takes Claude Code (see confined). A PR whose branch lives in this
-	// repository is what delamain itself implemented, or what someone with write access
-	// pushed: the same code the issue flow already works on, on either harness.
-	if pr.Fork && r.Cfg.Agent.Harness != config.HarnessClaude {
-		return res, fmt.Errorf("revisar um PR/MR vindo de fork pede agent.harness: claude, o único que confina o revisor à leitura do PR (got %q)", r.Cfg.Agent.Harness)
+	// A head in another repository is third-party code: its checkout brings the files that
+	// steer the agent, and the review would speak as the operator about code nobody here
+	// vouched for. delamain does not review it, on any harness. A PR whose branch lives in
+	// this repository is what delamain implemented, or what someone with write access pushed:
+	// the same code the issue flow already works on.
+	if pr.Fork {
+		return res, fmt.Errorf("o delamain não revisa PR/MR vindo de fork: o head do #%d está em outro repositório, fora do alcance de quem responde por este. Revise à mão, ou traga a branch para este repositório e revise o PR/MR dela", n)
 	}
 	if err := r.ensurePrompts(); err != nil {
 		return res, err
@@ -233,10 +233,10 @@ func (r *Runner) reviewPR(ctx context.Context, ru *run, p *prRun) error {
 	if err := r.setState(ctx, ru, store.StateReview); err != nil {
 		return err
 	}
+	// The reviewer is not confined: RunReview refused the fork, so this head is a branch of
+	// this repository. Answering threads is the confined one (see RunAddress), because the
+	// comments it reads come from anyone who can comment on the PR.
 	artifact := filepath.Join(ru.dir, "review.json")
-	if pr.Fork {
-		ru.confine = &Confinement{Checkout: wt, Base: pr.BaseSHA, Artifact: artifact}
-	}
 	data := r.stageData(ru, 0, artifact, "")
 	data.PR = prompts.PR{
 		Number: pr.Number, URL: pr.URL, Title: pr.Title, Body: pr.Body, Author: pr.Author,
@@ -282,7 +282,8 @@ func (r *Runner) reviewPR(ctx context.Context, ru *run, p *prRun) error {
 	if err := r.setState(ctx, ru, store.StateDeliver); err != nil {
 		return err
 	}
-	opts, sum := reviewOptions(ru.rec.ID, pr, review, lines, postedKeys(threads, r.ForgeUser))
+	opts, sum := reviewOptions(ru.rec.ID, pr, review, lines, postedKeys(threads, r.ForgeUser),
+		func(file string, line int) string { return r.excerpt(ctx, repo, p.ref, file, line) })
 	if opts.Summary != "" || len(opts.Comments) > 0 {
 		// The bodies are the agent's words, posted publicly as the operator: a prompt injection
 		// could have it quote a local credential.
@@ -303,17 +304,13 @@ func (r *Runner) reviewPR(ctx context.Context, ru *run, p *prRun) error {
 	}
 	ru.res.Outcome = OutcomeReviewed
 	// The memory is read into every later review of this repository, so what goes in has to
-	// come from a trusted head. A fork's author steers the code and text the reviewer read,
-	// and could plant a durable "fact" that silences findings in other people's PRs.
-	switch {
-	case pr.Fork:
-		ru.log.Info("learnings of a fork left out of the repository memory", "run", ru.rec.ID, "pr", pr.Number, "dropped", len(review.Learnings))
-	default:
-		if n, err := mem.Append(fr.Host, fr.Path, ru.rec.ID, pr.Number, review.Learnings, time.Now()); err != nil {
-			ru.log.Warn("could not update the repository memory", "err", err)
-		} else {
-			ru.log.Info("repository memory", "run", ru.rec.ID, "learnings", n)
-		}
+	// come from a trusted head. This one is: RunReview refuses a fork, whose author would steer
+	// the code the reviewer read and could plant a durable "fact" that silences findings in
+	// other people's PRs.
+	if n, err := mem.Append(fr.Host, fr.Path, ru.rec.ID, pr.Number, review.Learnings, time.Now()); err != nil {
+		ru.log.Warn("could not update the repository memory", "err", err)
+	} else {
+		ru.log.Info("repository memory", "run", ru.rec.ID, "learnings", n)
 	}
 	return nil
 }
@@ -346,20 +343,23 @@ func (r *Runner) finishReview(ctx context.Context, ru *run, p *prRun) error {
 	return r.record(ctx, ru)
 }
 
-// reviewOptions splits the findings: critical/major on a line the head added or changed go
-// inline, everything else to the summary. Comments whose marker key is already on the PR are
+// reviewOptions routes the findings: every one on a line the head added or changed goes inline,
+// whatever its severity, so the discussion sits on the code it is about. One the forge cannot
+// anchor — no file of its own, or a line outside the diff — goes to the summary carrying the
+// excerpt of the code it points at, so no comment is posted without the snippet it discusses.
+// excerpt reads the head and may return "". Comments whose marker key is already on the PR are
 // left out; with nothing new at all, both Summary and Comments are empty.
-func reviewOptions(runID int64, pr forge.PRDetail, rv artifacts.PRReview, lines map[string][]gitx.LineRange, posted map[string]bool) (forge.ReviewOptions, ReviewSummary) {
+func reviewOptions(runID int64, pr forge.PRDetail, rv artifacts.PRReview, lines map[string][]gitx.LineRange, posted map[string]bool, excerpt func(file string, line int) string) (forge.ReviewOptions, ReviewSummary) {
 	o := forge.ReviewOptions{HeadSHA: pr.HeadSHA, BaseSHA: pr.BaseSHA, StartSHA: pr.StartSHA}
 	sum := ReviewSummary{PRURL: pr.URL, Dropped: len(rv.Dropped)}
 	var others, outside []string
 	for _, a := range rv.Axes {
 		for _, f := range a.Findings {
 			switch {
-			case !f.Blocking() || f.File == "":
-				others = append(others, findingLine(a.Axis, f))
+			case f.File == "":
+				others = append(others, findingLine(a.Axis, f, ""))
 			case !inDiff(lines[f.File], f.Line):
-				outside = append(outside, findingLine(a.Axis, f))
+				outside = append(outside, findingLine(a.Axis, f, excerpt(f.File, f.Line)))
 			default:
 				m := forge.Marker{RunID: runID, Kind: "review", Key: forge.Key(f.File, strconv.Itoa(f.Line), f.Message)}
 				if posted[m.Key] {
@@ -464,16 +464,62 @@ func postedKeys(ts []forge.Thread, user string) map[string]bool {
 	return keys
 }
 
+// inlineBody is the comment posted on the line a finding is about. The forge shows the line
+// itself, and the evidence the reviewer read goes with it, so the comment says which part of
+// the change it is about.
 func inlineBody(axis string, f artifacts.Finding) string {
-	return fmt.Sprintf("**%s** · %s · %s\n\n%s", f.Severity, axis, f.Category, f.Message)
+	body := fmt.Sprintf("**%s** · %s · %s\n\n%s", f.Severity, axis, f.Category, f.Message)
+	if f.Evidence != "" {
+		body += "\n\n" + codeBlock(f.Evidence)
+	}
+	return body
 }
 
-func findingLine(axis string, f artifacts.Finding) string {
+// findingLine is one finding in the summary, with the code it is about underneath: the head's
+// excerpt around its line when there is one, the evidence the reviewer read otherwise. Both can
+// be empty, and then the line stands alone.
+func findingLine(axis string, f artifacts.Finding, excerpt string) string {
 	where := "PR"
 	if f.File != "" {
 		where = fmt.Sprintf("`%s:%d`", f.File, f.Line)
 	}
-	return fmt.Sprintf("- **%s** · %s · %s — %s", f.Severity, axis, where, flat(f.Message))
+	line := fmt.Sprintf("- **%s** · %s · %s — %s", f.Severity, axis, where, flat(f.Message))
+	snippet := excerpt
+	if snippet == "" {
+		snippet = f.Evidence
+	}
+	if snippet == "" {
+		return line
+	}
+	// Indented, or the fence would end the list item instead of belonging to it.
+	return line + "\n\n" + indent(codeBlock(snippet), "  ")
+}
+
+// codeBlock fences s, with a fence long enough that a fence inside s cannot close it early —
+// the excerpt of a Markdown file carries its own.
+func codeBlock(s string) string {
+	longest, run := 0, 0
+	for _, c := range s {
+		if c != '`' {
+			run = 0
+			continue
+		}
+		run++
+		longest = max(longest, run)
+	}
+	fence := strings.Repeat("`", max(3, longest+1))
+	return fence + "\n" + strings.Trim(s, "\n") + "\n" + fence
+}
+
+// indent puts with before every non-empty line of s.
+func indent(s, with string) string {
+	lines := strings.Split(s, "\n")
+	for i, l := range lines {
+		if l != "" {
+			lines[i] = with + l
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 func summaryBody(rv artifacts.PRReview, others, outside []string) string {
