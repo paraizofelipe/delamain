@@ -834,3 +834,94 @@ func TestRunAddressWithPushShouldGiveTheResponderTheFixingConfinement(t *testing
 		t.Error("the prompt says the push is enabled")
 	}
 }
+
+// replyTo is the body posted to thread.
+func replyTo(t *testing.T, rh *reviewHarness, thread string) string {
+	t.Helper()
+	for _, rp := range rh.f.replies {
+		if rp.thread == thread {
+			return rp.body
+		}
+	}
+	t.Fatalf("no reply posted to %s: %+v", thread, rh.f.replies)
+	return ""
+}
+
+// assertFixNotSent is a run that answered every thread but sent and resolved nothing, the fixed
+// thread's reply saying why instead of claiming a fix.
+func assertFixNotSent(t *testing.T, rh *reviewHarness, res Result, why string) {
+	t.Helper()
+	if res.Outcome != OutcomeAnswered {
+		t.Fatalf("the replies still go out: got %s (%s)", res.Outcome, res.Reason)
+	}
+	if len(rh.g.ffPushes) != 0 || len(rh.f.resolved) != 0 {
+		t.Fatalf("nothing is pushed nor resolved: pushes %+v, resolved %v", rh.g.ffPushes, rh.f.resolved)
+	}
+	body := replyTo(t, rh, "issue-comment:9")
+	if strings.Contains(body, fixReply) || !strings.Contains(body, why) || !strings.Contains(body, "revisão humana") {
+		t.Fatalf("the fixed thread's reply says the fix was not sent (%s), never that it was:\n%s", why, body)
+	}
+	if !strings.Contains(replyTo(t, rh, "t1"), invalidReply) {
+		t.Fatal("the other replies go out as written")
+	}
+	if !strings.Contains(res.Reason, "não enviadas") {
+		t.Fatalf("the outcome records that the fixes were not sent: %s", res.Reason)
+	}
+}
+
+func TestRunAddressWithPushShouldNotPushWhenVerifyFails(t *testing.T) {
+	rh := newFixHarness(t, fixAnswers())
+	rh.h.checks = func(name string, _ int) int {
+		if name == "test" {
+			return 1
+		}
+		return 0
+	}
+	res := rh.address(t)
+
+	assertFixNotSent(t, rh, res, "não passou nos checks")
+	if !strings.Contains(res.Reason, "test") {
+		t.Fatalf("the outcome names the failed check: %s", res.Reason)
+	}
+}
+
+func TestRunAddressWithPushShouldNotPushWhenTheCommitsLeakASecret(t *testing.T) {
+	// Built at runtime so no secret-shaped literal lives in the repository.
+	ghToken := "ghp_" + strings.Repeat("a1B2c3D4e5", 4)
+	t.Run("gitleaks finds one in the new commits", func(t *testing.T) {
+		rh := newFixHarness(t, fixAnswers())
+		rh.r.LookPath = func(string) (string, error) { return "/usr/bin/gitleaks", nil }
+		rh.h.checks = func(name string, _ int) int {
+			if name == "secrets" {
+				return 1
+			}
+			return 0
+		}
+		res := rh.address(t)
+
+		assertFixNotSent(t, rh, res, "não passou nos checks")
+		var scan string
+		for _, c := range rh.h.checkCalls {
+			if c.Name == "secrets" {
+				scan = c.Command
+			}
+		}
+		if !strings.Contains(scan, "--log-opts="+prHead+"..HEAD") {
+			t.Fatalf("gitleaks scans exactly the responder's commits, from the recorded head: %q", scan)
+		}
+	})
+	t.Run("a commit subject carries a token", func(t *testing.T) {
+		rh := newFixHarness(t, func(string, int, string) reply {
+			return reply{
+				write:  responsesJSON(response("t1", "invalid", invalidReply), fixed("issue-comment:9", fixReply)),
+				mutate: func(g *fakeGit) { g.commit("fix: use " + ghToken + " (review)") },
+			}
+		})
+		res := rh.address(t)
+
+		assertFixNotSent(t, rh, res, "não passou nos checks")
+		if strings.Contains(res.Reason, ghToken) || strings.Contains(replyTo(t, rh, "issue-comment:9"), ghToken) {
+			t.Fatal("the secret is never repeated")
+		}
+	})
+}
