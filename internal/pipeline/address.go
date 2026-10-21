@@ -30,10 +30,11 @@ const (
 )
 
 // RunAddress answers the pending review threads of delamain's PR/MR n of repo: one reply per
-// thread. With review.address.push on, the responder may also commit fixes for the valid threads
-// of a PR an issue run opened; the orchestrator checks and pushes them as a fast-forward, then
-// resolves those threads (see fixRun). Like RunReview, a non-nil error means the run could not
-// even be recorded; guardrail stops are OutcomeHalted.
+// thread. With review.fix on, the responder may also commit fixes for the valid threads of a PR
+// an issue run opened; the orchestrator checks and pushes them as a fast-forward, then resolves
+// those threads (see fixRun). `delamain review --pr n` is the only caller: nothing answers a
+// thread on its own. Like RunReview, a non-nil error means the run could not even be recorded;
+// guardrail stops are OutcomeHalted.
 func (r *Runner) RunAddress(ctx context.Context, repo string, n int) (Result, error) {
 	res := Result{}
 	if r.Forge == nil {
@@ -57,15 +58,17 @@ func (r *Runner) RunAddress(ctx context.Context, repo string, n int) (Result, er
 		res.Outcome, res.Reason = OutcomeSkipped, fmt.Sprintf("o PR/MR #%d não está aberto", n)
 		return res, nil
 	}
+	// delamain only opens a PR from a branch of this repository, so its own PR is never a fork.
+	// The refusal is here anyway: it is this function's contract, not the caller's, and a
+	// checkout of a fork would hand the responder code nobody here vouched for.
+	if pr.Fork {
+		return res, fmt.Errorf("o delamain não responde discussões de PR/MR vindo de fork: o head do #%d está em outro repositório, fora do alcance de quem responde por este", n)
+	}
 	threads, err := r.Forge.Threads(ctx, n)
 	if err != nil {
 		return res, fmt.Errorf("discussões do PR/MR #%d: %w", n, err)
 	}
-	cur, err := r.Store.Cursor(ctx, repo, n)
-	if err != nil && !errors.Is(err, store.ErrNotFound) {
-		return res, err
-	}
-	pending := PendingThreads(threads, r.ForgeUser, cur.LastSeenAt)
+	pending := PendingThreads(threads, r.ForgeUser)
 	if len(pending) == 0 {
 		res.Outcome, res.Reason = OutcomeSkipped, fmt.Sprintf("nenhuma discussão pendente no PR/MR #%d", n)
 		return res, nil
@@ -114,75 +117,13 @@ func (r *Runner) RunAddress(ctx context.Context, repo string, n int) (Result, er
 	default:
 		res.Outcome, res.Reason = OutcomeHalted, err.Error()
 	}
-	if err != nil {
-		r.noteAddressHalt(ctx, ru, p)
-	}
 	return res, r.finishReview(ctx, ru, p)
-}
-
-// noteAddressHalt spends a round on a run that halted before answering. A halt is usually
-// deterministic — a rejected artifact, a checkout the responder touched — and the comments stay
-// pending, so without this the daemon would start the same run on every poll until
-// review.max_rounds hands the PR to a human.
-func (r *Runner) noteAddressHalt(ctx context.Context, ru *run, p *prRun) {
-	if ctx.Err() != nil {
-		// The operator stopped the daemon: that says nothing about this PR.
-		ru.log.Info("address interrupted, no round spent", "run", ru.rec.ID, "pr", p.pr.Number)
-		return
-	}
-	ctx = context.WithoutCancel(ctx)
-	c, err := r.Store.Cursor(ctx, ru.rec.Repo, p.pr.Number)
-	if err != nil && !errors.Is(err, store.ErrNotFound) {
-		ru.log.Warn("could not read the review cursor to count the halt", "pr", p.pr.Number, "err", err)
-		return
-	}
-	c.Repo, c.PR = ru.rec.Repo, p.pr.Number
-	c.Rounds++
-	if err := r.Store.SaveCursor(ctx, c); err != nil {
-		ru.log.Warn("could not count the halted round", "pr", p.pr.Number, "err", err)
-		return
-	}
-	ru.log.Info("halted address counted as a round", "run", ru.rec.ID, "pr", p.pr.Number, "rounds", c.Rounds)
-}
-
-// escalate hands a PR whose rounds are spent to a human: the needs-human label, a notice posted
-// once per PR and the cursor past the comments seen, so the producer does not start the same
-// run on every poll. No agent runs and no round is spent.
-func (r *Runner) escalate(ctx context.Context, ru *run, p *prRun, prev store.ReviewCursor, pending []forge.Thread) error {
-	pr := p.pr
-	label := r.Cfg.Forge.Labels.NeedsHuman
-	if err := r.Forge.RelabelPR(ctx, pr.Number, []string{label}, nil); err != nil {
-		return haltf("falha ao marcar o PR/MR #%d com %s: %v", pr.Number, label, err)
-	}
-	// The marker's kind is a single word (see forge.ParseMarker), hence the underscore.
-	m := forge.Marker{RunID: ru.rec.ID, Kind: "needs_human", Key: forge.Key("needs-human", strconv.Itoa(pr.Number))}
-	if !postedKeys(p.threads, r.ForgeUser)[m.Key] {
-		body := fmt.Sprintf("🤖 **delamain**: este PR/MR chegou ao limite de %d rodadas automáticas (`review.max_rounds`). As próximas discussões ficam com um humano.\n\n%s", r.Cfg.Review.MaxRounds, m.String())
-		if err := r.Forge.PRComment(ctx, pr.Number, body); err != nil {
-			return haltf("falha ao avisar no PR/MR #%d: %v", pr.Number, err)
-		}
-	}
-	c := prev
-	c.Repo, c.PR, c.LastSeenAt = ru.rec.Repo, pr.Number, newestComment(pending)
-	if err := r.Store.SaveCursor(ctx, c); err != nil {
-		return err
-	}
-	ru.res.Outcome = OutcomeHalted
-	ru.res.Reason = fmt.Sprintf("review.max_rounds (%d) atingido: PR/MR #%d marcado %s", r.Cfg.Review.MaxRounds, pr.Number, label)
-	return nil
 }
 
 func (r *Runner) address(ctx context.Context, ru *run, p *prRun, pending []forge.Thread) error {
 	pr, repo := p.pr, ru.rec.Repo
 	if err := r.setState(ctx, ru, store.StateSetup); err != nil {
 		return err
-	}
-	prev, err := r.Store.Cursor(ctx, repo, pr.Number)
-	if err != nil && !errors.Is(err, store.ErrNotFound) {
-		return err
-	}
-	if prev.Rounds >= r.Cfg.Review.MaxRounds {
-		return r.escalate(ctx, ru, p, prev, pending)
 	}
 	// The agent never starts inside the PR checkout: its harness would load the settings, hooks
 	// and instruction files anyone with push access to the branch controls.
@@ -268,7 +209,9 @@ func (r *Runner) address(ctx context.Context, ru *run, p *prRun, pending []forge
 		}
 		data.LinkedIssues = append(data.LinkedIssues, prompts.Issue{Ref: "#" + strconv.Itoa(is.Number), Title: is.Title, Body: is.Body, URL: is.URL})
 	}
-	data.Threads = renderAddressThreads(p.threads, pending, func(t forge.Thread) string { return r.excerpt(ctx, repo, p.ref, t) })
+	data.Threads = renderAddressThreads(p.threads, pending, func(t forge.Thread) string {
+		return r.excerpt(ctx, repo, p.ref, t.Path, t.Line)
+	})
 	mem, fr := memory.Store{Dir: r.Cfg.Paths.MemoryDir()}, r.Forge.Repo()
 	if data.Memory, err = mem.Read(fr.Host, fr.Path, memoryPromptBytes); err != nil {
 		ru.log.Warn("could not read the repository memory", "err", err)
@@ -345,11 +288,6 @@ func (r *Runner) address(ctx context.Context, ru *run, p *prRun, pending []forge
 	if err != nil {
 		return err
 	}
-	c := prev
-	c.Repo, c.PR, c.LastSeenAt, c.Rounds = repo, pr.Number, newestComment(pending), prev.Rounds+1
-	if err := r.Store.SaveCursor(ctx, c); err != nil {
-		return err
-	}
 	ru.res.Outcome = OutcomeAnswered
 	ru.res.Reason = fmt.Sprintf("%d respostas postadas (valid %d · invalid %d · unclear %d)", count["valid"]+count["invalid"]+count["unclear"], count["valid"], count["invalid"], count["unclear"]) + fix.summary(resolved)
 	if n, err := mem.Append(fr.Host, fr.Path, ru.rec.ID, pr.Number, resp.Learnings, time.Now()); err != nil {
@@ -360,19 +298,25 @@ func (r *Runner) address(ctx context.Context, ru *run, p *prRun, pending []forge
 	return nil
 }
 
-// PendingThreads are the open threads of a PR waiting for delamain (user): their last public
-// comment is newer than since and is not delamain's own reply. Markers are public, so only a
-// comment by user that carries one counts as delamain's; without a known user nothing is
-// pending, or delamain could end up answering itself. Internal notes are never read: the
-// answer would be public.
-func PendingThreads(ts []forge.Thread, user string, since time.Time) []forge.Thread {
+// PendingThreads are the open threads of a PR waiting for delamain (user): the ones whose last
+// public comment is neither delamain's own reply nor one it already answered elsewhere. No
+// cursor over time is needed, so a comment older than the last review is not lost. Markers are
+// public, so only a comment by user that carries one counts as delamain's; without a known user
+// nothing is pending, or delamain could end up answering itself. Internal notes are never read:
+// the answer would be public.
+func PendingThreads(ts []forge.Thread, user string) []forge.Thread {
 	if user == "" {
 		return nil
 	}
+	// On GitHub the answer to a PR-level comment is a comment of its own, so the thread it
+	// answers keeps a human as its last comment and would stay pending forever. Its marker key
+	// is what retires it — the same key the reply loop checks before posting, looked up across
+	// every thread of the PR.
+	posted := postedKeys(ts, user)
 	var out []forge.Thread
 	for _, t := range ts {
 		last, ok := lastPublic(t)
-		if t.Resolved || !ok || ownComment(last, user) || !last.CreatedAt.After(since) {
+		if t.Resolved || !ok || ownComment(last, user) || posted[forge.Key(t.ID, last.ID)] {
 			continue
 		}
 		out = append(out, t)
@@ -399,17 +343,6 @@ func ownComment(c forge.Comment, user string) bool {
 	return ok
 }
 
-// newestComment is when the newest last comment of ts was made.
-func newestComment(ts []forge.Thread) time.Time {
-	var newest time.Time
-	for _, t := range ts {
-		if c, _ := lastPublic(t); c.CreatedAt.After(newest) {
-			newest = c.CreatedAt
-		}
-	}
-	return newest
-}
-
 // fixState is what became of the responder's commits.
 type fixState int
 
@@ -430,11 +363,11 @@ type fixRun struct {
 	failed   []string // checks that failed
 }
 
-// fixTarget is the PR's fixing side when the responder may fix it: review.address.push on and a
-// PR that an issue run of delamain opened from its own branch, not a fork. Anything else only
-// gets replies (nil): fixing a branch delamain does not own is out of scope.
+// fixTarget is the PR's fixing side when the responder may fix it: review.fix on and a PR that
+// an issue run of delamain opened from its own branch, not a fork. Anything else only gets
+// replies (nil): fixing a branch delamain does not own is out of scope.
 func (r *Runner) fixTarget(ctx context.Context, ru *run, pr forge.PRDetail) (*fixRun, error) {
-	if !r.Cfg.Review.Address.Push {
+	if !r.Cfg.Review.Fix {
 		return nil, nil
 	}
 	runs, err := r.Store.RunsWithMR(ctx, ru.rec.Repo)
@@ -649,20 +582,20 @@ func replyBody(a artifacts.Response) string {
 	return fmt.Sprintf("🤖 **delamain** · parecer: `%s`\n\n%s", a.Verdict, a.Reply)
 }
 
-// excerpt is the head's code around the line a thread comments on, read from the PR ref in the
-// object store: "" for PR-level threads or when the file cannot be read.
-func (r *Runner) excerpt(ctx context.Context, repo, ref string, t forge.Thread) string {
+// excerpt is the head's code around line of path, read from the PR ref in the object store: ""
+// for a comment with no line of its own, or when the file cannot be read.
+func (r *Runner) excerpt(ctx context.Context, repo, ref, path string, line int) string {
 	// Read from the ref's objects, never the checkout: no symlink is followed and a path that
 	// leaves the repository is not read at all.
-	if t.Path == "" || t.Line <= 0 || !filepath.IsLocal(t.Path) {
+	if path == "" || line <= 0 || !filepath.IsLocal(path) {
 		return ""
 	}
-	raw, err := r.Git.ShowFile(ctx, repo, ref, t.Path)
+	raw, err := r.Git.ShowFile(ctx, repo, ref, path)
 	if err != nil {
 		return ""
 	}
 	lines := strings.Split(string(raw), "\n")
-	from, to := max(t.Line-excerptContext, 1), min(t.Line+excerptContext, len(lines))
+	from, to := max(line-excerptContext, 1), min(line+excerptContext, len(lines))
 	var b strings.Builder
 	for i := from; i <= to; i++ {
 		fmt.Fprintf(&b, "%d: %s\n", i, lines[i-1])

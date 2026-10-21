@@ -11,6 +11,7 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	"github.com/paraizo/delamain/internal/pipeline"
+	"github.com/paraizo/delamain/internal/store"
 )
 
 func reviewConfig(t *testing.T, body string) string {
@@ -93,6 +94,31 @@ func TestPrintReviewResultShouldShowCountsLinkAndReportInEveryFormat(t *testing.
 	}
 	if !strings.Contains(skipped.String(), "skipped") || !strings.Contains(skipped.String(), "o head já foi revisado") {
 		t.Fatalf("a skip shows why:\n%s", skipped.String())
+	}
+}
+
+func TestAnyRunOpenedShouldRecognizeOnlyThePRsDelamainDelivered(t *testing.T) {
+	runs := []store.Run{
+		{MRURL: "https://github.com/acme/api/pull/41"},
+		{MRURL: "https://gitlab.com/acme/api/-/merge_requests/8"},
+		{MRURL: ""}, // an issue run whose PR was never opened
+	}
+	for pr, want := range map[int]bool{41: true, 8: true, 42: false, 0: false} {
+		if got := anyRunOpened(runs, pr); got != want {
+			t.Errorf("anyRunOpened(#%d) = %v, want %v", pr, got, want)
+		}
+	}
+	if anyRunOpened(nil, 41) {
+		t.Error("a repository delamain never delivered to has no PR of its own")
+	}
+}
+
+// The operator's own forge credential posts for delamain, so the PR author says nothing about
+// who opened it: every PR the operator opened by hand carries the same author.
+func TestAnyRunOpenedShouldNotBeFooledByAnUnrelatedPRNumberOfTheSameRepo(t *testing.T) {
+	runs := []store.Run{{MRURL: "https://github.com/acme/api/pull/41"}}
+	if anyRunOpened(runs, 410) || anyRunOpened(runs, 4) {
+		t.Error("the number must match whole, not as a prefix or suffix")
 	}
 }
 

@@ -42,3 +42,21 @@ func TestDetectShouldRejectUnknownHostsAndMalformedURLs(t *testing.T) {
 		}
 	}
 }
+
+func TestPRNumberShouldParseGitHubAndGitLabURLs(t *testing.T) {
+	for url, want := range map[string]int{
+		"https://github.com/acme/api/pull/42":                     42,
+		"https://gitlab.com/grp/sub/api/-/merge_requests/7":       7,
+		"https://git.corp.example/grp/api/-/merge_requests/1300/": 1300,
+		"https://github.com/acme/api/issues/42":                   0,
+		"https://github.com/acme/api/pull/":                       0,
+		"https://github.com/acme/api/pull/abc":                    0,
+		"https://github.com/acme/api/pull/0":                      0,
+		"":                                                        0,
+	} {
+		got, ok := PRNumber(url)
+		if got != want || ok != (want > 0) {
+			t.Errorf("PRNumber(%q) = %d, %v; want %d", url, got, ok, want)
+		}
+	}
+}

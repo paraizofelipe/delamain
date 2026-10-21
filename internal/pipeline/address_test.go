@@ -153,21 +153,22 @@ func TestRunAddressShouldSendOnlyPendingThreadsWithHistoryAndExcerptInsideThread
 	}
 }
 
-func TestRunAddressShouldAdvanceTheCursorToTheNewestHandledComment(t *testing.T) {
+func TestRunAddressShouldAnswerThreadsOlderThanTheLastReviewOfTheHead(t *testing.T) {
 	rh := newAddressHarness(t, answers(happyAnswers()))
-	// A review of this PR already recorded its head: addressing shares that row.
-	if err := rh.st.SaveCursor(context.Background(), store.ReviewCursor{Repo: rh.repo, PR: 5, LastSeenAt: t0, Rounds: 1, LastHeadSHA: prHead}); err != nil {
+	// A review of this PR ran after the comments were made and recorded its own cursor. The
+	// comments are still pending: answering does not read that row.
+	if err := rh.st.SaveCursor(context.Background(), store.ReviewCursor{Repo: rh.repo, PR: 5, LastSeenAt: t0.Add(72 * time.Hour), Rounds: 1, LastHeadSHA: prHead}); err != nil {
 		t.Fatal(err)
 	}
 	if res := rh.address(t); res.Outcome != OutcomeAnswered {
 		t.Fatalf("got %s (%s)", res.Outcome, res.Reason)
 	}
-	cur := rh.cursor(t)
-	if !cur.LastSeenAt.Equal(t0.Add(2 * time.Hour)) {
-		t.Fatalf("the cursor moves to the newest comment answered (%s), got %s", t0.Add(2*time.Hour), cur.LastSeenAt)
+	if len(rh.f.replies) == 0 {
+		t.Fatal("a comment older than the last review still gets an answer")
 	}
-	if cur.Rounds != 2 || cur.LastHeadSHA != prHead {
-		t.Fatalf("one more round, the reviewed head kept: %+v", cur)
+	cur := rh.cursor(t)
+	if !cur.LastSeenAt.Equal(t0.Add(72*time.Hour)) || cur.Rounds != 1 || cur.LastHeadSHA != prHead {
+		t.Fatalf("the reviewer's row is left exactly as it was: %+v", cur)
 	}
 }
 
@@ -265,9 +266,10 @@ func TestRunAddressShouldIgnoreThreadsWhoseLastCommentIsFromDelamain(t *testing.
 	}
 }
 
-func TestRunAddressShouldIgnoreCommentsOlderThanTheCursor(t *testing.T) {
-	rh := newAddressHarness(t, answers(responsesJSON(response("issue-comment:9", "valid", validReply))))
-	// An earlier round already handled what came before t0+90min.
+func TestRunAddressShouldAnswerEveryUnansweredThreadWhateverTheCursorSays(t *testing.T) {
+	rh := newAddressHarness(t, answers(happyAnswers()))
+	// A cursor newer than every comment used to retire them all. Nothing reads it now, so each
+	// unanswered thread is still delamain's turn.
 	if err := rh.st.SaveCursor(context.Background(), store.ReviewCursor{Repo: rh.repo, PR: 5, LastSeenAt: t0.Add(90 * time.Minute), Rounds: 1}); err != nil {
 		t.Fatal(err)
 	}
@@ -276,15 +278,21 @@ func TestRunAddressShouldIgnoreCommentsOlderThanTheCursor(t *testing.T) {
 	if res.Outcome != OutcomeAnswered {
 		t.Fatalf("want answered, got %s (%s)", res.Outcome, res.Reason)
 	}
-	if len(rh.f.replies) != 1 || rh.f.replies[0].thread != "issue-comment:9" {
-		t.Fatalf("only the comment newer than the cursor is answered: %+v", rh.f.replies)
+	var answered []string
+	for _, rp := range rh.f.replies {
+		answered = append(answered, rp.thread)
+	}
+	if !slices.Contains(answered, "t1") || !slices.Contains(answered, "issue-comment:9") {
+		t.Fatalf("every thread waiting for delamain is answered, got %v", answered)
 	}
 }
 
 func TestRunAddressShouldNotReplyTwiceWithSameMarkerKey(t *testing.T) {
-	rh := newAddressHarness(t, answers(happyAnswers()))
-	// On GitHub the answer to a PR-level comment lands in a thread of its own; the cursor that
-	// would have retired the comment was never saved.
+	// Only t1 is pending now, so that is all the responder may answer: an artifact naming the
+	// retired thread is rejected.
+	rh := newAddressHarness(t, answers(responsesJSON(response("t1", "invalid", invalidReply))))
+	// On GitHub the answer to a PR-level comment lands in a thread of its own, so the thread it
+	// answers still shows a human as its last comment. Only its marker key retires it.
 	rh.f.threads = append(rh.f.threads, forge.Thread{ID: "issue-comment:10", Comments: []forge.Comment{botReply("10", "issue-comment:9", "9", t0.Add(3*time.Hour))}})
 	res := rh.address(t)
 
@@ -294,8 +302,37 @@ func TestRunAddressShouldNotReplyTwiceWithSameMarkerKey(t *testing.T) {
 	if len(rh.f.replies) != 1 || rh.f.replies[0].thread != "t1" {
 		t.Fatalf("the comment already answered is not answered again: %+v", rh.f.replies)
 	}
-	if cur := rh.cursor(t); !cur.LastSeenAt.Equal(t0.Add(2 * time.Hour)) {
-		t.Fatalf("the cursor still moves past the comment already answered: %+v", cur)
+	// It must not even reach the responder: running it again costs budget and, with review.fix
+	// on, the orchestrator pushes the fix before the duplicate reply is dropped.
+	prompt := strings.Join(rh.h.prompts["responder"], "\n")
+	pending, _, found := strings.Cut(prompt, "Outras discussões")
+	if !found {
+		t.Fatalf("the responder prompt must separate pending from context threads:\n%s", prompt)
+	}
+	if strings.Contains(pending, "issue-comment:9") {
+		t.Errorf("a thread already answered must not be sent as pending:\n%s", pending)
+	}
+}
+
+// Whoever can comment on the PR writes what the responder reads, and a fork's checkout is code
+// nobody with write access here vouched for: answering one is refused as reviewing one is.
+func TestRunAddressShouldRefuseAForkBeforeFetchingAnything(t *testing.T) {
+	rh := newAddressHarness(t, answers(happyAnswers()))
+	rh.f.pr.Fork = true
+	_, err := rh.r.RunAddress(context.Background(), rh.repo, 5)
+	if err == nil {
+		t.Fatal("a fork must be refused before any work")
+	}
+	for _, want := range []string{"fork", "#5", "outro repositório"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the error must say %q, got %v", want, err)
+		}
+	}
+	if runs, _ := rh.st.RecentRuns(context.Background(), 10); len(runs) != 0 {
+		t.Fatalf("no run is recorded: %+v", runs)
+	}
+	if len(rh.g.fetchedPR)+len(rh.h.starts)+len(rh.f.replies) != 0 {
+		t.Fatal("nothing is fetched, started or answered")
 	}
 }
 
@@ -352,125 +389,78 @@ func TestPendingThreadsShouldSkipResolvedThreadsAndInternalNotes(t *testing.T) {
 		{ID: "open", Comments: []forge.Comment{human("1", time.Hour)}},
 		{ID: "resolved", Resolved: true, Comments: []forge.Comment{human("2", time.Hour)}},
 		{ID: "only-internal", Comments: []forge.Comment{internal(human("3", time.Hour))}},
+		// delamain's own reply is the last word: the thread is its turn no more.
+		{ID: "answered", Comments: []forge.Comment{human("4", time.Hour), botReply("5", "answered", "4", t0.Add(2*time.Hour))}},
 		// An internal note after delamain's reply is not a new public question.
-		{ID: "answered-then-noted", Comments: []forge.Comment{human("4", time.Hour), botReply("5", "answered-then-noted", "4", t0.Add(2*time.Hour)), internal(human("6", 3*time.Hour))}},
+		{ID: "answered-then-noted", Comments: []forge.Comment{human("6", time.Hour), botReply("7", "answered-then-noted", "6", t0.Add(2*time.Hour)), internal(human("8", 3*time.Hour))}},
 		{ID: "empty"},
 	}
 	var got []string
-	for _, th := range PendingThreads(ts, bot, time.Time{}) {
+	for _, th := range PendingThreads(ts, bot) {
 		got = append(got, th.ID)
 	}
 	if len(got) != 1 || got[0] != "open" {
 		t.Fatalf("only the open thread with a public question is pending, got %v", got)
 	}
-	if n := len(PendingThreads(ts, bot, t0.Add(time.Hour))); n != 0 {
-		t.Fatalf("a comment made exactly at the cursor was already handled, got %d pending", n)
+}
+
+func TestPendingThreadsShouldKeepAThreadOlderThanTheLastReviewOfThePR(t *testing.T) {
+	// A bot comments as soon as the PR opens, and delamain reviews it hours later. The comment
+	// is older than that review, and is still waiting for an answer.
+	ts := []forge.Thread{{ID: "antiga", Comments: []forge.Comment{{ID: "1", Author: "coderabbit", Body: "isto repete", CreatedAt: t0.Add(-72 * time.Hour)}}}}
+	if got := PendingThreads(ts, bot); len(got) != 1 {
+		t.Fatalf("an old unanswered comment is still pending, got %+v", got)
 	}
 }
 
 func TestPendingThreadsShouldReturnNothingWithoutAKnownForgeUser(t *testing.T) {
 	ts := []forge.Thread{{ID: "t1", Comments: []forge.Comment{{ID: "1", Author: "bob", Body: "pergunta", CreatedAt: t0}}}}
-	if got := PendingThreads(ts, "", time.Time{}); len(got) != 0 {
+	if got := PendingThreads(ts, ""); len(got) != 0 {
 		t.Fatalf("without knowing its own login delamain could answer itself forever: %+v", got)
 	}
 }
 
-func TestRunAddressShouldEscalateToNeedsHumanAfterMaxRounds(t *testing.T) {
+func TestRunAddressShouldLeaveTheReviewCursorAlone(t *testing.T) {
 	rh := newAddressHarness(t, answers(happyAnswers()))
-	rh.r.Cfg.Review.MaxRounds = 3
-	if err := rh.st.SaveCursor(context.Background(), store.ReviewCursor{Repo: rh.repo, PR: 5, Rounds: 3, LastHeadSHA: prHead}); err != nil {
-		t.Fatal(err)
+	if res := rh.address(t); res.Outcome != OutcomeAnswered {
+		t.Fatalf("want answered, got %s (%s)", res.Outcome, res.Reason)
 	}
-	res := rh.address(t)
-
-	if res.Outcome != OutcomeHalted || !strings.Contains(res.Reason, "needs-human") {
-		t.Fatalf("want halted on needs-human, got %s (%s)", res.Outcome, res.Reason)
-	}
-	if len(rh.f.prRelabels) != 1 || len(rh.f.prRelabels[0][0]) != 1 || rh.f.prRelabels[0][0][0] != rh.r.Cfg.Forge.Labels.NeedsHuman {
-		t.Fatalf("the PR is labeled needs-human: %+v", rh.f.prRelabels)
-	}
-	if len(rh.f.prComments) != 1 {
-		t.Fatalf("one notice tells the humans why: %+v", rh.f.prComments)
-	}
-	if m := marker(t, rh.f.prComments[0]); m.Kind != "needs_human" || m.Key != forge.Key("needs-human", "5") {
-		t.Fatalf("the notice is tagged once per PR: %+v", m)
-	}
-	if len(rh.h.starts)+len(rh.f.replies)+len(rh.g.fetchedPR) != 0 {
-		t.Fatal("past max_rounds no agent runs and nothing is answered")
-	}
-	cur := rh.cursor(t)
-	if !cur.LastSeenAt.Equal(t0.Add(2*time.Hour)) || cur.Rounds != 3 || cur.LastHeadSHA != prHead {
-		t.Fatalf("the cursor moves past the comments seen, without spending a round: %+v", cur)
-	}
-}
-
-func TestRunAddressShouldNotRepeatTheNeedsHumanCommentOnALaterPoll(t *testing.T) {
-	rh := newAddressHarness(t, answers(happyAnswers()))
-	if err := rh.st.SaveCursor(context.Background(), store.ReviewCursor{Repo: rh.repo, PR: 5, Rounds: rh.r.Cfg.Review.MaxRounds}); err != nil {
-		t.Fatal(err)
-	}
-	rh.address(t)
-	if len(rh.f.prComments) != 1 {
-		t.Fatalf("first escalation posts the notice: %+v", rh.f.prComments)
-	}
-	// The forge now shows the notice, and someone comments again.
-	rh.f.threads = append(rh.f.threads,
-		forge.Thread{ID: "issue-comment:20", Comments: []forge.Comment{{ID: "20", Author: bot, Body: rh.f.prComments[0], CreatedAt: t0.Add(3 * time.Hour)}}},
-		forge.Thread{ID: "issue-comment:21", Comments: []forge.Comment{{ID: "21", Author: "bob", Body: "e agora?", CreatedAt: t0.Add(4 * time.Hour)}}},
-	)
-	res := rh.address(t)
-
-	if res.Outcome != OutcomeHalted || len(rh.f.prComments) != 1 {
-		t.Fatalf("the notice goes out once per PR: %s, %+v", res.Outcome, rh.f.prComments)
-	}
-	if len(rh.h.starts) != 0 {
-		t.Fatal("the watcher stays stopped")
-	}
-	if cur := rh.cursor(t); !cur.LastSeenAt.Equal(t0.Add(4 * time.Hour)) {
-		t.Fatalf("the cursor follows the comments so the producer does not reopen the job: %+v", cur)
-	}
-}
-
-func TestRunAddressShouldCountAHaltedRoundTowardsMaxRounds(t *testing.T) {
-	rh := newAddressHarness(t, func(string, int, string) reply { return reply{provider: "overloaded"} })
-	rh.r.Cfg.Review.MaxRounds = 2
-	for want := 1; want <= 2; want++ {
-		if res := rh.address(t); res.Outcome != OutcomeHalted {
-			t.Fatalf("attempt %d: want halted, got %s (%s)", want, res.Outcome, res.Reason)
-		}
-		if cur := rh.cursor(t); cur.Rounds != want || !cur.LastSeenAt.IsZero() {
-			t.Fatalf("attempt %d: a halt spends a round and keeps the comments pending: %+v", want, cur)
-		}
-	}
-	starts := len(rh.h.starts)
-	if res := rh.address(t); res.Outcome != OutcomeHalted || !strings.Contains(res.Reason, "needs-human") {
-		t.Fatalf("a PR whose answers keep halting goes to a human: %s (%s)", res.Outcome, res.Reason)
-	}
-	if len(rh.h.starts) != starts || len(rh.f.replies) != 0 {
-		t.Fatal("no agent runs once the rounds are spent")
-	}
-}
-
-func TestRunAddressShouldNotCountAHaltTheOperatorCaused(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	rh := newAddressHarness(t, func(string, int, string) reply {
-		cancel()       // Ctrl+C on the daemon, mid-answer
-		return reply{} // no artifact: the step halts
-	})
-	res, err := rh.r.RunAddress(ctx, rh.repo, 5)
-	if err != nil {
-		t.Fatalf("an interrupted run still records its outcome: %v", err)
-	}
-	if res.Outcome != OutcomeHalted {
-		t.Fatalf("want halted, got %s (%s)", res.Outcome, res.Reason)
-	}
+	// The cursor belongs to the reviewer. Writing it here once hid a comment older than the
+	// last review from every later round, since the review had moved the cursor past it.
 	if cur, err := rh.st.Cursor(context.Background(), rh.repo, 5); !errors.Is(err, store.ErrNotFound) {
-		t.Fatalf("an interrupted run spends no round: %+v (%v)", cur, err)
+		t.Fatalf("answering must not write the review cursor: %+v (%v)", cur, err)
 	}
 }
 
-// assertNothingAnswered is the fail-closed contract: a halted run leaves no trace on the PR and
-// spends a round.
+func TestRunAddressShouldNotRepeatAnAnswerAlreadyOnTheThread(t *testing.T) {
+	rh := newAddressHarness(t, answers(happyAnswers()))
+	if res := rh.address(t); res.Outcome != OutcomeAnswered {
+		t.Fatalf("first round answers: %s (%s)", res.Outcome, res.Reason)
+	}
+	answered := len(rh.f.replies)
+	if answered == 0 {
+		t.Fatal("the first round posted no reply")
+	}
+	// The forge now shows delamain's replies as the last comment of each thread it answered.
+	for i, th := range rh.f.threads {
+		for _, rp := range rh.f.replies {
+			if rp.thread == th.ID {
+				rh.f.threads[i].Comments = append(rh.f.threads[i].Comments,
+					forge.Comment{ID: th.ID + "-bot", Author: bot, Body: rp.body, CreatedAt: t0.Add(3 * time.Hour)})
+			}
+		}
+	}
+	res := rh.address(t)
+
+	if res.Outcome != OutcomeSkipped {
+		t.Fatalf("with every thread answered there is nothing pending: %s (%s)", res.Outcome, res.Reason)
+	}
+	if len(rh.f.replies) != answered {
+		t.Fatalf("no thread may be answered twice: %+v", rh.f.replies)
+	}
+}
+
+// assertNothingAnswered is the fail-closed contract: a halted run leaves no trace on the PR.
 func assertNothingAnswered(t *testing.T, rh *reviewHarness, res Result, reason string) {
 	t.Helper()
 	if res.Outcome != OutcomeHalted || !strings.Contains(res.Reason, reason) {
@@ -479,8 +469,8 @@ func assertNothingAnswered(t *testing.T, rh *reviewHarness, res Result, reason s
 	if len(rh.f.replies)+len(rh.f.prComments)+len(rh.f.posted) != 0 {
 		t.Fatalf("nothing may be posted: replies %+v, comments %+v", rh.f.replies, rh.f.prComments)
 	}
-	if cur := rh.cursor(t); cur.Rounds != 1 || !cur.LastSeenAt.IsZero() {
-		t.Fatalf("the halt spends a round and keeps the comments pending: %+v", cur)
+	if cur, err := rh.st.Cursor(context.Background(), rh.repo, 5); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("a halted answer writes no cursor: %+v (%v)", cur, err)
 	}
 	if _, err := os.Stat(filepath.Join(rh.r.Cfg.Paths.MemoryDir(), "github.com", "acme", "api.md")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("a run that answered nothing learns nothing: %v", err)
@@ -701,12 +691,12 @@ func fixAnswers() behavior {
 	}
 }
 
-// newFixHarness is newAddressHarness with review.address.push on, for the PR that an issue run
+// newFixHarness is newAddressHarness with review.fix on, for the PR that an issue run
 // of delamain opened from fixBranch; the branch carries a .delamain.yaml with its gates.
 func newFixHarness(t *testing.T, b behavior) *reviewHarness {
 	t.Helper()
 	rh := newAddressHarness(t, b)
-	rh.r.Cfg.Review.Address.Push = true
+	rh.r.Cfg.Review.Fix = true
 	rh.f.pr.HeadRef = fixBranch
 	ctx := context.Background()
 	rec, err := rh.st.CreateRun(ctx, rh.repo, "#3", "Add parse", "claude", 3, 0, store.KindIssue)
@@ -798,8 +788,8 @@ func TestRunAddressWithPushShouldCommitVerifyPushAndResolveValidThreads(t *testi
 	if _, err := os.Stat(wt); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("the worktree is removed at the end: %v", err)
 	}
-	if cur := rh.cursor(t); cur.Rounds != 1 || !cur.LastSeenAt.Equal(t0.Add(2*time.Hour)) {
-		t.Fatalf("a fixing round is a round: %+v", cur)
+	if cur, err := rh.st.Cursor(context.Background(), rh.repo, 5); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("fixing writes no review cursor either: %+v (%v)", cur, err)
 	}
 }
 
@@ -1120,19 +1110,19 @@ func assertOnlyReplied(t *testing.T, rh *reviewHarness, res Result) {
 
 func TestRunAddressWithoutPushShouldBehaveAsPhase7(t *testing.T) {
 	rh := newFixHarness(t, answers(happyAnswers()))
-	rh.r.Cfg.Review.Address.Push = false
+	rh.r.Cfg.Review.Fix = false
 	assertOnlyReplied(t, rh, rh.address(t))
 
 	// A fix claimed with the push off is rejected exactly as in phase 7.
 	rh = newFixHarness(t, answers(responsesJSON(response("t1", "invalid", invalidReply), fixedAnswer())))
-	rh.r.Cfg.Review.Address.Push = false
+	rh.r.Cfg.Review.Fix = false
 	assertNothingAnswered(t, rh, rh.address(t), "fixed must be false")
 }
 
 func TestRunAddressWithPushShouldOnlyReplyOnAPRNotOpenedByDelamain(t *testing.T) {
+	// A fork is not among these: RunAddress refuses it outright, before any of this.
 	for name, setup := range map[string]func(rh *reviewHarness){
 		"no issue run opened it": func(rh *reviewHarness) { rh.f.pr.URL = "https://github.com/acme/api/pull/55" },
-		"head from a fork":       func(rh *reviewHarness) { rh.f.pr.Fork = true },
 		"another head branch":    func(rh *reviewHarness) { rh.f.pr.HeadRef = "feat/someone-else" },
 	} {
 		t.Run(name, func(t *testing.T) {

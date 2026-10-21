@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/paraizo/delamain/internal/artifacts"
 	"github.com/paraizo/delamain/internal/config"
 	"github.com/paraizo/delamain/internal/forge"
 	"github.com/paraizo/delamain/internal/gitx"
@@ -110,13 +112,25 @@ func TestRunReviewShouldPostCommentEventWithInlineAndSummary(t *testing.T) {
 	if o.HeadSHA != prHead || o.BaseSHA != prBase || o.StartSHA != prBase {
 		t.Fatalf("the review is pinned to the reviewed head and base: %+v", o)
 	}
-	if len(o.Comments) != 1 || o.Comments[0].Path != "a.go" || o.Comments[0].Line != 3 || !strings.Contains(o.Comments[0].Body, majorMsg) {
-		t.Fatalf("only the major finding goes inline, on its line: %+v", o.Comments)
+	// Both findings sit on lines the head touched, so both are posted on their own line —
+	// severity decides nothing about where a comment goes.
+	if len(o.Comments) != 2 {
+		t.Fatalf("every finding on a changed line goes inline: %+v", o.Comments)
 	}
-	if m := marker(t, o.Comments[0].Body); m.RunID != res.RunID || m.Kind != "review" || m.Key != forge.Key("a.go", "3", majorMsg) {
-		t.Fatalf("inline marker %+v, want run %d kind review key of path/line/message", m, res.RunID)
+	want := map[int]string{3: majorMsg, 4: minorMsg}
+	for _, c := range o.Comments {
+		if c.Path != "a.go" || !strings.Contains(c.Body, want[c.Line]) {
+			t.Fatalf("inline comment on the wrong line or message: %+v", c)
+		}
+		if m := marker(t, c.Body); m.RunID != res.RunID || m.Kind != "review" || m.Key != forge.Key("a.go", strconv.Itoa(c.Line), want[c.Line]) {
+			t.Fatalf("inline marker %+v, want run %d kind review key of path/line/message", m, res.RunID)
+		}
 	}
-	for _, want := range []string{"Adiciona o parse, mas engole o erro.", minorMsg, "talvez nil"} {
+	// The evidence goes with the comment, so it says which part of the line is the problem.
+	if !strings.Contains(o.Comments[0].Body, "```\nv, _ := parse(s)\n```") && !strings.Contains(o.Comments[1].Body, "```\nv, _ := parse(s)\n```") {
+		t.Errorf("the inline comment must carry the evidence as a code block: %+v", o.Comments)
+	}
+	for _, want := range []string{"Adiciona o parse, mas engole o erro.", "talvez nil"} {
 		if !strings.Contains(o.Summary, want) {
 			t.Errorf("the summary must carry %q:\n%s", want, o.Summary)
 		}
@@ -124,7 +138,7 @@ func TestRunReviewShouldPostCommentEventWithInlineAndSummary(t *testing.T) {
 	if m := marker(t, o.Summary); m.RunID != res.RunID || m.Kind != "summary" || m.Key != forge.Key("summary", prHead) {
 		t.Fatalf("summary marker %+v, want kind summary keyed by the head", m)
 	}
-	if res.Review == nil || *res.Review != (ReviewSummary{PRURL: rh.f.pr.URL, Inline: 1, InSummary: 1, Dropped: 1}) {
+	if res.Review == nil || *res.Review != (ReviewSummary{PRURL: rh.f.pr.URL, Inline: 2, InSummary: 0, Dropped: 1}) {
 		t.Fatalf("result counts: %+v", res.Review)
 	}
 	rec := rh.finalRun(t, res.RunID)
@@ -370,6 +384,54 @@ func TestRunReviewShouldMoveFindingsOutsideTheDiffToSummary(t *testing.T) {
 	}
 }
 
+func TestRunReviewShouldCarryTheCodeOfEveryFindingItPostsInTheSummary(t *testing.T) {
+	findings := `[{"severity":"minor","category":"estilo","file":"a.go","line":30,"evidence":"nao usado","rule":"r","message":"fora do hunk"},
+{"severity":"major","category":"faltando","file":"","line":0,"evidence":"nenhum teste chama parse","rule":"r","message":"sem teste para o parse"}]`
+	rh := newReviewHarness(t, reviewsPR(prReviewJSON(findings)))
+	rh.g.lines = map[string][]gitx.LineRange{"a.go": {{Start: 1, End: 5}}}
+	// The head of the PR, as the object store serves it to the excerpt.
+	var body strings.Builder
+	for i := 1; i <= 40; i++ {
+		fmt.Fprintf(&body, "linha %d\n", i)
+	}
+	rh.g.files[gitx.PRRef(5)+":a.go"] = body.String()
+	res := rh.review(t)
+
+	if res.Outcome != OutcomeReviewed || len(rh.f.posted) != 1 {
+		t.Fatalf("want one review, got %s (%s), %d posted", res.Outcome, res.Reason, len(rh.f.posted))
+	}
+	summary := rh.f.posted[0].Summary
+	// A finding with a line of its own shows the head around it, numbered.
+	for _, want := range []string{"30: linha 30", "25: linha 25", "35: linha 35"} {
+		if !strings.Contains(summary, want) {
+			t.Errorf("the summary must show the head around the line; missing %q:\n%s", want, summary)
+		}
+	}
+	if strings.Contains(summary, "24: linha 24") {
+		t.Errorf("the excerpt must stay within %d lines of the finding:\n%s", excerptContext, summary)
+	}
+	// A finding about the PR as a whole has no line, so it shows the evidence instead.
+	if !strings.Contains(summary, "nenhum teste chama parse") {
+		t.Errorf("a PR-level finding must carry its evidence:\n%s", summary)
+	}
+	// Indented under the list item, or the fence would break out of it.
+	if !strings.Contains(summary, "\n  ```\n") {
+		t.Errorf("the code of a summary finding must be a fenced block inside its item:\n%s", summary)
+	}
+}
+
+func TestReviewSummaryShouldNotLetAFenceInTheCodeBreakOutOfItsBlock(t *testing.T) {
+	f := artifacts.Finding{Severity: "minor", Category: "docs", File: "README.md", Line: 4, Message: "exemplo errado"}
+	// The excerpt of a Markdown file carries fences of its own.
+	got := findingLine("standards", f, "3: ```go\n4: parse(s)\n5: ```\n")
+	if !strings.Contains(got, "````") {
+		t.Fatalf("a fence inside the code needs a longer fence around it:\n%s", got)
+	}
+	if strings.Count(got, "````") != 2 {
+		t.Fatalf("the block opens and closes exactly once:\n%s", got)
+	}
+}
+
 func TestRunReviewShouldNotRepostCommentsWithSameMarkerKey(t *testing.T) {
 	findings := `[{"severity":"major","category":"erro","file":"a.go","line":3,"evidence":"x","rule":"r","message":"` + majorMsg + `"},
 {"severity":"major","category":"erro","file":"a.go","line":5,"evidence":"y","rule":"r","message":"achado novo"}]`
@@ -531,20 +593,6 @@ func TestRunReviewShouldAppendLearningsToMemoryOutsideTheWorktree(t *testing.T) 
 	}
 }
 
-// The memory is read into every later review of the repository, so a fork's author must not be
-// able to leave a durable "fact" there that silences findings in someone else's PR.
-func TestRunReviewShouldNotStoreTheLearningsOfAForkPR(t *testing.T) {
-	rh := newReviewHarness(t, reviewsPR(prReviewJSON("")))
-	rh.fromFork()
-	res := rh.review(t)
-	if res.Outcome != OutcomeReviewed {
-		t.Fatalf("got %s (%s)", res.Outcome, res.Reason)
-	}
-	if _, err := os.Stat(filepath.Join(rh.r.Cfg.Paths.MemoryDir(), "github.com", "acme", "api.md")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("a fork's learnings must not reach the repository memory: %v", err)
-	}
-}
-
 func TestRunReviewShouldStartThePRReviewerOutsideThePRCheckout(t *testing.T) {
 	rh := newReviewHarness(t, reviewsPR(prReviewJSON("")))
 	rh.g.onDetached = func(path string) {
@@ -583,6 +631,7 @@ func TestRunReviewShouldIgnoreMarkersNotPostedByDelamain(t *testing.T) {
 		return []forge.Thread{
 			{ID: "issue-comment:7", Comments: []forge.Comment{{Author: author, Body: body("summary", forge.Key("summary", prHead))}}},
 			{ID: "t7", Path: "a.go", Line: 3, Comments: []forge.Comment{{Author: author, Body: body("review", forge.Key("a.go", "3", majorMsg))}}},
+			{ID: "t8", Path: "a.go", Line: 4, Comments: []forge.Comment{{Author: author, Body: body("review", forge.Key("a.go", "4", minorMsg))}}},
 		}
 	}
 	for name, tc := range map[string]struct{ user, author string }{
@@ -600,11 +649,11 @@ func TestRunReviewShouldIgnoreMarkersNotPostedByDelamain(t *testing.T) {
 				t.Fatalf("the review must still be posted: %s (%s), %d posted", res.Outcome, res.Reason, len(rh.f.posted))
 			}
 			o := rh.f.posted[0]
-			if !strings.Contains(o.Summary, "Adiciona o parse, mas engole o erro.") || !strings.Contains(o.Summary, minorMsg) {
-				t.Fatalf("a forged summary marker must not suppress the findings:\n%s", o.Summary)
+			if !strings.Contains(o.Summary, "Adiciona o parse, mas engole o erro.") {
+				t.Fatalf("a forged summary marker must not suppress the summary:\n%s", o.Summary)
 			}
-			if len(o.Comments) != 1 || o.Comments[0].Line != 3 {
-				t.Fatalf("a forged inline marker must not suppress the comment: %+v", o.Comments)
+			if len(o.Comments) != 2 {
+				t.Fatalf("a forged inline marker must not suppress the comments: %+v", o.Comments)
 			}
 		})
 	}
@@ -684,14 +733,10 @@ func TestRunReviewShouldCountEveryHaltOfTheSameHeadAndClearThemOnceItPosts(t *te
 	}
 }
 
-// fromFork turns the fixture into a contribution pushed from another repository: the only case
-// whose code is third-party and still needs the reviewer confined.
-func (rh *reviewHarness) fromFork() {
-	rh.f.pr.Fork = true
-	rh.r.Cfg.Agent.Harness = config.HarnessClaude
-}
-
-func TestRunReviewShouldReviewAPRFromThisRepositoryWithoutConfiningTheReviewer(t *testing.T) {
+// Every head delamain reviews is a branch of this repository, since RunReview refuses a fork.
+// That code is not third-party, so no agent of the review or the issue flow is confined;
+// answering review threads is the confined one, because anyone can write a comment.
+func TestRunReviewShouldNotConfineAnyAgentBecauseTheHeadIsAlwaysFromThisRepository(t *testing.T) {
 	rh := newReviewHarness(t, reviewsPR(prReviewJSON("")))
 	res := rh.review(t)
 	if res.Outcome != OutcomeReviewed {
@@ -701,25 +746,11 @@ func TestRunReviewShouldReviewAPRFromThisRepositoryWithoutConfiningTheReviewer(t
 	if start.Confine != nil {
 		t.Fatalf("code from this repository is not third-party: the reviewer keeps its tools, got %+v", start.Confine)
 	}
-}
-
-func TestRunReviewShouldConfineThePRReviewerToReadingTheCheckout(t *testing.T) {
-	rh := newReviewHarness(t, reviewsPR(prReviewJSON("")))
-	rh.fromFork()
-	res := rh.review(t)
-	if res.Outcome != OutcomeReviewed {
-		t.Fatalf("got %s (%s)", res.Outcome, res.Reason)
-	}
-	start := rh.h.starts["pr-reviewer-r"+strconv.FormatInt(res.RunID, 10)]
-	want := Confinement{Checkout: res.Worktree, Base: prBase, Artifact: filepath.Join(res.RunDir, "review.json")}
-	if start.Confine == nil || *start.Confine != want {
-		t.Fatalf("the pr-reviewer reads third-party code: it must run confined to %+v, got %+v", want, start.Confine)
-	}
-	// The only commands the confinement allows must be the ones the prompt asks for, verbatim.
+	// The reviewer still gets git pointed at the checkout explicitly, never at its own cwd.
 	prompt := strings.Join(rh.h.prompts["pr-reviewer"], "\n")
 	for _, cmd := range []string{"git -C " + res.Worktree + " diff --no-ext-diff --no-textconv " + prBase + "...HEAD", "git -C " + res.Worktree + " log " + prBase + "..HEAD --oneline"} {
 		if !strings.Contains(prompt, "`"+cmd+"`") {
-			t.Errorf("the prompt must give %q exactly as the confinement allows it", cmd)
+			t.Errorf("the prompt must give %q exactly", cmd)
 		}
 	}
 
@@ -772,19 +803,31 @@ func TestRunReviewShouldHaltWithoutPostingWhenTheReviewLeaksASecret(t *testing.T
 	}
 }
 
-func TestRunReviewShouldRefuseAForkOnAHarnessThatCannotConfineTheReviewer(t *testing.T) {
-	rh := newReviewHarness(t, reviewsPR(prReviewJSON("")))
-	rh.f.pr.Fork = true
-	rh.r.Cfg.Agent.Harness = config.HarnessOmp // no per-command allowlist: the reviewer would get a free shell
-	_, err := rh.r.RunReview(context.Background(), rh.repo, 5)
-	if err == nil || !strings.Contains(err.Error(), "agent.harness: claude") {
-		t.Fatalf("a fork review on omp must be refused before any work: %v", err)
-	}
-	if runs, _ := rh.st.RecentRuns(context.Background(), 10); len(runs) != 0 {
-		t.Fatalf("no run is recorded: %+v", runs)
-	}
-	if len(rh.g.fetchedPR)+len(rh.h.starts)+len(rh.f.posted) != 0 {
-		t.Fatal("nothing is fetched, started or posted")
+// A head in another repository is code nobody with write access here vouched for, and its
+// checkout brings the files that steer the agent. delamain does not review it on any harness:
+// whoever asked gets an error that says why and what to do instead.
+func TestRunReviewShouldRefuseAForkOnEveryHarness(t *testing.T) {
+	for _, harness := range []config.Harness{config.HarnessOmp, config.HarnessClaude} {
+		t.Run(string(harness), func(t *testing.T) {
+			rh := newReviewHarness(t, reviewsPR(prReviewJSON("")))
+			rh.f.pr.Fork = true
+			rh.r.Cfg.Agent.Harness = harness
+			_, err := rh.r.RunReview(context.Background(), rh.repo, 5)
+			if err == nil {
+				t.Fatal("a fork must be refused before any work")
+			}
+			for _, want := range []string{"fork", "#5", "outro repositório"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("the error must say %q, got %v", want, err)
+				}
+			}
+			if runs, _ := rh.st.RecentRuns(context.Background(), 10); len(runs) != 0 {
+				t.Fatalf("no run is recorded: %+v", runs)
+			}
+			if len(rh.g.fetchedPR)+len(rh.h.starts)+len(rh.f.posted) != 0 {
+				t.Fatal("nothing is fetched, started or posted")
+			}
+		})
 	}
 }
 

@@ -158,7 +158,9 @@ func renderReviewReport(res Result, p *prRun) string {
 	b.WriteString("## Achados\n\n")
 	for _, a := range rv.Axes {
 		for _, f := range a.Findings {
-			b.WriteString(findingLine(a.Axis, f) + "\n")
+			// No excerpt here: the report is written after the checkout is gone, so each
+			// finding shows the evidence the reviewer quoted.
+			b.WriteString(findingLine(a.Axis, f, "") + "\n")
 		}
 	}
 	if len(rv.Dropped) > 0 {

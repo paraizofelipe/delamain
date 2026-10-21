@@ -105,8 +105,8 @@ func (r *Runner) recoverRun(ctx context.Context, rec store.Run) (Result, error) 
 // haltUnresumable closes a review or address run whose process died: it has nothing to deliver,
 // so only what it fetched is cleaned up before it is recorded as halted. It drops the same two
 // things finishReview does — the worktree and the PR ref — because a ref left behind keeps the
-// PR's commits reachable, and git never collects them: for a fork, that is third-party code
-// kept in the repository after the PR itself is gone.
+// PR's commits reachable, and git never collects them: the repository would grow a copy of
+// every branch delamain ever looked at, including the ones since deleted.
 func (r *Runner) haltUnresumable(ctx context.Context, ru *run) error {
 	rec := ru.rec
 	ru.log.Warn("halting interrupted run", "run", rec.ID, "kind", rec.Kind, "state", rec.State)

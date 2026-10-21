@@ -389,8 +389,12 @@ func (s *Store) UsageSince(ctx context.Context, t time.Time) (Usage, error) {
 
 // ReviewCursor is how far the reviewer got on a PR.
 type ReviewCursor struct {
-	Repo        string
-	PR          int
+	Repo string
+	PR   int
+	// LastSeenAt is when the last review of this PR posted and Rounds how many have posted.
+	// Nothing decides on either one: they are a record for operators. What keeps a head from
+	// being reviewed twice is LastHeadSHA, and what keeps a thread from being answered twice is
+	// the reply itself (see pipeline.PendingThreads). The columns stay to avoid a migration.
 	LastSeenAt  time.Time
 	Rounds      int
 	LastHeadSHA string

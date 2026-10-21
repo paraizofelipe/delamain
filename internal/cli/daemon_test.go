@@ -126,25 +126,20 @@ func TestRecoveredResultShouldFollowTheOutcomeMapping(t *testing.T) {
 	}
 }
 
+// The startup line says the same on either harness: review runs on both, and a PR/MR from a
+// fork is refused on both.
 func TestDaemonShouldDescribeReviewStateOnStartup(t *testing.T) {
 	cfg := config.Default()
 	cfg.Agent.Harness = config.HarnessOmp
 	if got := reviewStartup(cfg); got != "review: disabled" {
 		t.Fatalf("review off, on any harness: %q", got)
 	}
-	cfg.Review.Enabled, cfg.Agent.Harness, cfg.Forge.Labels.Review = true, config.HarnessClaude, "needs-review"
-	if got := reviewStartup(cfg); got != "review: enabled (label needs-review)" {
-		t.Fatalf("review on: %q", got)
-	}
-}
-
-// The daemon serves issues and reviews together: a harness that cannot confine the reviewer is
-// not a reason to refuse the whole thing, only the PRs/MRs whose head comes from a fork.
-func TestDaemonShouldStartReviewOnAHarnessThatCannotConfineTheReviewer(t *testing.T) {
-	cfg := config.Default()
-	cfg.Review.Enabled, cfg.Agent.Harness, cfg.Forge.Labels.Review = true, config.HarnessOmp, "needs-review"
-	got := reviewStartup(cfg)
-	if !strings.HasPrefix(got, "review: enabled (label needs-review") || !strings.Contains(got, "fork") {
-		t.Fatalf("review stays on and warns about forks, got %q", got)
+	cfg.Review.Enabled, cfg.Forge.Labels.Review = true, "needs-review"
+	for _, harness := range []config.Harness{config.HarnessOmp, config.HarnessClaude} {
+		cfg.Agent.Harness = harness
+		got := reviewStartup(cfg)
+		if !strings.HasPrefix(got, "review: enabled (label needs-review") || !strings.Contains(got, "fork") {
+			t.Errorf("%s: review on, saying forks are left out, got %q", harness, got)
+		}
 	}
 }

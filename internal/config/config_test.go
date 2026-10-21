@@ -322,8 +322,8 @@ func TestPathsShouldPlaceMemoryDirUnderStateDir(t *testing.T) {
 	}
 }
 
-func TestReviewShouldDefaultToDisabledWithItsLimits(t *testing.T) {
-	want := Review{Enabled: false, MaxComments: 15, MaxRounds: 3, PerReview: 500_000, Address: ReviewAddress{Enabled: false, Push: false}}
+func TestReviewShouldDefaultToDisabledWithItsLimitsAndFixingOn(t *testing.T) {
+	want := Review{Enabled: false, MaxComments: 15, PerReview: 500_000, Fix: true}
 	cfg, err := Load(filepath.Join(t.TempDir(), "absent.yaml"), noEnv)
 	if err != nil {
 		t.Fatal(err)
@@ -337,31 +337,40 @@ func TestReviewShouldDefaultToDisabledWithItsLimits(t *testing.T) {
 }
 
 func TestLoadShouldReadTheReviewSectionFromTheFile(t *testing.T) {
-	p := writeFile(t, "review:\n  enabled: true\n  max_comments: 7\n  per_review: 2.5\n  address:\n    enabled: true\n    push: true\n")
+	p := writeFile(t, "review:\n  enabled: true\n  max_comments: 7\n  per_review: 2.5\n")
 	cfg, err := Load(p, noEnv)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := Review{Enabled: true, MaxComments: 7, MaxRounds: 3, PerReview: 2.5, Address: ReviewAddress{Enabled: true, Push: true}}
+	want := Review{Enabled: true, MaxComments: 7, PerReview: 2.5, Fix: true}
 	if cfg.Review != want {
-		t.Fatalf("review = %+v, want %+v (unset max_rounds keeps its default)", cfg.Review, want)
+		t.Fatalf("review = %+v, want %+v (unset fix keeps its default)", cfg.Review, want)
+	}
+}
+
+func TestReviewFixShouldBeTurnedOffByTheFile(t *testing.T) {
+	p := writeFile(t, "review:\n  enabled: true\n  fix: false\n")
+	cfg, err := Load(p, noEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Review.Fix {
+		t.Fatal("review.fix: false in the file must win over the default")
 	}
 }
 
 func TestReviewShouldBeOverriddenByEnv(t *testing.T) {
-	p := writeFile(t, "review:\n  enabled: true\n  max_comments: 7\n  address:\n    push: true\n")
+	p := writeFile(t, "review:\n  enabled: true\n  max_comments: 7\n  fix: true\n")
 	cfg, err := Load(p, envOf(map[string]string{
-		"DELAMAIN_REVIEW_ENABLED":         "false",
-		"DELAMAIN_REVIEW_MAX_COMMENTS":    "20",
-		"DELAMAIN_REVIEW_MAX_ROUNDS":      "5",
-		"DELAMAIN_REVIEW_PER_REVIEW":      "0.75",
-		"DELAMAIN_REVIEW_ADDRESS_ENABLED": "true",
-		"DELAMAIN_REVIEW_ADDRESS_PUSH":    "false",
+		"DELAMAIN_REVIEW_ENABLED":      "false",
+		"DELAMAIN_REVIEW_MAX_COMMENTS": "20",
+		"DELAMAIN_REVIEW_PER_REVIEW":   "0.75",
+		"DELAMAIN_REVIEW_FIX":          "false",
 	}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := Review{Enabled: false, MaxComments: 20, MaxRounds: 5, PerReview: 0.75, Address: ReviewAddress{Enabled: true, Push: false}}
+	want := Review{Enabled: false, MaxComments: 20, PerReview: 0.75, Fix: false}
 	if cfg.Review != want {
 		t.Fatalf("env must win over file: review = %+v, want %+v", cfg.Review, want)
 	}
@@ -369,12 +378,10 @@ func TestReviewShouldBeOverriddenByEnv(t *testing.T) {
 
 func TestReviewShouldRejectMalformedEnvOverrides(t *testing.T) {
 	for key, v := range map[string]string{
-		"DELAMAIN_REVIEW_ENABLED":         "talvez",
-		"DELAMAIN_REVIEW_ADDRESS_ENABLED": "yes please",
-		"DELAMAIN_REVIEW_ADDRESS_PUSH":    "nope",
-		"DELAMAIN_REVIEW_MAX_COMMENTS":    "many",
-		"DELAMAIN_REVIEW_MAX_ROUNDS":      "1.5",
-		"DELAMAIN_REVIEW_PER_REVIEW":      "half",
+		"DELAMAIN_REVIEW_ENABLED":      "talvez",
+		"DELAMAIN_REVIEW_FIX":          "nope",
+		"DELAMAIN_REVIEW_MAX_COMMENTS": "many",
+		"DELAMAIN_REVIEW_PER_REVIEW":   "half",
 	} {
 		if _, err := Load(filepath.Join(t.TempDir(), "x.yaml"), envOf(map[string]string{key: v})); err == nil || !strings.Contains(err.Error(), key) {
 			t.Errorf("%s=%q: want error naming the bad variable, got %v", key, v, err)
@@ -388,11 +395,10 @@ func TestValidateShouldRejectMeaninglessReviewLimits(t *testing.T) {
 		field  string
 	}{
 		"zero comments":     {func(c *Config) { c.Review.MaxComments = 0 }, "review.max_comments"},
-		"zero rounds":       {func(c *Config) { c.Review.MaxRounds = 0 }, "review.max_rounds"},
+		"negative comments": {func(c *Config) { c.Review.MaxComments = -2 }, "review.max_comments"},
 		"zero budget":       {func(c *Config) { c.Review.PerReview = 0 }, "review.per_review"},
 		"negative budget":   {func(c *Config) { c.Review.PerReview = -1 }, "review.per_review"},
 		"enabled, zero cap": {func(c *Config) { c.Review.Enabled = true; c.Review.MaxComments = 0 }, "review.max_comments"},
-		"negative rounds":   {func(c *Config) { c.Review.MaxRounds = -2 }, "review.max_rounds"},
 	} {
 		cfg := Default()
 		tc.mutate(&cfg)
@@ -401,9 +407,9 @@ func TestValidateShouldRejectMeaninglessReviewLimits(t *testing.T) {
 		}
 	}
 	cfg := Default()
-	cfg.Review.MaxComments, cfg.Review.MaxRounds, cfg.Review.PerReview = 1, 1, 0.01
+	cfg.Review.MaxComments, cfg.Review.PerReview = 1, 0.01
 	if err := cfg.Validate(); err != nil {
-		t.Fatalf("one comment, one round and any positive budget are meaningful: %v", err)
+		t.Fatalf("one comment and any positive budget are meaningful: %v", err)
 	}
 }
 

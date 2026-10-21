@@ -67,4 +67,6 @@ Escreva `{{.ArtifactPath}}`, JSON válido, agregando a saída dos eixos **depois
 
 Cada finding: `{"severity": "critical|major|minor", "category": "...", "file": "path", "line": 1, "evidence": "...", "rule": "...", "message": "..."}`. `line` é a linha do arquivo **no head** e precisa ser > 0 quando `file` está preenchido. No máximo {{.MaxComments}} achados `critical` ou `major`: acima disso nada é postado.
 
+`file`, `line` e `evidence` valem para **todo** achado, em qualquer severidade: o achado numa linha que o head alterou é postado como comentário na própria linha, e o que cai fora do diff vai para o resumo com o trecho do código. Em `evidence`, copie o trecho exato que sustenta o achado, sem reescrever nem resumir — é ele que aparece no comentário público. Só deixe `file` vazio quando o achado for do PR como um todo e não houver linha a apontar.
+
 Não altere nenhum arquivo do repositório. Responda apenas: `DONE {{.ArtifactPath}}`

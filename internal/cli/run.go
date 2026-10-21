@@ -33,6 +33,7 @@ var outcomeExit = map[pipeline.Outcome]int{
 	pipeline.OutcomeExhausted: 3,
 	pipeline.OutcomeNeedsInfo: 4,
 	pipeline.OutcomeReviewed:  0,
+	pipeline.OutcomeAnswered:  0,
 	pipeline.OutcomeSkipped:   0,
 }
 

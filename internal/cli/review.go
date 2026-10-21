@@ -15,6 +15,7 @@ import (
 	"github.com/paraizo/delamain/internal/forge"
 	"github.com/paraizo/delamain/internal/notify"
 	"github.com/paraizo/delamain/internal/pipeline"
+	"github.com/paraizo/delamain/internal/store"
 )
 
 func newReviewCmd(load func() (config.Config, error)) *cobra.Command {
@@ -22,16 +23,29 @@ func newReviewCmd(load func() (config.Config, error)) *cobra.Command {
 	var pr int
 	cmd := &cobra.Command{
 		Use:   "review --pr <n> [--repo <path>]",
-		Short: "Review a PR/MR read-only and post comments (never approves nor merges)",
-		Long: `Reviews any open PR/MR of the origin forge, forks included. The PR head is fetched into
-refs/delamain/pr/<n> and checked out in a detached worktree in paths.worktrees_dir; the
-pr-reviewer agent reads it (spec, standards and security, then a verifier) without running any of
-the PR's code. delamain then posts one comment-only review: inline comments for critical/major
-findings on changed lines, everything else in the summary. Requires review.enabled; a PR/MR whose
-head lives in a fork also requires agent.harness: claude, the only harness that confines the
-reviewer to reading the PR.
+		Short: "Review a PR/MR, or answer the review comments of one delamain opened",
+		Long: `What this does depends on who opened the PR/MR, and nothing else triggers it.
 
-Exit codes: 0 reviewed or skipped · 1 interrupted.`,
+A PR/MR delamain did not open is reviewed, as long as its head is a branch of this repository:
+one whose head lives in a fork is refused with an error, on every harness, because its code
+answers to nobody here. The head is fetched into refs/delamain/pr/<n> and checked out in a
+detached worktree in paths.worktrees_dir; the pr-reviewer agent reads it (spec, standards and
+security, then a verifier) without running any of the PR's code. delamain then posts one
+comment-only review, never an approval nor a merge: every finding on a line the head touched
+becomes an inline comment, and a finding the forge cannot anchor goes to the summary with the
+excerpt of the code it is about.
+
+A PR/MR delamain opened has its pending review threads answered instead — the ones whose last
+comment is not delamain's own. Each gets one reply with a verdict: valid (the comment holds),
+invalid (it does not, with the evidence read in the code) or unclear (what is missing to decide).
+With review.fix on, the valid ones are also fixed: one commit per thread, pushed as a
+fast-forward once lint, typecheck, tests and the secret scan pass, and those threads are
+resolved. Answering requires agent.harness: claude, the only harness that confines the
+responder, since whoever comments on the PR writes what it reads.
+
+Requires review.enabled.
+
+Exit codes: 0 reviewed, answered or skipped · 1 interrupted.`,
 		RunE: func(c *cobra.Command, _ []string) error {
 			cfg, err := load()
 			if err != nil {
@@ -94,7 +108,42 @@ func reviewPR(ctx context.Context, cfg config.Config, repo string, pr int, fg fo
 	}
 	defer func() { _ = r.Notify.Close() }()
 	r.Forge, r.ForgeUser = fg, user
+	own, err := openedByDelamain(ctx, r, st, repo, pr)
+	if err != nil {
+		return pipeline.Result{}, err
+	}
+	if own {
+		// Reviewing its own code again would only repeat the review that opened the PR; what is
+		// left to do there is to answer whoever reviewed it.
+		return r.RunAddress(ctx, repo, pr)
+	}
 	return r.RunReview(ctx, repo, pr)
+}
+
+// openedByDelamain reports whether PR/MR pr of repo is one an issue run of delamain opened. The
+// store answers it, not the PR's author: delamain posts with the operator's own forge
+// credential, so every PR the operator opened by hand would look like delamain's.
+func openedByDelamain(ctx context.Context, r *pipeline.Runner, st *store.Store, repo string, pr int) (bool, error) {
+	// Runs are recorded under the repository's toplevel, not the path given.
+	top, err := r.Git.Toplevel(ctx, repo)
+	if err != nil {
+		return false, err
+	}
+	runs, err := st.RunsWithMR(ctx, top)
+	if err != nil {
+		return false, err
+	}
+	return anyRunOpened(runs, pr), nil
+}
+
+// anyRunOpened reports whether any of runs delivered PR/MR pr.
+func anyRunOpened(runs []store.Run, pr int) bool {
+	for _, rec := range runs {
+		if n, ok := forge.PRNumber(rec.MRURL); ok && n == pr {
+			return true
+		}
+	}
+	return false
 }
 
 // ReviewView is the outcome of `delamain review` as json/yaml show it.
@@ -122,7 +171,7 @@ func reviewView(res pipeline.Result) ReviewView {
 func printReviewResult(w io.Writer, format string, res pipeline.Result) error {
 	v := reviewView(res)
 	return printAs(w, format, v, func(w io.Writer) error {
-		icon := map[pipeline.Outcome]string{pipeline.OutcomeReviewed: "✅", pipeline.OutcomeSkipped: "⏭️ ", pipeline.OutcomeHalted: "❌"}[res.Outcome]
+		icon := map[pipeline.Outcome]string{pipeline.OutcomeReviewed: "✅", pipeline.OutcomeAnswered: "💬", pipeline.OutcomeSkipped: "⏭️ ", pipeline.OutcomeHalted: "❌"}[res.Outcome]
 		fmt.Fprintf(w, "%s %s", icon, v.Outcome)
 		if v.Reason != "" {
 			fmt.Fprintf(w, " — %s", v.Reason)

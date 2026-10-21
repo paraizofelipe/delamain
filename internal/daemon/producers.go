@@ -4,9 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"regexp"
-	"strconv"
-	"time"
 
 	"github.com/paraizo/delamain/internal/forge"
 	"github.com/paraizo/delamain/internal/pipeline"
@@ -42,42 +39,17 @@ type ReviewState struct {
 const maxHaltsPerHead = 3
 
 // ReviewJobs reviews the PRs/MRs labeled Label, once per head. State is what earlier reviews of
-// a PR recorded. RefuseForks leaves out the PRs/MRs whose head is in a fork, which the runner
-// reviews only on a harness that confines the reviewer.
+// a PR recorded.
 type ReviewJobs struct {
-	Enabled     bool
-	Label       string
-	RefuseForks bool
-	State       func(ctx context.Context, repo string, pr int) (ReviewState, error)
-	Run         func(ctx context.Context, repo string, pr int, fg forge.Forge) (pipeline.Result, error)
-}
-
-// AddressJobs answers the review threads of the PRs/MRs delamain opened.
-type AddressJobs struct {
 	Enabled bool
-	// PRs lists the URLs of the PRs/MRs delamain opened in repo.
-	PRs func(ctx context.Context, repo string) ([]string, error)
-	// Since is how far the last round on PR/MR pr got (zero before the first).
-	Since func(ctx context.Context, repo string, pr int) (time.Time, error)
-	// User is the forge login delamain posts as in repo.
-	User func(repo string) string
-	Run  func(ctx context.Context, repo string, pr int, fg forge.Forge) (pipeline.Result, error)
+	Label   string
+	State   func(ctx context.Context, repo string, pr int) (ReviewState, error)
+	Run     func(ctx context.Context, repo string, pr int, fg forge.Forge) (pipeline.Result, error)
 }
 
-// PRNumber is the number of a GitHub PR or GitLab MR URL.
-func PRNumber(url string) (int, bool) {
-	m := prURL.FindStringSubmatch(url)
-	if m == nil {
-		return 0, false
-	}
-	n, err := strconv.Atoi(m[1])
-	return n, err == nil && n > 0
-}
-
-var prURL = regexp.MustCompile(`/(?:pull|-/merge_requests)/(\d+)/?$`)
-
-// Producers is the daemon's job order: issues first, then reviews when enabled.
-func Producers(log *slog.Logger, issues IssueJobs, reviews ReviewJobs, addresses AddressJobs) []Producer {
+// Producers is the daemon's job order: issues first, then reviews when enabled. Answering the
+// review comments of delamain's own PRs/MRs is not here: only `delamain review --pr n` does it.
+func Producers(log *slog.Logger, issues IssueJobs, reviews ReviewJobs) []Producer {
 	ps := []Producer{issues.jobs}
 	if reviews.Enabled {
 		// A poll runs one producer at a time, so this set needs no lock (as budgetAlert.sent).
@@ -86,57 +58,7 @@ func Producers(log *slog.Logger, issues IssueJobs, reviews ReviewJobs, addresses
 			return reviews.jobs(ctx, log, warned, src)
 		})
 	}
-	// Answering is part of reviewing: it never runs with review.enabled off.
-	if reviews.Enabled && addresses.Enabled {
-		ps = append(ps, func(ctx context.Context, src Source) ([]Job, error) {
-			return addresses.jobs(ctx, log, src)
-		})
-	}
 	return ps
-}
-
-// jobs lists one job per open PR/MR delamain opened in the source with a thread waiting for
-// it. A PR/MR whose state or threads cannot be read is left for the next poll, alone.
-func (o AddressJobs) jobs(ctx context.Context, log *slog.Logger, src Source) ([]Job, error) {
-	urls, err := o.PRs(ctx, src.Repo)
-	if err != nil {
-		return nil, fmt.Errorf("list the PRs/MRs delamain opened: %w", err)
-	}
-	var out []Job
-	seen := map[int]bool{}
-	for _, u := range urls {
-		n, ok := PRNumber(u)
-		if !ok || seen[n] {
-			continue
-		}
-		seen[n] = true
-		pr, err := src.Forge.PRView(ctx, n)
-		if err != nil {
-			log.Warn("could not read the PR/MR to answer", "repo", src.Repo, "pr", n, "err", err)
-			continue
-		}
-		if !pr.Open {
-			continue
-		}
-		threads, err := src.Forge.Threads(ctx, n)
-		if err != nil {
-			log.Warn("could not read the PR/MR threads to answer", "repo", src.Repo, "pr", n, "err", err)
-			continue
-		}
-		since, err := o.Since(ctx, src.Repo, n)
-		if err != nil {
-			log.Warn("could not read how far the last round got", "repo", src.Repo, "pr", n, "err", err)
-			continue
-		}
-		if len(pipeline.PendingThreads(threads, o.User(src.Repo), since)) == 0 {
-			continue
-		}
-		out = append(out, Job{
-			Key: fmt.Sprintf("%s#addr:%d", src.Repo, n),
-			Run: func(ctx context.Context) (pipeline.Result, error) { return o.Run(ctx, src.Repo, n, src.Forge) },
-		})
-	}
-	return out, nil
 }
 
 // jobs lists the source's ready issues, oldest first.
@@ -158,9 +80,9 @@ func (o IssueJobs) jobs(ctx context.Context, src Source) ([]Job, error) {
 }
 
 // jobs lists one review per PR/MR of the source carrying the review label, leaving drafts out,
-// the forks RefuseForks rules out, the heads already reviewed and the heads whose review keeps
-// halting. When a PR's state cannot be read, no review of the source starts: reviewing the same
-// head twice costs budget and reposts comments. warned keeps the fork notice to once per PR.
+// the forks, the heads already reviewed and the heads whose review keeps halting. When a PR's
+// state cannot be read, no review of the source starts: reviewing the same head twice costs
+// budget and reposts comments. warned keeps the fork notice to once per PR.
 func (o ReviewJobs) jobs(ctx context.Context, log *slog.Logger, warned map[string]bool, src Source) ([]Job, error) {
 	prs, err := src.Forge.ListPRs(ctx, o.Label)
 	if err != nil {
@@ -171,12 +93,12 @@ func (o ReviewJobs) jobs(ctx context.Context, log *slog.Logger, warned map[strin
 		if pr.Draft {
 			continue
 		}
-		// The runner refuses a fork on this harness before it records anything, so a job for
-		// it would fail on every poll without ever reviewing the PR.
-		if pr.Fork && o.RefuseForks {
+		// The runner refuses a fork before it records anything, so a job for it would fail on
+		// every poll without ever reviewing the PR.
+		if pr.Fork {
 			if key := fmt.Sprintf("%s#%d", src.Repo, pr.Number); !warned[key] {
 				warned[key] = true
-				log.Warn("PR/MR from a fork needs a harness that confines the reviewer",
+				log.Warn("PR/MR from a fork is not reviewed: its head is in another repository",
 					"repo", src.Repo, "pr", pr.Number)
 			}
 			continue
