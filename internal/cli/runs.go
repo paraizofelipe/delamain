@@ -337,11 +337,11 @@ func renderStatus(w io.Writer, s RunStatus, st styles) error {
 	v := s.Run
 	field := func(label string, value cell) []cell { return []cell{styled(st.label, label), value} }
 	rows := [][]cell{
-		field("RUN", plain(fmt.Sprintf("%d · %s %s", v.ID, v.Issue, v.Title))),
+		field("RUN", join(plain(fmt.Sprintf("%d · ", v.ID)), styled(st.info, v.Issue), plain(" "+v.Title))),
 		field("KIND", plain(v.Kind)),
 		field("REPO", plain(v.Repo)),
 		field("HARNESS", plain(orDash(v.Harness))),
-		field("STATE", plain(v.State)),
+		field("STATE", styled(st.runStateStyle(v.State), v.State)),
 		field("INTERACTIONS", plain(v.iter())),
 		field("COMPLEXITY", styled(st.complexityStyle(v.Complexity), orDash(v.Complexity))),
 	}
@@ -352,15 +352,19 @@ func renderStatus(w io.Writer, s RunStatus, st styles) error {
 	}
 	rows = append(rows, field("OWNER", plain(v.owner())), field("BUDGET", plain(s.Budget.Summary)))
 	if v.PR != "" {
-		rows = append(rows, field("PR/MR", plain(v.PR)))
+		rows = append(rows, field("PR/MR", styled(st.info.Underline(true), v.PR)))
 	}
 	if v.Workspace != "" {
 		rows = append(rows, field("HERDR", plain(v.Workspace)))
 	}
 	if v.Result != "" {
-		rows = append(rows, field("RESULT", plain(v.Result)))
+		outcome, reason, found := strings.Cut(v.Result, ":")
+		if found {
+			reason = ":" + reason
+		}
+		rows = append(rows, field("RESULT", join(styled(st.resultStyle(outcome), outcome), plain(reason))))
 	}
-	rows = append(rows, field("LOGS", plain(fmt.Sprintf("%s (delamain logs %d -f)", filepath.Join(v.RunDir, "logs"), v.ID))))
+	rows = append(rows, field("LOGS", join(plain(filepath.Join(v.RunDir, "logs")+" "), styled(st.muted, fmt.Sprintf("(delamain logs %d -f)", v.ID)))))
 	if err := writeTable(w, rows); err != nil {
 		return err
 	}

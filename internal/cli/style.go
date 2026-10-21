@@ -8,6 +8,8 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/paraizo/delamain/internal/complexity"
+	"github.com/paraizo/delamain/internal/pipeline"
+	"github.com/paraizo/delamain/internal/store"
 )
 
 // styles are the looks of `status`; a renderer without colors (not a terminal, NO_COLOR) makes
@@ -20,15 +22,19 @@ type styles struct {
 	ok      lipgloss.Style
 	warn    lipgloss.Style
 	bad     lipgloss.Style
+	muted   lipgloss.Style
+	info    lipgloss.Style
 }
 
 func newStyles(r *lipgloss.Renderer) styles {
 	bold := r.NewStyle().Bold(true)
 	return styles{
 		label: bold, heading: bold, header: bold, none: r.NewStyle(),
-		ok:   r.NewStyle().Foreground(lipgloss.Color("2")),
-		warn: r.NewStyle().Foreground(lipgloss.Color("3")),
-		bad:  r.NewStyle().Foreground(lipgloss.Color("1")),
+		ok:    r.NewStyle().Foreground(lipgloss.Color("2")),
+		warn:  r.NewStyle().Foreground(lipgloss.Color("3")),
+		bad:   r.NewStyle().Foreground(lipgloss.Color("1")),
+		muted: r.NewStyle().Faint(true),
+		info:  r.NewStyle().Foreground(lipgloss.Color("6")),
 	}
 }
 
@@ -44,6 +50,34 @@ func (st styles) complexityStyle(level string) lipgloss.Style {
 	return st.none
 }
 
+// resultStyle colors the outcome a run recorded, the part of RESULT before ": <reason>".
+func (st styles) resultStyle(outcome string) lipgloss.Style {
+	switch pipeline.Outcome(outcome) {
+	case pipeline.OutcomeApproved, pipeline.OutcomeReviewed, pipeline.OutcomeAnswered:
+		return st.ok
+	case pipeline.OutcomeExhausted, pipeline.OutcomeNeedsInfo:
+		return st.warn
+	case pipeline.OutcomeHalted:
+		return st.bad
+	case pipeline.OutcomeSkipped:
+		return st.muted
+	}
+	return st.none
+}
+
+// runStateStyle colors where a run stands: finished, waiting on someone, stopped or moving.
+func (st styles) runStateStyle(state string) lipgloss.Style {
+	switch store.RunState(state) {
+	case store.StateRecorded:
+		return st.ok
+	case store.StateNeedsInfo:
+		return st.warn
+	case store.StateHalted:
+		return st.bad
+	}
+	return st.info
+}
+
 // cell is a table cell: its text sets the column width, styled is what is printed.
 type cell struct{ text, styled string }
 
@@ -55,6 +89,15 @@ func styled(st lipgloss.Style, text string) cell {
 		return plain(text)
 	}
 	return cell{text, st.Render(text)}
+}
+
+func join(cs ...cell) cell {
+	var c cell
+	for _, p := range cs {
+		c.text += p.text
+		c.styled += p.styled
+	}
+	return c
 }
 
 // writeTable lays rows out as tabwriter.NewWriter(w, 0, 0, 2, ' ', 0) would with the plain

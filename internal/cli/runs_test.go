@@ -753,3 +753,46 @@ func TestStatusShouldColorComplexityByLevel(t *testing.T) {
 		wantCodes(t, forcedStatus(t, s), "COMPLEXITY", orDash(level), codes...)
 	}
 }
+
+func TestStatusShouldColorResultByOutcome(t *testing.T) {
+	cases := map[string][]string{
+		"approved": {"32"}, "reviewed": {"32"}, "answered": {"32"},
+		"exhausted": {"33"}, "needs_info": {"33"},
+		"halted":  {"31"},
+		"skipped": {"2"},
+		"mystery": nil, // an outcome this version does not know stays plain
+	}
+	for outcome, codes := range cases {
+		s := sampleStatus()
+		s.Run.Result = outcome
+		wantCodes(t, forcedStatus(t, s), "RESULT", outcome, codes...)
+	}
+
+	// Only the outcome is colored; the reason is free text and prints as is.
+	out := forcedStatus(t, sampleStatus())
+	wantCodes(t, out, "RESULT", "halted", "31")
+	wantCodes(t, out, "RESULT", ": guardrail tripped")
+}
+
+func TestStatusShouldColorRunState(t *testing.T) {
+	cases := map[store.RunState][]string{
+		store.StateRecorded: {"32"}, store.StateNeedsInfo: {"33"}, store.StateHalted: {"31"},
+		store.StateImplement: {"36"}, store.StateReview: {"36"}, store.StatePreflight: {"36"},
+		store.StateSetup: {"36"}, store.StateDeliver: {"36"}, store.StateDeliverDraft: {"36"},
+	}
+	for state, codes := range cases {
+		s := sampleStatus()
+		s.Run.State = string(state)
+		wantCodes(t, forcedStatus(t, s), "STATE", string(state), codes...)
+	}
+}
+
+func TestStatusShouldColorRunRefPRAndLogsHint(t *testing.T) {
+	out := forcedStatus(t, sampleStatus())
+	wantCodes(t, out, "RUN", "#45", "36")
+	wantCodes(t, out, "RUN", "7 · ")
+	wantCodes(t, out, "RUN", " Bold labels") // the title comes from the issue and prints as is
+	wantCodes(t, out, "PR/MR", "https://github.com/o/app/pull/9", "4", "36")
+	wantCodes(t, out, "LOGS", "(delamain logs 7 -f)", "2")
+	wantCodes(t, out, "LOGS", "/s/runs/7/logs ")
+}
