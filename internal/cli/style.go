@@ -6,6 +6,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/paraizo/delamain/internal/complexity"
 )
 
 // styles are the looks of `status`; a renderer without colors (not a terminal, NO_COLOR) makes
@@ -14,11 +16,32 @@ type styles struct {
 	label   lipgloss.Style // labels of the first block
 	heading lipgloss.Style // section titles: WORKTREES, AGENTS
 	header  lipgloss.Style // column headers
+	none    lipgloss.Style // values with no meaning to color
+	ok      lipgloss.Style
+	warn    lipgloss.Style
+	bad     lipgloss.Style
 }
 
 func newStyles(r *lipgloss.Renderer) styles {
 	bold := r.NewStyle().Bold(true)
-	return styles{label: bold, heading: bold, header: bold}
+	return styles{
+		label: bold, heading: bold, header: bold, none: r.NewStyle(),
+		ok:   r.NewStyle().Foreground(lipgloss.Color("2")),
+		warn: r.NewStyle().Foreground(lipgloss.Color("3")),
+		bad:  r.NewStyle().Foreground(lipgloss.Color("1")),
+	}
+}
+
+func (st styles) complexityStyle(level string) lipgloss.Style {
+	switch complexity.Level(level) {
+	case complexity.Low:
+		return st.ok
+	case complexity.Medium:
+		return st.warn
+	case complexity.High:
+		return st.bad
+	}
+	return st.none
 }
 
 // cell is a table cell: its text sets the column width, styled is what is printed.

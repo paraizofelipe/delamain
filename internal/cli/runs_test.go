@@ -745,3 +745,11 @@ func TestStatusShouldNotEmitANSIInYAMLOrJSONWhenColorIsForced(t *testing.T) {
 		t.Errorf("yaml stays plain: %v\n%q", err, yamlOut)
 	}
 }
+
+func TestStatusShouldColorComplexityByLevel(t *testing.T) {
+	for level, codes := range map[string][]string{"low": {"32"}, "medium": {"33"}, "high": {"31"}, "": nil} {
+		s := sampleStatus()
+		s.Run.Complexity = level
+		wantCodes(t, forcedStatus(t, s), "COMPLEXITY", orDash(level), codes...)
+	}
+}

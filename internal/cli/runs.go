@@ -343,7 +343,7 @@ func renderStatus(w io.Writer, s RunStatus, st styles) error {
 		field("HARNESS", plain(orDash(v.Harness))),
 		field("STATE", plain(v.State)),
 		field("INTERACTIONS", plain(v.iter())),
-		field("COMPLEXITY", plain(orDash(v.Complexity))),
+		field("COMPLEXITY", styled(st.complexityStyle(v.Complexity), orDash(v.Complexity))),
 	}
 	if v.Branch != "" {
 		rows = append(rows,
