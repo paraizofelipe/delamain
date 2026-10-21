@@ -108,7 +108,7 @@ func reviewPR(ctx context.Context, cfg config.Config, repo string, pr int, fg fo
 	}
 	defer func() { _ = r.Notify.Close() }()
 	r.Forge, r.ForgeUser = fg, user
-	own, err := openedByDelamain(ctx, r, st, repo, pr)
+	own, err := openedByDelamain(ctx, st, fg, pr)
 	if err != nil {
 		return pipeline.Result{}, err
 	}
@@ -120,30 +120,22 @@ func reviewPR(ctx context.Context, cfg config.Config, repo string, pr int, fg fo
 	return r.RunReview(ctx, repo, pr)
 }
 
-// openedByDelamain reports whether PR/MR pr of repo is one an issue run of delamain opened. The
-// store answers it, not the PR's author: delamain posts with the operator's own forge
-// credential, so every PR the operator opened by hand would look like delamain's.
-func openedByDelamain(ctx context.Context, r *pipeline.Runner, st *store.Store, repo string, pr int) (bool, error) {
-	// Runs are recorded under the repository's toplevel, not the path given.
-	top, err := r.Git.Toplevel(ctx, repo)
+// openedByDelamain reports whether PR/MR pr is one an issue run of delamain opened, which is
+// what decides between answering its threads and reviewing it.
+//
+// The PR's own URL identifies it, as it does in fixTarget. Not the PR's author: delamain posts
+// with the operator's own forge credential, so every PR the operator opened by hand carries the
+// same author. And not the repository path either: the same repository is checked out at
+// several paths — every worktree is one — while a run records the path it ran from, so matching
+// on it answered "not delamain's" for a PR of its own and posted a review on it.
+func openedByDelamain(ctx context.Context, st *store.Store, fg forge.Forge, pr int) (bool, error) {
+	// One extra read of the PR, before the stage reads it again: cheap next to a review that
+	// should not have been posted.
+	d, err := fg.PRView(ctx, pr)
 	if err != nil {
 		return false, err
 	}
-	runs, err := st.RunsWithMR(ctx, top)
-	if err != nil {
-		return false, err
-	}
-	return anyRunOpened(runs, pr), nil
-}
-
-// anyRunOpened reports whether any of runs delivered PR/MR pr.
-func anyRunOpened(runs []store.Run, pr int) bool {
-	for _, rec := range runs {
-		if n, ok := forge.PRNumber(rec.MRURL); ok && n == pr {
-			return true
-		}
-	}
-	return false
+	return st.OpenedMR(ctx, d.URL)
 }
 
 // ReviewView is the outcome of `delamain review` as json/yaml show it.
