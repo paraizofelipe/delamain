@@ -66,6 +66,7 @@ const (
 	OutcomeNeedsInfo Outcome = "needs_info" // preflight rejected the task; nothing was created
 	OutcomeReviewed  Outcome = "reviewed"   // the PR review is posted (or was already, comment by comment)
 	OutcomeSkipped   Outcome = "skipped"    // nothing to review: PR not open or head already reviewed
+	OutcomeAnswered  Outcome = "answered"   // the pending review threads of the PR got their replies
 )
 
 type Result struct {

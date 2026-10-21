@@ -4,6 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"regexp"
+	"strconv"
+	"time"
 
 	"github.com/paraizo/delamain/internal/forge"
 	"github.com/paraizo/delamain/internal/pipeline"
@@ -49,8 +52,32 @@ type ReviewJobs struct {
 	Run         func(ctx context.Context, repo string, pr int, fg forge.Forge) (pipeline.Result, error)
 }
 
+// AddressJobs answers the review threads of the PRs/MRs delamain opened.
+type AddressJobs struct {
+	Enabled bool
+	// PRs lists the URLs of the PRs/MRs delamain opened in repo.
+	PRs func(ctx context.Context, repo string) ([]string, error)
+	// Since is how far the last round on PR/MR pr got (zero before the first).
+	Since func(ctx context.Context, repo string, pr int) (time.Time, error)
+	// User is the forge login delamain posts as in repo.
+	User func(repo string) string
+	Run  func(ctx context.Context, repo string, pr int, fg forge.Forge) (pipeline.Result, error)
+}
+
+// PRNumber is the number of a GitHub PR or GitLab MR URL.
+func PRNumber(url string) (int, bool) {
+	m := prURL.FindStringSubmatch(url)
+	if m == nil {
+		return 0, false
+	}
+	n, err := strconv.Atoi(m[1])
+	return n, err == nil && n > 0
+}
+
+var prURL = regexp.MustCompile(`/(?:pull|-/merge_requests)/(\d+)/?$`)
+
 // Producers is the daemon's job order: issues first, then reviews when enabled.
-func Producers(log *slog.Logger, issues IssueJobs, reviews ReviewJobs) []Producer {
+func Producers(log *slog.Logger, issues IssueJobs, reviews ReviewJobs, addresses AddressJobs) []Producer {
 	ps := []Producer{issues.jobs}
 	if reviews.Enabled {
 		// A poll runs one producer at a time, so this set needs no lock (as budgetAlert.sent).
@@ -59,7 +86,57 @@ func Producers(log *slog.Logger, issues IssueJobs, reviews ReviewJobs) []Produce
 			return reviews.jobs(ctx, log, warned, src)
 		})
 	}
+	// Answering is part of reviewing: it never runs with review.enabled off.
+	if reviews.Enabled && addresses.Enabled {
+		ps = append(ps, func(ctx context.Context, src Source) ([]Job, error) {
+			return addresses.jobs(ctx, log, src)
+		})
+	}
 	return ps
+}
+
+// jobs lists one job per open PR/MR delamain opened in the source with a thread waiting for
+// it. A PR/MR whose state or threads cannot be read is left for the next poll, alone.
+func (o AddressJobs) jobs(ctx context.Context, log *slog.Logger, src Source) ([]Job, error) {
+	urls, err := o.PRs(ctx, src.Repo)
+	if err != nil {
+		return nil, fmt.Errorf("list the PRs/MRs delamain opened: %w", err)
+	}
+	var out []Job
+	seen := map[int]bool{}
+	for _, u := range urls {
+		n, ok := PRNumber(u)
+		if !ok || seen[n] {
+			continue
+		}
+		seen[n] = true
+		pr, err := src.Forge.PRView(ctx, n)
+		if err != nil {
+			log.Warn("could not read the PR/MR to answer", "repo", src.Repo, "pr", n, "err", err)
+			continue
+		}
+		if !pr.Open {
+			continue
+		}
+		threads, err := src.Forge.Threads(ctx, n)
+		if err != nil {
+			log.Warn("could not read the PR/MR threads to answer", "repo", src.Repo, "pr", n, "err", err)
+			continue
+		}
+		since, err := o.Since(ctx, src.Repo, n)
+		if err != nil {
+			log.Warn("could not read how far the last round got", "repo", src.Repo, "pr", n, "err", err)
+			continue
+		}
+		if len(pipeline.PendingThreads(threads, o.User(src.Repo), since)) == 0 {
+			continue
+		}
+		out = append(out, Job{
+			Key: fmt.Sprintf("%s#addr:%d", src.Repo, n),
+			Run: func(ctx context.Context) (pipeline.Result, error) { return o.Run(ctx, src.Repo, n, src.Forge) },
+		})
+	}
+	return out, nil
 }
 
 // jobs lists the source's ready issues, oldest first.

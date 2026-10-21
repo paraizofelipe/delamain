@@ -470,9 +470,17 @@ type fakeForge struct {
 	linked  []forge.Issue
 	threads []forge.Thread
 	posted  []forge.ReviewOptions
+	// What addressing the review comments did on the PR, in order.
+	prComments []string
+	replies    []threadReply
+	resolved   []string
+	prRelabels [][2][]string // {add, remove}
 	// Failures of the review calls.
-	threadsErr, postErr error
+	threadsErr, postErr, replyErr error
 }
+
+// threadReply is one answer posted inside a thread.
+type threadReply struct{ thread, body string }
 
 func (f *fakeForge) Repo() forge.Repo {
 	if f.kind == forge.GitLab {
@@ -521,10 +529,25 @@ func (f *fakeForge) PostReview(_ context.Context, _ int, o forge.ReviewOptions) 
 	f.posted = append(f.posted, o)
 	return nil
 }
-func (f *fakeForge) PRComment(context.Context, int, string) error             { return nil }
-func (f *fakeForge) Reply(context.Context, int, string, string) error         { return nil }
-func (f *fakeForge) ResolveThread(context.Context, int, string) error         { return nil }
-func (f *fakeForge) RelabelPR(context.Context, int, []string, []string) error { return nil }
+func (f *fakeForge) PRComment(_ context.Context, _ int, body string) error {
+	f.prComments = append(f.prComments, body)
+	return nil
+}
+func (f *fakeForge) Reply(_ context.Context, _ int, thread, body string) error {
+	if f.replyErr != nil {
+		return f.replyErr
+	}
+	f.replies = append(f.replies, threadReply{thread, body})
+	return nil
+}
+func (f *fakeForge) ResolveThread(_ context.Context, _ int, thread string) error {
+	f.resolved = append(f.resolved, thread)
+	return nil
+}
+func (f *fakeForge) RelabelPR(_ context.Context, _ int, add, remove []string) error {
+	f.prRelabels = append(f.prRelabels, [2][]string{add, remove})
+	return nil
+}
 
 // fakeNotifier records every toast and how many issue comments existed when it was sent.
 type fakeNotifier struct {

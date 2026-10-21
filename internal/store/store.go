@@ -422,3 +422,8 @@ func (s *Store) SaveCursor(ctx context.Context, c ReviewCursor) error {
 		c.Repo, c.PR, c.LastSeenAt.UTC(), c.Rounds, c.LastHeadSHA, c.HaltedHeadSHA, c.Halts)
 	return err
 }
+
+// RunsWithMR lists the issue runs of repo that opened a PR/MR, oldest first.
+func (s *Store) RunsWithMR(ctx context.Context, repo string) ([]Run, error) {
+	return s.queryRuns(ctx, `SELECT `+runCols+` FROM runs WHERE repo = ? AND kind = ? AND mr_url != '' ORDER BY id`, repo, KindIssue)
+}
