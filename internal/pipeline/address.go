@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -174,15 +175,22 @@ func (r *Runner) address(ctx context.Context, ru *run, p *prRun, pending []forge
 	if prev.Rounds >= r.Cfg.Review.MaxRounds {
 		return r.escalate(ctx, ru, p, prev, pending)
 	}
-	for _, d := range []string{filepath.Join(ru.dir, "sessions")} {
+	// The agent never starts inside the PR checkout: its harness would load the settings, hooks
+	// and instruction files anyone with push access to the branch controls.
+	ru.agentDir = filepath.Join(ru.dir, "agent")
+	for _, d := range []string{filepath.Join(ru.dir, "sessions"), ru.agentDir} {
 		if err := os.MkdirAll(d, 0o700); err != nil {
 			return err
 		}
 	}
-	_, err = r.Git.FetchPRHead(ctx, repo, r.Forge.Repo().Kind, pr.Number)
+	fetched, err := r.Git.FetchPRHead(ctx, repo, r.Forge.Repo().Kind, pr.Number)
 	p.ref = gitx.PRRef(pr.Number) // removed even when the fetch half-failed
 	if err != nil {
 		return err
+	}
+	// Fail closed: the excerpts would show code the PR no longer has.
+	if fetched != pr.HeadSHA {
+		return haltf("o head buscado (%s) difere do head do PR/MR #%d (%s); nada foi postado", short(fetched), pr.Number, short(pr.HeadSHA))
 	}
 	wt := filepath.Join(r.Cfg.Paths.WorktreesDir, filepath.Base(repo), fmt.Sprintf("address-pr-%d-%d", pr.Number, ru.rec.ID))
 	if err := r.Git.AddUntrustedWorktree(ctx, repo, wt, p.ref); err != nil {
@@ -195,6 +203,13 @@ func (r *Runner) address(ctx context.Context, ru *run, p *prRun, pending []forge
 	ru.log.Info("address worktree", "run", ru.rec.ID, "path", wt, "pr", pr.Number, "head", pr.HeadSHA)
 	if err := r.Store.UpdateRun(ctx, ru.rec); err != nil {
 		return err
+	}
+	head, status, err := r.worktreeState(ctx, wt)
+	if err != nil {
+		return err
+	}
+	if head != pr.HeadSHA {
+		return haltf("a worktree está em %s, não no head do PR/MR #%d (%s); nada foi postado", short(head), pr.Number, short(pr.HeadSHA))
 	}
 	linked, err := r.Forge.LinkedIssues(ctx, pr.Number)
 	if err != nil {
@@ -211,6 +226,11 @@ func (r *Runner) address(ctx context.Context, ru *run, p *prRun, pending []forge
 		BaseRef: pr.BaseRef, HeadRef: pr.HeadRef, BaseSHA: pr.BaseSHA, HeadSHA: pr.HeadSHA,
 	}
 	for _, is := range linked {
+		// The replies are public; a confidential issue linked to the PR could be quoted in them.
+		if is.Confidential {
+			ru.log.Info("confidential linked issue left out of the prompt", "pr", pr.Number, "issue", is.Number)
+			continue
+		}
 		data.LinkedIssues = append(data.LinkedIssues, prompts.Issue{Ref: "#" + strconv.Itoa(is.Number), Title: is.Title, Body: is.Body, URL: is.URL})
 	}
 	data.Threads = renderAddressThreads(p.threads, pending, func(t forge.Thread) string { return r.excerpt(ctx, repo, p.ref, t) })
@@ -222,6 +242,14 @@ func (r *Runner) address(ctx context.Context, ru *run, p *prRun, pending []forge
 	if err != nil {
 		return err
 	}
+	// The responder only replies by contract; prove it.
+	head2, status2, err := r.worktreeState(ctx, wt)
+	if err != nil {
+		return err
+	}
+	if head2 != head || status2 != status {
+		return haltf("o responder alterou a worktree (HEAD %s→%s); respostas descartadas, nada foi postado", short(head), short(head2))
+	}
 	ids := make([]string, 0, len(pending))
 	for _, t := range pending {
 		ids = append(ids, t.ID)
@@ -230,6 +258,15 @@ func (r *Runner) address(ctx context.Context, ru *run, p *prRun, pending []forge
 		return haltf("artefato do responder rejeitado: %v; nada foi postado", err)
 	}
 
+	// The replies are posted publicly as the operator and the learnings feed later prompts: a
+	// prompt injection could have the responder quote a local credential in either.
+	bodies := slices.Clone(resp.Learnings)
+	for _, a := range resp.Responses {
+		bodies = append(bodies, a.Reply)
+	}
+	if kind := leakedSecret(bodies, os.Environ()); kind != "" {
+		return haltf("as respostas contêm o que parece um segredo (%s); nada foi postado", kind)
+	}
 	if err := r.setState(ctx, ru, store.StateDeliver); err != nil {
 		return err
 	}
@@ -325,7 +362,9 @@ func replyBody(a artifacts.Response) string {
 // excerpt is the head's code around the line a thread comments on, read from the PR ref in the
 // object store: "" for PR-level threads or when the file cannot be read.
 func (r *Runner) excerpt(ctx context.Context, repo, ref string, t forge.Thread) string {
-	if t.Path == "" || t.Line <= 0 {
+	// Read from the ref's objects, never the checkout: no symlink is followed and a path that
+	// leaves the repository is not read at all.
+	if t.Path == "" || t.Line <= 0 || !filepath.IsLocal(t.Path) {
 		return ""
 	}
 	raw, err := r.Git.ShowFile(ctx, repo, ref, t.Path)
