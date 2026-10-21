@@ -129,7 +129,14 @@ func (r *Runner) noteReviewHalt(ctx context.Context, ru *run, p *prRun) {
 	if ru.res.Outcome != OutcomeHalted || p.pr.HeadSHA == "" {
 		return
 	}
-	ctx = context.WithoutCancel(ctx) // an interrupted review still has to be counted
+	if ctx.Err() != nil {
+		// The operator stopped the daemon: that says nothing about this head, and three
+		// restarts during its review would otherwise retire it until the next push.
+		ru.log.Info("review interrupted, not counted against the PR/MR head", "run", ru.rec.ID, "pr", p.pr.Number)
+		return
+	}
+	// A halt the review itself decided is still recorded if the operator interrupts right now.
+	ctx = context.WithoutCancel(ctx)
 	c, err := r.Store.Cursor(ctx, ru.rec.Repo, p.pr.Number)
 	if err != nil && !errors.Is(err, store.ErrNotFound) {
 		ru.log.Warn("could not read the review cursor to count the halt", "pr", p.pr.Number, "err", err)

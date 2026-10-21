@@ -640,6 +640,26 @@ func TestRunReviewShouldHaltWithoutMovingTheCursorWhenAForgeOrGitCallFails(t *te
 	}
 }
 
+// Stopping the daemon says nothing about the head being reviewed: counting that halt would
+// retire a PR after a few restarts, with no defect of its own to blame.
+func TestRunReviewShouldNotCountAHaltTheOperatorCaused(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	rh := newReviewHarness(t, func(string, int, string) reply {
+		cancel()       // Ctrl+C on the daemon, mid-review
+		return reply{} // no artifact: the step halts
+	})
+	res, err := rh.r.RunReview(ctx, rh.repo, 5)
+	if err != nil {
+		t.Fatalf("an interrupted review still records its outcome: %v", err)
+	}
+	if res.Outcome != OutcomeHalted {
+		t.Fatalf("want halted, got %s (%s)", res.Outcome, res.Reason)
+	}
+	if cur, err := rh.st.Cursor(context.Background(), rh.repo, 5); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("an interrupted review leaves no halt behind: %+v (%v)", cur, err)
+	}
+}
+
 // The daemon's producer stops starting a review once the same head has halted a few times, so
 // each attempt has to add to that count — and a review that posts has to clear it, or the next
 // push would start out with the old halts.

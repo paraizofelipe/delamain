@@ -99,6 +99,7 @@ in-flight runs end as interrupted.`,
 			}}
 			reviews := daemon.ReviewJobs{
 				Enabled: cfg.Review.Enabled, Label: cfg.Forge.Labels.Review,
+				RefuseForks: cfg.Agent.Harness != config.HarnessClaude,
 				// The review records its cursor under the repository's toplevel, not the path given.
 				State: func(ctx context.Context, repo string, pr int) (daemon.ReviewState, error) {
 					top, err := base.Git.Toplevel(ctx, repo)

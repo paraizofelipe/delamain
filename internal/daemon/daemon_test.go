@@ -207,6 +207,28 @@ func TestPollShouldSkipPRWhoseHeadWasAlreadyReviewed(t *testing.T) {
 	}
 }
 
+// The runner refuses a fork before it records a run, so a job for one would fail on every poll
+// without ever reviewing the PR: the producer has to leave it out on such a harness.
+func TestPollShouldNotStartReviewsOfForkPRsWhenTheHarnessCannotConfineTheReviewer(t *testing.T) {
+	r := newRunner()
+	fork := pr(4, "aaa")
+	fork.Fork = true
+	src := &stubForge{prs: []forge.PRDetail{fork, pr(6, "bbb")}}
+	d := reviewDaemon(r, 4, nil, Source{Repo: "/a", Forge: src})
+	d.opts.Producers = Producers(discard, IssueJobs{Label: "delamain:ready", Run: r.run}, ReviewJobs{
+		Enabled: true, Label: reviewLabel, Run: r.review, RefuseForks: true,
+		State: func(context.Context, string, int) (ReviewState, error) { return ReviewState{}, nil },
+	})
+	if n := d.Poll(context.Background()); n != 1 {
+		t.Fatalf("started %d, want only the PR whose head lives in this repository", n)
+	}
+	close(r.release)
+	d.Wait()
+	if got := r.snapshot(); !slices.Equal(got, []string{"/a#pr:6"}) {
+		t.Fatalf("reviews = %v, want the non-fork PR only", got)
+	}
+}
+
 // A halt is usually deterministic: retrying it every poll would spend the day's budget on a
 // review that never posts, and the issues share that budget.
 func TestPollShouldStopReviewingAHeadWhoseReviewKeepsHalting(t *testing.T) {
