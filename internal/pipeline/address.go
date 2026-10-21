@@ -58,6 +58,12 @@ func (r *Runner) RunAddress(ctx context.Context, repo string, n int) (Result, er
 		res.Outcome, res.Reason = OutcomeSkipped, fmt.Sprintf("o PR/MR #%d não está aberto", n)
 		return res, nil
 	}
+	// delamain only opens a PR from a branch of this repository, so its own PR is never a fork.
+	// The refusal is here anyway: it is this function's contract, not the caller's, and a
+	// checkout of a fork would hand the responder code nobody here vouched for.
+	if pr.Fork {
+		return res, fmt.Errorf("o delamain não responde discussões de PR/MR vindo de fork: o head do #%d está em outro repositório, fora do alcance de quem responde por este", n)
+	}
 	threads, err := r.Forge.Threads(ctx, n)
 	if err != nil {
 		return res, fmt.Errorf("discussões do PR/MR #%d: %w", n, err)
@@ -292,21 +298,25 @@ func (r *Runner) address(ctx context.Context, ru *run, p *prRun, pending []forge
 	return nil
 }
 
-// PendingThreads are the open threads of a PR waiting for delamain (user): their last public
-// comment is not delamain's own reply. That alone keeps a thread from being answered twice —
-// answering makes delamain's reply the last comment — so no cursor over time is needed and a
-// comment older than the last review is not lost. Markers are public, so only a comment by
-// user that carries one counts as delamain's; without a known user nothing is pending, or
-// delamain could end up answering itself. Internal notes are never read: the answer would be
-// public.
+// PendingThreads are the open threads of a PR waiting for delamain (user): the ones whose last
+// public comment is neither delamain's own reply nor one it already answered elsewhere. No
+// cursor over time is needed, so a comment older than the last review is not lost. Markers are
+// public, so only a comment by user that carries one counts as delamain's; without a known user
+// nothing is pending, or delamain could end up answering itself. Internal notes are never read:
+// the answer would be public.
 func PendingThreads(ts []forge.Thread, user string) []forge.Thread {
 	if user == "" {
 		return nil
 	}
+	// On GitHub the answer to a PR-level comment is a comment of its own, so the thread it
+	// answers keeps a human as its last comment and would stay pending forever. Its marker key
+	// is what retires it — the same key the reply loop checks before posting, looked up across
+	// every thread of the PR.
+	posted := postedKeys(ts, user)
 	var out []forge.Thread
 	for _, t := range ts {
 		last, ok := lastPublic(t)
-		if t.Resolved || !ok || ownComment(last, user) {
+		if t.Resolved || !ok || ownComment(last, user) || posted[forge.Key(t.ID, last.ID)] {
 			continue
 		}
 		out = append(out, t)

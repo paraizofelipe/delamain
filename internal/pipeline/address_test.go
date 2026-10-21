@@ -288,9 +288,11 @@ func TestRunAddressShouldAnswerEveryUnansweredThreadWhateverTheCursorSays(t *tes
 }
 
 func TestRunAddressShouldNotReplyTwiceWithSameMarkerKey(t *testing.T) {
-	rh := newAddressHarness(t, answers(happyAnswers()))
-	// On GitHub the answer to a PR-level comment lands in a thread of its own; the cursor that
-	// would have retired the comment was never saved.
+	// Only t1 is pending now, so that is all the responder may answer: an artifact naming the
+	// retired thread is rejected.
+	rh := newAddressHarness(t, answers(responsesJSON(response("t1", "invalid", invalidReply))))
+	// On GitHub the answer to a PR-level comment lands in a thread of its own, so the thread it
+	// answers still shows a human as its last comment. Only its marker key retires it.
 	rh.f.threads = append(rh.f.threads, forge.Thread{ID: "issue-comment:10", Comments: []forge.Comment{botReply("10", "issue-comment:9", "9", t0.Add(3*time.Hour))}})
 	res := rh.address(t)
 
@@ -299,6 +301,38 @@ func TestRunAddressShouldNotReplyTwiceWithSameMarkerKey(t *testing.T) {
 	}
 	if len(rh.f.replies) != 1 || rh.f.replies[0].thread != "t1" {
 		t.Fatalf("the comment already answered is not answered again: %+v", rh.f.replies)
+	}
+	// It must not even reach the responder: running it again costs budget and, with review.fix
+	// on, the orchestrator pushes the fix before the duplicate reply is dropped.
+	prompt := strings.Join(rh.h.prompts["responder"], "\n")
+	pending, _, found := strings.Cut(prompt, "Outras discussões")
+	if !found {
+		t.Fatalf("the responder prompt must separate pending from context threads:\n%s", prompt)
+	}
+	if strings.Contains(pending, "issue-comment:9") {
+		t.Errorf("a thread already answered must not be sent as pending:\n%s", pending)
+	}
+}
+
+// Whoever can comment on the PR writes what the responder reads, and a fork's checkout is code
+// nobody with write access here vouched for: answering one is refused as reviewing one is.
+func TestRunAddressShouldRefuseAForkBeforeFetchingAnything(t *testing.T) {
+	rh := newAddressHarness(t, answers(happyAnswers()))
+	rh.f.pr.Fork = true
+	_, err := rh.r.RunAddress(context.Background(), rh.repo, 5)
+	if err == nil {
+		t.Fatal("a fork must be refused before any work")
+	}
+	for _, want := range []string{"fork", "#5", "outro repositório"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the error must say %q, got %v", want, err)
+		}
+	}
+	if runs, _ := rh.st.RecentRuns(context.Background(), 10); len(runs) != 0 {
+		t.Fatalf("no run is recorded: %+v", runs)
+	}
+	if len(rh.g.fetchedPR)+len(rh.h.starts)+len(rh.f.replies) != 0 {
+		t.Fatal("nothing is fetched, started or answered")
 	}
 }
 
@@ -1086,9 +1120,9 @@ func TestRunAddressWithoutPushShouldBehaveAsPhase7(t *testing.T) {
 }
 
 func TestRunAddressWithPushShouldOnlyReplyOnAPRNotOpenedByDelamain(t *testing.T) {
+	// A fork is not among these: RunAddress refuses it outright, before any of this.
 	for name, setup := range map[string]func(rh *reviewHarness){
 		"no issue run opened it": func(rh *reviewHarness) { rh.f.pr.URL = "https://github.com/acme/api/pull/55" },
-		"head from a fork":       func(rh *reviewHarness) { rh.f.pr.Fork = true },
 		"another head branch":    func(rh *reviewHarness) { rh.f.pr.HeadRef = "feat/someone-else" },
 	} {
 		t.Run(name, func(t *testing.T) {
