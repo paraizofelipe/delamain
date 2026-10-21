@@ -1076,3 +1076,86 @@ func TestRunAddressWithPushShouldHaltWhenResolvingFailsAfterThePush(t *testing.T
 		t.Fatalf("the push and the replies already happened: %+v %+v", rh.g.ffPushes, rh.f.replies)
 	}
 }
+
+// assertOnlyReplied is the phase-7 flow: the PR head checked out as untrusted code, a read-only
+// responder told the push is off, the replies posted and nothing pushed nor resolved.
+func assertOnlyReplied(t *testing.T, rh *reviewHarness, res Result) {
+	t.Helper()
+	if res.Outcome != OutcomeAnswered || len(rh.f.replies) != 2 {
+		t.Fatalf("the threads are answered: %s (%s), %+v", res.Outcome, res.Reason, rh.f.replies)
+	}
+	if len(rh.g.untrusted) != 1 || len(rh.g.onBranch) != 0 {
+		t.Fatalf("the PR head is checked out read-only, not the branch: untrusted %v, branch %v", rh.g.untrusted, rh.g.onBranch)
+	}
+	start := rh.h.starts["responder-r"+strconv.FormatInt(res.RunID, 10)]
+	if start.Confine == nil || start.Confine.Fix {
+		t.Fatalf("the responder may only read: %+v", start.Confine)
+	}
+	if prompt := strings.Join(rh.h.prompts["responder"], "\n"); !strings.Contains(prompt, "push desabilitado") || strings.Contains(prompt, "push habilitado") {
+		t.Error("the prompt says the push is off")
+	}
+	if len(rh.g.ffPushes)+len(rh.g.pushed)+len(rh.f.resolved)+len(rh.h.checkCalls) != 0 {
+		t.Fatal("nothing is checked, pushed or resolved")
+	}
+}
+
+func TestRunAddressWithoutPushShouldBehaveAsPhase7(t *testing.T) {
+	rh := newFixHarness(t, answers(happyAnswers()))
+	rh.r.Cfg.Review.Address.Push = false
+	assertOnlyReplied(t, rh, rh.address(t))
+
+	// A fix claimed with the push off is rejected exactly as in phase 7.
+	rh = newFixHarness(t, answers(responsesJSON(response("t1", "invalid", invalidReply), fixed("issue-comment:9", fixReply))))
+	rh.r.Cfg.Review.Address.Push = false
+	assertNothingAnswered(t, rh, rh.address(t), "fixed must be false")
+}
+
+func TestRunAddressWithPushShouldOnlyReplyOnAPRNotOpenedByDelamain(t *testing.T) {
+	for name, setup := range map[string]func(rh *reviewHarness){
+		"no issue run opened it": func(rh *reviewHarness) { rh.f.pr.URL = "https://github.com/acme/api/pull/55" },
+		"head from a fork":       func(rh *reviewHarness) { rh.f.pr.Fork = true },
+		"another head branch":    func(rh *reviewHarness) { rh.f.pr.HeadRef = "feat/someone-else" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			rh := newFixHarness(t, answers(happyAnswers()))
+			setup(rh)
+			assertOnlyReplied(t, rh, rh.address(t))
+		})
+	}
+}
+
+func TestRunAddressWithPushShouldReuseTheIssueWorktreeOnlyWhenCleanAtTheRemoteHead(t *testing.T) {
+	for name, tc := range map[string]struct {
+		branch, head, status string
+		reuse                bool
+	}{
+		"clean at the remote head": {branch: fixBranch, head: prHead, reuse: true},
+		"dirty":                    {branch: fixBranch, head: prHead, status: " M a.go"},
+		"behind or ahead":          {branch: fixBranch, head: "dddddddd"},
+		"on another branch":        {branch: "feat/other", head: prHead},
+	} {
+		t.Run(name, func(t *testing.T) {
+			rh := newFixHarness(t, fixAnswers())
+			rh.g.remoteHead, rh.g.prHead = prHead, prHead
+			wt := filepath.Join(rh.r.Cfg.Paths.WorktreesDir, "repo", fixBranch)
+			if err := os.MkdirAll(wt, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			_ = os.WriteFile(filepath.Join(wt, ".delamain.yaml"), []byte("commands:\n  test: make test\n"), 0o600)
+			rh.g.branch, rh.g.head, rh.g.status, rh.g.wt = tc.branch, tc.head, tc.status, wt
+			res := rh.address(t)
+
+			if res.Outcome != OutcomeAnswered || len(rh.g.ffPushes) != 1 || res.Worktree != wt {
+				t.Fatalf("the fix goes out from %s: %s (%s), %+v", wt, res.Outcome, res.Reason, rh.g.ffPushes)
+			}
+			recreated := len(rh.g.onBranch) == 1
+			if recreated == tc.reuse {
+				t.Fatalf("reuse=%v, but the branch was checked out again: %v", tc.reuse, rh.g.onBranch)
+			}
+			// finishReview always removes the worktree; a recreated one is removed first too.
+			if removals := strings.Count(strings.Join(rh.g.redproof, ","), "remove"); removals != map[bool]int{true: 1, false: 2}[tc.reuse] {
+				t.Fatalf("worktree removals %d (reuse=%v): %v", removals, tc.reuse, rh.g.redproof)
+			}
+		})
+	}
+}
