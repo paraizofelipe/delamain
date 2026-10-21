@@ -377,15 +377,15 @@ func renderStatus(w io.Writer, s RunStatus, st styles) error {
 	} else {
 		rows = [][]cell{{plain(""), styled(st.header, "BRANCH"), styled(st.header, "HEAD"), styled(st.header, "PATH")}}
 		for _, wt := range s.Worktrees {
-			mark := ""
+			mark, look := "", st.none
 			if wt.ThisRun {
-				mark = "*"
+				mark, look = "*", st.info.Bold(true)
 			}
 			branch := wt.Branch
 			if wt.Detached {
 				branch = "(detached)"
 			}
-			rows = append(rows, []cell{plain(mark), plain(branch), plain(short(wt.Head)), plain(wt.Path)})
+			rows = append(rows, []cell{styled(look, mark), styled(look, branch), plain(short(wt.Head)), plain(wt.Path)})
 		}
 		if err := writeTable(w, rows); err != nil {
 			return err
@@ -406,7 +406,11 @@ func renderStatus(w io.Writer, s RunStatus, st styles) error {
 		if a.EndedAt != nil {
 			end = *a.EndedAt
 		}
-		rows = append(rows, []cell{plain(a.Role), plain(a.State), plain(strconv.Itoa(a.Process.PID)), plain(yesNo(a.Process.Alive)),
+		alive := styled(st.muted, yesNo(false))
+		if a.Process.Alive {
+			alive = styled(st.ok, yesNo(true))
+		}
+		rows = append(rows, []cell{plain(a.Role), styled(st.agentStateStyle(a.State), a.State), plain(strconv.Itoa(a.Process.PID)), alive,
 			plain(end.Sub(a.StartedAt).Round(time.Second).String()), plain(budget.Format(float64(a.Tokens), config.BudgetTokens)), plain(fmt.Sprintf("%.2f", a.CostUSD))})
 	}
 	return writeTable(w, rows)

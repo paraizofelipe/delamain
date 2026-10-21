@@ -78,6 +78,18 @@ func (st styles) runStateStyle(state string) lipgloss.Style {
 	return st.info
 }
 
+func (st styles) agentStateStyle(state string) lipgloss.Style {
+	switch store.AgentState(state) {
+	case store.AgentDone:
+		return st.ok
+	case store.AgentRunning:
+		return st.info
+	case store.AgentFailed:
+		return st.bad
+	}
+	return st.none
+}
+
 // cell is a table cell: its text sets the column width, styled is what is printed.
 type cell struct{ text, styled string }
 

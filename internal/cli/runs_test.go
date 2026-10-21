@@ -796,3 +796,31 @@ func TestStatusShouldColorRunRefPRAndLogsHint(t *testing.T) {
 	wantCodes(t, out, "LOGS", "(delamain logs 7 -f)", "2")
 	wantCodes(t, out, "LOGS", "/s/runs/7/logs ")
 }
+
+func TestStatusShouldHighlightThisRunWorktree(t *testing.T) {
+	out := forcedStatus(t, sampleStatus())
+	wantCodes(t, out, "*", "*", "1", "36")
+	wantCodes(t, out, "*", "feat/45-x", "1", "36")
+	wantCodes(t, out, "*", "01234567  /wt/app/feat/45-x")
+	wantCodes(t, out, "   (detached)", "(detached)")
+
+	s := sampleStatus()
+	s.Worktrees[0].ThisRun, s.Worktrees[1].ThisRun = false, true
+	out = forcedStatus(t, s)
+	wantCodes(t, out, "*", "(detached)", "1", "36")
+	wantCodes(t, out, "   feat/45-x", "feat/45-x")
+}
+
+func TestStatusShouldColorAgentState(t *testing.T) {
+	for state, codes := range map[store.AgentState][]string{store.AgentDone: {"32"}, store.AgentRunning: {"36"}, store.AgentFailed: {"31"}} {
+		s := sampleStatus()
+		s.Run.Agents[0].State = string(state)
+		wantCodes(t, forcedStatus(t, s), "planner", string(state), codes...)
+	}
+}
+
+func TestStatusShouldColorAgentAlive(t *testing.T) {
+	out := forcedStatus(t, sampleStatus())
+	wantCodes(t, out, "implementer", "yes", "32")
+	wantCodes(t, out, "planner", "no", "2")
+}
