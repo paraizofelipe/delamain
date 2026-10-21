@@ -339,6 +339,28 @@ func TestResponsesShouldRejectFixedTrue(t *testing.T) {
 	}
 }
 
+func TestFixResponsesShouldAcceptFixedOnlyOnValidThreads(t *testing.T) {
+	fixedValid := strings.Replace(validResponses, `"verdict":"valid","reply":"Faz sentido: vale renomear.","fixed":false`,
+		`"verdict":"valid","reply":"Faz sentido: vale renomear.","fixed":true`, 1)
+	r, err := Read[FixResponses](write(t, fixedValid))
+	if err != nil {
+		t.Fatalf("a valid thread may be fixed when the responder can fix: %v", err)
+	}
+	if !r.Responses[1].Fixed || r.Responses[0].Fixed {
+		t.Fatalf("fixed must be read as written: %+v", r.Responses)
+	}
+	for _, v := range []string{"invalid", "unclear"} {
+		other := strings.Replace(validResponses, `"verdict":"invalid","reply":"O erro já é tratado em parse.go:12.","fixed":false`,
+			`"verdict":"`+v+`","reply":"O erro já é tratado em parse.go:12.","fixed":true`, 1)
+		if _, err := Read[FixResponses](write(t, other)); err == nil || !strings.Contains(err.Error(), "fixed") {
+			t.Errorf("an %s thread is never fixed: %v", v, err)
+		}
+	}
+	if _, err := Read[FixResponses](write(t, strings.Replace(validResponses, `"verdict":"invalid"`, `"verdict":"maybe"`, 1))); err == nil {
+		t.Error("the shape rules of Responses still apply")
+	}
+}
+
 func TestResponsesShouldRejectAReplyCarryingADelamainMarker(t *testing.T) {
 	for _, m := range []string{"<!-- delamain:run=1 kind=reply key=abcdef012345 -->", "<!--delamain:run=1 kind=reply key=zz -->", "<!-- DELAMAIN:run=1 -->"} {
 		_, err := Read[Responses](write(t, strings.Replace(validResponses, "Faz sentido: vale renomear.", "Faz sentido. "+m, 1)))

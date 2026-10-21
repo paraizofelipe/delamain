@@ -55,6 +55,9 @@ type Confinement struct {
 	Checkout string
 	Base     string // the commit the PR is diffed against
 	Artifact string
+	Fix      bool
+	// CommitMessage is the file a Fix session writes each commit message to.
+	CommitMessage string
 }
 
 // RPCAgents runs each session as `omp --mode rpc`.
@@ -141,7 +144,12 @@ func (a ClaudeAgents) args(sessionID, rolePrompt string, c *Confinement) []strin
 }
 
 // confined narrows Claude Code to reading the checkout, two exact git commands in it and writing
-// the artifact. The git rules are whole commands, not prefixes: "diff:*" would also allow
+// the artifact. A Fix session may also edit the checkout, never its .git, and stage and commit
+// there, all exact commands: the commit message comes from the CommitMessage file the session
+// writes, since a prefix rule ("commit -m:*") would also take --pathspec-from-file=<any file> (read
+// any file) or -F <any file>. The commit runs no hook: a hooksPath inside the checkout would let
+// the edits run code. It still runs nothing it edits. Verified against Claude Code 2.1.305:
+// writes in .git, push, extra arguments and other commands are denied. The git rules are whole commands, not prefixes: "diff:*" would also allow
 // --no-index (read any file) and --output=<path> (write any file). The diff runs no external diff
 // nor textconv, whose driver the checkout's .gitattributes picks. Rules on absolute paths start
 // with "//"; Edit rules cover Write; subagents inherit them. Verified against Claude Code 2.1.303:
@@ -149,12 +157,18 @@ func (a ClaudeAgents) args(sessionID, rolePrompt string, c *Confinement) []strin
 // commands and other writes are denied.
 func confined(c *Confinement) []string {
 	git := "Bash(git -C " + c.Checkout + " "
-	return []string{
-		"--tools", "Read,Grep,Glob,Bash,Write,Agent",
-		"--allowedTools", "Read(/" + c.Checkout + "/**)",
+	allowed := []string{
+		"Read(/" + c.Checkout + "/**)",
 		git + "diff --no-ext-diff --no-textconv " + c.Base + "...HEAD)", git + "log " + c.Base + "..HEAD --oneline)",
 		"Edit(/" + c.Artifact + ")",
 	}
+	if !c.Fix {
+		return append([]string{"--tools", "Read,Grep,Glob,Bash,Write,Agent", "--allowedTools"}, allowed...)
+	}
+	allowed = append(allowed, "Edit(/"+c.Checkout+"/**)", git+"status --porcelain)", git+"add -A)",
+		"Edit(/"+c.CommitMessage+")", git+"-c core.hooksPath=/dev/null commit -F "+c.CommitMessage+")")
+	args := append([]string{"--tools", "Read,Grep,Glob,Bash,Edit,Write,Agent", "--allowedTools"}, allowed...)
+	return append(args, "--disallowed-tools", "AskUserQuestion", "Edit(/"+c.Checkout+"/.git)", "Edit(/"+c.Checkout+"/.git/**)")
 }
 
 func (ClaudeAgents) Sessions(sessionsDir string) ([]budget.SessionUsage, error) {

@@ -3,8 +3,10 @@ package pipeline
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -675,5 +677,540 @@ func TestRunAddressShouldRefuseAHarnessThatCannotConfineTheResponder(t *testing.
 	}
 	if len(rh.g.fetchedPR)+len(rh.h.starts)+len(rh.f.replies) != 0 {
 		t.Fatal("nothing is fetched, started or replied")
+	}
+}
+
+const (
+	fixReply = "Corrigido: renomeei x para count."
+	// fixBranch is the branch the issue run pushed and PR #5 merges.
+	fixBranch = "feat/parse"
+)
+
+// fixedAnswer is the responder's answer to the PR-level thread, whose fix it committed.
+func fixedAnswer() string {
+	return strings.Replace(response("issue-comment:9", "valid", fixReply), `"fixed":false`, `"fixed":true`, 1)
+}
+
+// fixAnswers is the responder fixing the PR-level thread with one commit: t1 does not hold.
+func fixAnswers() behavior {
+	return func(string, int, string) reply {
+		return reply{
+			write:  responsesJSON(response("t1", "invalid", invalidReply), fixedAnswer()),
+			mutate: func(g *fakeGit) { g.commit("fix: rename x to count (review)") },
+		}
+	}
+}
+
+// newFixHarness is newAddressHarness with review.address.push on, for the PR that an issue run
+// of delamain opened from fixBranch; the branch carries a .delamain.yaml with its gates.
+func newFixHarness(t *testing.T, b behavior) *reviewHarness {
+	t.Helper()
+	rh := newAddressHarness(t, b)
+	rh.r.Cfg.Review.Address.Push = true
+	rh.f.pr.HeadRef = fixBranch
+	ctx := context.Background()
+	rec, err := rh.st.CreateRun(ctx, rh.repo, "#3", "Add parse", "claude", 3, 0, store.KindIssue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec.Branch, rec.MRURL, rec.State = fixBranch, rh.f.pr.URL, store.StateRecorded
+	if err := rh.st.UpdateRun(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+	rh.g.onWorktree = func(path string) {
+		_ = os.WriteFile(filepath.Join(path, ".delamain.yaml"), []byte("commands:\n  lint: make lint\n  test: make test\n"), 0o600)
+	}
+	return rh
+}
+
+// orderedGit, orderedForge and orderedChecks log the publishing steps in the order they happen.
+type orderedGit struct {
+	Git
+	log *[]string
+}
+
+func (o orderedGit) PushFastForward(ctx context.Context, dir, branch, base, expected string) error {
+	*o.log = append(*o.log, "push")
+	return o.Git.PushFastForward(ctx, dir, branch, base, expected)
+}
+
+type orderedForge struct {
+	forge.Forge
+	log *[]string
+}
+
+func (o orderedForge) Reply(ctx context.Context, n int, thread, body string) error {
+	*o.log = append(*o.log, "reply "+thread)
+	return o.Forge.Reply(ctx, n, thread, body)
+}
+
+func (o orderedForge) ResolveThread(ctx context.Context, n int, thread string) error {
+	*o.log = append(*o.log, "resolve "+thread)
+	return o.Forge.ResolveThread(ctx, n, thread)
+}
+
+type orderedChecks struct {
+	Checks
+	log *[]string
+}
+
+func (o orderedChecks) Run(ctx context.Context, c Check) (int, error) {
+	*o.log = append(*o.log, "check "+c.Name)
+	return o.Checks.Run(ctx, c)
+}
+
+func TestRunAddressWithPushShouldCommitVerifyPushAndResolveValidThreads(t *testing.T) {
+	rh := newFixHarness(t, fixAnswers())
+	var steps []string
+	rh.r.Git, rh.r.Forge, rh.r.Checks = orderedGit{rh.g, &steps}, orderedForge{rh.f, &steps}, orderedChecks{rh.h, &steps}
+	res := rh.address(t)
+
+	if res.Outcome != OutcomeAnswered {
+		t.Fatalf("want answered, got %s (%s)", res.Outcome, res.Reason)
+	}
+	wt := filepath.Join(rh.r.Cfg.Paths.WorktreesDir, "repo", fixBranch)
+	if len(rh.g.onBranch) != 1 || rh.g.onBranch[0] != fixBranch+" "+wt || res.Worktree != wt {
+		t.Fatalf("the fix happens on the PR branch checked out at %s: %v (%s)", wt, rh.g.onBranch, res.Worktree)
+	}
+	fix := "00000001" // the fake's first commit
+	want := ffPush{branch: fixBranch, base: "origin/main", expected: prHead, head: fix}
+	if len(rh.g.ffPushes) != 1 || rh.g.ffPushes[0] != want {
+		t.Fatalf("one fast-forward push of the fix from the head recorded before the agent: %+v", rh.g.ffPushes)
+	}
+	wantSteps := []string{"check lint", "check test", "push", "reply t1", "reply issue-comment:9", "resolve issue-comment:9"}
+	if strings.Join(steps, ",") != strings.Join(wantSteps, ",") {
+		t.Fatalf("checks, then push, then replies, then resolve:\n got %v\nwant %v", steps, wantSteps)
+	}
+	for _, rp := range rh.f.replies {
+		if rp.thread == "issue-comment:9" && (!strings.Contains(rp.body, fixReply) || !strings.Contains(rp.body, fix)) {
+			t.Errorf("the reply to the fixed thread cites the pushed commit %s:\n%s", fix, rp.body)
+		}
+		if rp.thread == "t1" && strings.Contains(rp.body, fix) {
+			t.Errorf("an invalid thread cites no fix:\n%s", rp.body)
+		}
+	}
+	if len(rh.f.resolved) != 1 || rh.f.resolved[0] != "issue-comment:9" {
+		t.Fatalf("only the fixed thread is resolved: %v", rh.f.resolved)
+	}
+	if !strings.Contains(res.Reason, fix) {
+		t.Errorf("the outcome records the pushed commit: %s", res.Reason)
+	}
+	if _, err := os.Stat(wt); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the worktree is removed at the end: %v", err)
+	}
+	if cur := rh.cursor(t); cur.Rounds != 1 || !cur.LastSeenAt.Equal(t0.Add(2*time.Hour)) {
+		t.Fatalf("a fixing round is a round: %+v", cur)
+	}
+}
+
+func TestRunAddressWithPushShouldGiveTheResponderTheFixingConfinement(t *testing.T) {
+	rh := newFixHarness(t, fixAnswers())
+	res := rh.address(t)
+	if res.Outcome != OutcomeAnswered {
+		t.Fatalf("got %s (%s)", res.Outcome, res.Reason)
+	}
+	start := rh.h.starts["responder-r"+strconv.FormatInt(res.RunID, 10)]
+	msg := filepath.Join(res.RunDir, "commit-msg.txt") // outside the checkout: add -A never commits it
+	want := Confinement{Checkout: res.Worktree, Base: prBase, Artifact: filepath.Join(res.RunDir, "responses.json"), Fix: true, CommitMessage: msg}
+	if start.Confine == nil || *start.Confine != want {
+		t.Fatalf("the responder edits and commits only in the checkout: want %+v, got %+v", want, start.Confine)
+	}
+	if rel, err := filepath.Rel(res.Worktree, start.Dir); err == nil && filepath.IsLocal(rel) || start.Dir == res.Worktree {
+		t.Fatalf("the agent's cwd %s is inside the checkout %s", start.Dir, res.Worktree)
+	}
+	for _, kv := range gitx.AgentEnv() {
+		if !slices.Contains(start.Env, kv) {
+			t.Fatalf("the responder runs with the push block (%s): only the orchestrator publishes", kv)
+		}
+	}
+	prompt := strings.Join(rh.h.prompts["responder"], "\n")
+	for _, cmd := range []string{
+		"git -C " + res.Worktree + " status --porcelain", "git -C " + res.Worktree + " add -A",
+		"git -C " + res.Worktree + " -c core.hooksPath=/dev/null commit -F " + msg,
+	} {
+		if !strings.Contains(prompt, "`"+cmd+"`") {
+			t.Errorf("the prompt must give %q as the confinement allows it", cmd)
+		}
+	}
+	if !strings.Contains(prompt, "push habilitado") {
+		t.Error("the prompt says the push is enabled")
+	}
+}
+
+// replyTo is the body posted to thread.
+func replyTo(t *testing.T, rh *reviewHarness, thread string) string {
+	t.Helper()
+	for _, rp := range rh.f.replies {
+		if rp.thread == thread {
+			return rp.body
+		}
+	}
+	t.Fatalf("no reply posted to %s: %+v", thread, rh.f.replies)
+	return ""
+}
+
+// assertFixNotSent is a run that answered every thread but sent and resolved nothing, the fixed
+// thread's reply saying why instead of claiming a fix.
+func assertFixNotSent(t *testing.T, rh *reviewHarness, res Result, why string) {
+	t.Helper()
+	if res.Outcome != OutcomeAnswered {
+		t.Fatalf("the replies still go out: got %s (%s)", res.Outcome, res.Reason)
+	}
+	if len(rh.g.ffPushes) != 0 || len(rh.f.resolved) != 0 {
+		t.Fatalf("nothing is pushed nor resolved: pushes %+v, resolved %v", rh.g.ffPushes, rh.f.resolved)
+	}
+	body := replyTo(t, rh, "issue-comment:9")
+	if strings.Contains(body, fixReply) || !strings.Contains(body, why) || !strings.Contains(body, "revisão humana") {
+		t.Fatalf("the fixed thread's reply says the fix was not sent (%s), never that it was:\n%s", why, body)
+	}
+	if !strings.Contains(replyTo(t, rh, "t1"), invalidReply) {
+		t.Fatal("the other replies go out as written")
+	}
+	if !strings.Contains(res.Reason, "não enviadas") {
+		t.Fatalf("the outcome records that the fixes were not sent: %s", res.Reason)
+	}
+}
+
+func TestRunAddressWithPushShouldNotPushWhenVerifyFails(t *testing.T) {
+	rh := newFixHarness(t, fixAnswers())
+	rh.h.checks = func(name string, _ int) int {
+		if name == "test" {
+			return 1
+		}
+		return 0
+	}
+	res := rh.address(t)
+
+	assertFixNotSent(t, rh, res, "não passou nos checks")
+	if !strings.Contains(res.Reason, "test") {
+		t.Fatalf("the outcome names the failed check: %s", res.Reason)
+	}
+}
+
+func TestRunAddressWithPushShouldNotPushWhenTheCommitsLeakASecret(t *testing.T) {
+	// Built at runtime so no secret-shaped literal lives in the repository.
+	ghToken := "ghp_" + strings.Repeat("a1B2c3D4e5", 4)
+	t.Run("gitleaks finds one in the new commits", func(t *testing.T) {
+		rh := newFixHarness(t, fixAnswers())
+		rh.r.LookPath = func(string) (string, error) { return "/usr/bin/gitleaks", nil }
+		rh.h.checks = func(name string, _ int) int {
+			if name == "secrets" {
+				return 1
+			}
+			return 0
+		}
+		res := rh.address(t)
+
+		assertFixNotSent(t, rh, res, "não passou nos checks")
+		var scan string
+		for _, c := range rh.h.checkCalls {
+			if c.Name == "secrets" {
+				scan = c.Command
+			}
+		}
+		if !strings.Contains(scan, "--log-opts="+prHead+"..HEAD") {
+			t.Fatalf("gitleaks scans exactly the responder's commits, from the recorded head: %q", scan)
+		}
+	})
+	t.Run("a commit subject carries a token", func(t *testing.T) {
+		rh := newFixHarness(t, func(string, int, string) reply {
+			return reply{
+				write:  responsesJSON(response("t1", "invalid", invalidReply), fixedAnswer()),
+				mutate: func(g *fakeGit) { g.commit("fix: use " + ghToken + " (review)") },
+			}
+		})
+		res := rh.address(t)
+
+		assertFixNotSent(t, rh, res, "não passou nos checks")
+		if strings.Contains(res.Reason, ghToken) || strings.Contains(replyTo(t, rh, "issue-comment:9"), ghToken) {
+			t.Fatal("the secret is never repeated")
+		}
+	})
+	t.Run("a commit body carries a token", func(t *testing.T) {
+		// With commit -F the responder writes the whole message: gitleaks scans patches, not it.
+		rh := newFixHarness(t, func(string, int, string) reply {
+			return reply{
+				write: responsesJSON(response("t1", "invalid", invalidReply), fixedAnswer()),
+				mutate: func(g *fakeGit) {
+					g.commit("fix: rename x to count (review)")
+					g.bodies = map[string]string{g.head: "context for the reviewer\n" + ghToken}
+				},
+			}
+		})
+		res := rh.address(t)
+
+		assertFixNotSent(t, rh, res, "não passou nos checks")
+		if strings.Contains(res.Reason, ghToken) || strings.Contains(replyTo(t, rh, "issue-comment:9"), ghToken) {
+			t.Fatal("the secret is never repeated")
+		}
+	})
+}
+
+func TestRunAddressWithPushShouldNotPushWhenRemoteMovedDuringTheRun(t *testing.T) {
+	rh := newFixHarness(t, fixAnswers())
+	rh.g.ffErr = fmt.Errorf("feat/parse is at cccccccc on origin: %w", gitx.ErrRemoteMoved)
+	res := rh.address(t)
+
+	assertFixNotSent(t, rh, res, "a branch mudou")
+	if !strings.Contains(res.Reason, "mudou no remoto") {
+		t.Fatalf("the outcome says the branch moved: %s", res.Reason)
+	}
+	report, err := os.ReadFile(res.ReportPath)
+	if err != nil || !strings.Contains(string(report), "mudou no remoto") {
+		t.Fatalf("the report records why nothing was sent: %v\n%s", err, report)
+	}
+}
+
+func TestRunAddressWithPushShouldHaltWhenNewCommitsDoNotDescendFromTheRemoteHead(t *testing.T) {
+	rh := newFixHarness(t, func(string, int, string) reply {
+		return reply{
+			write: responsesJSON(response("t1", "invalid", invalidReply), fixedAnswer()),
+			// commit --amend passes the commit rule's prefix: the published commit is rewritten.
+			mutate: func(g *fakeGit) { g.rewritten = true; g.commit("fix: rename x to count (review)") },
+		}
+	})
+	res := rh.address(t)
+
+	assertNothingAnswered(t, rh, res, "não descendem")
+	if len(rh.g.ffPushes)+len(rh.f.resolved)+len(rh.h.checkCalls) != 0 {
+		t.Fatalf("a rewritten history is neither checked nor pushed: %+v %v %d", rh.g.ffPushes, rh.f.resolved, len(rh.h.checkCalls))
+	}
+}
+
+func TestRunAddressWithPushShouldHaltWhenThePushIsRefused(t *testing.T) {
+	rh := newFixHarness(t, fixAnswers())
+	rh.g.ffErr = errors.New("HEAD does not descend from aaaaaaaa")
+	res := rh.address(t)
+
+	assertNothingAnswered(t, rh, res, "recusado")
+	if len(rh.f.resolved) != 0 {
+		t.Fatalf("nothing is resolved: %v", rh.f.resolved)
+	}
+}
+
+func TestRunAddressWithPushShouldHaltWhenTheBranchIsNotAtThePRHead(t *testing.T) {
+	rh := newFixHarness(t, fixAnswers())
+	rh.g.remoteHead = "cccccccc" // pushed after PRView
+	res := rh.address(t)
+
+	assertNothingAnswered(t, rh, res, "cccccccc")
+	if len(rh.g.onBranch)+len(rh.h.starts) != 0 {
+		t.Fatal("no checkout nor agent for a branch that is not at the PR head")
+	}
+}
+
+func TestRunAddressWithPushShouldRejectFixedWithoutCommit(t *testing.T) {
+	rh := newFixHarness(t, answers(responsesJSON(response("t1", "invalid", invalidReply), fixedAnswer())))
+	res := rh.address(t)
+
+	assertNothingAnswered(t, rh, res, "sem nenhum commit")
+	if len(rh.g.ffPushes)+len(rh.f.resolved) != 0 {
+		t.Fatal("a fix nobody committed is neither pushed nor resolved")
+	}
+}
+
+func TestRunAddressWithPushShouldHaltOnUncommittedChanges(t *testing.T) {
+	for name, tc := range map[string]struct {
+		artifact string
+		mutate   func(g *fakeGit)
+		reason   string
+	}{
+		"change left out of a commit": {
+			artifact: responsesJSON(response("t1", "invalid", invalidReply), fixedAnswer()),
+			mutate:   func(g *fakeGit) { g.commit("fix: rename x to count (review)"); g.status = " M a.go" },
+			reason:   "fora de commit",
+		},
+		"commit no thread declares": {
+			artifact: happyAnswers(),
+			mutate:   func(g *fakeGit) { g.commit("feat: something nobody asked for") },
+			reason:   "sem marcar",
+		},
+		"commit on another branch": {
+			artifact: responsesJSON(response("t1", "invalid", invalidReply), fixedAnswer()),
+			mutate:   func(g *fakeGit) { g.commit("fix: rename x to count (review)"); g.branch = "main" },
+			reason:   "saiu da branch",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			rh := newFixHarness(t, func(string, int, string) reply { return reply{write: tc.artifact, mutate: tc.mutate} })
+			res := rh.address(t)
+
+			assertNothingAnswered(t, rh, res, tc.reason)
+			if len(rh.g.ffPushes)+len(rh.f.resolved)+len(rh.h.checkCalls) != 0 {
+				t.Fatal("nothing is checked, pushed or resolved")
+			}
+		})
+	}
+}
+
+func TestRunAddressWithPushShouldNeverResolveInvalidOrUnclearThreads(t *testing.T) {
+	t.Run("only the fixed valid thread is resolved", func(t *testing.T) {
+		rh := newFixHarness(t, func(string, int, string) reply {
+			return reply{
+				write: responsesJSON(response("t1", "invalid", invalidReply), fixedAnswer(),
+					response("t3", "unclear", "Qual entrada falha?"), response("t4", "valid", validReply)),
+				mutate: func(g *fakeGit) { g.commit("fix: rename x to count (review)") },
+			}
+		})
+		for _, id := range []string{"t3", "t4"} {
+			rh.f.threads = append(rh.f.threads, forge.Thread{ID: id, Comments: []forge.Comment{{ID: id + "c", Author: "dave", Body: "e isto?", CreatedAt: t0.Add(time.Hour)}}})
+		}
+		res := rh.address(t)
+
+		if res.Outcome != OutcomeAnswered || len(rh.g.ffPushes) != 1 {
+			t.Fatalf("the fix is pushed: %s (%s), %+v", res.Outcome, res.Reason, rh.g.ffPushes)
+		}
+		if len(rh.f.resolved) != 1 || rh.f.resolved[0] != "issue-comment:9" {
+			t.Fatalf("invalid, unclear and unfixed threads stay open: resolved %v", rh.f.resolved)
+		}
+	})
+	for _, verdict := range []string{"invalid", "unclear"} {
+		t.Run("fixed on an "+verdict+" thread", func(t *testing.T) {
+			bad := strings.Replace(response("t1", verdict, invalidReply), `"fixed":false`, `"fixed":true`, 1)
+			rh := newFixHarness(t, func(string, int, string) reply {
+				return reply{
+					write:  responsesJSON(bad, response("issue-comment:9", "valid", validReply)),
+					mutate: func(g *fakeGit) { g.commit("fix: rename x to count (review)") },
+				}
+			})
+			res := rh.address(t)
+
+			assertNothingAnswered(t, rh, res, "fixed")
+			if len(rh.g.ffPushes)+len(rh.f.resolved) != 0 {
+				t.Fatal("a fix of a thread that does not hold is never sent nor resolved")
+			}
+		})
+	}
+}
+
+func TestRunAddressWithPushShouldHaltWhenResolvingFailsAfterThePush(t *testing.T) {
+	rh := newFixHarness(t, fixAnswers())
+	rh.f.resolveErr = errors.New("HTTP 502")
+	res := rh.address(t)
+
+	if res.Outcome != OutcomeHalted || !strings.Contains(res.Reason, "issue-comment:9") || !strings.Contains(res.Reason, "00000001") {
+		t.Fatalf("the halt names the thread left open and the pushed commit: %s (%s)", res.Outcome, res.Reason)
+	}
+	if len(rh.g.ffPushes) != 1 || len(rh.f.replies) != 2 {
+		t.Fatalf("the push and the replies already happened: %+v %+v", rh.g.ffPushes, rh.f.replies)
+	}
+}
+
+// assertOnlyReplied is the phase-7 flow: the PR head checked out as untrusted code, a read-only
+// responder told the push is off, the replies posted and nothing pushed nor resolved.
+func assertOnlyReplied(t *testing.T, rh *reviewHarness, res Result) {
+	t.Helper()
+	if res.Outcome != OutcomeAnswered || len(rh.f.replies) != 2 {
+		t.Fatalf("the threads are answered: %s (%s), %+v", res.Outcome, res.Reason, rh.f.replies)
+	}
+	if len(rh.g.untrusted) != 1 || len(rh.g.onBranch) != 0 {
+		t.Fatalf("the PR head is checked out read-only, not the branch: untrusted %v, branch %v", rh.g.untrusted, rh.g.onBranch)
+	}
+	start := rh.h.starts["responder-r"+strconv.FormatInt(res.RunID, 10)]
+	if start.Confine == nil || start.Confine.Fix {
+		t.Fatalf("the responder may only read: %+v", start.Confine)
+	}
+	if prompt := strings.Join(rh.h.prompts["responder"], "\n"); !strings.Contains(prompt, "push desabilitado") || strings.Contains(prompt, "push habilitado") {
+		t.Error("the prompt says the push is off")
+	}
+	if len(rh.g.ffPushes)+len(rh.g.pushed)+len(rh.f.resolved)+len(rh.h.checkCalls) != 0 {
+		t.Fatal("nothing is checked, pushed or resolved")
+	}
+}
+
+func TestRunAddressWithoutPushShouldBehaveAsPhase7(t *testing.T) {
+	rh := newFixHarness(t, answers(happyAnswers()))
+	rh.r.Cfg.Review.Address.Push = false
+	assertOnlyReplied(t, rh, rh.address(t))
+
+	// A fix claimed with the push off is rejected exactly as in phase 7.
+	rh = newFixHarness(t, answers(responsesJSON(response("t1", "invalid", invalidReply), fixedAnswer())))
+	rh.r.Cfg.Review.Address.Push = false
+	assertNothingAnswered(t, rh, rh.address(t), "fixed must be false")
+}
+
+func TestRunAddressWithPushShouldOnlyReplyOnAPRNotOpenedByDelamain(t *testing.T) {
+	for name, setup := range map[string]func(rh *reviewHarness){
+		"no issue run opened it": func(rh *reviewHarness) { rh.f.pr.URL = "https://github.com/acme/api/pull/55" },
+		"head from a fork":       func(rh *reviewHarness) { rh.f.pr.Fork = true },
+		"another head branch":    func(rh *reviewHarness) { rh.f.pr.HeadRef = "feat/someone-else" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			rh := newFixHarness(t, answers(happyAnswers()))
+			setup(rh)
+			assertOnlyReplied(t, rh, rh.address(t))
+		})
+	}
+}
+
+func TestRunAddressWithPushShouldReuseTheIssueWorktreeOnlyWhenCleanAtTheRemoteHead(t *testing.T) {
+	for name, tc := range map[string]struct {
+		branch, head, status string
+		reuse                bool
+	}{
+		"clean at the remote head": {branch: fixBranch, head: prHead, reuse: true},
+		"clean and behind":         {branch: fixBranch, head: "dddddddd"},
+		"on another branch":        {branch: "feat/other", head: prHead},
+	} {
+		t.Run(name, func(t *testing.T) {
+			rh := newFixHarness(t, fixAnswers())
+			rh.g.remoteHead, rh.g.prHead = prHead, prHead
+			wt := filepath.Join(rh.r.Cfg.Paths.WorktreesDir, "repo", fixBranch)
+			if err := os.MkdirAll(wt, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			_ = os.WriteFile(filepath.Join(wt, ".delamain.yaml"), []byte("commands:\n  test: make test\n"), 0o600)
+			rh.g.branch, rh.g.head, rh.g.status, rh.g.wt = tc.branch, tc.head, tc.status, wt
+			res := rh.address(t)
+
+			if res.Outcome != OutcomeAnswered || len(rh.g.ffPushes) != 1 || res.Worktree != wt {
+				t.Fatalf("the fix goes out from %s: %s (%s), %+v", wt, res.Outcome, res.Reason, rh.g.ffPushes)
+			}
+			recreated := len(rh.g.onBranch) == 1
+			if recreated == tc.reuse {
+				t.Fatalf("reuse=%v, but the branch was checked out again: %v", tc.reuse, rh.g.onBranch)
+			}
+			// finishReview always removes the worktree; a recreated one is removed first too.
+			if removals := strings.Count(strings.Join(rh.g.redproof, ","), "remove"); removals != map[bool]int{true: 1, false: 2}[tc.reuse] {
+				t.Fatalf("worktree removals %d (reuse=%v): %v", removals, tc.reuse, rh.g.redproof)
+			}
+		})
+	}
+}
+
+func TestRunAddressWithPushShouldLeaveAnUnsafeIssueWorktreeAlone(t *testing.T) {
+	for name, tc := range map[string]struct {
+		head, status, reason string
+		unpushed             bool
+	}{
+		// Someone's fix in progress, or work a halted run kept on purpose.
+		"uncommitted changes": {head: prHead, status: " M a.go", reason: "fora de commit"},
+		// Recreating the branch from origin would orphan them.
+		"commits not on origin": {head: "dddddddd", unpushed: true, reason: "não estão em origin"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			rh := newFixHarness(t, fixAnswers())
+			rh.g.remoteHead, rh.g.prHead = prHead, prHead
+			wt := filepath.Join(rh.r.Cfg.Paths.WorktreesDir, "repo", fixBranch)
+			if err := os.MkdirAll(wt, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			rh.g.branch, rh.g.head, rh.g.status, rh.g.wt = fixBranch, tc.head, tc.status, wt
+			if tc.unpushed {
+				rh.g.unpushed = map[string]bool{tc.head: true}
+			}
+			res := rh.address(t)
+
+			assertNothingAnswered(t, rh, res, tc.reason)
+			if !strings.Contains(res.Reason, wt) {
+				t.Errorf("the halt names the worktree left alone: %s", res.Reason)
+			}
+			if strings.Contains(strings.Join(rh.g.redproof, ","), "remove") || len(rh.g.onBranch)+len(rh.h.starts) != 0 {
+				t.Fatalf("the worktree is neither removed nor checked out again, and no agent runs: %v %v", rh.g.redproof, rh.g.onBranch)
+			}
+			if _, err := os.Stat(wt); err != nil {
+				t.Fatalf("the worktree stays where it was: %v", err)
+			}
+		})
 	}
 }

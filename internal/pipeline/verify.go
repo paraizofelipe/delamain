@@ -73,6 +73,29 @@ func (r *Runner) verify(ctx context.Context, ru *run, iterDir string) ([]CheckRe
 	matrix.Command = "plan.json"
 	results = append(results, matrix)
 
+	cmds, err := r.commandChecks(ctx, ru, iterDir)
+	results = append(results, cmds...)
+	if err != nil {
+		return results, err
+	}
+	// Proving red only makes sense once the branch itself is green.
+	if allPassed(results) && r.wantsRedProof(ru) {
+		res, err := r.redProof(ctx, ru, iterDir, changed)
+		if err != nil {
+			return results, err
+		}
+		results = append(results, res)
+	}
+	sec, err := r.secrets(ctx, ru, iterDir, ru.repo.Base)
+	if err != nil {
+		return results, err
+	}
+	return append(results, sec), nil
+}
+
+// commandChecks runs the project's own format, lint, typecheck and test commands, those set.
+func (r *Runner) commandChecks(ctx context.Context, ru *run, iterDir string) ([]CheckResult, error) {
+	var results []CheckResult
 	c := ru.cmds
 	for _, cmd := range []struct{ name, line string }{
 		{"format", c.FormatCheck}, {"lint", c.Lint}, {"typecheck", c.Typecheck}, {"test", c.Test},
@@ -86,19 +109,7 @@ func (r *Runner) verify(ctx context.Context, ru *run, iterDir string) ([]CheckRe
 		}
 		results = append(results, res)
 	}
-	// Proving red only makes sense once the branch itself is green.
-	if allPassed(results) && r.wantsRedProof(ru) {
-		res, err := r.redProof(ctx, ru, iterDir, changed)
-		if err != nil {
-			return results, err
-		}
-		results = append(results, res)
-	}
-	sec, err := r.secrets(ctx, ru, iterDir)
-	if err != nil {
-		return results, err
-	}
-	return append(results, sec), nil
+	return results, nil
 }
 
 // loadGates reads .delamain.yaml and detects the stack from the fresh worktree, which still
@@ -190,8 +201,8 @@ func (r *Runner) redProof(ctx context.Context, ru *run, iterDir string, changed 
 	return res, nil
 }
 
-// secrets scans the branch commits with gitleaks; without it the gate is reported as skipped.
-func (r *Runner) secrets(ctx context.Context, ru *run, iterDir string) (CheckResult, error) {
+// secrets scans the commits in from..HEAD with gitleaks; without it the gate is reported as skipped.
+func (r *Runner) secrets(ctx context.Context, ru *run, iterDir, from string) (CheckResult, error) {
 	look := r.LookPath
 	if look == nil {
 		look = exec.LookPath
@@ -200,7 +211,7 @@ func (r *Runner) secrets(ctx context.Context, ru *run, iterDir string) (CheckRes
 	if _, err := look("gitleaks"); err != nil {
 		return CheckResult{Name: name, Command: "gitleaks", Skipped: true, Tail: "gitleaks não instalado: varredura de segredos não executada"}, nil
 	}
-	line := fmt.Sprintf("gitleaks git --no-banner --redact --log-opts=%s..HEAD .", ru.repo.Base)
+	line := fmt.Sprintf("gitleaks git --no-banner --redact --log-opts=%s..HEAD .", from)
 	res, err := r.runCheck(ctx, ru, iterDir, "secrets", line)
 	res.Name = name
 	return res, err

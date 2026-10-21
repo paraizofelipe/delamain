@@ -780,3 +780,172 @@ func TestUntrustedStatusShouldRunNoFilterOfTheCheckout(t *testing.T) {
 		t.Fatalf("the fixture's clean filter must run on a plain status: %v", err)
 	}
 }
+
+// pushedBranch gives a repository an origin holding main and feat/x, checked out locally, and
+// returns the repository and the head of feat/x on the origin.
+func pushedBranch(t *testing.T) (r, head string) {
+	t.Helper()
+	r = repo(t)
+	withOrigin(t, r)
+	gitIn(t, r, "push", "-q", "origin", "main")
+	gitIn(t, r, "switch", "-q", "-c", "feat/x")
+	head = commitFile(t, r, "a.txt", "one\n")
+	gitIn(t, r, "push", "-q", "origin", "feat/x")
+	return r, head
+}
+
+func originHead(t *testing.T, r, branch string) string {
+	t.Helper()
+	out := gitIn(t, r, "ls-remote", "--heads", "origin", "refs/heads/"+branch)
+	sha, _, _ := strings.Cut(out, "\t")
+	return sha
+}
+
+func TestRemoteSHAShouldReturnTheBranchHeadOnOrigin(t *testing.T) {
+	g, ctx := New(), context.Background()
+	r, head := pushedBranch(t)
+	commitFile(t, r, "b.txt", "local only\n") // the local branch moves, the origin does not
+	got, err := g.RemoteSHA(ctx, r, "feat/x")
+	if err != nil || got != head {
+		t.Fatalf("RemoteSHA = %q %v, want the origin head %s", got, err, head)
+	}
+	if got, err := g.RemoteSHA(ctx, r, "feat/none"); err != nil || got != "" {
+		t.Fatalf("a branch missing on origin has no SHA, got %q %v", got, err)
+	}
+}
+
+func TestPushFastForwardShouldPushWhenRemoteIsUnchanged(t *testing.T) {
+	g, ctx := New(), context.Background()
+	r, expected := pushedBranch(t)
+	fix := commitFile(t, r, "a.txt", "two\n")
+	if err := g.PushFastForward(ctx, r, "feat/x", "origin/main", expected); err != nil {
+		t.Fatal(err)
+	}
+	if got := originHead(t, r, "feat/x"); got != fix {
+		t.Fatalf("origin must hold the fix %s, got %s", fix, got)
+	}
+}
+
+func TestPushFastForwardShouldRefuseWhenRemoteMoved(t *testing.T) {
+	g, ctx := New(), context.Background()
+	r, expected := pushedBranch(t)
+	// Someone else pushes to the branch while the agent works.
+	other := filepath.Join(t.TempDir(), "other")
+	gitIn(t, r, "worktree", "add", "-q", "--detach", other, expected)
+	theirs := commitFile(t, other, "theirs.txt", "theirs\n")
+	gitIn(t, other, "push", "-q", "origin", "HEAD:refs/heads/feat/x")
+	commitFile(t, r, "a.txt", "two\n")
+	err := g.PushFastForward(ctx, r, "feat/x", "origin/main", expected)
+	if !errors.Is(err, ErrRemoteMoved) {
+		t.Fatalf("a moved remote must be ErrRemoteMoved, got %v", err)
+	}
+	if got := originHead(t, r, "feat/x"); got != theirs {
+		t.Fatalf("their push must survive, origin is at %s", got)
+	}
+}
+
+func TestPushFastForwardShouldRefuseNonDescendantHead(t *testing.T) {
+	g, ctx := New(), context.Background()
+	r, expected := pushedBranch(t)
+	// The agent rewrote the published commit instead of adding one on top of it.
+	gitIn(t, r, "commit", "-q", "--amend", "-m", "rewritten")
+	err := g.PushFastForward(ctx, r, "feat/x", "origin/main", expected)
+	if err == nil || errors.Is(err, ErrRemoteMoved) {
+		t.Fatalf("a head that does not descend from the remote must be refused, got %v", err)
+	}
+	if got := originHead(t, r, "feat/x"); got != expected {
+		t.Fatalf("the published commit must stay on origin, got %s", got)
+	}
+}
+
+func TestPushFastForwardShouldRefuseProtectedAndBaseBranches(t *testing.T) {
+	g, ctx := New(), context.Background()
+	r := repo(t)
+	withOrigin(t, r)
+	gitIn(t, r, "push", "-q", "origin", "main")
+	expected := gitIn(t, r, "rev-parse", "HEAD")
+	commitFile(t, r, "a.txt", "on main\n")
+	for _, b := range []string{"main", "master", "develop"} {
+		if err := g.PushFastForward(ctx, r, b, "origin/develop", expected); err == nil {
+			t.Errorf("push of %q must be refused", b)
+		}
+	}
+	if got := originHead(t, r, "main"); got != expected {
+		t.Fatalf("main must not move on origin, got %s", got)
+	}
+}
+
+func TestAddWorktreeOnBranchShouldCheckOutTheRemoteHeadOfTheBranch(t *testing.T) {
+	g, ctx := New(), context.Background()
+	r, _ := pushedBranch(t)
+	// The branch moves on origin after the local clone last saw it.
+	other := filepath.Join(t.TempDir(), "other")
+	gitIn(t, r, "worktree", "add", "-q", "--detach", other, "feat/x")
+	remote := commitFile(t, other, "b.txt", "two\n")
+	gitIn(t, other, "push", "-q", "origin", "HEAD:refs/heads/feat/x")
+	gitIn(t, r, "worktree", "remove", "--force", other)
+	gitIn(t, r, "switch", "-q", "main")
+	wt := filepath.Join(t.TempDir(), "wts", "repo", "feat", "x")
+	if err := g.AddWorktreeOnBranch(ctx, r, wt, "feat/x", "origin/main"); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := g.CurrentBranch(ctx, wt); b != "feat/x" {
+		t.Fatalf("worktree must be on the branch, got %q", b)
+	}
+	if head, _ := g.Head(ctx, wt); head != remote {
+		t.Fatalf("worktree must start at the origin head %s, got %s", remote, head)
+	}
+}
+
+func TestAddWorktreeOnBranchShouldRefuseBaseAndMain(t *testing.T) {
+	g, ctx := New(), context.Background()
+	r := repo(t)
+	withOrigin(t, r)
+	gitIn(t, r, "push", "-q", "origin", "main")
+	for _, b := range []string{"main", "master", "develop"} {
+		wt := filepath.Join(t.TempDir(), "wt")
+		if err := g.AddWorktreeOnBranch(ctx, r, wt, b, "origin/develop"); err == nil {
+			t.Errorf("a worktree on %q must be refused", b)
+		}
+		if _, err := os.Stat(wt); !os.IsNotExist(err) {
+			t.Errorf("nothing is created when %q is refused", b)
+		}
+	}
+}
+
+func TestIsAncestorShouldTellWhetherHeadDescendsFromACommit(t *testing.T) {
+	g, ctx := New(), context.Background()
+	r, published := pushedBranch(t)
+	commitFile(t, r, "a.txt", "two\n")
+	if ok, err := g.IsAncestor(ctx, r, published, "HEAD"); err != nil || !ok {
+		t.Fatalf("a commit on top of the published one descends from it: %v %v", ok, err)
+	}
+	gitIn(t, r, "reset", "-q", "--hard", "main")
+	gitIn(t, r, "commit", "-q", "--allow-empty", "-m", "rewritten")
+	if ok, err := g.IsAncestor(ctx, r, published, "HEAD"); err != nil || ok {
+		t.Fatalf("a rewritten history does not descend from the published commit: %v %v", ok, err)
+	}
+	if _, err := g.IsAncestor(ctx, r, "0123456789abcdef0123456789abcdef01234567", "HEAD"); err == nil {
+		t.Fatal("an unknown commit is an error, not a no")
+	}
+}
+
+func TestCommitMessagesShouldReturnTheWholeMessageOfEachNewCommit(t *testing.T) {
+	g, ctx := New(), context.Background()
+	r, published := pushedBranch(t)
+	gitIn(t, r, "commit", "-q", "--allow-empty", "-m", "fix: rename x (review)", "-m", "body line one\nbody line two")
+	gitIn(t, r, "commit", "-q", "--allow-empty", "-m", "fix: second (review)")
+	got, err := g.CommitMessages(ctx, r, published)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || !strings.Contains(got[0], "fix: rename x (review)") || !strings.Contains(got[0], "body line two") || !strings.Contains(got[1], "fix: second (review)") {
+		t.Fatalf("each new commit's subject and body, oldest first: %q", got)
+	}
+	if strings.Contains(strings.Join(got, "\n"), "change a.txt") {
+		t.Fatalf("commits up to the base are left out: %q", got)
+	}
+	if got, err := g.CommitMessages(ctx, r, "HEAD"); err != nil || len(got) != 0 {
+		t.Fatalf("no new commit, no message: %q %v", got, err)
+	}
+}

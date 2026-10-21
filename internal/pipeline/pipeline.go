@@ -55,6 +55,11 @@ type Git interface {
 	ShowFile(ctx context.Context, repo, ref, path string) ([]byte, error)
 	ChangedLines(ctx context.Context, dir, base string) (map[string][]gitx.LineRange, error)
 	DeleteRef(ctx context.Context, repo, ref string) error
+	RemoteSHA(ctx context.Context, repo, branch string) (string, error)
+	AddWorktreeOnBranch(ctx context.Context, repo, path, branch, base string) error
+	IsAncestor(ctx context.Context, dir, ancestor, ref string) (bool, error)
+	CommitMessages(ctx context.Context, dir, base string) ([]string, error)
+	PushFastForward(ctx context.Context, dir, branch, base, expected string) error
 }
 
 type Outcome string

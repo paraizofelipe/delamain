@@ -125,6 +125,64 @@ func TestClaudeAgentsShouldConfineASessionToReadingItsCheckout(t *testing.T) {
 	}
 }
 
+// flagValues collects the values that follow every occurrence of flag in args.
+func flagValues(args []string, flag string) map[string]bool {
+	values := map[string]bool{}
+	for i, arg := range args {
+		if arg == flag {
+			for _, v := range args[i+1:] {
+				if strings.HasPrefix(v, "--") {
+					break
+				}
+				values[v] = true
+			}
+		}
+	}
+	return values
+}
+
+func TestClaudeAgentsShouldLetAFixingSessionEditAndCommitOnlyInItsCheckout(t *testing.T) {
+	a := ClaudeAgents{Model: "opus", Effort: "high", PermissionMode: "bypassPermissions", AgentsFile: "/p/agents.json", PluginDir: "/p/plugin"}
+	args := a.args("sid", "fix the PR", &Confinement{Checkout: "/wt/feat/x", Base: "b4se", Artifact: "/run/5/responses.json", Fix: true, CommitMessage: "/run/5/commit-msg.txt"})
+	got := strings.Join(args, " ")
+	if !strings.Contains(got, "--permission-mode dontAsk") || !strings.Contains(got, "--tools Read,Grep,Glob,Bash,Edit,Write,Agent ") {
+		t.Fatalf("a fixing session edits files and still denies everything not allowed: %s", got)
+	}
+	// Status, add and commit in the checkout only, every one an exact command: the message comes
+	// from a file the session writes, so no argument is left open (a prefix rule would also take
+	// --pathspec-from-file=<any file>, -F <any file> or a second -m). Hooks are off because a
+	// hooksPath inside the checkout would be editable. No test, build, push or forge command:
+	// running code it edits would be a free shell.
+	want := []string{
+		"Read(//wt/feat/x/**)",
+		"Bash(git -C /wt/feat/x diff --no-ext-diff --no-textconv b4se...HEAD)", "Bash(git -C /wt/feat/x log b4se..HEAD --oneline)",
+		"Edit(//run/5/responses.json)",
+		"Edit(//wt/feat/x/**)",
+		"Bash(git -C /wt/feat/x status --porcelain)", "Bash(git -C /wt/feat/x add -A)",
+		"Edit(//run/5/commit-msg.txt)", "Bash(git -C /wt/feat/x -c core.hooksPath=/dev/null commit -F /run/5/commit-msg.txt)",
+	}
+	allowed := flagValues(args, "--allowedTools")
+	if len(allowed) != len(want) {
+		t.Fatalf("allowed rules %v, want exactly %v", allowed, want)
+	}
+	for _, rule := range want {
+		if !allowed[rule] {
+			t.Errorf("missing allow rule %q in %v", rule, allowed)
+		}
+	}
+	for rule := range allowed {
+		if strings.Contains(rule, ":*") || strings.Contains(rule, "Bash(") && strings.Contains(rule, "*") {
+			t.Errorf("open-ended rule %q lets the agent add any argument", rule)
+		}
+	}
+	denied := flagValues(args, "--disallowed-tools")
+	for _, rule := range []string{"AskUserQuestion", "Edit(//wt/feat/x/.git)", "Edit(//wt/feat/x/.git/**)"} {
+		if !denied[rule] {
+			t.Errorf("a fixing session must deny %q, denied %v", rule, denied)
+		}
+	}
+}
+
 func TestRPCAgentsShouldRefuseAConfinedSession(t *testing.T) {
 	dir := t.TempDir()
 	a := RPCAgents{Binary: filepath.Join(dir, "omp-not-installed"), Model: "m", Thinking: "medium", ApprovalMode: "yolo"}

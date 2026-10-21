@@ -103,6 +103,22 @@ func (g Git) CommitsSince(ctx context.Context, dir, base string) ([]string, erro
 	return strings.Split(out, "\n"), nil
 }
 
+// CommitMessages returns the whole message (subject and body) of each commit in base..HEAD,
+// oldest first.
+func (g Git) CommitMessages(ctx context.Context, dir, base string) ([]string, error) {
+	out, err := g.run(ctx, dir, "log", "--reverse", "-z", "--format=%B", base+"..HEAD")
+	if err != nil {
+		return nil, err
+	}
+	var msgs []string
+	for _, m := range strings.Split(out, "\x00") {
+		if m = strings.TrimSpace(m); m != "" {
+			msgs = append(msgs, m)
+		}
+	}
+	return msgs, nil
+}
+
 // ChangedFiles lists files added or modified in base...HEAD (deletions excluded).
 func (g Git) ChangedFiles(ctx context.Context, dir, base string) ([]string, error) {
 	out, err := g.run(ctx, dir, "diff", "--name-only", "--diff-filter=d", base+"...HEAD")
@@ -119,6 +135,19 @@ func (g Git) AddWorktree(ctx context.Context, repo, path, branch, base string) e
 		return err
 	}
 	_, err := g.run(ctx, repo, "worktree", "add", "--quiet", "-b", branch, path, base)
+	return err
+}
+
+// AddWorktreeOnBranch fetches branch from origin and checks it out at path, the local branch
+// reset to the origin head. Protected and base branches are refused before any git command.
+func (g Git) AddWorktreeOnBranch(ctx context.Context, repo, path, branch, base string) error {
+	if err := GuardWorkBranch(branch, base); err != nil {
+		return err
+	}
+	if err := g.FetchRef(ctx, repo, branch); err != nil {
+		return err
+	}
+	_, err := g.run(ctx, repo, "worktree", "add", "--quiet", "-B", branch, path, "refs/remotes/origin/"+branch)
 	return err
 }
 
@@ -383,6 +412,57 @@ func (g Git) Push(ctx context.Context, dir, branch, base string) error {
 	ref := "refs/heads/" + branch
 	_, err := g.run(ctx, dir, "push", "--quiet", "origin", ref+":"+ref)
 	return err
+}
+
+// IsAncestor reports whether ref descends from (or is) ancestor; an unknown commit is an error.
+func (g Git) IsAncestor(ctx context.Context, dir, ancestor, ref string) (bool, error) {
+	_, err := g.run(ctx, dir, "merge-base", "--is-ancestor", ancestor, ref)
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() == 1 {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+// ErrRemoteMoved means the branch on origin is no longer at the SHA recorded before the work.
+var ErrRemoteMoved = errors.New("remote branch moved")
+
+// RemoteSHA asks origin for the head of branch; a branch missing on origin is "".
+func (g Git) RemoteSHA(ctx context.Context, repo, branch string) (string, error) {
+	out, err := g.run(ctx, repo, "ls-remote", "--heads", "origin", "refs/heads/"+branch)
+	sha, _, _ := strings.Cut(out, "\t")
+	return sha, err
+}
+
+// PushFastForward publishes HEAD of dir to branch on origin only as a fast-forward of expected,
+// the origin head recorded before the work started. A moved origin is ErrRemoteMoved and a HEAD
+// that does not descend from expected is refused; the lease makes git itself recheck expected,
+// so the push never overwrites anything. Protected and base branches are refused first.
+func (g Git) PushFastForward(ctx context.Context, dir, branch, base, expected string) error {
+	if err := GuardWorkBranch(branch, base); err != nil {
+		return err
+	}
+	if expected == "" {
+		return errors.New("no recorded origin head to fast-forward from")
+	}
+	if remote, err := g.RemoteSHA(ctx, dir, branch); err != nil {
+		return err
+	} else if remote != expected {
+		return fmt.Errorf("%s is at %.12s on origin, not %.12s: %w", branch, remote, expected, ErrRemoteMoved)
+	}
+	if ok, err := g.IsAncestor(ctx, dir, expected, "HEAD"); err != nil {
+		return err
+	} else if !ok {
+		return fmt.Errorf("HEAD does not descend from %.12s", expected)
+	}
+	ref := "refs/heads/" + branch
+	if _, err := g.run(ctx, dir, "push", "--quiet", "--force-with-lease="+ref+":"+expected, "origin", "HEAD:"+ref); err != nil {
+		if remote, rerr := g.RemoteSHA(ctx, dir, branch); rerr == nil && remote != expected {
+			return fmt.Errorf("%w: %w", ErrRemoteMoved, err)
+		}
+		return err
+	}
+	return nil
 }
 
 // RemoteBranchExists asks origin itself, not the possibly stale remote-tracking refs.
