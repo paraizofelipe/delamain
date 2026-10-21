@@ -398,6 +398,16 @@ func (g Git) Push(ctx context.Context, dir, branch, base string) error {
 	return err
 }
 
+// IsAncestor reports whether ref descends from (or is) ancestor; an unknown commit is an error.
+func (g Git) IsAncestor(ctx context.Context, dir, ancestor, ref string) (bool, error) {
+	_, err := g.run(ctx, dir, "merge-base", "--is-ancestor", ancestor, ref)
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() == 1 {
+		return false, nil
+	}
+	return err == nil, err
+}
+
 // ErrRemoteMoved means the branch on origin is no longer at the SHA recorded before the work.
 var ErrRemoteMoved = errors.New("remote branch moved")
 
@@ -424,8 +434,10 @@ func (g Git) PushFastForward(ctx context.Context, dir, branch, base, expected st
 	} else if remote != expected {
 		return fmt.Errorf("%s is at %.12s on origin, not %.12s: %w", branch, remote, expected, ErrRemoteMoved)
 	}
-	if _, err := g.run(ctx, dir, "merge-base", "--is-ancestor", expected, "HEAD"); err != nil {
-		return fmt.Errorf("HEAD does not descend from %.12s: %w", expected, err)
+	if ok, err := g.IsAncestor(ctx, dir, expected, "HEAD"); err != nil {
+		return err
+	} else if !ok {
+		return fmt.Errorf("HEAD does not descend from %.12s", expected)
 	}
 	ref := "refs/heads/" + branch
 	if _, err := g.run(ctx, dir, "push", "--quiet", "--force-with-lease="+ref+":"+expected, "origin", "HEAD:"+ref); err != nil {

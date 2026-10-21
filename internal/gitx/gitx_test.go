@@ -912,3 +912,20 @@ func TestAddWorktreeOnBranchShouldRefuseBaseAndMain(t *testing.T) {
 		}
 	}
 }
+
+func TestIsAncestorShouldTellWhetherHeadDescendsFromACommit(t *testing.T) {
+	g, ctx := New(), context.Background()
+	r, published := pushedBranch(t, "feat/x")
+	commitFile(t, r, "a.txt", "two\n")
+	if ok, err := g.IsAncestor(ctx, r, published, "HEAD"); err != nil || !ok {
+		t.Fatalf("a commit on top of the published one descends from it: %v %v", ok, err)
+	}
+	gitIn(t, r, "reset", "-q", "--hard", "main")
+	gitIn(t, r, "commit", "-q", "--allow-empty", "-m", "rewritten")
+	if ok, err := g.IsAncestor(ctx, r, published, "HEAD"); err != nil || ok {
+		t.Fatalf("a rewritten history does not descend from the published commit: %v %v", ok, err)
+	}
+	if _, err := g.IsAncestor(ctx, r, "0123456789abcdef0123456789abcdef01234567", "HEAD"); err == nil {
+		t.Fatal("an unknown commit is an error, not a no")
+	}
+}
