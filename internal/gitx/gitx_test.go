@@ -929,3 +929,23 @@ func TestIsAncestorShouldTellWhetherHeadDescendsFromACommit(t *testing.T) {
 		t.Fatal("an unknown commit is an error, not a no")
 	}
 }
+
+func TestCommitMessagesShouldReturnTheWholeMessageOfEachNewCommit(t *testing.T) {
+	g, ctx := New(), context.Background()
+	r, published := pushedBranch(t)
+	gitIn(t, r, "commit", "-q", "--allow-empty", "-m", "fix: rename x (review)", "-m", "body line one\nbody line two")
+	gitIn(t, r, "commit", "-q", "--allow-empty", "-m", "fix: second (review)")
+	got, err := g.CommitMessages(ctx, r, published)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || !strings.Contains(got[0], "fix: rename x (review)") || !strings.Contains(got[0], "body line two") || !strings.Contains(got[1], "fix: second (review)") {
+		t.Fatalf("each new commit's subject and body, oldest first: %q", got)
+	}
+	if strings.Contains(strings.Join(got, "\n"), "change a.txt") {
+		t.Fatalf("commits up to the base are left out: %q", got)
+	}
+	if got, err := g.CommitMessages(ctx, r, "HEAD"); err != nil || len(got) != 0 {
+		t.Fatalf("no new commit, no message: %q %v", got, err)
+	}
+}

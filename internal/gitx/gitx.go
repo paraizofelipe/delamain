@@ -103,6 +103,22 @@ func (g Git) CommitsSince(ctx context.Context, dir, base string) ([]string, erro
 	return strings.Split(out, "\n"), nil
 }
 
+// CommitMessages returns the whole message (subject and body) of each commit in base..HEAD,
+// oldest first.
+func (g Git) CommitMessages(ctx context.Context, dir, base string) ([]string, error) {
+	out, err := g.run(ctx, dir, "log", "--reverse", "-z", "--format=%B", base+"..HEAD")
+	if err != nil {
+		return nil, err
+	}
+	var msgs []string
+	for _, m := range strings.Split(out, "\x00") {
+		if m = strings.TrimSpace(m); m != "" {
+			msgs = append(msgs, m)
+		}
+	}
+	return msgs, nil
+}
+
 // ChangedFiles lists files added or modified in base...HEAD (deletions excluded).
 func (g Git) ChangedFiles(ctx context.Context, dir, base string) ([]string, error) {
 	out, err := g.run(ctx, dir, "diff", "--name-only", "--diff-filter=d", base+"...HEAD")
