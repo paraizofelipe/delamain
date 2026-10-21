@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/paraizo/delamain/internal/config"
 	"github.com/paraizo/delamain/internal/forge"
 	"github.com/paraizo/delamain/internal/gitx"
 	"github.com/paraizo/delamain/internal/store"
@@ -46,6 +47,8 @@ func newAddressHarness(t *testing.T, b behavior) *reviewHarness {
 	t.Helper()
 	rh := newReviewHarness(t, b)
 	rh.f.pr.Author = bot
+	// The responder reads what anyone may comment: only a harness that confines it may run it.
+	rh.r.Cfg.Agent.Harness = config.HarnessClaude
 	rh.f.threads = []forge.Thread{
 		{ID: "t1", Path: "a.go", Line: 3, Comments: []forge.Comment{{ID: "c1", Author: "bob", Body: "parse ignora o erro", CreatedAt: t0.Add(time.Hour)}}},
 		{ID: "issue-comment:9", Comments: []forge.Comment{{ID: "9", Author: "carol", Body: "o nome x confunde", CreatedAt: t0.Add(2 * time.Hour)}}},
@@ -637,5 +640,40 @@ func TestRunAddressShouldKeepConfidentialIssuesAndInternalNotesOutOfThePrompt(t 
 		if strings.Contains(prompt, hidden) {
 			t.Errorf("confidential text %q must never reach a responder whose words are posted publicly", hidden)
 		}
+	}
+}
+
+func TestRunAddressShouldConfineTheResponderToReadingTheCheckout(t *testing.T) {
+	rh := newAddressHarness(t, answers(happyAnswers()))
+	res := rh.address(t)
+	if res.Outcome != OutcomeAnswered {
+		t.Fatalf("got %s (%s)", res.Outcome, res.Reason)
+	}
+	start := rh.h.starts["responder-r"+strconv.FormatInt(res.RunID, 10)]
+	want := Confinement{Checkout: res.Worktree, Base: prBase, Artifact: filepath.Join(res.RunDir, "responses.json")}
+	if start.Confine == nil || *start.Confine != want {
+		t.Fatalf("an injected comment must not hand the responder a shell: want it confined to %+v, got %+v", want, start.Confine)
+	}
+	// The only commands the confinement allows must be the ones the prompt asks for, verbatim.
+	prompt := strings.Join(rh.h.prompts["responder"], "\n")
+	for _, cmd := range []string{"git -C " + res.Worktree + " diff --no-ext-diff --no-textconv " + prBase + "...HEAD", "git -C " + res.Worktree + " log " + prBase + "..HEAD --oneline"} {
+		if !strings.Contains(prompt, "`"+cmd+"`") {
+			t.Errorf("the prompt must give %q exactly as the confinement allows it", cmd)
+		}
+	}
+}
+
+func TestRunAddressShouldRefuseAHarnessThatCannotConfineTheResponder(t *testing.T) {
+	rh := newAddressHarness(t, answers(happyAnswers()))
+	rh.r.Cfg.Agent.Harness = config.HarnessOmp // no per-command allowlist: the responder would get a free shell
+	_, err := rh.r.RunAddress(context.Background(), rh.repo, 5)
+	if err == nil || !strings.Contains(err.Error(), "agent.harness: claude") {
+		t.Fatalf("answering on omp must be refused before any work: %v", err)
+	}
+	if runs, _ := rh.st.RecentRuns(context.Background(), 10); len(runs) != 0 {
+		t.Fatalf("no run is recorded: %+v", runs)
+	}
+	if len(rh.g.fetchedPR)+len(rh.h.starts)+len(rh.f.replies) != 0 {
+		t.Fatal("nothing is fetched, started or replied")
 	}
 }

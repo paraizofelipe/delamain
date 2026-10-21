@@ -122,8 +122,14 @@ in-flight runs end as interrupted.`,
 				},
 			}
 			// Runs and cursors are recorded under the repository's toplevel, not the path given.
+			// RunAddress refuses a harness that cannot confine the responder, so no job is made
+			// that would fail on every poll.
+			canAddress := cfg.Agent.Harness == config.HarnessClaude
+			if cfg.Review.Enabled && cfg.Review.Address.Enabled && !canAddress {
+				base.Log.Warn("review.address needs agent.harness: claude to confine the responder; not answering threads", "harness", cfg.Agent.Harness)
+			}
 			addresses := daemon.AddressJobs{
-				Enabled: cfg.Review.Address.Enabled,
+				Enabled: cfg.Review.Address.Enabled && canAddress,
 				PRs: func(ctx context.Context, repo string) ([]string, error) {
 					top, err := base.Git.Toplevel(ctx, repo)
 					if err != nil {

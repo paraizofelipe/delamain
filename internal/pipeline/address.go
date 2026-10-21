@@ -13,6 +13,7 @@ import (
 
 	"github.com/paraizo/delamain/internal/artifacts"
 	"github.com/paraizo/delamain/internal/budget"
+	"github.com/paraizo/delamain/internal/config"
 	"github.com/paraizo/delamain/internal/forge"
 	"github.com/paraizo/delamain/internal/gitx"
 	"github.com/paraizo/delamain/internal/memory"
@@ -34,6 +35,11 @@ func (r *Runner) RunAddress(ctx context.Context, repo string, n int) (Result, er
 	res := Result{}
 	if r.Forge == nil {
 		return res, errors.New("address requires a GitHub or GitLab origin")
+	}
+	// Anyone who can comment on the PR writes the responder's input, so the responder runs
+	// confined to reading the checkout, which only Claude Code can do (see confined).
+	if r.Cfg.Agent.Harness != config.HarnessClaude {
+		return res, fmt.Errorf("responder discussões de PR/MR pede agent.harness: claude, o único que confina o responder à leitura do PR (got %q)", r.Cfg.Agent.Harness)
 	}
 	repo, err := r.Git.Toplevel(ctx, repo)
 	if err != nil {
@@ -220,6 +226,7 @@ func (r *Runner) address(ctx context.Context, ru *run, p *prRun, pending []forge
 		return err
 	}
 	artifact := filepath.Join(ru.dir, "responses.json")
+	ru.confine = &Confinement{Checkout: wt, Base: pr.BaseSHA, Artifact: artifact}
 	data := r.stageData(ru, 0, artifact, "")
 	data.PR = prompts.PR{
 		Number: pr.Number, URL: pr.URL, Title: pr.Title, Body: pr.Body, Author: pr.Author,
