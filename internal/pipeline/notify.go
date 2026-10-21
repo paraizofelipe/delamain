@@ -2,9 +2,12 @@ package pipeline
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"path/filepath"
+	"strings"
 
+	"github.com/paraizo/delamain/internal/artifacts"
 	"github.com/paraizo/delamain/internal/budget"
 	"github.com/paraizo/delamain/internal/config"
 	"github.com/paraizo/delamain/internal/notify"
@@ -47,4 +50,33 @@ func outcomeToast(ru *run, t Task, state store.RunState) notify.Message {
 	default:
 		return notify.FormatNeedsHuman(n)
 	}
+}
+
+// iterationToast announces the iteration ru is starting; why is how the previous one failed.
+func iterationToast(ru *run, t Task, why string) notify.Message {
+	n := notifyRun(ru, t, ru.rec.State)
+	n.Reason = why
+	return notify.FormatIteration(n)
+}
+
+// reviewReason counts the review's blocking findings and names the axes that have one, in order.
+func reviewReason(r artifacts.Review) string {
+	count, axes := 0, []string{}
+	for _, a := range r.Axes {
+		k := 0
+		for _, f := range a.Findings {
+			if f.Blocking() {
+				k++
+			}
+		}
+		if k > 0 {
+			count += k
+			axes = append(axes, a.Axis)
+		}
+	}
+	noun := "findings"
+	if count == 1 {
+		noun = "finding"
+	}
+	return fmt.Sprintf("review: %d blocking %s (%s)", count, noun, strings.Join(axes, ", "))
 }

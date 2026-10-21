@@ -346,7 +346,7 @@ func (r *Runner) execute(ctx context.Context, ru *run, repo string, t Task) erro
 	ru.cmds, ru.res.CommandSources = gates.Effective(ru.repoCfg.Commands, ru.stack.Commands, plan.Commands)
 	ru.log.Info("gate commands", "run", ru.rec.ID, "stack", ru.stack.Name, "sources", ru.res.CommandSources)
 
-	feedback, digest := "", ""
+	feedback, digest, why := "", "", ""
 	seenBlockers, diverging := map[string]bool{}, 0
 	for iter := 1; iter <= ru.maxIter; iter++ {
 		it := Iteration{N: iter, Feedback: feedback}
@@ -354,6 +354,9 @@ func (r *Runner) execute(ctx context.Context, ru *run, repo string, t Task) erro
 		iterDir := filepath.Join(ru.dir, fmt.Sprintf("iter-%d", iter))
 		if err := os.MkdirAll(iterDir, 0o700); err != nil {
 			return err
+		}
+		if iter > 1 {
+			r.notify(ctx, ru.log, iterationToast(ru, t, why))
 		}
 
 		if err := r.setState(ctx, ru, store.StateImplement); err != nil {
@@ -390,7 +393,7 @@ func (r *Runner) execute(ctx context.Context, ru *run, repo string, t Task) erro
 			ru.res.Outcome = OutcomeApproved
 			return r.setState(ctx, ru, store.StateDeliver)
 		}
-		feedback, digest = reviewFeedback(review), prevReviewDigest(review)
+		feedback, digest, why = reviewFeedback(review), prevReviewDigest(review), reviewReason(review)
 		if markBlockers(seenBlockers, review) {
 			diverging++
 		} else {
