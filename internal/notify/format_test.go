@@ -229,3 +229,38 @@ func TestFormatRecoverShouldListAtMostThreeRuns(t *testing.T) {
 		}
 	}
 }
+
+func TestFormatIterationShouldShowIterationReasonAndOpenTheIssue(t *testing.T) {
+	r := sampleRun()
+	r.Repo, r.Ref, r.Title, r.ID = "/srv/repo", "#7", "forge lê metadados, issues ligadas e threads", 10
+	r.Iterations, r.MaxIterations, r.Tokens, r.CostUSD = 2, 12, "1.2M", 4.1
+	r.Reason = "review: 3 blocking findings (spec, security)"
+	assertMessage(t, FormatIteration(r), Message{
+		Event: EventIteration, RunID: 10,
+		Title:   "🔁 Iteration 2/12 · repo #7",
+		Body:    "forge lê metadados, issues ligadas e threads\nrun 10 · 1.2M tokens · US$ 4.10\nreview: 3 blocking findings (spec, security)",
+		Urgency: Low, Expire: 15000, Category: "x-delamain.iteration",
+		Actions: []Action{
+			{Key: "default", Label: "Open issue", Target: sampleIssue},
+			{Key: "open-issue", Label: "Open issue", Target: sampleIssue},
+		},
+	})
+}
+
+func TestFormatIterationShouldOmitCostWhenZero(t *testing.T) {
+	r := sampleRun()
+	r.CostUSD, r.Reason = 0, "verify failed: test"
+	m := FormatIteration(r)
+	if want := "Mostrar HARNESS e INTERACTIONS no status\nrun 42 · 167K tokens\nverify failed: test"; m.Body != want {
+		t.Fatalf("a zero cost adds no US$ fact:\n got %q\nwant %q", m.Body, want)
+	}
+}
+
+func TestFormatIterationShouldTruncateALongReason(t *testing.T) {
+	r := sampleRun()
+	r.Reason = "review: 1 blocking finding (" + strings.Repeat("x", 200) + ")"
+	lines := strings.Split(FormatIteration(r).Body, "\n")
+	if len(lines) != 3 || lines[2] != "review: 1 blocking finding ("+strings.Repeat("x", 91)+"…" {
+		t.Fatalf("a reason longer than 120 characters is cut with …: %q", lines)
+	}
+}
