@@ -22,6 +22,9 @@ func Sample(e Event) (Message, error) {
 	switch e {
 	case EventStarted:
 		m = FormatStarted(r)
+	case EventIteration:
+		r.MaxIterations, r.Tokens, r.Reason = 12, "1.2M", "review: 3 blocking findings (spec, security)"
+		m = FormatIteration(r)
 	case EventPROpened:
 		m = FormatPROpened(r)
 	case EventNeedsHuman:

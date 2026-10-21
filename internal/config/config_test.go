@@ -264,6 +264,19 @@ func TestNotifyShouldBeOverriddenByEnv(t *testing.T) {
 	}
 }
 
+func TestNotifyShouldAcceptIterationEventButKeepItOffByDefault(t *testing.T) {
+	cfg, err := Load(writeFile(t, "notify:\n  events: [iteration]\n"), noEnv)
+	if err != nil {
+		t.Fatalf("iteration is a known event: %v", err)
+	}
+	if !slices.Equal(cfg.Notify.Events, []string{"iteration"}) {
+		t.Fatalf("events = %v", cfg.Notify.Events)
+	}
+	if slices.Contains(Default().Notify.Events, "iteration") {
+		t.Fatalf("a run may raise up to 11 iteration toasts: it is off by default: %v", Default().Notify.Events)
+	}
+}
+
 func TestValidateShouldRejectUnknownNotifyBackendOrEvent(t *testing.T) {
 	for _, tc := range []struct {
 		name, yaml, want string
@@ -281,7 +294,7 @@ func TestValidateShouldRejectUnknownNotifyBackendOrEvent(t *testing.T) {
 	for _, b := range []string{"auto", "dbus", "macos", "none"} {
 		cfg := Default()
 		cfg.Notify.Backend = b
-		cfg.Notify.Events = []string{"started", "pr_opened", "needs_human", "halted", "needs_info", "budget", "recover"}
+		cfg.Notify.Events = []string{"started", "iteration", "pr_opened", "needs_human", "halted", "needs_info", "budget", "recover"}
 		if err := cfg.Validate(); err != nil {
 			t.Errorf("backend %s with every known event is valid: %v", b, err)
 		}

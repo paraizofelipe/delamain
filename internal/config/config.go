@@ -197,8 +197,8 @@ const (
 	NotifyNone  = "none"
 )
 
-// NotifyEvents are the events that can raise a toast; "started" is off by default.
-var NotifyEvents = []string{"started", "pr_opened", "needs_human", "halted", "needs_info", "budget", "recover"}
+// NotifyEvents are the events that can raise a toast; "started" and "iteration" are off by default.
+var NotifyEvents = []string{"started", "iteration", "pr_opened", "needs_human", "halted", "needs_info", "budget", "recover"}
 
 // Notify configures desktop notifications (D-Bus on Linux, Notification Center on macOS).
 type Notify struct {

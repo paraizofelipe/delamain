@@ -184,3 +184,17 @@ func TestNotifyTestShouldRejectUnknownEvent(t *testing.T) {
 		t.Fatalf("nothing is sent for an unknown event: %+v", n.sent)
 	}
 }
+
+func TestNotifyTestShouldSendTheIterationSample(t *testing.T) {
+	n := &testableNotifier{backend: "dbus"}
+	prev := newNotifier
+	newNotifier = func(cfg config.Notify, opts notify.Options) notify.Notifier { n.cfg, n.opts = cfg, opts; return n }
+	t.Cleanup(func() { newNotifier = prev })
+	cfgFile, _ := isolatedConfig(t, "")
+	if out, err := execute(t, "--config", cfgFile, "notify", "--test", "--event", "iteration"); err != nil {
+		t.Fatalf("iteration has a sample toast: %v\n%s", err, out)
+	}
+	if len(n.sent) != 1 || n.sent[0].Event != notify.EventIteration || n.sent[0].Title != "🔁 Iteration 2/12 · delamain #12" || len(n.sent[0].Actions) != 0 {
+		t.Fatalf("the iteration sample goes out without actions, even off by default: %+v", n.sent)
+	}
+}
