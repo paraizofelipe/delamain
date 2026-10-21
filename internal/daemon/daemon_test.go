@@ -136,13 +136,13 @@ func TestPollShouldKeepProcessingReadyIssuesAsBefore(t *testing.T) {
 	d.Wait()
 }
 
-// reviewDaemon runs issues and, with review enabled, the labeled PRs; lastHead maps "<repo>#<n>"
-// to the head its last review saw.
-func reviewDaemon(r *runner, parallel int, lastHead map[string]string, sources ...Source) *Daemon {
+// reviewDaemon runs issues and, with review enabled, the labeled PRs; state maps "<repo>#<n>" to
+// what earlier reviews of that PR recorded.
+func reviewDaemon(r *runner, parallel int, state map[string]ReviewState, sources ...Source) *Daemon {
 	reviews := ReviewJobs{
 		Enabled: true, Label: reviewLabel, Run: r.review,
-		LastHead: func(_ context.Context, repo string, n int) (string, error) {
-			return lastHead[repo+"#"+strconv.Itoa(n)], nil
+		State: func(_ context.Context, repo string, n int) (ReviewState, error) {
+			return state[repo+"#"+strconv.Itoa(n)], nil
 		},
 	}
 	return New(Options{
@@ -150,6 +150,9 @@ func reviewDaemon(r *runner, parallel int, lastHead map[string]string, sources .
 		Producers: Producers(discard, IssueJobs{Label: "delamain:ready", Run: r.run}, reviews),
 	})
 }
+
+// reviewed is the state of a PR whose head was reviewed and posted.
+func reviewed(head string) ReviewState { return ReviewState{ReviewedHead: head} }
 
 func TestPollShouldStartReviewJobsForLabeledPRs(t *testing.T) {
 	r := newRunner()
@@ -186,14 +189,38 @@ func TestPollShouldSkipDraftPRs(t *testing.T) {
 
 func TestPollShouldSkipPRWhoseHeadWasAlreadyReviewed(t *testing.T) {
 	r := newRunner()
-	reviewed := map[string]string{"/a#4": "aaa", "/a#6": "old"}
-	d := reviewDaemon(r, 4, reviewed, Source{Repo: "/a", Forge: &stubForge{prs: []forge.PRDetail{
+	seen := map[string]ReviewState{"/a#4": reviewed("aaa"), "/a#6": reviewed("old")}
+	d := reviewDaemon(r, 4, seen, Source{Repo: "/a", Forge: &stubForge{prs: []forge.PRDetail{
 		pr(4, "aaa"), // head already reviewed
 		pr(6, "bbb"), // new push since the last review
 		pr(8, ""),    // head unknown: cannot be compared, so not skipped
 	}}})
 	if n := d.Poll(context.Background()); n != 2 {
 		t.Fatalf("started %d, want the two PRs whose head was not reviewed", n)
+	}
+	close(r.release)
+	d.Wait()
+	got := r.snapshot()
+	slices.Sort(got)
+	if want := []string{"/a#pr:6", "/a#pr:8"}; !slices.Equal(got, want) {
+		t.Fatalf("reviews = %v, want %v", got, want)
+	}
+}
+
+// A halt is usually deterministic: retrying it every poll would spend the day's budget on a
+// review that never posts, and the issues share that budget.
+func TestPollShouldStopReviewingAHeadWhoseReviewKeepsHalting(t *testing.T) {
+	r := newRunner()
+	state := map[string]ReviewState{
+		"/a#4": {HaltedHead: "aaa", Halts: maxHaltsPerHead},     // out of retries for this head
+		"/a#6": {HaltedHead: "bbb", Halts: maxHaltsPerHead - 1}, // one retry left
+		"/a#8": {HaltedHead: "old", Halts: maxHaltsPerHead},     // the halts were on an older head
+	}
+	d := reviewDaemon(r, 4, state, Source{Repo: "/a", Forge: &stubForge{prs: []forge.PRDetail{
+		pr(4, "aaa"), pr(6, "bbb"), pr(8, "ccc"),
+	}}})
+	if n := d.Poll(context.Background()); n != 2 {
+		t.Fatalf("started %d, want the retry and the new head, not the exhausted one", n)
 	}
 	close(r.release)
 	d.Wait()
@@ -213,11 +240,11 @@ func TestPollShouldNotStartReviewsWhenTheLastHeadCannotBeRead(t *testing.T) {
 	unreadable := errors.New("database is locked")
 	d.opts.Producers = Producers(discard, IssueJobs{Label: "delamain:ready", Run: r.run}, ReviewJobs{
 		Enabled: true, Label: reviewLabel, Run: r.review,
-		LastHead: func(_ context.Context, repo string, _ int) (string, error) {
+		State: func(_ context.Context, repo string, _ int) (ReviewState, error) {
 			if repo == "/a" {
-				return "", unreadable
+				return ReviewState{}, unreadable
 			}
-			return "", nil
+			return ReviewState{}, nil
 		},
 	})
 	d.Poll(context.Background())
@@ -235,7 +262,7 @@ func TestPollShouldNotStartReviewJobsWhenReviewDisabled(t *testing.T) {
 	d := reviewDaemon(r, 4, nil, Source{Repo: "/a", Forge: &stubForge{ready: issues(1), prs: []forge.PRDetail{pr(4, "aaa")}}})
 	d.opts.Producers = Producers(discard, IssueJobs{Label: "delamain:ready", Run: r.run}, ReviewJobs{
 		Enabled: false, Label: reviewLabel, Run: r.review,
-		LastHead: func(context.Context, string, int) (string, error) { return "", nil },
+		State: func(context.Context, string, int) (ReviewState, error) { return ReviewState{}, nil },
 	})
 	d.Poll(context.Background())
 	close(r.release)

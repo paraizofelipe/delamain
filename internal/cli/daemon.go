@@ -27,11 +27,13 @@ func newDaemonCmd(load func() (config.Config, error)) *cobra.Command {
 	var repos []string
 	cmd := &cobra.Command{
 		Use:   "daemon [--repo <path>]...",
-		Short: "Continuously process issues labeled ready in the configured repositories",
+		Short: "Continuously process the issues, and the PRs/MRs up for review, of the configured repositories",
 		Long: `Polls open issues with forge.labels.ready every daemon.poll_interval and runs up to
 pipeline.max_parallel at once. With review.enabled, it also reviews the open, non-draft PRs/MRs
-labeled forge.labels.review, once per head, in the same slots and daily budget. On startup, finalizes runs left behind by a process that died.
-Only one instance runs per state_dir. Ctrl+C stops it: in-flight runs end as interrupted.`,
+labeled forge.labels.review, once per head, in the same slots and daily budget; a head whose
+review halts is retried a few times and then left to the next push. On startup, finalizes runs
+left behind by a process that died. Only one instance runs per state_dir. Ctrl+C stops it:
+in-flight runs end as interrupted.`,
 		RunE: func(c *cobra.Command, _ []string) error {
 			cfg, err := load()
 			if err != nil {
@@ -43,10 +45,6 @@ Only one instance runs per state_dir. Ctrl+C stops it: in-flight runs end as int
 			}
 			if len(repos) == 0 {
 				return errors.New("no repository: use --repo or daemon.repos in the config")
-			}
-			reviewState, err := reviewStartup(cfg)
-			if err != nil {
-				return err
 			}
 			ctx := c.Context()
 			unlock, err := lockDaemon(cfg.Paths.StateDir)
@@ -102,16 +100,19 @@ Only one instance runs per state_dir. Ctrl+C stops it: in-flight runs end as int
 			reviews := daemon.ReviewJobs{
 				Enabled: cfg.Review.Enabled, Label: cfg.Forge.Labels.Review,
 				// The review records its cursor under the repository's toplevel, not the path given.
-				LastHead: func(ctx context.Context, repo string, pr int) (string, error) {
+				State: func(ctx context.Context, repo string, pr int) (daemon.ReviewState, error) {
 					top, err := base.Git.Toplevel(ctx, repo)
 					if err != nil {
-						return "", err
+						return daemon.ReviewState{}, err
 					}
 					cur, err := st.Cursor(ctx, top, pr)
 					if errors.Is(err, store.ErrNotFound) {
-						return "", nil
+						return daemon.ReviewState{}, nil
 					}
-					return cur.LastHeadSHA, err
+					if err != nil {
+						return daemon.ReviewState{}, err
+					}
+					return daemon.ReviewState{ReviewedHead: cur.LastHeadSHA, HaltedHead: cur.HaltedHeadSHA, Halts: cur.Halts}, nil
 				},
 				Run: func(ctx context.Context, repo string, pr int, fg forge.Forge) (pipeline.Result, error) {
 					r := *base
@@ -125,7 +126,7 @@ Only one instance runs per state_dir. Ctrl+C stops it: in-flight runs end as int
 				DayExhausted: dayExhausted(meter.Today, &budgetAlert{notify: base.Notify, softRatio: cfg.Budget.SoftRatio, now: time.Now}),
 			})
 			base.Log.Info("daemon started", "repos", len(sources), "max_parallel", cfg.Pipeline.MaxParallel, "poll", cfg.Daemon.PollInterval)
-			base.Log.Info(reviewState)
+			base.Log.Info(reviewStartup(cfg))
 			return d.Serve(ctx)
 		},
 	}
@@ -261,14 +262,16 @@ func (a *budgetAlert) observe(ctx context.Context, s budget.Status) {
 	}))
 }
 
-// reviewStartup says whether the daemon reviews PRs/MRs, for the startup log. Like `delamain
-// review`, it refuses review on a harness that does not confine the reviewer to reading the PR.
-func reviewStartup(cfg config.Config) (string, error) {
+// reviewStartup says whether the daemon reviews PRs/MRs, for the startup log. Review runs on
+// either harness; only a PR/MR from a fork brings third-party code into the checkout, and that
+// one RunReview refuses unless the harness confines the reviewer.
+func reviewStartup(cfg config.Config) string {
 	if !cfg.Review.Enabled {
-		return "review: disabled", nil
+		return "review: disabled"
 	}
 	if cfg.Agent.Harness != config.HarnessClaude {
-		return "", reviewHarnessError(cfg.Agent.Harness)
+		return fmt.Sprintf("review: enabled (label %s; PRs/MRs from a fork are refused on harness %s)",
+			cfg.Forge.Labels.Review, cfg.Agent.Harness)
 	}
-	return fmt.Sprintf("review: enabled (label %s)", cfg.Forge.Labels.Review), nil
+	return fmt.Sprintf("review: enabled (label %s)", cfg.Forge.Labels.Review)
 }

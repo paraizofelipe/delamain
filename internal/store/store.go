@@ -193,6 +193,8 @@ var migrations = []string{
 		last_head_sha TEXT NOT NULL DEFAULT '',
 		PRIMARY KEY (repo, pr)
 	);`,
+	`ALTER TABLE review_cursors ADD COLUMN halted_head_sha TEXT NOT NULL DEFAULT '';
+	ALTER TABLE review_cursors ADD COLUMN halts INTEGER NOT NULL DEFAULT 0;`,
 }
 
 func (s *Store) migrate(ctx context.Context) error {
@@ -392,14 +394,18 @@ type ReviewCursor struct {
 	LastSeenAt  time.Time
 	Rounds      int
 	LastHeadSHA string
+	// HaltedHeadSHA is the head whose review last halted without posting, and Halts how many
+	// times that head halted. A review that posts clears both.
+	HaltedHeadSHA string
+	Halts         int
 }
 
 // Cursor returns the review cursor of a PR, or ErrNotFound before the first SaveCursor.
 func (s *Store) Cursor(ctx context.Context, repo string, pr int) (ReviewCursor, error) {
 	c := ReviewCursor{Repo: repo, PR: pr}
 	err := s.db.QueryRowContext(ctx,
-		`SELECT last_seen_at, rounds, last_head_sha FROM review_cursors WHERE repo = ? AND pr = ?`, repo, pr).
-		Scan(&c.LastSeenAt, &c.Rounds, &c.LastHeadSHA)
+		`SELECT last_seen_at, rounds, last_head_sha, halted_head_sha, halts FROM review_cursors WHERE repo = ? AND pr = ?`, repo, pr).
+		Scan(&c.LastSeenAt, &c.Rounds, &c.LastHeadSHA, &c.HaltedHeadSHA, &c.Halts)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ReviewCursor{}, ErrNotFound
 	}
@@ -409,8 +415,10 @@ func (s *Store) Cursor(ctx context.Context, repo string, pr int) (ReviewCursor, 
 // SaveCursor inserts or overwrites the review cursor of c.Repo and c.PR.
 func (s *Store) SaveCursor(ctx context.Context, c ReviewCursor) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO review_cursors (repo, pr, last_seen_at, rounds, last_head_sha) VALUES (?, ?, ?, ?, ?)
-		 ON CONFLICT(repo, pr) DO UPDATE SET last_seen_at=excluded.last_seen_at, rounds=excluded.rounds, last_head_sha=excluded.last_head_sha`,
-		c.Repo, c.PR, c.LastSeenAt.UTC(), c.Rounds, c.LastHeadSHA)
+		`INSERT INTO review_cursors (repo, pr, last_seen_at, rounds, last_head_sha, halted_head_sha, halts)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(repo, pr) DO UPDATE SET last_seen_at=excluded.last_seen_at, rounds=excluded.rounds,
+		 last_head_sha=excluded.last_head_sha, halted_head_sha=excluded.halted_head_sha, halts=excluded.halts`,
+		c.Repo, c.PR, c.LastSeenAt.UTC(), c.Rounds, c.LastHeadSHA, c.HaltedHeadSHA, c.Halts)
 	return err
 }

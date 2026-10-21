@@ -77,6 +77,16 @@ func (rh *reviewHarness) review(t *testing.T) Result {
 	return res
 }
 
+// cursor is what the store knows about the reviews of the fixture's PR #5.
+func (rh *reviewHarness) cursor(t *testing.T) store.ReviewCursor {
+	t.Helper()
+	cur, err := rh.st.Cursor(context.Background(), rh.repo, 5)
+	if err != nil {
+		t.Fatalf("review cursor of PR #5: %v", err)
+	}
+	return cur
+}
+
 func marker(t *testing.T, body string) forge.Marker {
 	t.Helper()
 	m, ok := forge.ParseMarker(body)
@@ -251,8 +261,14 @@ func assertNothingPosted(t *testing.T, rh *reviewHarness, res Result, reason str
 	if len(rh.f.posted) != 0 {
 		t.Fatalf("nothing may be posted: %+v", rh.f.posted)
 	}
-	if _, err := rh.st.Cursor(context.Background(), rh.repo, 5); !errors.Is(err, store.ErrNotFound) {
-		t.Fatalf("a halted review must not move the cursor: %v", err)
+	// The reviewed head stays put, so the same head is reviewed again; the halt is counted so
+	// the daemon does not start that review on every poll forever.
+	cur := rh.cursor(t)
+	if cur.LastHeadSHA != "" {
+		t.Fatalf("a halted review must not mark the head as reviewed: %+v", cur)
+	}
+	if cur.HaltedHeadSHA != prHead || cur.Halts != 1 {
+		t.Fatalf("the halt is counted against the PR head: %+v", cur)
 	}
 	if res.Worktree != "" {
 		if _, err := os.Stat(res.Worktree); !errors.Is(err, os.ErrNotExist) {
@@ -621,6 +637,30 @@ func TestRunReviewShouldHaltWithoutMovingTheCursorWhenAForgeOrGitCallFails(t *te
 				t.Fatalf("a review that posted nothing learns nothing: %v", err)
 			}
 		})
+	}
+}
+
+// The daemon's producer stops starting a review once the same head has halted a few times, so
+// each attempt has to add to that count — and a review that posts has to clear it, or the next
+// push would start out with the old halts.
+func TestRunReviewShouldCountEveryHaltOfTheSameHeadAndClearThemOnceItPosts(t *testing.T) {
+	rh := newReviewHarness(t, reviewsPR(prReviewJSON("")))
+	rh.f.postErr = errors.New("HTTP 502")
+	for want := 1; want <= 2; want++ {
+		res := rh.review(t)
+		if res.Outcome != OutcomeHalted {
+			t.Fatalf("attempt %d: want halted, got %s (%s)", want, res.Outcome, res.Reason)
+		}
+		if cur := rh.cursor(t); cur.HaltedHeadSHA != prHead || cur.Halts != want {
+			t.Fatalf("attempt %d of the same head: %+v", want, cur)
+		}
+	}
+	rh.f.postErr = nil
+	if res := rh.review(t); res.Outcome != OutcomeReviewed {
+		t.Fatalf("the review posts once the forge answers: %s (%s)", res.Outcome, res.Reason)
+	}
+	if cur := rh.cursor(t); cur.LastHeadSHA != prHead || cur.HaltedHeadSHA != "" || cur.Halts != 0 {
+		t.Fatalf("a posted review clears the halts of its head: %+v", cur)
 	}
 }
 
