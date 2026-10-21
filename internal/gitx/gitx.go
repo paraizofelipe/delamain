@@ -385,6 +385,45 @@ func (g Git) Push(ctx context.Context, dir, branch, base string) error {
 	return err
 }
 
+// ErrRemoteMoved means the branch on origin is no longer at the SHA recorded before the work.
+var ErrRemoteMoved = errors.New("remote branch moved")
+
+// RemoteSHA asks origin for the head of branch; a branch missing on origin is "".
+func (g Git) RemoteSHA(ctx context.Context, repo, branch string) (string, error) {
+	out, err := g.run(ctx, repo, "ls-remote", "--heads", "origin", "refs/heads/"+branch)
+	sha, _, _ := strings.Cut(out, "\t")
+	return sha, err
+}
+
+// PushFastForward publishes HEAD of dir to branch on origin only as a fast-forward of expected,
+// the origin head recorded before the work started. A moved origin is ErrRemoteMoved and a HEAD
+// that does not descend from expected is refused; the lease makes git itself recheck expected,
+// so the push never overwrites anything. Protected and base branches are refused first.
+func (g Git) PushFastForward(ctx context.Context, dir, branch, base, expected string) error {
+	if err := GuardWorkBranch(branch, base); err != nil {
+		return err
+	}
+	if expected == "" {
+		return errors.New("no recorded origin head to fast-forward from")
+	}
+	if remote, err := g.RemoteSHA(ctx, dir, branch); err != nil {
+		return err
+	} else if remote != expected {
+		return fmt.Errorf("%s is at %.12s on origin, not %.12s: %w", branch, remote, expected, ErrRemoteMoved)
+	}
+	if _, err := g.run(ctx, dir, "merge-base", "--is-ancestor", expected, "HEAD"); err != nil {
+		return fmt.Errorf("HEAD does not descend from %.12s: %w", expected, err)
+	}
+	ref := "refs/heads/" + branch
+	if _, err := g.run(ctx, dir, "push", "--quiet", "--force-with-lease="+ref+":"+expected, "origin", "HEAD:"+ref); err != nil {
+		if remote, rerr := g.RemoteSHA(ctx, dir, branch); rerr == nil && remote != expected {
+			return fmt.Errorf("%w: %w", ErrRemoteMoved, err)
+		}
+		return err
+	}
+	return nil
+}
+
 // RemoteBranchExists asks origin itself, not the possibly stale remote-tracking refs.
 func (g Git) RemoteBranchExists(ctx context.Context, repo, branch string) (bool, error) {
 	out, err := g.run(ctx, repo, "ls-remote", "--heads", "origin", "refs/heads/"+branch)
