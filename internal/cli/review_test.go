@@ -96,10 +96,15 @@ func TestPrintReviewResultShouldShowCountsLinkAndReportInEveryFormat(t *testing.
 	}
 }
 
-func TestReviewShouldRefuseAHarnessThatCannotConfineTheReviewer(t *testing.T) {
+// Only a head in a fork brings third-party code, and RunReview is what refuses that one. The
+// command reviews this repository's own PRs/MRs on either harness, so it must not stop at omp.
+func TestReviewShouldNotRefuseAnUnconfinedHarnessBeforeSeeingThePR(t *testing.T) {
 	cfg := reviewConfig(t, "review:\n  enabled: true\nagent:\n  harness: omp\nforge:\n  kind: none\n")
 	_, err := execute(t, "--config", cfg, "review", "--pr", "5", "--repo", t.TempDir())
-	if err == nil || !strings.Contains(err.Error(), "agent.harness: claude") {
-		t.Fatalf("a review on omp is refused before any forge call: %v", err)
+	if err == nil || strings.Contains(err.Error(), "agent.harness") {
+		t.Fatalf("omp must get past the harness check: %v", err)
+	}
+	if !strings.Contains(err.Error(), "GitHub or GitLab origin") {
+		t.Fatalf("the command stops at the missing forge, got %v", err)
 	}
 }

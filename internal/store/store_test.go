@@ -438,6 +438,31 @@ func TestSaveCursorShouldUpsert(t *testing.T) {
 	}
 }
 
+// The daemon reads the halt count to stop retrying a head whose review never posts, so it has to
+// survive the round trip and go away with the save of a review that posted.
+func TestSaveCursorShouldKeepTheHaltsOfAHeadUntilAReviewPosts(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	seen := time.Date(2026, 3, 4, 10, 30, 0, 0, time.UTC)
+	if err := s.SaveCursor(ctx, ReviewCursor{Repo: "repo", PR: 7, LastSeenAt: seen, HaltedHeadSHA: "abc123", Halts: 2}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Cursor(ctx, "repo", 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.HaltedHeadSHA != "abc123" || got.Halts != 2 || got.LastHeadSHA != "" {
+		t.Fatalf("cursor = %+v, want two halts of abc123 and no reviewed head", got)
+	}
+	posted := ReviewCursor{Repo: "repo", PR: 7, LastSeenAt: seen.Add(time.Hour), Rounds: 1, LastHeadSHA: "abc123"}
+	if err := s.SaveCursor(ctx, posted); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ = s.Cursor(ctx, "repo", 7); got.LastHeadSHA != "abc123" || got.HaltedHeadSHA != "" || got.Halts != 0 {
+		t.Fatalf("a posted review clears the halts: %+v", got)
+	}
+}
+
 func TestRunLimitsShouldFallBackToTheDefaultsUntilClassified(t *testing.T) {
 	old := Run{}
 	if it, pi := old.Limits(3, 2e6); it != 3 || pi != 2e6 {

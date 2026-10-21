@@ -116,7 +116,42 @@ func (r *Runner) RunReview(ctx context.Context, repo string, n int) (Result, err
 	default:
 		res.Outcome, res.Reason = OutcomeHalted, err.Error()
 	}
+	r.noteReviewHalt(ctx, ru, p)
 	return res, r.finishReview(ctx, ru, p)
+}
+
+// noteReviewHalt counts a review that halted against the head it was reviewing. A halt is
+// usually deterministic — a head that moved, a checkout the reviewer touched, a rejected
+// artifact — so without this count the daemon's producer would start the same review on every
+// poll, spending the daily budget the issues share. A new push changes the head and the count
+// starts over; a review that posts clears it.
+func (r *Runner) noteReviewHalt(ctx context.Context, ru *run, p *prRun) {
+	if ru.res.Outcome != OutcomeHalted || p.pr.HeadSHA == "" {
+		return
+	}
+	if ctx.Err() != nil {
+		// The operator stopped the daemon: that says nothing about this head, and three
+		// restarts during its review would otherwise retire it until the next push.
+		ru.log.Info("review interrupted, not counted against the PR/MR head", "run", ru.rec.ID, "pr", p.pr.Number)
+		return
+	}
+	// A halt the review itself decided is still recorded if the operator interrupts right now.
+	ctx = context.WithoutCancel(ctx)
+	c, err := r.Store.Cursor(ctx, ru.rec.Repo, p.pr.Number)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		ru.log.Warn("could not read the review cursor to count the halt", "pr", p.pr.Number, "err", err)
+		return
+	}
+	c.Repo, c.PR, c.LastSeenAt = ru.rec.Repo, p.pr.Number, time.Now()
+	if c.HaltedHeadSHA != p.pr.HeadSHA {
+		c.HaltedHeadSHA, c.Halts = p.pr.HeadSHA, 0
+	}
+	c.Halts++
+	if err := r.Store.SaveCursor(ctx, c); err != nil {
+		ru.log.Warn("could not count the halted review", "pr", p.pr.Number, "err", err)
+		return
+	}
+	ru.log.Info("halted review counted against the PR/MR head", "run", ru.rec.ID, "pr", p.pr.Number, "halts", c.Halts)
 }
 
 func (r *Runner) reviewPR(ctx context.Context, ru *run, p *prRun) error {
@@ -261,6 +296,8 @@ func (r *Runner) reviewPR(ctx context.Context, ru *run, p *prRun) error {
 		ru.log.Info("review already posted", "run", ru.rec.ID, "pr", pr.Number)
 	}
 	ru.res.Review = &sum
+	// The review is posted: this head is done, and the halt count of earlier attempts on it
+	// goes away with the cursor it is written over (see noteReviewHalt).
 	if err := r.Store.SaveCursor(ctx, store.ReviewCursor{Repo: repo, PR: pr.Number, LastSeenAt: time.Now(), Rounds: prev.Rounds + 1, LastHeadSHA: pr.HeadSHA}); err != nil {
 		return err
 	}

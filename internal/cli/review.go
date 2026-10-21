@@ -27,7 +27,9 @@ func newReviewCmd(load func() (config.Config, error)) *cobra.Command {
 refs/delamain/pr/<n> and checked out in a detached worktree in paths.worktrees_dir; the
 pr-reviewer agent reads it (spec, standards and security, then a verifier) without running any of
 the PR's code. delamain then posts one comment-only review: inline comments for critical/major
-findings on changed lines, everything else in the summary. Requires review.enabled.
+findings on changed lines, everything else in the summary. Requires review.enabled; a PR/MR whose
+head lives in a fork also requires agent.harness: claude, the only harness that confines the
+reviewer to reading the PR.
 
 Exit codes: 0 reviewed or skipped · 1 interrupted.`,
 		RunE: func(c *cobra.Command, _ []string) error {
@@ -40,9 +42,6 @@ Exit codes: 0 reviewed or skipped · 1 interrupted.`,
 			}
 			if !cfg.Review.Enabled {
 				return errors.New("review is disabled: set review.enabled: true in the config")
-			}
-			if cfg.Agent.Harness != config.HarnessClaude {
-				return fmt.Errorf("review requires agent.harness: claude, the only harness that confines the reviewer to reading the PR (got %q)", cfg.Agent.Harness)
 			}
 			if !slices.Contains(outputFormats, output) {
 				return fmt.Errorf("invalid format %q: use %s", output, strings.Join(outputFormats, "|"))
