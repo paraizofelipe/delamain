@@ -248,7 +248,7 @@ func TestPRReviewShouldRejectUnknownJSONFields(t *testing.T) {
 // validResponses answers the pending threads t1 and t2.
 const validResponses = `{"responses":[
 {"thread_id":"t1","verdict":"invalid","reply":"O erro já é tratado em parse.go:12.","fixed":false},
-{"thread_id":"t2","verdict":"valid","reply":"Procede: vale renomear.","fixed":false}],
+{"thread_id":"t2","verdict":"valid","reply":"Faz sentido: vale renomear.","fixed":false}],
 "learnings":["Erros de parse são tratados em parse.go"]}`
 
 func TestResponsesShouldAcceptOneReplyPerPendingThread(t *testing.T) {
@@ -341,7 +341,7 @@ func TestResponsesShouldRejectFixedTrue(t *testing.T) {
 
 func TestResponsesShouldRejectAReplyCarryingADelamainMarker(t *testing.T) {
 	for _, m := range []string{"<!-- delamain:run=1 kind=reply key=abcdef012345 -->", "<!--delamain:run=1 kind=reply key=zz -->", "<!-- DELAMAIN:run=1 -->"} {
-		_, err := Read[Responses](write(t, strings.Replace(validResponses, "Procede: vale renomear.", "Procede. "+m, 1)))
+		_, err := Read[Responses](write(t, strings.Replace(validResponses, "Faz sentido: vale renomear.", "Faz sentido. "+m, 1)))
 		if err == nil || !strings.Contains(err.Error(), "marker") {
 			t.Errorf("a reply must not carry its own marker %q: %v", m, err)
 		}

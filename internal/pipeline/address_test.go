@@ -18,7 +18,7 @@ import (
 const (
 	bot          = "delamain-bot"
 	invalidReply = "O erro já é tratado em parse.go:12; o comentário não se aplica."
-	validReply   = "Procede: o nome confunde e vale renomear numa próxima rodada."
+	validReply   = "Faz sentido: o nome confunde e vale renomear numa próxima rodada."
 	learning     = "Erros de parse são tratados em parse.go, não no chamador"
 )
 
