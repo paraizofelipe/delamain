@@ -781,16 +781,16 @@ func TestUntrustedStatusShouldRunNoFilterOfTheCheckout(t *testing.T) {
 	}
 }
 
-// pushedBranch gives a repository an origin holding main and branch, checked out locally, and
-// returns the repository and the branch head on the origin.
-func pushedBranch(t *testing.T, branch string) (r, head string) {
+// pushedBranch gives a repository an origin holding main and feat/x, checked out locally, and
+// returns the repository and the head of feat/x on the origin.
+func pushedBranch(t *testing.T) (r, head string) {
 	t.Helper()
 	r = repo(t)
 	withOrigin(t, r)
 	gitIn(t, r, "push", "-q", "origin", "main")
-	gitIn(t, r, "switch", "-q", "-c", branch)
+	gitIn(t, r, "switch", "-q", "-c", "feat/x")
 	head = commitFile(t, r, "a.txt", "one\n")
-	gitIn(t, r, "push", "-q", "origin", branch)
+	gitIn(t, r, "push", "-q", "origin", "feat/x")
 	return r, head
 }
 
@@ -803,7 +803,7 @@ func originHead(t *testing.T, r, branch string) string {
 
 func TestRemoteSHAShouldReturnTheBranchHeadOnOrigin(t *testing.T) {
 	g, ctx := New(), context.Background()
-	r, head := pushedBranch(t, "feat/x")
+	r, head := pushedBranch(t)
 	commitFile(t, r, "b.txt", "local only\n") // the local branch moves, the origin does not
 	got, err := g.RemoteSHA(ctx, r, "feat/x")
 	if err != nil || got != head {
@@ -816,7 +816,7 @@ func TestRemoteSHAShouldReturnTheBranchHeadOnOrigin(t *testing.T) {
 
 func TestPushFastForwardShouldPushWhenRemoteIsUnchanged(t *testing.T) {
 	g, ctx := New(), context.Background()
-	r, expected := pushedBranch(t, "feat/x")
+	r, expected := pushedBranch(t)
 	fix := commitFile(t, r, "a.txt", "two\n")
 	if err := g.PushFastForward(ctx, r, "feat/x", "origin/main", expected); err != nil {
 		t.Fatal(err)
@@ -828,7 +828,7 @@ func TestPushFastForwardShouldPushWhenRemoteIsUnchanged(t *testing.T) {
 
 func TestPushFastForwardShouldRefuseWhenRemoteMoved(t *testing.T) {
 	g, ctx := New(), context.Background()
-	r, expected := pushedBranch(t, "feat/x")
+	r, expected := pushedBranch(t)
 	// Someone else pushes to the branch while the agent works.
 	other := filepath.Join(t.TempDir(), "other")
 	gitIn(t, r, "worktree", "add", "-q", "--detach", other, expected)
@@ -846,7 +846,7 @@ func TestPushFastForwardShouldRefuseWhenRemoteMoved(t *testing.T) {
 
 func TestPushFastForwardShouldRefuseNonDescendantHead(t *testing.T) {
 	g, ctx := New(), context.Background()
-	r, expected := pushedBranch(t, "feat/x")
+	r, expected := pushedBranch(t)
 	// The agent rewrote the published commit instead of adding one on top of it.
 	gitIn(t, r, "commit", "-q", "--amend", "-m", "rewritten")
 	err := g.PushFastForward(ctx, r, "feat/x", "origin/main", expected)
@@ -877,7 +877,7 @@ func TestPushFastForwardShouldRefuseProtectedAndBaseBranches(t *testing.T) {
 
 func TestAddWorktreeOnBranchShouldCheckOutTheRemoteHeadOfTheBranch(t *testing.T) {
 	g, ctx := New(), context.Background()
-	r, _ := pushedBranch(t, "feat/x")
+	r, _ := pushedBranch(t)
 	// The branch moves on origin after the local clone last saw it.
 	other := filepath.Join(t.TempDir(), "other")
 	gitIn(t, r, "worktree", "add", "-q", "--detach", other, "feat/x")
@@ -915,7 +915,7 @@ func TestAddWorktreeOnBranchShouldRefuseBaseAndMain(t *testing.T) {
 
 func TestIsAncestorShouldTellWhetherHeadDescendsFromACommit(t *testing.T) {
 	g, ctx := New(), context.Background()
-	r, published := pushedBranch(t, "feat/x")
+	r, published := pushedBranch(t)
 	commitFile(t, r, "a.txt", "two\n")
 	if ok, err := g.IsAncestor(ctx, r, published, "HEAD"); err != nil || !ok {
 		t.Fatalf("a commit on top of the published one descends from it: %v %v", ok, err)

@@ -681,21 +681,21 @@ func TestRunAddressShouldRefuseAHarnessThatCannotConfineTheResponder(t *testing.
 }
 
 const (
-	fixReply = "Procede: renomeei x para count."
+	fixReply = "Corrigido: renomeei x para count."
 	// fixBranch is the branch the issue run pushed and PR #5 merges.
 	fixBranch = "feat/parse"
 )
 
-// fixed is a responder answer whose fix the responder committed.
-func fixed(thread, text string) string {
-	return strings.Replace(response(thread, "valid", text), `"fixed":false`, `"fixed":true`, 1)
+// fixedAnswer is the responder's answer to the PR-level thread, whose fix it committed.
+func fixedAnswer() string {
+	return strings.Replace(response("issue-comment:9", "valid", fixReply), `"fixed":false`, `"fixed":true`, 1)
 }
 
 // fixAnswers is the responder fixing the PR-level thread with one commit: t1 does not hold.
 func fixAnswers() behavior {
 	return func(string, int, string) reply {
 		return reply{
-			write:  responsesJSON(response("t1", "invalid", invalidReply), fixed("issue-comment:9", fixReply)),
+			write:  responsesJSON(response("t1", "invalid", invalidReply), fixedAnswer()),
 			mutate: func(g *fakeGit) { g.commit("fix: rename x to count (review)") },
 		}
 	}
@@ -914,7 +914,7 @@ func TestRunAddressWithPushShouldNotPushWhenTheCommitsLeakASecret(t *testing.T) 
 	t.Run("a commit subject carries a token", func(t *testing.T) {
 		rh := newFixHarness(t, func(string, int, string) reply {
 			return reply{
-				write:  responsesJSON(response("t1", "invalid", invalidReply), fixed("issue-comment:9", fixReply)),
+				write:  responsesJSON(response("t1", "invalid", invalidReply), fixedAnswer()),
 				mutate: func(g *fakeGit) { g.commit("fix: use " + ghToken + " (review)") },
 			}
 		})
@@ -945,7 +945,7 @@ func TestRunAddressWithPushShouldNotPushWhenRemoteMovedDuringTheRun(t *testing.T
 func TestRunAddressWithPushShouldHaltWhenNewCommitsDoNotDescendFromTheRemoteHead(t *testing.T) {
 	rh := newFixHarness(t, func(string, int, string) reply {
 		return reply{
-			write: responsesJSON(response("t1", "invalid", invalidReply), fixed("issue-comment:9", fixReply)),
+			write: responsesJSON(response("t1", "invalid", invalidReply), fixedAnswer()),
 			// commit --amend passes the commit rule's prefix: the published commit is rewritten.
 			mutate: func(g *fakeGit) { g.rewritten = true; g.commit("fix: rename x to count (review)") },
 		}
@@ -981,7 +981,7 @@ func TestRunAddressWithPushShouldHaltWhenTheBranchIsNotAtThePRHead(t *testing.T)
 }
 
 func TestRunAddressWithPushShouldRejectFixedWithoutCommit(t *testing.T) {
-	rh := newFixHarness(t, answers(responsesJSON(response("t1", "invalid", invalidReply), fixed("issue-comment:9", fixReply))))
+	rh := newFixHarness(t, answers(responsesJSON(response("t1", "invalid", invalidReply), fixedAnswer())))
 	res := rh.address(t)
 
 	assertNothingAnswered(t, rh, res, "sem nenhum commit")
@@ -997,7 +997,7 @@ func TestRunAddressWithPushShouldHaltOnUncommittedChanges(t *testing.T) {
 		reason   string
 	}{
 		"change left out of a commit": {
-			artifact: responsesJSON(response("t1", "invalid", invalidReply), fixed("issue-comment:9", fixReply)),
+			artifact: responsesJSON(response("t1", "invalid", invalidReply), fixedAnswer()),
 			mutate:   func(g *fakeGit) { g.commit("fix: rename x to count (review)"); g.status = " M a.go" },
 			reason:   "fora de commit",
 		},
@@ -1007,7 +1007,7 @@ func TestRunAddressWithPushShouldHaltOnUncommittedChanges(t *testing.T) {
 			reason:   "sem marcar",
 		},
 		"commit on another branch": {
-			artifact: responsesJSON(response("t1", "invalid", invalidReply), fixed("issue-comment:9", fixReply)),
+			artifact: responsesJSON(response("t1", "invalid", invalidReply), fixedAnswer()),
 			mutate:   func(g *fakeGit) { g.commit("fix: rename x to count (review)"); g.branch = "main" },
 			reason:   "saiu da branch",
 		},
@@ -1028,7 +1028,7 @@ func TestRunAddressWithPushShouldNeverResolveInvalidOrUnclearThreads(t *testing.
 	t.Run("only the fixed valid thread is resolved", func(t *testing.T) {
 		rh := newFixHarness(t, func(string, int, string) reply {
 			return reply{
-				write: responsesJSON(response("t1", "invalid", invalidReply), fixed("issue-comment:9", fixReply),
+				write: responsesJSON(response("t1", "invalid", invalidReply), fixedAnswer(),
 					response("t3", "unclear", "Qual entrada falha?"), response("t4", "valid", validReply)),
 				mutate: func(g *fakeGit) { g.commit("fix: rename x to count (review)") },
 			}
@@ -1105,7 +1105,7 @@ func TestRunAddressWithoutPushShouldBehaveAsPhase7(t *testing.T) {
 	assertOnlyReplied(t, rh, rh.address(t))
 
 	// A fix claimed with the push off is rejected exactly as in phase 7.
-	rh = newFixHarness(t, answers(responsesJSON(response("t1", "invalid", invalidReply), fixed("issue-comment:9", fixReply))))
+	rh = newFixHarness(t, answers(responsesJSON(response("t1", "invalid", invalidReply), fixedAnswer())))
 	rh.r.Cfg.Review.Address.Push = false
 	assertNothingAnswered(t, rh, rh.address(t), "fixed must be false")
 }
