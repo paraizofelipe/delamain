@@ -45,7 +45,7 @@ func (r *Runner) RunAddress(ctx context.Context, repo string, n int) (Result, er
 	if r.Cfg.Agent.Harness != config.HarnessClaude {
 		return res, fmt.Errorf("responder discussões de PR/MR pede agent.harness: claude, o único que confina o responder à leitura do PR (got %q)", r.Cfg.Agent.Harness)
 	}
-	repo, err := r.Git.Toplevel(ctx, repo)
+	repo, err := r.Git.MainWorktree(ctx, repo)
 	if err != nil {
 		return res, fmt.Errorf("repository: %w", err)
 	}

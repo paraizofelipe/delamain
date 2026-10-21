@@ -188,6 +188,25 @@ func (g Git) ListWorktrees(ctx context.Context, repo string) ([]Worktree, error)
 	return list, nil
 }
 
+// MainWorktree resolves the repository that every checkout of dir shares: its main worktree, the
+// one `git worktree list` reports first.
+//
+// Toplevel is not that: inside a linked worktree it answers the worktree's own path. A path is
+// what names a repository's checkouts (paths.worktrees_dir/<repo>/...) and what finds the
+// checkout of a branch again, so resolving it from a worktree would nest a second tree of
+// worktrees under the worktree's own name and miss the checkout of the branch it meant to reuse.
+// Where the command was called from must not change where a run works.
+func (g Git) MainWorktree(ctx context.Context, dir string) (string, error) {
+	list, err := g.ListWorktrees(ctx, dir)
+	if err != nil {
+		return "", err
+	}
+	if len(list) == 0 {
+		return "", fmt.Errorf("git worktree list: no checkout of the repository holding %s", dir)
+	}
+	return list[0].Path, nil
+}
+
 // AddDetachedWorktree checks ref out at path without creating a branch (used for the red proof).
 func (g Git) AddDetachedWorktree(ctx context.Context, repo, path, ref string) error {
 	_, err := g.run(ctx, repo, "worktree", "add", "--quiet", "--detach", path, ref)

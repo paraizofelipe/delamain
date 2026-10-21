@@ -406,7 +406,7 @@ func (g *fakeGit) DiscardEmptyWork(_ context.Context, _, worktree, branch, _ str
 	return os.RemoveAll(worktree)
 }
 
-func (g *fakeGit) Toplevel(_ context.Context, dir string) (string, error) {
+func (g *fakeGit) MainWorktree(_ context.Context, dir string) (string, error) {
 	if dir == "" {
 		return "", errors.New("not a repo")
 	}

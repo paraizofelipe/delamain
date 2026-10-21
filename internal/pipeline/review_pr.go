@@ -51,7 +51,7 @@ func (r *Runner) RunReview(ctx context.Context, repo string, n int) (Result, err
 	if r.Forge == nil {
 		return res, errors.New("review requires a GitHub or GitLab origin")
 	}
-	repo, err := r.Git.Toplevel(ctx, repo)
+	repo, err := r.Git.MainWorktree(ctx, repo)
 	if err != nil {
 		return res, fmt.Errorf("repository: %w", err)
 	}

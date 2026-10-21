@@ -33,7 +33,7 @@ import (
 
 // Git is the subset of gitx the pipeline uses.
 type Git interface {
-	Toplevel(ctx context.Context, dir string) (string, error)
+	MainWorktree(ctx context.Context, dir string) (string, error)
 	ResolveBase(ctx context.Context, repo string) (string, error)
 	BranchExists(ctx context.Context, repo, branch string) bool
 	Head(ctx context.Context, dir string) (string, error)
@@ -196,7 +196,7 @@ func (r *Runner) Run(ctx context.Context, t Task) (Result, error) {
 		r.needsInfo(ctx, t, problems, &res)
 		return res, nil
 	}
-	repo, err := r.Git.Toplevel(ctx, t.Repo)
+	repo, err := r.Git.MainWorktree(ctx, t.Repo)
 	if err != nil {
 		return res, fmt.Errorf("repository: %w", err)
 	}
