@@ -156,6 +156,13 @@ func (r *Runner) address(ctx context.Context, ru *run, p *prRun, pending []forge
 	if err != nil {
 		return err
 	}
+	ids := make([]string, 0, len(pending))
+	for _, t := range pending {
+		ids = append(ids, t.ID)
+	}
+	if err := resp.ValidatePending(ids); err != nil {
+		return haltf("artefato do responder rejeitado: %v; nada foi postado", err)
+	}
 
 	if err := r.setState(ctx, ru, store.StateDeliver); err != nil {
 		return err

@@ -226,3 +226,18 @@ func TestRunAddressShouldSkipClosedPRWithoutCreatingARun(t *testing.T) {
 		t.Fatal("nothing is fetched, prompted or replied for a closed PR")
 	}
 }
+
+func TestRunAddressShouldHaltWithoutReplyingWhenResponsesMissAPendingThread(t *testing.T) {
+	rh := newAddressHarness(t, answers(responsesJSON(response("t1", "invalid", invalidReply))))
+	res := rh.address(t)
+
+	if res.Outcome != OutcomeHalted || !strings.Contains(res.Reason, "issue-comment:9") {
+		t.Fatalf("want halted naming the unanswered thread, got %s (%s)", res.Outcome, res.Reason)
+	}
+	if len(rh.f.replies) != 0 {
+		t.Fatalf("a partial answer posts nothing: %+v", rh.f.replies)
+	}
+	if _, err := os.Stat(filepath.Join(rh.r.Cfg.Paths.MemoryDir(), "github.com", "acme", "api.md")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a run that answered nothing learns nothing: %v", err)
+	}
+}

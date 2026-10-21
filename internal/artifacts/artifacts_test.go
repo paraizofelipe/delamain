@@ -244,3 +244,106 @@ func TestPRReviewShouldRejectUnknownJSONFields(t *testing.T) {
 		t.Fatalf("an extra field means the agent wrote another format: %v", err)
 	}
 }
+
+// validResponses answers the pending threads t1 and t2.
+const validResponses = `{"responses":[
+{"thread_id":"t1","verdict":"invalid","reply":"O erro já é tratado em parse.go:12.","fixed":false},
+{"thread_id":"t2","verdict":"valid","reply":"Procede: vale renomear.","fixed":false}],
+"learnings":["Erros de parse são tratados em parse.go"]}`
+
+func TestResponsesShouldAcceptOneReplyPerPendingThread(t *testing.T) {
+	r, err := Read[Responses](write(t, validResponses))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.ValidatePending([]string{"t1", "t2"}); err != nil {
+		t.Fatalf("one reply per pending thread is the contract: %v", err)
+	}
+	if len(r.Responses) != 2 || r.Responses[0].Verdict != "invalid" || len(r.Learnings) != 1 {
+		t.Fatalf("decoded wrong: %+v", r)
+	}
+}
+
+func TestResponsesShouldRejectAnUnknownThread(t *testing.T) {
+	r, err := Read[Responses](write(t, validResponses))
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = r.ValidatePending([]string{"t1"})
+	if err == nil || !strings.Contains(err.Error(), "t2") {
+		t.Fatalf("a reply to a thread that was not pending must be rejected: %v", err)
+	}
+}
+
+func TestResponsesShouldRejectAPendingThreadWithoutReply(t *testing.T) {
+	r, err := Read[Responses](write(t, validResponses))
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = r.ValidatePending([]string{"t1", "t2", "t3"})
+	if err == nil || !strings.Contains(err.Error(), "t3") {
+		t.Fatalf("every pending thread needs its reply: %v", err)
+	}
+	if err := (Responses{}).ValidatePending(nil); err != nil {
+		t.Fatalf("nothing pending, nothing to answer: %v", err)
+	}
+}
+
+func TestResponsesShouldRejectTwoRepliesToTheSameThread(t *testing.T) {
+	_, err := Read[Responses](write(t, strings.Replace(validResponses, `"thread_id":"t2"`, `"thread_id":"t1"`, 1)))
+	if err == nil || !strings.Contains(err.Error(), "t1") {
+		t.Fatalf("two replies to one thread must be rejected: %v", err)
+	}
+}
+
+func TestResponsesShouldRejectAnInvalidVerdict(t *testing.T) {
+	for _, v := range []string{"agree", "", "VALID"} {
+		_, err := Read[Responses](write(t, strings.Replace(validResponses, `"verdict":"invalid"`, `"verdict":"`+v+`"`, 1)))
+		if err == nil || !strings.Contains(err.Error(), "verdict") {
+			t.Errorf("verdict %q must be rejected: %v", v, err)
+		}
+	}
+	for _, v := range []string{"valid", "invalid", "unclear"} {
+		if _, err := Read[Responses](write(t, strings.Replace(validResponses, `"verdict":"invalid"`, `"verdict":"`+v+`"`, 1))); err != nil {
+			t.Errorf("verdict %q is part of the contract: %v", v, err)
+		}
+	}
+}
+
+func TestResponsesShouldRejectAnEmptyOrTooLongReply(t *testing.T) {
+	const reply = `"reply":"O erro já é tratado em parse.go:12."`
+	for name, tc := range map[string]struct {
+		reply string
+		ok    bool
+	}{
+		"empty":            {`"reply":""`, false},
+		"blank":            {`"reply":"   "`, false},
+		"2001 runes":       {`"reply":"` + strings.Repeat("é", 2001) + `"`, false},
+		"exactly 2000 ok":  {`"reply":"` + strings.Repeat("é", 2000) + `"`, true},
+		"a single rune ok": {`"reply":"x"`, true},
+	} {
+		_, err := Read[Responses](write(t, strings.Replace(validResponses, reply, tc.reply, 1)))
+		if tc.ok != (err == nil) {
+			t.Errorf("%s: ok=%v, got %v", name, tc.ok, err)
+		}
+		if !tc.ok && (err == nil || !strings.Contains(err.Error(), "reply")) {
+			t.Errorf("%s: the error names the reply: %v", name, err)
+		}
+	}
+}
+
+func TestResponsesShouldRejectFixedTrue(t *testing.T) {
+	_, err := Read[Responses](write(t, strings.Replace(validResponses, `"fixed":false`, `"fixed":true`, 1)))
+	if err == nil || !strings.Contains(err.Error(), "fixed") {
+		t.Fatalf("nothing is fixed while addressing only replies: %v", err)
+	}
+}
+
+func TestResponsesShouldRejectAReplyCarryingADelamainMarker(t *testing.T) {
+	for _, m := range []string{"<!-- delamain:run=1 kind=reply key=abcdef012345 -->", "<!--delamain:run=1 kind=reply key=zz -->", "<!-- DELAMAIN:run=1 -->"} {
+		_, err := Read[Responses](write(t, strings.Replace(validResponses, "Procede: vale renomear.", "Procede. "+m, 1)))
+		if err == nil || !strings.Contains(err.Error(), "marker") {
+			t.Errorf("a reply must not carry its own marker %q: %v", m, err)
+		}
+	}
+}

@@ -9,7 +9,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"regexp"
+	"slices"
 	"strings"
+	"unicode/utf8"
 )
 
 type Commands struct {
@@ -391,7 +394,58 @@ type Responses struct {
 	Learnings []string   `json:"learnings"`
 }
 
+var (
+	validResponseVerdicts = map[string]bool{"valid": true, "invalid": true, "unclear": true}
+	// delamainMarker is any attempt at a delamain marker, well-formed or not: only the
+	// orchestrator tags what it posts.
+	delamainMarker = regexp.MustCompile(`(?i)<!--\s*delamain`)
+)
+
+// MaxReplyRunes caps one reply the orchestrator posts.
+const MaxReplyRunes = 2000
+
 // Validate checks the shape; ValidatePending checks the replies against the threads sent.
 func (r Responses) Validate() error {
-	return nil
+	var errs []error
+	seen := map[string]bool{}
+	for i, a := range r.Responses {
+		if strings.TrimSpace(a.ThreadID) == "" {
+			errs = append(errs, fmt.Errorf("response %d: thread_id is empty", i+1))
+		}
+		if seen[a.ThreadID] {
+			errs = append(errs, fmt.Errorf("thread %s: more than one reply", a.ThreadID))
+		}
+		seen[a.ThreadID] = true
+		if !validResponseVerdicts[a.Verdict] {
+			errs = append(errs, fmt.Errorf("thread %s: verdict must be valid, invalid or unclear, got %q", a.ThreadID, a.Verdict))
+		}
+		if n := utf8.RuneCountInString(a.Reply); strings.TrimSpace(a.Reply) == "" || n > MaxReplyRunes {
+			errs = append(errs, fmt.Errorf("thread %s: reply must have 1 to %d characters, got %d", a.ThreadID, MaxReplyRunes, n))
+		}
+		if delamainMarker.MatchString(a.Reply) {
+			errs = append(errs, fmt.Errorf("thread %s: reply carries a delamain marker; the orchestrator adds its own", a.ThreadID))
+		}
+		if a.Fixed {
+			errs = append(errs, fmt.Errorf("thread %s: fixed must be false, nothing is fixed while only replying", a.ThreadID))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// ValidatePending requires exactly one reply per pending thread and none for any other thread.
+func (r Responses) ValidatePending(pending []string) error {
+	var errs []error
+	answered := map[string]bool{}
+	for _, a := range r.Responses {
+		answered[a.ThreadID] = true
+		if !slices.Contains(pending, a.ThreadID) {
+			errs = append(errs, fmt.Errorf("thread %s was not pending", a.ThreadID))
+		}
+	}
+	for _, id := range pending {
+		if !answered[id] {
+			errs = append(errs, fmt.Errorf("pending thread %s has no reply", id))
+		}
+	}
+	return errors.Join(errs...)
 }
