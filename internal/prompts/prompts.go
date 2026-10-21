@@ -141,6 +141,8 @@ type StageData struct {
 	Memory       string // the repository's stored learnings
 	MaxComments  int    // cap of critical/major findings a review may post
 	CanFix       bool   // address only: the responder may commit fixes that the orchestrator pushes
+	// CommitMessagePath is the file a fixing responder writes each commit message to.
+	CommitMessagePath string
 }
 
 // SampleStageData fills every field so lint can prove each template renders.
@@ -161,11 +163,12 @@ func SampleStageData() StageData {
 			Number: 42, URL: "https://example.invalid/pull/42", Title: "Sample PR", Body: "Closes #41", Author: "octocat",
 			BaseRef: "main", HeadRef: "feat/sample", BaseSHA: "1111111111111111111111111111111111111111", HeadSHA: "2222222222222222222222222222222222222222",
 		},
-		LinkedIssues: []Issue{{Ref: "#41", Title: "Sample linked issue", Body: "- [ ] criterion", URL: "https://example.invalid/issues/41"}},
-		Threads:      "- t1 · a.go:3 · alice · aberta: rename this",
-		Memory:       "- 2026-01-01 run 1 PR #40: tests use fakes in fakes_test.go",
-		MaxComments:  15,
-		CanFix:       true,
+		LinkedIssues:      []Issue{{Ref: "#41", Title: "Sample linked issue", Body: "- [ ] criterion", URL: "https://example.invalid/issues/41"}},
+		Threads:           "- t1 · a.go:3 · alice · aberta: rename this",
+		Memory:            "- 2026-01-01 run 1 PR #40: tests use fakes in fakes_test.go",
+		MaxComments:       15,
+		CanFix:            true,
+		CommitMessagePath: "/tmp/run/commit-msg.txt",
 	}
 }
 

@@ -429,11 +429,15 @@ func TestAddressStageShouldAskForFixesOnlyWhenCanFix(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	commit := "git -C " + d.Repo.Worktree + " -c core.hooksPath=/dev/null commit -m"
-	for _, want := range []string{"push habilitado", "fix: <assunto> (review)", commit, "git -C " + d.Repo.Worktree + " add -A", `"fixed": true`, "um commit por discussão"} {
+	// The commit command is exact, as the confinement allows it: the message goes in a file.
+	commit := "`git -C " + d.Repo.Worktree + " -c core.hooksPath=/dev/null commit -F " + d.CommitMessagePath + "`"
+	for _, want := range []string{"push habilitado", "fix: <assunto> (review)", commit, "`" + d.CommitMessagePath + "`", "git -C " + d.Repo.Worktree + " add -A", `"fixed": true`, "um commit por discussão"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("with push enabled the address stage must say %q", want)
 		}
+	}
+	if strings.Contains(out, "commit -m") {
+		t.Error("the stage must not offer commit -m: the confinement denies it")
 	}
 	if strings.Contains(out, "push desabilitado") || strings.Contains(out, "Nesta fase você **só responde**") {
 		t.Errorf("with push enabled the stage must not forbid fixing:\n%s", out)

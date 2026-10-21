@@ -810,7 +810,8 @@ func TestRunAddressWithPushShouldGiveTheResponderTheFixingConfinement(t *testing
 		t.Fatalf("got %s (%s)", res.Outcome, res.Reason)
 	}
 	start := rh.h.starts["responder-r"+strconv.FormatInt(res.RunID, 10)]
-	want := Confinement{Checkout: res.Worktree, Base: prBase, Artifact: filepath.Join(res.RunDir, "responses.json"), Fix: true}
+	msg := filepath.Join(res.RunDir, "commit-msg.txt") // outside the checkout: add -A never commits it
+	want := Confinement{Checkout: res.Worktree, Base: prBase, Artifact: filepath.Join(res.RunDir, "responses.json"), Fix: true, CommitMessage: msg}
 	if start.Confine == nil || *start.Confine != want {
 		t.Fatalf("the responder edits and commits only in the checkout: want %+v, got %+v", want, start.Confine)
 	}
@@ -825,9 +826,9 @@ func TestRunAddressWithPushShouldGiveTheResponderTheFixingConfinement(t *testing
 	prompt := strings.Join(rh.h.prompts["responder"], "\n")
 	for _, cmd := range []string{
 		"git -C " + res.Worktree + " status --porcelain", "git -C " + res.Worktree + " add -A",
-		"git -C " + res.Worktree + " -c core.hooksPath=/dev/null commit -m",
+		"git -C " + res.Worktree + " -c core.hooksPath=/dev/null commit -F " + msg,
 	} {
-		if !strings.Contains(prompt, "`"+cmd) {
+		if !strings.Contains(prompt, "`"+cmd+"`") {
 			t.Errorf("the prompt must give %q as the confinement allows it", cmd)
 		}
 	}

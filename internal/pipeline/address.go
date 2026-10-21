@@ -251,7 +251,11 @@ func (r *Runner) address(ctx context.Context, ru *run, p *prRun, pending []forge
 	artifact := filepath.Join(ru.dir, "responses.json")
 	ru.confine = &Confinement{Checkout: wt, Base: pr.BaseSHA, Artifact: artifact, Fix: fix != nil}
 	data := r.stageData(ru, 0, artifact, "")
-	data.CanFix = fix != nil
+	if fix != nil {
+		// Outside the checkout, so add -A never commits it.
+		ru.confine.CommitMessage = filepath.Join(ru.dir, "commit-msg.txt")
+		data.CanFix, data.CommitMessagePath = true, ru.confine.CommitMessage
+	}
 	data.PR = prompts.PR{
 		Number: pr.Number, URL: pr.URL, Title: pr.Title, Body: pr.Body, Author: pr.Author,
 		BaseRef: pr.BaseRef, HeadRef: pr.HeadRef, BaseSHA: pr.BaseSHA, HeadSHA: pr.HeadSHA,
