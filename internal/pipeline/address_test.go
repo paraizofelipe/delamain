@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -924,4 +925,57 @@ func TestRunAddressWithPushShouldNotPushWhenTheCommitsLeakASecret(t *testing.T) 
 			t.Fatal("the secret is never repeated")
 		}
 	})
+}
+
+func TestRunAddressWithPushShouldNotPushWhenRemoteMovedDuringTheRun(t *testing.T) {
+	rh := newFixHarness(t, fixAnswers())
+	rh.g.ffErr = fmt.Errorf("feat/parse is at cccccccc on origin: %w", gitx.ErrRemoteMoved)
+	res := rh.address(t)
+
+	assertFixNotSent(t, rh, res, "a branch mudou")
+	if !strings.Contains(res.Reason, "mudou no remoto") {
+		t.Fatalf("the outcome says the branch moved: %s", res.Reason)
+	}
+	report, err := os.ReadFile(res.ReportPath)
+	if err != nil || !strings.Contains(string(report), "mudou no remoto") {
+		t.Fatalf("the report records why nothing was sent: %v\n%s", err, report)
+	}
+}
+
+func TestRunAddressWithPushShouldHaltWhenNewCommitsDoNotDescendFromTheRemoteHead(t *testing.T) {
+	rh := newFixHarness(t, func(string, int, string) reply {
+		return reply{
+			write: responsesJSON(response("t1", "invalid", invalidReply), fixed("issue-comment:9", fixReply)),
+			// commit --amend passes the commit rule's prefix: the published commit is rewritten.
+			mutate: func(g *fakeGit) { g.rewritten = true; g.commit("fix: rename x to count (review)") },
+		}
+	})
+	res := rh.address(t)
+
+	assertNothingAnswered(t, rh, res, "não descendem")
+	if len(rh.g.ffPushes)+len(rh.f.resolved)+len(rh.h.checkCalls) != 0 {
+		t.Fatalf("a rewritten history is neither checked nor pushed: %+v %v %d", rh.g.ffPushes, rh.f.resolved, len(rh.h.checkCalls))
+	}
+}
+
+func TestRunAddressWithPushShouldHaltWhenThePushIsRefused(t *testing.T) {
+	rh := newFixHarness(t, fixAnswers())
+	rh.g.ffErr = errors.New("HEAD does not descend from aaaaaaaa")
+	res := rh.address(t)
+
+	assertNothingAnswered(t, rh, res, "recusado")
+	if len(rh.f.resolved) != 0 {
+		t.Fatalf("nothing is resolved: %v", rh.f.resolved)
+	}
+}
+
+func TestRunAddressWithPushShouldHaltWhenTheBranchIsNotAtThePRHead(t *testing.T) {
+	rh := newFixHarness(t, fixAnswers())
+	rh.g.remoteHead = "cccccccc" // pushed after PRView
+	res := rh.address(t)
+
+	assertNothingAnswered(t, rh, res, "cccccccc")
+	if len(rh.g.onBranch)+len(rh.h.starts) != 0 {
+		t.Fatal("no checkout nor agent for a branch that is not at the PR head")
+	}
 }
