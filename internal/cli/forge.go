@@ -52,7 +52,9 @@ func forgeRepo(ctx context.Context, cfg config.Config, dir string) (repo forge.R
 		return forge.Repo{}, false, nil
 	}
 	g := gitx.New()
-	top, err := g.Toplevel(ctx, dir)
+	// The repository, not the checkout dir happens to be: a command called from inside a worktree
+	// answers for the same forge as one called from the repository itself.
+	top, err := g.MainWorktree(ctx, dir)
 	if err != nil {
 		return forge.Repo{}, false, fmt.Errorf("repository: %w", err)
 	}

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -430,4 +431,21 @@ func (s *Store) SaveCursor(ctx context.Context, c ReviewCursor) error {
 // RunsWithMR lists the issue runs of repo that opened a PR/MR, oldest first.
 func (s *Store) RunsWithMR(ctx context.Context, repo string) ([]Run, error) {
 	return s.queryRuns(ctx, `SELECT `+runCols+` FROM runs WHERE repo = ? AND kind = ? AND mr_url != '' ORDER BY id`, repo, KindIssue)
+}
+
+// OpenedMR reports whether an issue run delivered the PR/MR at url. The URL is the identity
+// here, not the repository path: the same repository is checked out at several paths — every
+// worktree is one — and a run records the path it ran from.
+func (s *Store) OpenedMR(ctx context.Context, url string) (bool, error) {
+	url = strings.TrimSuffix(url, "/")
+	if url == "" {
+		return false, nil
+	}
+	var n int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT count(*) FROM runs WHERE kind = ? AND rtrim(mr_url, '/') = ?`, KindIssue, url).Scan(&n)
+	if err != nil {
+		return false, fmt.Errorf("runs that opened %s: %w", url, err)
+	}
+	return n > 0, nil
 }

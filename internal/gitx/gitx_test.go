@@ -360,6 +360,47 @@ func TestListWorktreesShouldReportEveryCheckoutWithItsBranch(t *testing.T) {
 	}
 }
 
+// Every run names its worktrees after the repository and finds the checkout of a branch by its
+// path, so the repository a run works on must be the same from wherever the command was called —
+// including from inside one of its worktrees, where Toplevel answers that worktree instead.
+func TestMainWorktreeShouldAnswerTheRepositoryFromInsideAnyOfItsWorktrees(t *testing.T) {
+	g, ctx := New(), context.Background()
+	r := repo(t)
+	wt := filepath.Join(t.TempDir(), "wt")
+	if err := g.AddWorktree(ctx, r, wt, "feat/3-z", "main"); err != nil {
+		t.Fatal(err)
+	}
+	sub := filepath.Join(wt, "pkg", "deep")
+	if err := os.MkdirAll(sub, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	resolve := func(p string) string { s, _ := filepath.EvalSymlinks(p); return s }
+	for _, dir := range []string{r, wt, sub} {
+		got, err := g.MainWorktree(ctx, dir)
+		if err != nil {
+			t.Fatalf("MainWorktree(%s): %v", dir, err)
+		}
+		if resolve(got) != resolve(r) {
+			t.Errorf("MainWorktree(%s) = %s, want the repository %s", dir, got, r)
+		}
+	}
+	// The contrast that makes this function necessary: inside a worktree, Toplevel is the worktree.
+	top, err := g.Toplevel(ctx, sub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolve(top) != resolve(wt) {
+		t.Fatalf("Toplevel(%s) = %s, want the worktree %s", sub, top, wt)
+	}
+}
+
+func TestMainWorktreeShouldFailOutsideAnyRepository(t *testing.T) {
+	g, ctx := New(), context.Background()
+	if _, err := g.MainWorktree(ctx, t.TempDir()); err == nil {
+		t.Fatal("a directory that belongs to no repository must fail, never answer a path")
+	}
+}
+
 func envValue(env []string, key string) string {
 	v := ""
 	for _, kv := range env { // the last value wins, as in exec

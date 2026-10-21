@@ -506,4 +506,23 @@ func TestRunsWithMRShouldListOnlyIssueRunsOfTheRepoWithAnMRURL(t *testing.T) {
 	if none, err := s.RunsWithMR(ctx, "/empty"); err != nil || len(none) != 0 {
 		t.Fatalf("a repository without runs has none: %+v %v", none, err)
 	}
+	// What `delamain review --pr n` asks, from whatever path it was called: the PR's URL is the
+	// identity, never the path a run happened to record.
+	for url, want := range map[string]bool{
+		"https://github.com/acme/api/pull/10":   true,  // the issue run of /a opened it
+		"https://github.com/acme/other/pull/11": true,  // and this one ran from /b
+		"https://github.com/acme/api/pull/10/":  true,  // a trailing slash is the same PR
+		"https://github.com/acme/api/pull/12":   false, // only reviewed: someone else's PR
+		"https://github.com/acme/api/pull/1":    false,
+		"https://github.com/acme/api/pull/100":  false,
+		"":                                      false,
+	} {
+		got, err := s.OpenedMR(ctx, url)
+		if err != nil {
+			t.Fatalf("%s: %v", url, err)
+		}
+		if got != want {
+			t.Errorf("OpenedMR(%q) = %v, want %v", url, got, want)
+		}
+	}
 }
