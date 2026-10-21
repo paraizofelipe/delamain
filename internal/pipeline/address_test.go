@@ -369,3 +369,97 @@ func TestPendingThreadsShouldReturnNothingWithoutAKnownForgeUser(t *testing.T) {
 		t.Fatalf("without knowing its own login delamain could answer itself forever: %+v", got)
 	}
 }
+
+func TestRunAddressShouldEscalateToNeedsHumanAfterMaxRounds(t *testing.T) {
+	rh := newAddressHarness(t, answers(happyAnswers()))
+	rh.r.Cfg.Review.MaxRounds = 3
+	if err := rh.st.SaveCursor(context.Background(), store.ReviewCursor{Repo: rh.repo, PR: 5, Rounds: 3, LastHeadSHA: prHead}); err != nil {
+		t.Fatal(err)
+	}
+	res := rh.address(t)
+
+	if res.Outcome != OutcomeHalted || !strings.Contains(res.Reason, "needs-human") {
+		t.Fatalf("want halted on needs-human, got %s (%s)", res.Outcome, res.Reason)
+	}
+	if len(rh.f.prRelabels) != 1 || len(rh.f.prRelabels[0][0]) != 1 || rh.f.prRelabels[0][0][0] != rh.r.Cfg.Forge.Labels.NeedsHuman {
+		t.Fatalf("the PR is labeled needs-human: %+v", rh.f.prRelabels)
+	}
+	if len(rh.f.prComments) != 1 {
+		t.Fatalf("one notice tells the humans why: %+v", rh.f.prComments)
+	}
+	if m := marker(t, rh.f.prComments[0]); m.Kind != "needs_human" || m.Key != forge.Key("needs-human", "5") {
+		t.Fatalf("the notice is tagged once per PR: %+v", m)
+	}
+	if len(rh.h.starts)+len(rh.f.replies)+len(rh.g.fetchedPR) != 0 {
+		t.Fatal("past max_rounds no agent runs and nothing is answered")
+	}
+	cur := rh.cursor(t)
+	if !cur.LastSeenAt.Equal(t0.Add(2*time.Hour)) || cur.Rounds != 3 || cur.LastHeadSHA != prHead {
+		t.Fatalf("the cursor moves past the comments seen, without spending a round: %+v", cur)
+	}
+}
+
+func TestRunAddressShouldNotRepeatTheNeedsHumanCommentOnALaterPoll(t *testing.T) {
+	rh := newAddressHarness(t, answers(happyAnswers()))
+	if err := rh.st.SaveCursor(context.Background(), store.ReviewCursor{Repo: rh.repo, PR: 5, Rounds: rh.r.Cfg.Review.MaxRounds}); err != nil {
+		t.Fatal(err)
+	}
+	rh.address(t)
+	if len(rh.f.prComments) != 1 {
+		t.Fatalf("first escalation posts the notice: %+v", rh.f.prComments)
+	}
+	// The forge now shows the notice, and someone comments again.
+	rh.f.threads = append(rh.f.threads,
+		forge.Thread{ID: "issue-comment:20", Comments: []forge.Comment{{ID: "20", Author: bot, Body: rh.f.prComments[0], CreatedAt: t0.Add(3 * time.Hour)}}},
+		forge.Thread{ID: "issue-comment:21", Comments: []forge.Comment{{ID: "21", Author: "bob", Body: "e agora?", CreatedAt: t0.Add(4 * time.Hour)}}},
+	)
+	res := rh.address(t)
+
+	if res.Outcome != OutcomeHalted || len(rh.f.prComments) != 1 {
+		t.Fatalf("the notice goes out once per PR: %s, %+v", res.Outcome, rh.f.prComments)
+	}
+	if len(rh.h.starts) != 0 {
+		t.Fatal("the watcher stays stopped")
+	}
+	if cur := rh.cursor(t); !cur.LastSeenAt.Equal(t0.Add(4 * time.Hour)) {
+		t.Fatalf("the cursor follows the comments so the producer does not reopen the job: %+v", cur)
+	}
+}
+
+func TestRunAddressShouldCountAHaltedRoundTowardsMaxRounds(t *testing.T) {
+	rh := newAddressHarness(t, func(string, int, string) reply { return reply{provider: "overloaded"} })
+	rh.r.Cfg.Review.MaxRounds = 2
+	for want := 1; want <= 2; want++ {
+		if res := rh.address(t); res.Outcome != OutcomeHalted {
+			t.Fatalf("attempt %d: want halted, got %s (%s)", want, res.Outcome, res.Reason)
+		}
+		if cur := rh.cursor(t); cur.Rounds != want || !cur.LastSeenAt.IsZero() {
+			t.Fatalf("attempt %d: a halt spends a round and keeps the comments pending: %+v", want, cur)
+		}
+	}
+	starts := len(rh.h.starts)
+	if res := rh.address(t); res.Outcome != OutcomeHalted || !strings.Contains(res.Reason, "needs-human") {
+		t.Fatalf("a PR whose answers keep halting goes to a human: %s (%s)", res.Outcome, res.Reason)
+	}
+	if len(rh.h.starts) != starts || len(rh.f.replies) != 0 {
+		t.Fatal("no agent runs once the rounds are spent")
+	}
+}
+
+func TestRunAddressShouldNotCountAHaltTheOperatorCaused(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	rh := newAddressHarness(t, func(string, int, string) reply {
+		cancel()       // Ctrl+C on the daemon, mid-answer
+		return reply{} // no artifact: the step halts
+	})
+	res, err := rh.r.RunAddress(ctx, rh.repo, 5)
+	if err != nil {
+		t.Fatalf("an interrupted run still records its outcome: %v", err)
+	}
+	if res.Outcome != OutcomeHalted {
+		t.Fatalf("want halted, got %s (%s)", res.Outcome, res.Reason)
+	}
+	if cur, err := rh.st.Cursor(context.Background(), rh.repo, 5); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("an interrupted run spends no round: %+v (%v)", cur, err)
+	}
+}

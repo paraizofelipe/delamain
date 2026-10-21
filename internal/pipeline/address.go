@@ -104,7 +104,62 @@ func (r *Runner) RunAddress(ctx context.Context, repo string, n int) (Result, er
 	default:
 		res.Outcome, res.Reason = OutcomeHalted, err.Error()
 	}
+	if err != nil {
+		r.noteAddressHalt(ctx, ru, p)
+	}
 	return res, r.finishReview(ctx, ru, p)
+}
+
+// noteAddressHalt spends a round on a run that halted before answering. A halt is usually
+// deterministic — a rejected artifact, a checkout the responder touched — and the comments stay
+// pending, so without this the daemon would start the same run on every poll until
+// review.max_rounds hands the PR to a human.
+func (r *Runner) noteAddressHalt(ctx context.Context, ru *run, p *prRun) {
+	if ctx.Err() != nil {
+		// The operator stopped the daemon: that says nothing about this PR.
+		ru.log.Info("address interrupted, no round spent", "run", ru.rec.ID, "pr", p.pr.Number)
+		return
+	}
+	ctx = context.WithoutCancel(ctx)
+	c, err := r.Store.Cursor(ctx, ru.rec.Repo, p.pr.Number)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		ru.log.Warn("could not read the review cursor to count the halt", "pr", p.pr.Number, "err", err)
+		return
+	}
+	c.Repo, c.PR = ru.rec.Repo, p.pr.Number
+	c.Rounds++
+	if err := r.Store.SaveCursor(ctx, c); err != nil {
+		ru.log.Warn("could not count the halted round", "pr", p.pr.Number, "err", err)
+		return
+	}
+	ru.log.Info("halted address counted as a round", "run", ru.rec.ID, "pr", p.pr.Number, "rounds", c.Rounds)
+}
+
+// escalate hands a PR whose rounds are spent to a human: the needs-human label, a notice posted
+// once per PR and the cursor past the comments seen, so the producer does not start the same
+// run on every poll. No agent runs and no round is spent.
+func (r *Runner) escalate(ctx context.Context, ru *run, p *prRun, prev store.ReviewCursor, pending []forge.Thread) error {
+	pr := p.pr
+	label := r.Cfg.Forge.Labels.NeedsHuman
+	if err := r.Forge.RelabelPR(ctx, pr.Number, []string{label}, nil); err != nil {
+		return haltf("falha ao marcar o PR/MR #%d com %s: %v", pr.Number, label, err)
+	}
+	// The marker's kind is a single word (see forge.ParseMarker), hence the underscore.
+	m := forge.Marker{RunID: ru.rec.ID, Kind: "needs_human", Key: forge.Key("needs-human", strconv.Itoa(pr.Number))}
+	if !postedKeys(p.threads, r.ForgeUser)[m.Key] {
+		body := fmt.Sprintf("🤖 **delamain**: este PR/MR chegou ao limite de %d rodadas automáticas (`review.max_rounds`). As próximas discussões ficam com um humano.\n\n%s", r.Cfg.Review.MaxRounds, m.String())
+		if err := r.Forge.PRComment(ctx, pr.Number, body); err != nil {
+			return haltf("falha ao avisar no PR/MR #%d: %v", pr.Number, err)
+		}
+	}
+	c := prev
+	c.Repo, c.PR, c.LastSeenAt = ru.rec.Repo, pr.Number, newestComment(pending)
+	if err := r.Store.SaveCursor(ctx, c); err != nil {
+		return err
+	}
+	ru.res.Outcome = OutcomeHalted
+	ru.res.Reason = fmt.Sprintf("review.max_rounds (%d) atingido: PR/MR #%d marcado %s", r.Cfg.Review.MaxRounds, pr.Number, label)
+	return nil
 }
 
 func (r *Runner) address(ctx context.Context, ru *run, p *prRun, pending []forge.Thread) error {
@@ -115,6 +170,9 @@ func (r *Runner) address(ctx context.Context, ru *run, p *prRun, pending []forge
 	prev, err := r.Store.Cursor(ctx, repo, pr.Number)
 	if err != nil && !errors.Is(err, store.ErrNotFound) {
 		return err
+	}
+	if prev.Rounds >= r.Cfg.Review.MaxRounds {
+		return r.escalate(ctx, ru, p, prev, pending)
 	}
 	for _, d := range []string{filepath.Join(ru.dir, "sessions")} {
 		if err := os.MkdirAll(d, 0o700); err != nil {
