@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -130,6 +131,9 @@ type Runner struct {
 	Notify notify.Notifier
 	// BudgetInterval paces the budget watcher during agent turns (default 10s).
 	BudgetInterval time.Duration
+	// SubagentWait is how long a step waits before giving its subagents another turn to
+	// report back (default 30s); see stepArtifact.
+	SubagentWait time.Duration
 }
 
 // halt is a guardrail stop: the run is recorded with this reason instead of failing the process.
@@ -607,9 +611,40 @@ func (r *Runner) send(ctx context.Context, ru *run, role, text string) error {
 	return r.checkBudget(ctx, ru)
 }
 
+const (
+	// defaultSubagentWait paces the turns a step gets while its subagents report back.
+	defaultSubagentWait = 30 * time.Second
+	// subagentWaits is how many further turns a step gets while its subagents may still be
+	// running. With the default wait that covers about four minutes, past the usual axis.
+	subagentWaits = 8
+)
+
+// pause waits SubagentWait, or returns early if the run is cancelled.
+func (r *Runner) pause(ctx context.Context) error {
+	d := r.SubagentWait
+	if d <= 0 {
+		d = defaultSubagentWait
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
+}
+
 type validated interface{ Validate() error }
 
 // stepArtifact runs a stage and reads its artifact, allowing one corrective prompt.
+//
+// An artifact that is merely absent does not mean the step failed: Claude Code's Agent tool
+// puts a subagent in the background unless the call says otherwise, and hands its result to the
+// main session only in a later turn, so the turn can end with the axes still working. Each
+// further turn delivers the notifications that landed meanwhile, which is why the step is given
+// several before its artifact is called missing. A malformed artifact skips the wait: the step
+// did produce a file, so only the single correction turn applies.
 func stepArtifact[T validated](ctx context.Context, r *Runner, ru *run, role, stage string, data prompts.StageData) (T, error) {
 	var zero T
 	if err := r.prompt(ctx, ru, role, stage, data); err != nil {
@@ -618,6 +653,21 @@ func stepArtifact[T validated](ctx context.Context, r *Runner, ru *run, role, st
 	v, err := artifacts.Read[T](data.ArtifactPath)
 	if err == nil {
 		return v, nil
+	}
+	for i := 0; errors.Is(err, fs.ErrNotExist) && i < subagentWaits; i++ {
+		ru.log.Info("artifact missing, waiting for the step's subagents",
+			"stage", stage, "attempt", i+1, "of", subagentWaits, "path", data.ArtifactPath)
+		if werr := r.pause(ctx); werr != nil {
+			return zero, werr
+		}
+		wait := fmt.Sprintf("O artefato `%s` ainda não existe. Se os seus subagentes ainda estão rodando, espere o resultado deles e **não** invente achado nenhum. Quando todos tiverem respondido, escreva o arquivo no formato pedido no passo e responda apenas: `DONE %s`. Se já terminaram, escreva o arquivo agora.",
+			data.ArtifactPath, data.ArtifactPath)
+		if serr := r.send(ctx, ru, role, wait); serr != nil {
+			return zero, serr
+		}
+		if v, err = artifacts.Read[T](data.ArtifactPath); err == nil {
+			return v, nil
+		}
 	}
 	ru.log.Warn("invalid artifact, asking for a correction", "stage", stage, "err", err)
 	fix := fmt.Sprintf("O artefato `%s` está ausente ou inválido:\n\n%s\n\nCorrija o arquivo no mesmo caminho, exatamente no formato pedido no passo anterior, e responda apenas: `DONE %s`",

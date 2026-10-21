@@ -16,6 +16,8 @@ Você **não corrige nada**, não aprova e não bloqueia. Não edita arquivos, n
 
 **Independência.** Rode os três eixos em paralelo. Cada um recebe só o intervalo da diff, o texto do PR e as issues ligadas; nenhum vê os achados dos outros. Para o eixo Spec, o PR e as issues fazem o papel do plano. Depois, passe todos os achados ao `delamain-review-verifier`.
 
+**Paralelo, nunca em segundo plano.** Dispare os três na mesma mensagem e **espere o resultado deles no mesmo turno**: se a ferramenta de subagente aceitar execução em segundo plano, desligue-a (no Claude Code, `run_in_background: false`). O passo termina quando o seu turno termina, então um subagente deixado em segundo plano é morto no meio do trabalho e a revisão inteira se perde. Três chamadas na mesma mensagem já rodam em paralelo — segundo plano não acrescenta nada aqui.
+
 **Adesão.** Preencha `adherence` a partir do eixo Spec: `matches` quando entrega o prometido, `partial` quando falta algo, `diverges` quando faz outra coisa.
 
 **Profundidade conforme o risco.** Se a diff toca autenticação, autorização, criptografia, segredos, migrations, contratos públicos (API, CLI, schema), billing ou dados pessoais, o eixo Segurança é sempre completo, nunca amostrado.
