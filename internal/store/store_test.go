@@ -526,3 +526,34 @@ func TestRunsWithMRShouldListOnlyIssueRunsOfTheRepoWithAnMRURL(t *testing.T) {
 		}
 	}
 }
+
+func TestRequestStopShouldBeVisibleToStopRequested(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	a, err := s.CreateRun(ctx, "repo", "#1", "a", "omp", 3, 0, KindIssue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := s.CreateRun(ctx, "repo", "#2", "b", "omp", 3, 0, KindIssue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stop, err := s.StopRequested(ctx, a.ID); err != nil || stop {
+		t.Fatalf("a new run has no stop request: %v %v", stop, err)
+	}
+	if err := s.RequestStop(ctx, a.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RequestStop(ctx, a.ID); err != nil {
+		t.Fatalf("asking twice is not an error: %v", err)
+	}
+	if stop, err := s.StopRequested(ctx, a.ID); err != nil || !stop {
+		t.Fatalf("the stop request must be visible to the run's owner: %v %v", stop, err)
+	}
+	if stop, err := s.StopRequested(ctx, b.ID); err != nil || stop {
+		t.Fatalf("only the requested run is asked to stop: %v %v", stop, err)
+	}
+	if err := s.RequestStop(ctx, 999); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("an unknown run is reported as not found, got %v", err)
+	}
+}

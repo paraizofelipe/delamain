@@ -196,6 +196,7 @@ var migrations = []string{
 	);`,
 	`ALTER TABLE review_cursors ADD COLUMN halted_head_sha TEXT NOT NULL DEFAULT '';
 	ALTER TABLE review_cursors ADD COLUMN halts INTEGER NOT NULL DEFAULT 0;`,
+	`ALTER TABLE runs ADD COLUMN stop_requested_at TIMESTAMP;`,
 }
 
 func (s *Store) migrate(ctx context.Context) error {
@@ -448,4 +449,24 @@ func (s *Store) OpenedMR(ctx context.Context, url string) (bool, error) {
 		return false, fmt.Errorf("runs that opened %s: %w", url, err)
 	}
 	return n > 0, nil
+}
+
+// RequestStop asks the process driving run id to stop it. Asking again keeps the first request.
+func (s *Store) RequestStop(ctx context.Context, id int64) error {
+	if _, err := s.db.ExecContext(ctx, `UPDATE runs SET stop_requested_at=? WHERE id=? AND stop_requested_at IS NULL`, s.now(), id); err != nil {
+		return err
+	}
+	_, err := s.StopRequested(ctx, id)
+	return err
+}
+
+// StopRequested reports whether someone asked run id to stop.
+// It returns ErrNotFound for an unknown run.
+func (s *Store) StopRequested(ctx context.Context, id int64) (bool, error) {
+	var stop bool
+	err := s.db.QueryRowContext(ctx, `SELECT stop_requested_at IS NOT NULL FROM runs WHERE id = ?`, id).Scan(&stop)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, ErrNotFound
+	}
+	return stop, err
 }

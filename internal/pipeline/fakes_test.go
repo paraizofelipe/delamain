@@ -32,6 +32,8 @@ type reply struct {
 	unwritten int64
 	hang      bool // the turn only ends when the agent is aborted
 	lost      bool // the final message never reaches the client (only the session file has it)
+	// release holds the turn until it is closed; the turn then ends normally.
+	release <-chan struct{}
 }
 
 // behavior decides the reply for a role's n-th prompt (1-based).
@@ -148,6 +150,15 @@ func (a *fakeAgent) Prompt(ctx context.Context, text string, timeout time.Durati
 		select {
 		case <-a.f.interrupt:
 			return agent.Turn{StopReason: "aborted", Model: "fake"}, nil
+		case <-time.After(timeout):
+			return agent.Turn{}, agent.ErrTimeout
+		case <-ctx.Done():
+			return agent.Turn{}, ctx.Err()
+		}
+	}
+	if rep.release != nil {
+		select {
+		case <-rep.release:
 		case <-time.After(timeout):
 			return agent.Turn{}, agent.ErrTimeout
 		case <-ctx.Done():

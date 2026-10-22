@@ -140,6 +140,8 @@ type Runner struct {
 	// SubagentWait is how long a step waits before giving its subagents another turn to
 	// report back (default 30s); see stepArtifact.
 	SubagentWait time.Duration
+	// StopPoll paces how often a run checks whether `delamain stop` asked it to stop (default 2s).
+	StopPoll time.Duration
 }
 
 // halt is a guardrail stop: the run is recorded with this reason instead of failing the process.
@@ -218,6 +220,9 @@ func (r *Runner) Run(ctx context.Context, t Task) (Result, error) {
 		return res, err
 	}
 	res.RunID = rec.ID
+	ctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	defer r.watchStop(ctx, rec.ID, cancel)()
 	ru := &run{
 		rec:      rec,
 		task:     prompts.Issue{Ref: t.Ref, Title: t.Title, Body: t.Body, URL: t.URL, Kind: t.Kind},
@@ -241,6 +246,9 @@ func (r *Runner) Run(ctx context.Context, t Task) (Result, error) {
 
 	var h halt
 	switch {
+	case errors.Is(context.Cause(ctx), ErrStopped): // a stopped step fails as a halt or a cancel
+		ru.log.Info("run stopped by request", "run", rec.ID)
+		res.Outcome, res.Reason = OutcomeHalted, ErrStopped.Error()
 	case err == nil:
 	case errors.As(err, &h):
 		res.Outcome, res.Reason = OutcomeHalted, h.reason
