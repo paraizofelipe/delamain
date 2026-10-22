@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"text/tabwriter"
 	"time"
 	"unicode/utf8"
 
@@ -823,4 +824,178 @@ func TestStatusShouldColorAgentAlive(t *testing.T) {
 	out := forcedStatus(t, sampleStatus())
 	wantCodes(t, out, "implementer", "yes", "32")
 	wantCodes(t, out, "planner", "no", "2")
+}
+
+// sampleRuns are runs of different widths, with every look a row of the ls table has.
+func sampleRuns() []RunView {
+	now := time.Now()
+	running := []AgentView{{Role: "implementer", Process: Process{PID: 42, Alive: true}}}
+	return []RunView{
+		{ID: 12, Kind: "issue", Repo: "/r/app", Issue: "#45", State: "implement", Iteration: 2, iterations: 5, Complexity: "low",
+			Branch: "feat/45-x", Agents: running, Owner: Process{PID: 42, Alive: true}, UpdatedAt: now.Add(-3 * time.Hour)},
+		{ID: 9, Kind: "issue", Repo: "/r/app", Issue: "#46", State: "plan", Owner: Process{PID: deadPID}, UpdatedAt: now.Add(-5 * time.Minute)},
+		{ID: 7, Kind: "review", Repo: "/r/backend", Issue: "pr:3", State: "recorded", Iteration: 1, iterations: 3, Complexity: "medium",
+			Owner: Process{PID: 41}, terminal: true, UpdatedAt: now.Add(-50 * time.Hour)},
+		{ID: 3, Kind: "issue", Repo: "/r/backend", Issue: "#2", State: "halted", Iteration: 1, iterations: 3, terminal: true, UpdatedAt: now.Add(-30 * time.Second)},
+	}
+}
+
+// sampleListRows are sampleRuns as the ls table showed them before colors: written by hand.
+var sampleListRows = []string{
+	"RUN\tKIND\tREPO\tISSUE\tSTATE\tITER\tCOMPLEXITY\tBRANCH\tAGENTS\tOWNER\tUPDATED",
+	"12\tissue\tapp\t#45\timplement\t2/5\tlow\tfeat/45-x\timplementer\tpid 42 (alive)\t3h",
+	"9\tissue\tapp\t#46\tplan\t-\twait\t-\t-\tpid 999999 (dead: run delamain recover)\t5m",
+	"7\treview\tbackend\tpr:3\trecorded\t1/3\tmedium\t-\t-\tpid 41 (finished)\t2d",
+	"3\tissue\tbackend\t#2\thalted\t1/3\t-\t-\t-\t-\t30s",
+}
+
+// forcedList renders views as a terminal that supports ANSI colors shows `ls`.
+func forcedList(t *testing.T, views []RunView) string {
+	t.Helper()
+	var out bytes.Buffer
+	r := lipgloss.NewRenderer(&out)
+	r.SetColorProfile(termenv.ANSI)
+	if err := renderList(&out, views, false, newStyles(r)); err != nil {
+		t.Fatal(err)
+	}
+	return out.String()
+}
+
+func TestListShouldBoldTheHeader(t *testing.T) {
+	out := forcedList(t, sampleRuns())
+	for _, h := range []string{"RUN", "KIND", "REPO", "ISSUE", "STATE", "ITER", "COMPLEXITY", "BRANCH", "AGENTS", "OWNER", "UPDATED"} {
+		wantCodes(t, out, "RUN", h, "1")
+	}
+}
+
+func TestListShouldKeepColumnsAlignedWithColor(t *testing.T) {
+	colorEnv(t, "", "")
+	var want bytes.Buffer
+	tw := tabwriter.NewWriter(&want, 0, 0, 2, ' ', 0)
+	for _, row := range sampleListRows {
+		fmt.Fprintln(tw, row)
+	}
+	if err := tw.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	var plainOut bytes.Buffer
+	if err := listTable(&plainOut, sampleRuns(), false); err != nil {
+		t.Fatal(err)
+	}
+	if plainOut.String() != want.String() {
+		t.Errorf("a writer that is not a terminal gets the tabwriter table, byte for byte:\n%q\nwant\n%q", plainOut.String(), want.String())
+	}
+
+	out := forcedList(t, sampleRuns())
+	if !strings.Contains(out, "\x1b[") {
+		t.Fatalf("a forced ANSI renderer colors the table:\n%q", out)
+	}
+	if got := stripANSI(out); got != plainOut.String() {
+		t.Errorf("without the escapes the colored table is the plain one:\n%s\nwant\n%s", got, plainOut.String())
+	}
+}
+
+func TestListShouldNotEmitANSIWhenNotATerminal(t *testing.T) {
+	f := newFixture(t)
+	f.run(t, "#1", "fix/1-a", store.StateImplement)
+	f.run(t, "#2", "fix/2-b", store.StateRecorded)
+	colorEnv(t, "", "")
+	for _, args := range [][]string{{"ls"}, {"ls", "--all"}} {
+		if out := f.exec(t, args...); strings.Contains(out, "\x1b") || !strings.HasPrefix(out, "RUN") {
+			t.Errorf("%v: a writer that is not a terminal gets the plain table:\n%q", args, out)
+		}
+	}
+}
+
+func TestListShouldNotEmitANSIWhenNoColorIsSet(t *testing.T) {
+	f := newFixture(t)
+	f.run(t, "#1", "fix/1-a", store.StateImplement)
+	f.run(t, "#2", "fix/2-b", store.StateRecorded)
+	colorEnv(t, "1", "1") // NO_COLOR wins over CLICOLOR_FORCE
+	for _, args := range [][]string{{"ls"}, {"ls", "--all"}} {
+		if out := f.exec(t, args...); strings.Contains(out, "\x1b") || !strings.HasPrefix(out, "RUN") {
+			t.Errorf("%v: NO_COLOR prints the plain table:\n%q", args, out)
+		}
+	}
+}
+
+func TestListShouldNotEmitANSIInYAMLOrJSONWhenColorIsForced(t *testing.T) {
+	f := newFixture(t)
+	f.run(t, "#1", "fix/1-a", store.StateImplement)
+	colorEnv(t, "1", "")
+	var runs []RunView
+	jsonOut := f.exec(t, "ls", "-o", "json")
+	if err := json.Unmarshal([]byte(jsonOut), &runs); err != nil || len(runs) != 1 || strings.Contains(jsonOut, "\x1b") {
+		t.Errorf("json stays plain: %v\n%q", err, jsonOut)
+	}
+	yamlOut := f.exec(t, "ls", "-o", "yaml")
+	if err := yaml.Unmarshal([]byte(yamlOut), &runs); err != nil || len(runs) != 1 || strings.Contains(yamlOut, "\x1b") {
+		t.Errorf("yaml stays plain: %v\n%q", err, yamlOut)
+	}
+}
+
+func TestListShouldColorStateComplexityAndOwner(t *testing.T) {
+	// A row with no "-" anywhere, not even in the branch, so each case below finds the cell it changes.
+	base := func() RunView {
+		return RunView{ID: 5, Kind: "issue", Repo: "/r/app", Issue: "#5", State: "implement", Iteration: 1, iterations: 3, Complexity: "low",
+			Branch: "feature", Agents: []AgentView{{Role: "implementer", Process: Process{PID: 42, Alive: true}}},
+			Owner: Process{PID: 42, Alive: true}, UpdatedAt: time.Now().Add(-3 * time.Hour)}
+	}
+	row := func(change func(*RunView)) string {
+		v := base()
+		change(&v)
+		return forcedList(t, []RunView{v})
+	}
+
+	out := row(func(*RunView) {})
+	if line := strings.Split(stripANSI(out), "\n")[1]; strings.Contains(line, "-") {
+		t.Fatalf("the base row must have no \"-\", or the \"-\" cases below find the wrong cell: %q", line)
+	}
+	wantCodes(t, out, "5 ", "implement", "36")
+	wantCodes(t, out, "5 ", "low", "32")
+	wantCodes(t, out, "5 ", "#5", "36")
+	wantCodes(t, out, "5 ", "implementer", "36")
+	wantCodes(t, out, "5 ", "pid 42 (alive)", "32")
+	wantCodes(t, out, "5 ", "3h", "2")
+	for _, text := range []string{"5", "issue", "app", "1/3", "feature"} {
+		wantCodes(t, out, "5 ", text)
+	}
+
+	for state, codes := range map[string][]string{"recorded": {"32"}, "halted": {"31"}, "plan": {"36"}} {
+		wantCodes(t, row(func(v *RunView) { v.State = state }), "5 ", state, codes...)
+	}
+	for level, codes := range map[string][]string{"medium": {"33"}, "high": {"31"}} {
+		wantCodes(t, row(func(v *RunView) { v.Complexity = level }), "5 ", level, codes...)
+	}
+	wantCodes(t, row(func(v *RunView) { v.Complexity = "" }), "5 ", "wait", "2")
+	wantCodes(t, row(func(v *RunView) { v.Complexity, v.terminal = "", true }), "5 ", "-")
+
+	wantCodes(t, row(func(v *RunView) { v.Owner.Alive = false }), "5 ", "pid 42 (dead: run delamain recover)", "31")
+	wantCodes(t, row(func(v *RunView) { v.terminal = true }), "5 ", "pid 42 (finished)", "2")
+	wantCodes(t, row(func(v *RunView) { v.Owner = Process{} }), "5 ", "-")
+	wantCodes(t, row(func(v *RunView) { v.Agents = nil }), "5 ", "-")
+}
+
+// lsAge is the UPDATED column, which may tick between two invocations of ls.
+var lsAge = regexp.MustCompile(`(?m)\d+[smhd]$`)
+
+func TestListShouldColorWhenCLIColorForceIsSet(t *testing.T) {
+	f := newFixture(t)
+	f.run(t, "#1", "fix/1-a", store.StateImplement)
+	f.run(t, "#2", "fix/2-b", store.StateRecorded)
+	for _, args := range [][]string{{"ls"}, {"ls", "--all"}} {
+		colorEnv(t, "", "")
+		plain := f.exec(t, args...)
+
+		colorEnv(t, "1", "")
+		out := f.exec(t, args...)
+		wantCodes(t, out, "RUN", "RUN", "1")
+		wantCodes(t, out, "RUN", "STATE", "1")
+		wantCodes(t, out, "1 ", "implement", "36")
+		if got := lsAge.ReplaceAllString(stripANSI(out), "age"); got != lsAge.ReplaceAllString(plain, "age") {
+			t.Errorf("%v: colors add escapes, not text:\n%s\nwant\n%s", args, got, plain)
+		}
+	}
+	all := f.exec(t, "ls", "--all")
+	wantCodes(t, all, "2 ", "recorded", "32")
 }
