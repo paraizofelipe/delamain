@@ -358,11 +358,7 @@ func renderStatus(w io.Writer, s RunStatus, st styles) error {
 		rows = append(rows, field("HERDR", plain(v.Workspace)))
 	}
 	if v.Result != "" {
-		outcome, reason, found := strings.Cut(v.Result, ":")
-		if found {
-			reason = ":" + reason
-		}
-		rows = append(rows, field("RESULT", join(styled(st.resultStyle(outcome), outcome), plain(reason))))
+		rows = append(rows, field("RESULT", resultCell(st, v.Result)))
 	}
 	rows = append(rows, field("LOGS", join(plain(filepath.Join(v.RunDir, "logs")+" "), styled(st.muted, fmt.Sprintf("(delamain logs %d -f)", v.ID)))))
 	if err := writeTable(w, rows); err != nil {
@@ -414,6 +410,15 @@ func renderStatus(w io.Writer, s RunStatus, st styles) error {
 			plain(end.Sub(a.StartedAt).Round(time.Second).String()), plain(budget.Format(float64(a.Tokens), config.BudgetTokens)), plain(fmt.Sprintf("%.2f", a.CostUSD))})
 	}
 	return writeTable(w, rows)
+}
+
+// resultCell colors the outcome of a recorded result, the part before ": <reason>".
+func resultCell(st styles, result string) cell {
+	outcome, reason, found := strings.Cut(result, ":")
+	if found {
+		reason = ":" + reason
+	}
+	return join(styled(st.resultStyle(outcome), outcome), plain(reason))
 }
 
 func (v RunView) iter() string {
