@@ -24,39 +24,71 @@ func (r *Runner) Recover(ctx context.Context, forgeFor func(repo string) (forge.
 	if err != nil {
 		return nil, err
 	}
-	alive := r.Alive
-	if alive == nil {
-		alive = ProcessAlive
-	}
 	var out []Result
 	for _, rec := range runs {
-		if rec.OwnerPID == os.Getpid() || alive(rec.OwnerPID) {
-			continue // still being driven by a live process
+		res, err := r.recoverOrphan(ctx, rec, forgeFor)
+		if errors.Is(err, errNotOrphaned) {
+			continue // still being driven by a live process, or another one is recovering it
 		}
-		claimed, err := r.Store.ClaimRun(ctx, rec.ID, rec.OwnerPID, os.Getpid())
 		if err != nil {
 			return out, err
-		}
-		if !claimed {
-			continue // another process is recovering it
-		}
-		rr := *r
-		rr.Forge = nil
-		if forgeFor != nil && rec.Kind == store.KindIssue {
-			fg, err := forgeFor(rec.Repo)
-			if err != nil {
-				r.Log.Warn("recover: no forge, delivering locally", "run", rec.ID, "err", err)
-			} else {
-				rr.Forge = fg
-			}
-		}
-		res, err := rr.recoverRun(ctx, rec)
-		if err != nil {
-			return out, fmt.Errorf("recover run %d: %w", rec.ID, err)
 		}
 		out = append(out, res)
 	}
 	return out, nil
+}
+
+// RecoverRun is Recover for run id alone. It fails for a run that does not exist, already
+// finished or is still driven by a live process.
+func (r *Runner) RecoverRun(ctx context.Context, id int64, forgeFor func(repo string) (forge.Forge, error)) (Result, error) {
+	rec, err := r.Store.GetRun(ctx, id)
+	if err != nil {
+		return Result{}, fmt.Errorf("run %d: %w", id, err)
+	}
+	if rec.State.Terminal() {
+		return Result{}, fmt.Errorf("run %d already finished (%s)", id, rec.State)
+	}
+	res, err := r.recoverOrphan(ctx, rec, forgeFor)
+	if errors.Is(err, errNotOrphaned) {
+		return res, fmt.Errorf("run %d: %w", id, err)
+	}
+	return res, err
+}
+
+// errNotOrphaned means a run's owner is alive or another process claimed it first.
+var errNotOrphaned = errors.New("the run is not orphaned: its owner is alive or another process is recovering it")
+
+// recoverOrphan claims a run whose owner died and finalizes it.
+func (r *Runner) recoverOrphan(ctx context.Context, rec store.Run, forgeFor func(repo string) (forge.Forge, error)) (Result, error) {
+	alive := r.Alive
+	if alive == nil {
+		alive = ProcessAlive
+	}
+	if rec.OwnerPID == os.Getpid() || alive(rec.OwnerPID) {
+		return Result{}, errNotOrphaned
+	}
+	claimed, err := r.Store.ClaimRun(ctx, rec.ID, rec.OwnerPID, os.Getpid())
+	if err != nil {
+		return Result{}, err
+	}
+	if !claimed {
+		return Result{}, errNotOrphaned
+	}
+	rr := *r
+	rr.Forge = nil
+	if forgeFor != nil && rec.Kind == store.KindIssue {
+		fg, err := forgeFor(rec.Repo)
+		if err != nil {
+			r.Log.Warn("recover: no forge, delivering locally", "run", rec.ID, "err", err)
+		} else {
+			rr.Forge = fg
+		}
+	}
+	res, err := rr.recoverRun(ctx, rec)
+	if err != nil {
+		return res, fmt.Errorf("recover run %d: %w", rec.ID, err)
+	}
+	return res, nil
 }
 
 func (r *Runner) recoverRun(ctx context.Context, rec store.Run) (Result, error) {
