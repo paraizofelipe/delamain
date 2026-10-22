@@ -935,10 +935,10 @@ func TestListShouldNotEmitANSIInYAMLOrJSONWhenColorIsForced(t *testing.T) {
 }
 
 func TestListShouldColorStateComplexityAndOwner(t *testing.T) {
-	// A row with no "-" anywhere, so each case below can find the cell it changes.
+	// A row with no "-" anywhere, not even in the branch, so each case below finds the cell it changes.
 	base := func() RunView {
 		return RunView{ID: 5, Kind: "issue", Repo: "/r/app", Issue: "#5", State: "implement", Iteration: 1, iterations: 3, Complexity: "low",
-			Branch: "feat/5-x", Agents: []AgentView{{Role: "implementer", Process: Process{PID: 42, Alive: true}}},
+			Branch: "feature", Agents: []AgentView{{Role: "implementer", Process: Process{PID: 42, Alive: true}}},
 			Owner: Process{PID: 42, Alive: true}, UpdatedAt: time.Now().Add(-3 * time.Hour)}
 	}
 	row := func(change func(*RunView)) string {
@@ -948,13 +948,16 @@ func TestListShouldColorStateComplexityAndOwner(t *testing.T) {
 	}
 
 	out := row(func(*RunView) {})
+	if line := strings.Split(stripANSI(out), "\n")[1]; strings.Contains(line, "-") {
+		t.Fatalf("the base row must have no \"-\", or the \"-\" cases below find the wrong cell: %q", line)
+	}
 	wantCodes(t, out, "5 ", "implement", "36")
 	wantCodes(t, out, "5 ", "low", "32")
 	wantCodes(t, out, "5 ", "#5", "36")
 	wantCodes(t, out, "5 ", "implementer", "36")
 	wantCodes(t, out, "5 ", "pid 42 (alive)", "32")
 	wantCodes(t, out, "5 ", "3h", "2")
-	for _, text := range []string{"5", "issue", "app", "1/3", "feat/5-x"} {
+	for _, text := range []string{"5", "issue", "app", "1/3", "feature"} {
 		wantCodes(t, out, "5 ", text)
 	}
 
