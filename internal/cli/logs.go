@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -196,7 +197,82 @@ func colorLine(st styles, source, text string) string {
 	if !stampRe.MatchString(text) {
 		return text
 	}
-	return paint(st.muted, text[:8]) + text[8:]
+	stamp, rest := paint(st.muted, text[:8])+" ", text[9:]
+	switch source {
+	case "delamain":
+		return stamp + colorOrchestrator(st, rest)
+	}
+	return stamp + rest
+}
+
+// attrRe finds the " key=" that starts each attribute of an orchestrator line.
+var attrRe = regexp.MustCompile(` [A-Za-z_][A-Za-z0-9_.]*=`)
+
+// colorOrchestrator styles "[LEVEL ]msg k=v k=v"; what does not parse is left as is.
+func colorOrchestrator(st styles, rest string) string {
+	for level, sty := range map[string]lipgloss.Style{"WARN": st.warn, "ERROR": st.bad} {
+		if after, ok := strings.CutPrefix(rest, level+" "); ok {
+			return paint(sty.Bold(true), level) + " " + paint(sty, after)
+		}
+	}
+	loc := attrRe.FindStringIndex(rest)
+	if loc == nil {
+		return paint(st.none.Bold(true), rest)
+	}
+	msg, attrs := rest[:loc[0]], rest[loc[0]:]
+	var b strings.Builder
+	b.WriteString(paint(st.none.Bold(true), msg))
+	for attrs != "" {
+		m := attrRe.FindStringIndex(attrs)
+		if m == nil || m[0] != 0 {
+			break
+		}
+		value, tail, ok := attrValue(attrs[m[1]:])
+		if !ok {
+			break
+		}
+		key := attrs[1:m[1]]
+		b.WriteString(" " + paint(st.muted, key) + paint(st.valueStyle(msg, key, value), value))
+		attrs = tail
+	}
+	return b.String() + attrs
+}
+
+// attrValue splits the value that starts s, quoted as the orchestrator log quotes it, from the
+// attributes after it.
+func attrValue(s string) (value, tail string, ok bool) {
+	if strings.HasPrefix(s, `"`) {
+		q, err := strconv.QuotedPrefix(s)
+		if err != nil || (len(q) < len(s) && s[len(q)] != ' ') {
+			return "", "", false
+		}
+		return q, s[len(q):], true
+	}
+	if i := strings.IndexByte(s, ' '); i >= 0 {
+		return s[:i], s[i:], true
+	}
+	return s, "", true
+}
+
+// valueStyle colors the values that tell how a run is going; the others stay plain.
+func (st styles) valueStyle(msg, key, value string) lipgloss.Style {
+	switch key {
+	case "state=":
+		if msg == "agent stopped" {
+			return st.agentStateStyle(value)
+		}
+		return st.runStateStyle(value)
+	case "exit=":
+		if code, err := strconv.Atoi(value); err == nil {
+			if code == 0 {
+				return st.ok
+			}
+			return st.bad
+		}
+	case "url=":
+		return st.info.Underline(true)
+	}
+	return st.none
 }
 
 // paint renders s only when lipgloss keeps its bytes: it rewrites tabs and line breaks, and

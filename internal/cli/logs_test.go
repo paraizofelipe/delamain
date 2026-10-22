@@ -412,3 +412,44 @@ func TestColorLineShouldReturnTheTextUnchangedWithoutColor(t *testing.T) {
 		}
 	}
 }
+
+func TestColorLineShouldColorTheOrchestrator(t *testing.T) {
+	st := lineStyles(termenv.ANSI)
+	line := func(text string) string { return colorLine(st, "delamain", text) }
+
+	out := line("05:31:47 state run=9 state=recorded")
+	wantCodes(t, out, "", "05:31:47", "2")
+	wantCodes(t, out, "", "state", "1") // the message
+	wantCodes(t, out, "", "run=", "2")
+	wantCodes(t, out, "", "9")
+	wantCodes(t, out, "", "state=", "2")
+	wantCodes(t, out, "", "recorded", "32")
+	wantCodes(t, line("05:31:47 state run=7 state=halted"), "", "halted", "31")
+	wantCodes(t, line("05:31:47 state run=7 state=done"), "", "done", "36")                       // a run state
+	wantCodes(t, line("05:31:38 agent stopped run=7 role=reviewer state=done"), "", "done", "32") // an agent state
+	wantCodes(t, line("05:31:38 agent stopped run=7 role=reviewer state=failed"), "", "failed", "31")
+
+	wantCodes(t, line("22:22:22 gate run=7 name=format exit=0"), "", "0", "32")
+	wantCodes(t, line("22:22:22 gate run=7 name=test exit=1"), "", "1", "31")
+	wantCodes(t, line("22:22:22 gate run=7 name=test exit=n/a"), "", "n/a") // not a code
+
+	out = line("05:31:44 delivered run=7 url=https://github.com/o/r/pull/32 draft=false")
+	wantCodes(t, out, "", "delivered", "1")
+	wantCodes(t, out, "", "https://github.com/o/r/pull/32", "36", "4")
+	wantCodes(t, out, "", "draft=", "2")
+	wantCodes(t, out, "", "false")
+
+	out = line(`05:27:58 WARN verify failed run=7 err="a b=c"`)
+	wantCodes(t, out, "", "WARN", "1", "33")
+	wantCodes(t, out, "", `verify failed run=7 err="a b=c"`, "33")
+	out = line(`05:27:58 ERROR run failed run=7 err="boom"`)
+	wantCodes(t, out, "", "ERROR", "1", "31")
+	wantCodes(t, out, "", `run failed run=7 err="boom"`, "31")
+
+	out = line(`05:27:58 retry run=7 err="a b=c" n=2`) // a quoted value is not split at its spaces
+	wantCodes(t, out, "", "retry", "1")
+	wantCodes(t, out, "", `"a b=c"`)
+	wantCodes(t, out, "", "n=", "2")
+	wantCodes(t, line("05:27:58 message only"), "", "message only", "1")
+	wantCodes(t, line("state run=7 state=halted"), "", "halted") // no stamp: not an orchestrator line
+}
