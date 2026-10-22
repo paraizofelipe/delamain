@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -22,7 +23,8 @@ func newRmCmd(load func() (config.Config, error)) *cobra.Command {
 		Long: `Deletes each finished run: its worktree, if one is left, its run directory (logs, sessions,
 plan and report) and its record in the state database. A run that has not finished is refused
 and nothing of it is deleted: stop it first with delamain stop. A worktree with uncommitted
-changes, untracked files included, is refused too unless --force discards them.
+changes, untracked files included, is refused too unless --force discards them, and so is a
+worktree an unfinished run is working in, even with --force.
 
 Each run is handled on its own: one that cannot be deleted does not keep the others.
 
@@ -81,6 +83,9 @@ func removeRun(c *cobra.Command, cfg config.Config, st *store.Store, arg string,
 		return fmt.Errorf("run %d: its directory %s is outside %s", id, dir, runs)
 	}
 	if rec.Worktree != "" && exists(rec.Worktree) {
+		if err := worktreeInUse(ctx, st, rec.Worktree); err != nil {
+			return err
+		}
 		git := gitx.New()
 		if !force {
 			status, err := git.Status(ctx, rec.Worktree)
@@ -102,6 +107,21 @@ func removeRun(c *cobra.Command, cfg config.Config, st *store.Store, arg string,
 		return fmt.Errorf("run %d: %w", id, err)
 	}
 	fmt.Fprintf(c.OutOrStdout(), "removed run %d\n", id)
+	return nil
+}
+
+// worktreeInUse refuses a worktree an unfinished run works in: fixing a PR's review threads
+// reuses the worktree of the issue run that opened it.
+func worktreeInUse(ctx context.Context, st *store.Store, worktree string) error {
+	active, err := st.UnfinishedRuns(ctx)
+	if err != nil {
+		return err
+	}
+	for _, a := range active {
+		if samePath(worktree, a.Worktree) {
+			return fmt.Errorf("worktree %s is in use by run %d (%s)", worktree, a.ID, a.State)
+		}
+	}
 	return nil
 }
 

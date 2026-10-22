@@ -146,3 +146,32 @@ func TestRmShouldRemoveTheOthersWhenOneIDFails(t *testing.T) {
 		}
 	}
 }
+
+func TestRmShouldRefuseAWorktreeAnActiveRunIsUsing(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	rec := f.run(t, "#1", "fix/1-a", store.StateRecorded)
+	dir := f.runDir(t, rec)
+	// Fixing the review threads of #1's PR reuses the worktree #1 left at the PR branch.
+	fix, err := f.st.CreateRun(ctx, f.repo, "addr:42", "Fix #1", "omp", 3, 0, store.KindAddress)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fix.State, fix.Worktree = store.StateImplement, rec.Worktree
+	if err := f.st.UpdateRun(ctx, fix); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, args := range [][]string{{"rm", "1"}, {"rm", "1", "--force"}} {
+		out, err := execute(t, append([]string{"--config", f.cfgFile}, args...)...)
+		if want := "worktree " + rec.Worktree + " is in use by run 2 (implement)"; err == nil || !strings.Contains(out, want) {
+			t.Fatalf("%v: a worktree an active run is using is never removed, want %q: %v\n%s", args, want, err, out)
+		}
+		if !exists(rec.Worktree) || !exists(dir) {
+			t.Fatalf("%v: a refused run keeps its worktree and directory", args)
+		}
+		if _, err := f.st.GetRun(ctx, rec.ID); err != nil {
+			t.Fatalf("%v: a refused run keeps its record: %v", args, err)
+		}
+	}
+}
