@@ -12,8 +12,8 @@ import (
 	"github.com/paraizo/delamain/internal/store"
 )
 
-// styles are the looks of `status`; a renderer without colors (not a terminal, NO_COLOR) makes
-// every one of them print the text unchanged.
+// styles are the looks of `status`, `ls` and `logs`; a renderer without colors (not a terminal,
+// NO_COLOR) makes every one of them print the text unchanged.
 type styles struct {
 	label   lipgloss.Style // labels of the first block
 	heading lipgloss.Style // section titles: WORKTREES, AGENTS
@@ -24,18 +24,33 @@ type styles struct {
 	bad     lipgloss.Style
 	muted   lipgloss.Style
 	info    lipgloss.Style
+	magenta lipgloss.Style
+	blue    lipgloss.Style
 }
 
 func newStyles(r *lipgloss.Renderer) styles {
 	bold := r.NewStyle().Bold(true)
 	return styles{
 		label: bold, heading: bold, header: bold, none: r.NewStyle(),
-		ok:    r.NewStyle().Foreground(lipgloss.Color("2")),
-		warn:  r.NewStyle().Foreground(lipgloss.Color("3")),
-		bad:   r.NewStyle().Foreground(lipgloss.Color("1")),
-		muted: r.NewStyle().Faint(true),
-		info:  r.NewStyle().Foreground(lipgloss.Color("6")),
+		ok:      r.NewStyle().Foreground(lipgloss.Color("2")),
+		warn:    r.NewStyle().Foreground(lipgloss.Color("3")),
+		bad:     r.NewStyle().Foreground(lipgloss.Color("1")),
+		muted:   r.NewStyle().Faint(true),
+		info:    r.NewStyle().Foreground(lipgloss.Color("6")),
+		magenta: r.NewStyle().Foreground(lipgloss.Color("5")),
+		blue:    r.NewStyle().Foreground(lipgloss.Color("4")),
 	}
+}
+
+// sourceStyle is the bold color of a log source in `logs`; an unknown source is only bold.
+func (st styles) sourceStyle(source string) lipgloss.Style {
+	color, ok := map[string]lipgloss.Style{
+		"delamain": st.magenta, "checks": st.warn, "planner": st.blue, "implementer": st.info, "reviewer": st.ok,
+	}[source]
+	if !ok {
+		color = st.none
+	}
+	return color.Bold(true)
 }
 
 func (st styles) complexityStyle(level string) lipgloss.Style {

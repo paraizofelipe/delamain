@@ -13,7 +13,9 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 
 	"github.com/paraizo/delamain/internal/config"
@@ -89,7 +91,8 @@ func (fl *logFollower) run(ctx context.Context, w io.Writer, follow bool, tail i
 		_, err := fmt.Fprintf(w, "no logs in %s\n", fl.dir)
 		return err
 	}
-	if err := emit(w, lines); err != nil || !follow {
+	st := newStyles(lipgloss.NewRenderer(w))
+	if err := emit(w, st, lines); err != nil || !follow {
 		return err
 	}
 	t := time.NewTicker(followInterval)
@@ -105,7 +108,7 @@ func (fl *logFollower) run(ctx context.Context, w io.Writer, follow bool, tail i
 		if err != nil {
 			return err
 		}
-		if err := emit(w, lines); err != nil {
+		if err := emit(w, st, lines); err != nil {
 			return err
 		}
 		if end {
@@ -176,11 +179,31 @@ func (fl *logFollower) readFrom(path, source string) ([]byte, error) {
 	return data, err
 }
 
-func emit(w io.Writer, lines []logLine) error {
+// emit prints each line as "%-11s │ %s"; the padding counts the plain source name, so colors
+// never shift the separator.
+func emit(w io.Writer, st styles, lines []logLine) error {
 	for _, l := range lines {
-		if _, err := fmt.Fprintf(w, "%-11s │ %s\n", l.source, l.text); err != nil {
+		pad := strings.Repeat(" ", max(0, 11-utf8.RuneCountInString(l.source)))
+		if _, err := fmt.Fprintf(w, "%s%s %s %s\n", paint(st.sourceStyle(l.source), l.source), pad, paint(st.muted, "│"), colorLine(st, l.source, l.text)); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// colorLine styles one complete log line of source; without colors it returns text unchanged.
+func colorLine(st styles, source, text string) string {
+	if !stampRe.MatchString(text) {
+		return text
+	}
+	return paint(st.muted, text[:8]) + text[8:]
+}
+
+// paint renders s only when lipgloss keeps its bytes: it rewrites tabs and line breaks, and
+// ranges over the runes of an underlined text. Anything else is printed as is.
+func paint(sty lipgloss.Style, s string) string {
+	if s == "" || strings.ContainsAny(s, "\t\r\n") || !utf8.ValidString(s) {
+		return s
+	}
+	return sty.Render(s)
 }
