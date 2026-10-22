@@ -1204,3 +1204,22 @@ func TestRunAddressWithPushShouldLeaveAnUnsafeIssueWorktreeAlone(t *testing.T) {
 		})
 	}
 }
+
+func TestAddressShouldHaltWhenStopIsRequested(t *testing.T) {
+	var rh *reviewHarness
+	rh = newAddressHarness(t, func(string, int, string) reply {
+		requestStop(t, rh.harness, "addr:5") // `delamain stop` while the responder works
+		return reply{write: happyAnswers(), hang: true}
+	})
+	rh.r.StopPoll = 5 * time.Millisecond
+	rh.r.Cfg.Pipeline.PromptTimeout = 5 * time.Second
+	res := rh.address(t)
+
+	if res.Outcome != OutcomeHalted || res.Reason != "parada pelo usuário (delamain stop)" {
+		t.Fatalf("a stopped address run halts with the stop as its reason, got %s: %s", res.Outcome, res.Reason)
+	}
+	assertNothingAnswered(t, rh, res, "parada pelo usuário")
+	if rec := rh.finalRun(t, res.RunID); rec.State != store.StateRecorded || rec.Reason != "halted: parada pelo usuário (delamain stop)" {
+		t.Fatalf("store must record the stop: %+v", rec)
+	}
+}
