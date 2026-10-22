@@ -195,14 +195,65 @@ func emit(w io.Writer, st styles, lines []logLine) error {
 // colorLine styles one complete log line of source; without colors it returns text unchanged.
 func colorLine(st styles, source, text string) string {
 	if !stampRe.MatchString(text) {
+		if source == "checks" {
+			return colorGateOutput(st, text)
+		}
 		return text
 	}
 	stamp, rest := paint(st.muted, text[:8])+" ", text[9:]
 	switch source {
 	case "delamain":
 		return stamp + colorOrchestrator(st, rest)
+	case "checks":
+		return stamp + colorGate(st, rest)
 	}
 	return stamp + rest
+}
+
+var gateEndRe = regexp.MustCompile(`^■ [^:]+: código (-?\d+)$`)
+
+// colorGate styles the "▶ <gate>: <command>" and "■ <gate>: código <n>" lines of the gates.
+func colorGate(st styles, rest string) string {
+	if strings.HasPrefix(rest, "▶ ") {
+		if i := strings.IndexByte(rest, ':'); i >= 0 {
+			return paint(st.none.Bold(true), rest[:i+1]) + rest[i+1:]
+		}
+		return rest
+	}
+	if m := gateEndRe.FindStringSubmatch(rest); m != nil {
+		if code, err := strconv.Atoi(m[1]); err == nil && code == 0 {
+			return paint(st.ok, rest)
+		}
+		return paint(st.bad, rest)
+	}
+	return rest
+}
+
+// colorGateOutput styles the results in the raw output of a gate's command, as go test prints
+// them; any other line is left as is.
+func colorGateOutput(st styles, text string) string {
+	if startsWord(text, "ok") {
+		return paint(st.ok, "ok") + text[len("ok"):]
+	}
+	for _, prefix := range []string{"", "--- "} {
+		if after, ok := strings.CutPrefix(text, prefix); ok && startsWord(after, "FAIL") {
+			return prefix + paint(st.bad.Bold(true), "FAIL") + after[len("FAIL"):]
+		}
+	}
+	if strings.HasPrefix(text, "?") && strings.HasSuffix(text, "[no test files]") {
+		parts := strings.Split(text, "\t") // the tabs stay raw, as paint never renders them
+		for i, p := range parts {
+			parts[i] = paint(st.muted, p)
+		}
+		return strings.Join(parts, "\t")
+	}
+	return text
+}
+
+// startsWord reports whether s starts with the whole word w.
+func startsWord(s, w string) bool {
+	after, ok := strings.CutPrefix(s, w)
+	return ok && (after == "" || strings.ContainsRune(" \t:", rune(after[0])))
 }
 
 // attrRe finds the " key=" that starts each attribute of an orchestrator line.

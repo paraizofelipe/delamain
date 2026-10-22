@@ -453,3 +453,40 @@ func TestColorLineShouldColorTheOrchestrator(t *testing.T) {
 	wantCodes(t, line("05:27:58 message only"), "", "message only", "1")
 	wantCodes(t, line("state run=7 state=halted"), "", "halted") // no stamp: not an orchestrator line
 }
+
+func TestColorLineShouldColorTheGates(t *testing.T) {
+	st := lineStyles(termenv.ANSI)
+	line := func(text string) string { return colorLine(st, "checks", text) }
+
+	out := line("05:27:49 ▶ test: go test ./...")
+	wantCodes(t, out, "", "05:27:49", "2")
+	wantCodes(t, out, "", "▶ test:", "1")
+	wantCodes(t, out, "", "go test ./...")
+	wantCodes(t, line("05:27:49 ▶ no gate name"), "", "▶ no gate name")
+
+	wantCodes(t, line("05:27:58 ■ test: código 0"), "", "■ test: código 0", "32")
+	wantCodes(t, line("05:27:58 ■ test: código 2"), "", "■ test: código 2", "31")
+	wantCodes(t, line("05:27:58 ■ test: estourou o tempo"), "", "■ test: estourou o tempo")
+
+	out = line("ok  \tgithub.com/x/agent\t0.003s")
+	wantCodes(t, out, "", "ok", "32")
+	wantCodes(t, out, "", "github.com/x/agent")
+	wantCodes(t, line("okay, not a result"), "", "okay")
+
+	out = line("FAIL\tgithub.com/x/forge\t0.412s")
+	wantCodes(t, out, "", "FAIL", "1", "31")
+	wantCodes(t, out, "", "github.com/x/forge")
+	out = line("--- FAIL: TestX (0.00s)")
+	wantCodes(t, out, "", "---")
+	wantCodes(t, out, "", "FAIL", "1", "31")
+	wantCodes(t, out, "", ": TestX (0.00s)")
+	wantCodes(t, line("FAILED to build"), "", "FAILED")
+
+	out = line("?   \tgithub.com/x/cmd\t[no test files]")
+	for _, part := range []string{"?", "github.com/x/cmd", "[no test files]"} {
+		wantCodes(t, out, "", part, "2")
+	}
+	wantCodes(t, line("?   \tgithub.com/x/cmd\t0.1s"), "", "?")
+	wantCodes(t, line("ok  \tpkg"), "", "ok", "32")
+	wantCodes(t, colorLine(st, "implementer", "ok  \tpkg"), "", "ok") // only the gates output
+}
