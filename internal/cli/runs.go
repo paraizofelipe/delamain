@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"text/tabwriter"
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
@@ -264,6 +263,10 @@ func newListCmd(load func() (config.Config, error)) *cobra.Command {
 }
 
 func listTable(w io.Writer, views []RunView, all bool) error {
+	return renderList(w, views, all, newStyles(lipgloss.NewRenderer(w)))
+}
+
+func renderList(w io.Writer, views []RunView, all bool, st styles) error {
 	if len(views) == 0 {
 		msg := "no active run"
 		if all {
@@ -272,13 +275,15 @@ func listTable(w io.Writer, views []RunView, all bool) error {
 		_, err := fmt.Fprintln(w, msg)
 		return err
 	}
-	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "RUN\tKIND\tREPO\tISSUE\tSTATE\tITER\tCOMPLEXITY\tBRANCH\tAGENTS\tOWNER\tUPDATED")
-	for _, v := range views {
-		fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			v.ID, v.Kind, filepath.Base(v.Repo), v.Issue, v.State, v.iter(), v.complexity(), orDash(v.Branch), runningAgents(v.Agents), v.owner(), ago(v.UpdatedAt))
+	rows := [][]cell{{}}
+	for _, h := range []string{"RUN", "KIND", "REPO", "ISSUE", "STATE", "ITER", "COMPLEXITY", "BRANCH", "AGENTS", "OWNER", "UPDATED"} {
+		rows[0] = append(rows[0], styled(st.header, h))
 	}
-	return tw.Flush()
+	for _, v := range views {
+		rows = append(rows, []cell{plain(strconv.FormatInt(v.ID, 10)), plain(v.Kind), plain(filepath.Base(v.Repo)), plain(v.Issue), plain(v.State),
+			plain(v.iter()), plain(v.complexity()), plain(orDash(v.Branch)), plain(runningAgents(v.Agents)), plain(v.owner()), plain(ago(v.UpdatedAt))})
+	}
+	return writeTable(w, rows)
 }
 
 // complexity is the run's level, "wait" until the plan classifies it, or "-" for a run that
