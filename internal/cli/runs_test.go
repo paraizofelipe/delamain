@@ -933,3 +933,66 @@ func TestListShouldNotEmitANSIInYAMLOrJSONWhenColorIsForced(t *testing.T) {
 		t.Errorf("yaml stays plain: %v\n%q", err, yamlOut)
 	}
 }
+
+func TestListShouldColorStateComplexityAndOwner(t *testing.T) {
+	// A row with no "-" anywhere, so each case below can find the cell it changes.
+	base := func() RunView {
+		return RunView{ID: 5, Kind: "issue", Repo: "/r/app", Issue: "#5", State: "implement", Iteration: 1, iterations: 3, Complexity: "low",
+			Branch: "feat/5-x", Agents: []AgentView{{Role: "implementer", Process: Process{PID: 42, Alive: true}}},
+			Owner: Process{PID: 42, Alive: true}, UpdatedAt: time.Now().Add(-3 * time.Hour)}
+	}
+	row := func(change func(*RunView)) string {
+		v := base()
+		change(&v)
+		return forcedList(t, []RunView{v})
+	}
+
+	out := row(func(*RunView) {})
+	wantCodes(t, out, "5 ", "implement", "36")
+	wantCodes(t, out, "5 ", "low", "32")
+	wantCodes(t, out, "5 ", "#5", "36")
+	wantCodes(t, out, "5 ", "implementer", "36")
+	wantCodes(t, out, "5 ", "pid 42 (alive)", "32")
+	wantCodes(t, out, "5 ", "3h", "2")
+	for _, text := range []string{"5", "issue", "app", "1/3", "feat/5-x"} {
+		wantCodes(t, out, "5 ", text)
+	}
+
+	for state, codes := range map[string][]string{"recorded": {"32"}, "halted": {"31"}, "plan": {"36"}} {
+		wantCodes(t, row(func(v *RunView) { v.State = state }), "5 ", state, codes...)
+	}
+	for level, codes := range map[string][]string{"medium": {"33"}, "high": {"31"}} {
+		wantCodes(t, row(func(v *RunView) { v.Complexity = level }), "5 ", level, codes...)
+	}
+	wantCodes(t, row(func(v *RunView) { v.Complexity = "" }), "5 ", "wait", "2")
+	wantCodes(t, row(func(v *RunView) { v.Complexity, v.terminal = "", true }), "5 ", "-")
+
+	wantCodes(t, row(func(v *RunView) { v.Owner.Alive = false }), "5 ", "pid 42 (dead: run delamain recover)", "31")
+	wantCodes(t, row(func(v *RunView) { v.terminal = true }), "5 ", "pid 42 (finished)", "2")
+	wantCodes(t, row(func(v *RunView) { v.Owner = Process{} }), "5 ", "-")
+	wantCodes(t, row(func(v *RunView) { v.Agents = nil }), "5 ", "-")
+}
+
+// lsAge is the UPDATED column, which may tick between two invocations of ls.
+var lsAge = regexp.MustCompile(`(?m)\d+[smhd]$`)
+
+func TestListShouldColorWhenCLIColorForceIsSet(t *testing.T) {
+	f := newFixture(t)
+	f.run(t, "#1", "fix/1-a", store.StateImplement)
+	f.run(t, "#2", "fix/2-b", store.StateRecorded)
+	for _, args := range [][]string{{"ls"}, {"ls", "--all"}} {
+		colorEnv(t, "", "")
+		plain := f.exec(t, args...)
+
+		colorEnv(t, "1", "")
+		out := f.exec(t, args...)
+		wantCodes(t, out, "RUN", "RUN", "1")
+		wantCodes(t, out, "RUN", "STATE", "1")
+		wantCodes(t, out, "1 ", "implement", "36")
+		if got := lsAge.ReplaceAllString(stripANSI(out), "age"); got != lsAge.ReplaceAllString(plain, "age") {
+			t.Errorf("%v: colors add escapes, not text:\n%s\nwant\n%s", args, got, plain)
+		}
+	}
+	all := f.exec(t, "ls", "--all")
+	wantCodes(t, all, "2 ", "recorded", "32")
+}

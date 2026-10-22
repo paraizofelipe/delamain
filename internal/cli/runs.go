@@ -280,8 +280,13 @@ func renderList(w io.Writer, views []RunView, all bool, st styles) error {
 		rows[0] = append(rows[0], styled(st.header, h))
 	}
 	for _, v := range views {
-		rows = append(rows, []cell{plain(strconv.FormatInt(v.ID, 10)), plain(v.Kind), plain(filepath.Base(v.Repo)), plain(v.Issue), plain(v.State),
-			plain(v.iter()), plain(v.complexity()), plain(orDash(v.Branch)), plain(runningAgents(v.Agents)), plain(v.owner()), plain(ago(v.UpdatedAt))})
+		agents := plain(runningAgents(v.Agents))
+		if agents.text != "-" {
+			agents = styled(st.info, agents.text)
+		}
+		rows = append(rows, []cell{plain(strconv.FormatInt(v.ID, 10)), plain(v.Kind), plain(filepath.Base(v.Repo)), styled(st.info, v.Issue),
+			styled(st.runStateStyle(v.State), v.State), plain(v.iter()), styled(v.complexityStyle(st), v.complexity()), plain(orDash(v.Branch)),
+			agents, styled(v.ownerStyle(st), v.owner()), styled(st.muted, ago(v.UpdatedAt))})
 	}
 	return writeTable(w, rows)
 }
@@ -296,6 +301,14 @@ func (v RunView) complexity() string {
 		return "-"
 	}
 	return "wait"
+}
+
+// complexityStyle colors complexity(): the level, faint while waiting for the plan.
+func (v RunView) complexityStyle(st styles) lipgloss.Style {
+	if v.complexity() == "wait" {
+		return st.muted
+	}
+	return st.complexityStyle(v.Complexity)
 }
 
 func newStatusCmd(load func() (config.Config, error)) *cobra.Command {
@@ -440,6 +453,19 @@ func (v RunView) owner() string {
 		return fmt.Sprintf("pid %d (alive)", v.Owner.PID)
 	}
 	return fmt.Sprintf("pid %d (dead: run delamain recover)", v.Owner.PID)
+}
+
+// ownerStyle colors owner(): a dead owner of an active run is the one that needs attention.
+func (v RunView) ownerStyle(st styles) lipgloss.Style {
+	switch {
+	case v.Owner.PID == 0:
+		return st.none
+	case v.terminal:
+		return st.muted
+	case v.Owner.Alive:
+		return st.ok
+	}
+	return st.bad
 }
 
 func runningAgents(as []AgentView) string {
