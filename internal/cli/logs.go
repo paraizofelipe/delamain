@@ -206,9 +206,37 @@ func colorLine(st styles, source, text string) string {
 		return stamp + colorOrchestrator(st, rest)
 	case "checks":
 		return stamp + colorGate(st, rest)
+	case "planner", "implementer", "reviewer":
+		return stamp + colorAgent(st, rest)
 	}
 	return stamp + rest
 }
+
+// colorAgent styles an agent line by its marker, which "⑂ " precedes in a subagent's lines;
+// what the agent says (💬) and unknown markers are left as is.
+func colorAgent(st styles, rest string) string {
+	if marked(rest, "⑂ subagent") {
+		return paint(st.muted, rest)
+	}
+	body := strings.TrimPrefix(rest, "⑂ ")
+	sub := rest[:len(rest)-len(body)]
+	switch {
+	case marked(body, "▶ prompt"):
+		prompt, size := paint(st.none.Bold(true), "▶ prompt"), body[len("▶ prompt"):]
+		if strings.HasPrefix(size, " (") {
+			return sub + prompt + " " + paint(st.muted, size[1:])
+		}
+		return sub + prompt + size
+	case marked(body, "🔧"), marked(body, "■ fim do turno:"):
+		return paint(st.muted, rest)
+	case marked(body, "✗"):
+		return paint(st.bad, rest)
+	}
+	return rest
+}
+
+// marked reports whether s starts with marker followed by a space, or is only the marker.
+func marked(s, marker string) bool { return s == marker || strings.HasPrefix(s, marker+" ") }
 
 var gateEndRe = regexp.MustCompile(`^■ [^:]+: código (-?\d+)$`)
 

@@ -490,3 +490,38 @@ func TestColorLineShouldColorTheGates(t *testing.T) {
 	wantCodes(t, line("ok  \tpkg"), "", "ok", "32")
 	wantCodes(t, colorLine(st, "implementer", "ok  \tpkg"), "", "ok") // only the gates output
 }
+
+func TestColorLineShouldColorTheAgents(t *testing.T) {
+	st := lineStyles(termenv.ANSI)
+	for _, source := range []string{"planner", "implementer", "reviewer"} {
+		line := func(text string) string { return colorLine(st, source, text) }
+
+		out := line("05:04:29 ▶ prompt (900 caracteres)")
+		wantCodes(t, out, "", "05:04:29", "2")
+		wantCodes(t, out, "", "▶ prompt", "1")
+		wantCodes(t, out, "", "(900 caracteres)", "2")
+		out = line("05:04:29 ⑂ ▶ prompt (3 caracteres)")
+		wantCodes(t, out, "", "⑂ ")
+		wantCodes(t, out, "", "▶ prompt", "1")
+
+		wantCodes(t, line("05:04:30 🔧 Bash: go vet ./internal/forge/..."), "", "🔧 Bash: go vet ./internal/forge/...", "2")
+		wantCodes(t, line("05:05:06 ⑂ subagent explore: mapa"), "", "⑂ subagent explore: mapa", "2")
+		wantCodes(t, line("05:05:08 ⑂ 🔧 Read: a.go"), "", "⑂ 🔧 Read: a.go", "2")
+		wantCodes(t, line("05:04:48 ✗ Bash falhou (exit 1): x"), "", "✗ Bash falhou (exit 1): x", "31")
+		wantCodes(t, line("05:05:07 ⑂ ✗ falhou"), "", "⑂ ✗ falhou", "31")
+		wantCodes(t, line("05:05:10 ■ fim do turno: stop · in 1 out 2 cacheW 3"), "", "■ fim do turno: stop · in 1 out 2 cacheW 3", "2")
+
+		for _, text := range []string{"05:05:05 💬 Transição ✗ commitada", "05:05:09 ⑂ 💬 achei"} {
+			if out := line(text); strings.Count(out, "\x1b[") != 2 { // the time alone
+				t.Errorf("%s: what the agent says is not colored: %q", source, out)
+			}
+		}
+		wantCodes(t, line("05:05:11 ⚠ rate limit"), "", "⚠ rate limit")
+		wantCodes(t, line("05:05:11 ↻ retry 1/3: x"), "", "↻ retry 1/3: x")
+		wantCodes(t, line("05:05:11 ▶ prompts"), "", "▶ prompts")
+		if out := line("✗ continuation of a 💬"); out != "✗ continuation of a 💬" {
+			t.Errorf("%s: a line without a time is not colored: %q", source, out)
+		}
+	}
+	wantCodes(t, colorLine(st, "other", "05:04:48 ✗ falhou"), "", "✗ falhou") // only the agents
+}
