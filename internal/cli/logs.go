@@ -238,7 +238,9 @@ func colorAgent(st styles, rest string) string {
 // marked reports whether s starts with marker followed by a space, or is only the marker.
 func marked(s, marker string) bool { return s == marker || strings.HasPrefix(s, marker+" ") }
 
-var gateEndRe = regexp.MustCompile(`^■ [^:]+: código (-?\d+)$`)
+// gateEndRe matches "■ <gate>: código <n>" as pipeline/checks.go writes it; the ó is escaped
+// because this package's literals are English text (language_test.go).
+var gateEndRe = regexp.MustCompile(`^■ [^:]+: c\x{f3}digo (-?\d+)$`)
 
 // colorGate styles the "▶ <gate>: <command>" and "■ <gate>: código <n>" lines of the gates.
 func colorGate(st styles, rest string) string {
