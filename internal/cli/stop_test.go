@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/paraizo/delamain/internal/notify"
 	"github.com/paraizo/delamain/internal/store"
 )
 
@@ -104,5 +105,34 @@ func TestStopShouldWaitForTheRunAndPrintHowItEnded(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Fatalf("stop prints how the run ended, missing %q:\n%s", want, out)
 		}
+	}
+}
+
+func TestStopShouldRecoverARunWhoseOwnerDied(t *testing.T) {
+	n := &fakeNotifier{}
+	useFakeNotifier(t, n, nil)
+	f := newFixture(t)
+	ctx := context.Background()
+	rec := f.run(t, "#1", "fix/1-a", store.StateImplement)
+	other := f.run(t, "#2", "fix/2-b", store.StateImplement)
+	for _, id := range []int64{rec.ID, other.ID} {
+		if ok, err := f.st.ClaimRun(ctx, id, os.Getpid(), deadPID); err != nil || !ok {
+			t.Fatal("seed a run whose process died", err)
+		}
+	}
+
+	out := f.exec(t, "stop", "1", "--timeout", "1s") // an orphan is finalized, never waited for
+	if !strings.Contains(out, "run 1 recovered:") || !strings.Contains(out, "halted") || !strings.Contains(out, "pid 999999") {
+		t.Fatalf("stop prints the result as recover does:\n%s", out)
+	}
+	got, err := f.st.GetRun(ctx, rec.ID)
+	if err != nil || got.State != store.StateRecorded || !strings.HasPrefix(got.Reason, "halted: run interrompida") {
+		t.Fatalf("the orphan is finalized as recover would: %+v %v", got, err)
+	}
+	if got, _ := f.st.GetRun(ctx, other.ID); got.State != store.StateImplement {
+		t.Fatalf("only the given run is recovered: %+v", got)
+	}
+	if ev := n.events(); len(ev) != 1 || ev[0] != notify.EventRecover {
+		t.Fatalf("the recover toast is sent as recover sends it: %v", ev)
 	}
 }

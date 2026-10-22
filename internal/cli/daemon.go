@@ -170,6 +170,13 @@ func recoverRuns(c *cobra.Command, cfg config.Config, base *pipeline.Runner) err
 		fmt.Fprintln(c.OutOrStdout(), "no orphaned run to recover")
 		return nil
 	}
+	reportRecovered(c, base, results)
+	return nil
+}
+
+// reportRecovered prints each recovered run and sums them up in one recover toast.
+func reportRecovered(c *cobra.Command, base *pipeline.Runner, results []pipeline.Result) {
+	ctx := c.Context()
 	var recovered []notify.Recovered
 	for _, res := range results {
 		fmt.Fprintf(c.OutOrStdout(), "run %d recovered:\n", res.RunID)
@@ -184,7 +191,6 @@ func recoverRuns(c *cobra.Command, cfg config.Config, base *pipeline.Runner) err
 	if base.Notify != nil && len(recovered) > 0 {
 		_ = base.Notify.Notify(ctx, notify.FormatRecover(recovered))
 	}
-	return nil
 }
 
 // recoveredResult says how a recovered run ended, in the recover toast's words.
