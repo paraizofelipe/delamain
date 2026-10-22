@@ -199,6 +199,25 @@ var migrations = []string{
 	`ALTER TABLE review_cursors ADD COLUMN halted_head_sha TEXT NOT NULL DEFAULT '';
 	ALTER TABLE review_cursors ADD COLUMN halts INTEGER NOT NULL DEFAULT 0;`,
 	`ALTER TABLE runs ADD COLUMN stop_requested_at TIMESTAMP;`,
+	// The ledger outlives the runs it bills (DeleteRun keeps it for the daily budget), so it
+	// cannot reference them. SQLite drops a foreign key only by rebuilding the table.
+	`CREATE TABLE token_ledger_new (
+		id          INTEGER PRIMARY KEY AUTOINCREMENT,
+		run_id      INTEGER NOT NULL,
+		role        TEXT NOT NULL,
+		at          TIMESTAMP NOT NULL,
+		input       INTEGER NOT NULL,
+		output      INTEGER NOT NULL,
+		cache_read  INTEGER NOT NULL,
+		cache_write INTEGER NOT NULL,
+		cost_usd    REAL NOT NULL
+	);
+	INSERT INTO token_ledger_new (id, run_id, role, at, input, output, cache_read, cache_write, cost_usd)
+		SELECT id, run_id, role, at, input, output, cache_read, cache_write, cost_usd FROM token_ledger;
+	DROP TABLE token_ledger;
+	ALTER TABLE token_ledger_new RENAME TO token_ledger;
+	CREATE INDEX token_ledger_at ON token_ledger(at);
+	CREATE INDEX token_ledger_run ON token_ledger(run_id);`,
 }
 
 func (s *Store) migrate(ctx context.Context) error {
@@ -475,4 +494,27 @@ func (s *Store) StopRequested(ctx context.Context, id int64) (bool, error) {
 		return false, ErrNotFound
 	}
 	return stop, err
+}
+
+// DeleteRun removes run id with its agents and token snapshots, in one transaction. Its
+// token_ledger rows stay: the daily budget sums them, and deleting a run gives no budget back.
+func (s *Store) DeleteRun(ctx context.Context, id int64) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, q := range []string{`DELETE FROM agents WHERE run_id = ?`, `DELETE FROM token_snapshots WHERE run_id = ?`} {
+		if _, err := tx.ExecContext(ctx, q, id); err != nil {
+			return err
+		}
+	}
+	res, err := tx.ExecContext(ctx, `DELETE FROM runs WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return tx.Commit()
 }

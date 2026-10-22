@@ -566,3 +566,86 @@ func TestRequestStopShouldBeVisibleToStopRequested(t *testing.T) {
 		t.Fatalf("an unknown run is reported as not found, got %v", err)
 	}
 }
+
+func TestDeleteRunShouldRemoveTheRunAndItsAgentsButKeepTheLedger(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	day := time.Date(2026, 10, 22, 0, 0, 0, 0, time.UTC)
+	s.now = func() time.Time { return day.Add(time.Hour) }
+	gone, _ := s.CreateRun(ctx, "repo", "#1", "a", "omp", 3, 0, KindIssue)
+	kept, _ := s.CreateRun(ctx, "repo", "#2", "b", "omp", 3, 0, KindIssue)
+	for _, r := range []Run{gone, kept} {
+		if err := s.StartAgent(ctx, Agent{RunID: r.ID, Role: "planner", PID: 1}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.RecordUsage(ctx, gone.ID, "planner", "/a.jsonl", Usage{Input: 700}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RecordUsage(ctx, kept.ID, "planner", "/b.jsonl", Usage{Input: 300}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.DeleteRun(ctx, gone.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.GetRun(ctx, gone.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("the deleted run is gone, got %v", err)
+	}
+	if agents, err := s.Agents(ctx, gone.ID); err != nil || len(agents) != 0 {
+		t.Fatalf("its agents go with it: %+v %v", agents, err)
+	}
+	if agents, err := s.Agents(ctx, kept.ID); err != nil || len(agents) != 1 {
+		t.Fatalf("the other run keeps its agents: %+v %v", agents, err)
+	}
+	if u, err := s.UsageSince(ctx, day); err != nil || u.Input != 1000 {
+		t.Fatalf("deleting a run gives no budget back: want 1000, got %d (%v)", u.Input, err)
+	}
+}
+
+func TestDeleteRunShouldFailForAnUnknownRun(t *testing.T) {
+	s := openTest(t)
+	if err := s.DeleteRun(context.Background(), 999); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("want ErrNotFound, got %v", err)
+	}
+}
+
+func TestMigrationShouldKeepExistingLedgerRows(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "d.db")
+	ctx := context.Background()
+	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=foreign_keys(1)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 10, 22, 8, 0, 0, 0, time.UTC)
+	qs := append([]string{}, migrations[:7]...)
+	qs = append(qs, "PRAGMA user_version = 7",
+		`INSERT INTO runs (repo, issue_ref, state, created_at, updated_at) VALUES ('repo', '#3', 'recorded', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`)
+	for _, q := range qs {
+		if _, err := db.ExecContext(ctx, q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, in := range []int{400, 600} {
+		if _, err := db.ExecContext(ctx,
+			`INSERT INTO token_ledger (run_id, role, at, input, output, cache_read, cache_write, cost_usd) VALUES (1, 'implementer', ?, ?, 0, 0, 0, 0.5)`, at, in); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db.Close()
+
+	s, err := Open(ctx, path)
+	if err != nil {
+		t.Fatalf("v7 must migrate: %v", err)
+	}
+	defer s.Close()
+	if u, err := s.RunUsage(ctx, 1); err != nil || u.Input != 1000 || u.CostUSD != 1 {
+		t.Fatalf("the ledger rows from before the upgrade are kept: %+v %v", u, err)
+	}
+	if err := s.DeleteRun(ctx, 1); err != nil {
+		t.Fatalf("a run with a ledger can be deleted once the ledger no longer references runs: %v", err)
+	}
+	if u, err := s.UsageSince(ctx, at.Add(-time.Hour)); err != nil || u.Input != 1000 {
+		t.Fatalf("its ledger outlives it: %+v %v", u, err)
+	}
+}
