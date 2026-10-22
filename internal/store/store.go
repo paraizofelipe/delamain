@@ -68,9 +68,11 @@ type Run struct {
 	PerIssue      float64
 	Complexity    string
 	// Kind is fixed when the run is created; runs older than v6 are KindIssue.
-	Kind      RunKind
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	Kind RunKind
+	// StopRequestedAt is when `delamain stop` first asked for the run to stop; nil if it never did.
+	StopRequestedAt *time.Time
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
 }
 
 // Usage is a cumulative token/cost snapshot of one omp session file.
@@ -196,6 +198,26 @@ var migrations = []string{
 	);`,
 	`ALTER TABLE review_cursors ADD COLUMN halted_head_sha TEXT NOT NULL DEFAULT '';
 	ALTER TABLE review_cursors ADD COLUMN halts INTEGER NOT NULL DEFAULT 0;`,
+	`ALTER TABLE runs ADD COLUMN stop_requested_at TIMESTAMP;`,
+	// The ledger outlives the runs it bills (DeleteRun keeps it for the daily budget), so it
+	// cannot reference them. SQLite drops a foreign key only by rebuilding the table.
+	`CREATE TABLE token_ledger_new (
+		id          INTEGER PRIMARY KEY AUTOINCREMENT,
+		run_id      INTEGER NOT NULL,
+		role        TEXT NOT NULL,
+		at          TIMESTAMP NOT NULL,
+		input       INTEGER NOT NULL,
+		output      INTEGER NOT NULL,
+		cache_read  INTEGER NOT NULL,
+		cache_write INTEGER NOT NULL,
+		cost_usd    REAL NOT NULL
+	);
+	INSERT INTO token_ledger_new (id, run_id, role, at, input, output, cache_read, cache_write, cost_usd)
+		SELECT id, run_id, role, at, input, output, cache_read, cache_write, cost_usd FROM token_ledger;
+	DROP TABLE token_ledger;
+	ALTER TABLE token_ledger_new RENAME TO token_ledger;
+	CREATE INDEX token_ledger_at ON token_ledger(at);
+	CREATE INDEX token_ledger_run ON token_ledger(run_id);`,
 }
 
 func (s *Store) migrate(ctx context.Context) error {
@@ -257,13 +279,17 @@ func (r Run) Limits(defaultMaxIter int, defaultPerIssue float64) (maxIter int, p
 	return maxIter, perIssue
 }
 
-const runCols = `id, repo, issue_ref, title, branch, worktree, state, iteration, mr_url, reason, owner_pid, base, workspace, harness, max_iterations, per_issue, complexity, kind, created_at, updated_at`
+const runCols = `id, repo, issue_ref, title, branch, worktree, state, iteration, mr_url, reason, owner_pid, base, workspace, harness, max_iterations, per_issue, complexity, kind, stop_requested_at, created_at, updated_at`
 
 func scanRun(row interface{ Scan(...any) error }) (Run, error) {
 	var r Run
-	err := row.Scan(&r.ID, &r.Repo, &r.IssueRef, &r.Title, &r.Branch, &r.Worktree, &r.State, &r.Iteration, &r.MRURL, &r.Reason, &r.OwnerPID, &r.Base, &r.Workspace, &r.Harness, &r.MaxIterations, &r.PerIssue, &r.Complexity, &r.Kind, &r.CreatedAt, &r.UpdatedAt)
+	var stop sql.NullTime
+	err := row.Scan(&r.ID, &r.Repo, &r.IssueRef, &r.Title, &r.Branch, &r.Worktree, &r.State, &r.Iteration, &r.MRURL, &r.Reason, &r.OwnerPID, &r.Base, &r.Workspace, &r.Harness, &r.MaxIterations, &r.PerIssue, &r.Complexity, &r.Kind, &stop, &r.CreatedAt, &r.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Run{}, ErrNotFound
+	}
+	if stop.Valid {
+		r.StopRequestedAt = &stop.Time
 	}
 	return r, err
 }
@@ -448,4 +474,47 @@ func (s *Store) OpenedMR(ctx context.Context, url string) (bool, error) {
 		return false, fmt.Errorf("runs that opened %s: %w", url, err)
 	}
 	return n > 0, nil
+}
+
+// RequestStop asks the process driving run id to stop it. Asking again keeps the first request.
+func (s *Store) RequestStop(ctx context.Context, id int64) error {
+	if _, err := s.db.ExecContext(ctx, `UPDATE runs SET stop_requested_at=? WHERE id=? AND stop_requested_at IS NULL`, s.now(), id); err != nil {
+		return err
+	}
+	_, err := s.StopRequested(ctx, id)
+	return err
+}
+
+// StopRequested reports whether someone asked run id to stop.
+// It returns ErrNotFound for an unknown run.
+func (s *Store) StopRequested(ctx context.Context, id int64) (bool, error) {
+	var stop bool
+	err := s.db.QueryRowContext(ctx, `SELECT stop_requested_at IS NOT NULL FROM runs WHERE id = ?`, id).Scan(&stop)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, ErrNotFound
+	}
+	return stop, err
+}
+
+// DeleteRun removes run id with its agents and token snapshots, in one transaction. Its
+// token_ledger rows stay: the daily budget sums them, and deleting a run gives no budget back.
+func (s *Store) DeleteRun(ctx context.Context, id int64) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, q := range []string{`DELETE FROM agents WHERE run_id = ?`, `DELETE FROM token_snapshots WHERE run_id = ?`} {
+		if _, err := tx.ExecContext(ctx, q, id); err != nil {
+			return err
+		}
+	}
+	res, err := tx.ExecContext(ctx, `DELETE FROM runs WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return tx.Commit()
 }

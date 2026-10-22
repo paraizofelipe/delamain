@@ -333,3 +333,46 @@ func TestRecoverShouldKeepFinishingIssueRunsAsBefore(t *testing.T) {
 		t.Fatalf("an issue run keeps being delivered as a draft: created=%+v pushed=%v", f.created, hs.g.pushed)
 	}
 }
+
+func TestRecoverRunShouldOnlyTouchTheGivenRun(t *testing.T) {
+	hs := newHarness(t, happy)
+	other := crashedAs(t, hs, store.StateImplement, store.KindIssue, "#7")
+	given := crashedAs(t, hs, store.StateImplement, store.KindIssue, "#8")
+	ctx := context.Background()
+
+	res, err := hs.r.RecoverRun(ctx, given.ID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.RunID != given.ID || res.Outcome != OutcomeHalted || !strings.Contains(res.Reason, "pid 999999") {
+		t.Fatalf("the given run is finalized as recover does: %+v", res)
+	}
+	if got, _ := hs.st.GetRun(ctx, given.ID); got.State != store.StateRecorded || got.OwnerPID != os.Getpid() {
+		t.Fatalf("the given run must be recorded by the recoverer: %+v", got)
+	}
+	if got, _ := hs.st.GetRun(ctx, other.ID); got.State != store.StateImplement || got.OwnerPID != deadPID {
+		t.Fatalf("the other orphan must be left alone: %+v", got)
+	}
+}
+
+func TestRecoverRunShouldRefuseARunThatIsNotOrphaned(t *testing.T) {
+	hs := newHarness(t, happy)
+	ctx := context.Background()
+	if _, err := hs.r.RecoverRun(ctx, 999, nil); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("an unknown run is not found, got %v", err)
+	}
+	live, err := hs.st.CreateRun(ctx, "/repo", "#9", "Live", "omp", 3, 0, store.KindIssue) // owned by this process
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := hs.r.RecoverRun(ctx, live.ID, nil); err == nil {
+		t.Fatal("a run whose owner is alive must not be recovered")
+	}
+	done := crashed(t, hs, store.StateRecorded)
+	if _, err := hs.r.RecoverRun(ctx, done.ID, nil); err == nil {
+		t.Fatal("a finished run must not be recovered")
+	}
+	if got, _ := hs.st.GetRun(ctx, live.ID); got.State != store.StateClaimed || got.OwnerPID != os.Getpid() {
+		t.Fatalf("a refused run is left as it was: %+v", got)
+	}
+}

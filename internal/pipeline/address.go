@@ -91,6 +91,9 @@ func (r *Runner) RunAddress(ctx context.Context, repo string, n int) (Result, er
 		return res, err
 	}
 	res.RunID = rec.ID
+	ctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	defer r.watchStop(ctx, rec.ID, cancel)()
 	ru := &run{
 		rec:      rec,
 		task:     prompts.Issue{Ref: ref, Title: pr.Title, URL: pr.URL},
@@ -111,6 +114,9 @@ func (r *Runner) RunAddress(ctx context.Context, repo string, n int) (Result, er
 
 	var h halt
 	switch {
+	case errors.Is(context.Cause(ctx), ErrStopped):
+		ru.log.Info("run stopped by request", "run", rec.ID)
+		res.Outcome, res.Reason = OutcomeHalted, ErrStopped.Error()
 	case err == nil:
 	case errors.As(err, &h):
 		res.Outcome, res.Reason = OutcomeHalted, h.reason

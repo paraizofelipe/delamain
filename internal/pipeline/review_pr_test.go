@@ -873,3 +873,30 @@ func TestRunReviewShouldKeepConfidentialIssuesAndInternalNotesOutOfThePrompt(t *
 		}
 	}
 }
+
+func TestReviewShouldHaltWhenStopIsRequested(t *testing.T) {
+	var rh *reviewHarness
+	rh = newReviewHarness(t, func(string, int, string) reply {
+		requestStop(t, rh.harness, "pr:5") // `delamain stop` while the reviewer works
+		return reply{write: prReviewJSON(""), hang: true}
+	})
+	rh.r.StopPoll = 5 * time.Millisecond
+	rh.r.Cfg.Pipeline.PromptTimeout = 5 * time.Second
+	res := rh.review(t)
+
+	if res.Outcome != OutcomeHalted || res.Reason != "parada pelo usuário (delamain stop)" {
+		t.Fatalf("a stopped review halts with the stop as its reason, got %s: %s", res.Outcome, res.Reason)
+	}
+	if len(rh.f.posted) != 0 {
+		t.Fatalf("a stopped review posts nothing: %+v", rh.f.posted)
+	}
+	if _, err := os.Stat(res.Worktree); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the review worktree is removed as after any halt: %v", err)
+	}
+	if rec := rh.finalRun(t, res.RunID); rec.State != store.StateRecorded || rec.Reason != "halted: parada pelo usuário (delamain stop)" {
+		t.Fatalf("store must record the stop: %+v", rec)
+	}
+	if cur, err := rh.st.Cursor(context.Background(), rh.repo, 5); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("a stop is the operator's doing and is not counted against the head: %+v (%v)", cur, err)
+	}
+}

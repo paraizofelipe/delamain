@@ -844,3 +844,105 @@ func TestApplyComplexityShouldWarnWhenThePlanTouchesTooManyFiles(t *testing.T) {
 		t.Fatalf("the warning must say what to do about it: %q", warned)
 	}
 }
+
+// requestStop asks the active run of ref to stop, as `delamain stop` does from another process.
+func requestStop(t *testing.T, hs *harness, ref string) {
+	t.Helper()
+	ctx := context.Background()
+	rec, err := hs.st.ActiveRun(ctx, hs.task.Repo, ref)
+	if err != nil {
+		t.Error(err)
+		return
+	}
+	if err := hs.st.RequestStop(ctx, rec.ID); err != nil {
+		t.Error(err)
+	}
+}
+
+func TestRunShouldHaltWhenStopIsRequested(t *testing.T) {
+	var hs *harness
+	hs = newHarness(t, func(role string, n int, text string) reply {
+		rep := happy(role, n, text)
+		if role == "implementer" {
+			// The implementer commits, then is asked to stop in the middle of its turn.
+			requestStop(t, hs, "#7")
+			rep.hang = true
+		}
+		return rep
+	})
+	hs.r.StopPoll = 5 * time.Millisecond
+	hs.r.Cfg.Pipeline.PromptTimeout = 5 * time.Second
+	f := withForge(hs)
+	res := hs.run(t)
+
+	if res.Outcome != OutcomeHalted || res.Reason != "parada pelo usuário (delamain stop)" {
+		t.Fatalf("a stopped run halts with the stop as its reason, got %s: %s", res.Outcome, res.Reason)
+	}
+	if len(hs.h.prompts["reviewer"]) != 0 {
+		t.Fatal("no stage may start after the run is stopped")
+	}
+	if len(f.created) != 1 || !f.created[0].Draft {
+		t.Fatalf("what was committed is delivered as a draft: %+v", f.created)
+	}
+	last := f.relabels[len(f.relabels)-1]
+	if !slices.Equal(last[0], []string{hs.r.Cfg.Forge.Labels.NeedsHuman}) {
+		t.Fatalf("a stopped issue goes to a human, labels=%v", last)
+	}
+	report, err := os.ReadFile(res.ReportPath)
+	if err != nil || !strings.Contains(string(report), "parada pelo usuário (delamain stop)") {
+		t.Fatalf("the report must say the run was stopped: %v\n%s", err, report)
+	}
+	if rec := hs.finalRun(t, res.RunID); rec.State != store.StateRecorded || rec.Reason != "halted: parada pelo usuário (delamain stop)" {
+		t.Fatalf("store must record the stop: %+v", rec)
+	}
+}
+
+func TestStopShouldOnlyCancelTheRequestedRun(t *testing.T) {
+	aHanging, bInFlight, releaseB := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	hs := newHarness(t, func(role string, n int, text string) reply {
+		rep := happy(role, n, text)
+		if role == "planner" && n == 1 { // run #7 plans first and keeps planning
+			close(aHanging)
+			return reply{hang: true}
+		}
+		if role == "planner" && n == 2 { // run #8 is planning while #7 is stopped
+			close(bInFlight)
+			rep.release = releaseB
+		}
+		return rep
+	})
+	hs.r.StopPoll = 5 * time.Millisecond
+	hs.r.Cfg.Pipeline.PromptTimeout = 5 * time.Second
+	a, b := hs.task, hs.task
+	b.Ref, b.Title = "#8", "Fix sub"
+
+	type outcome struct {
+		res Result
+		err error
+	}
+	aDone, bDone := make(chan outcome, 1), make(chan outcome, 1)
+	go func() {
+		res, err := hs.r.Run(context.Background(), a)
+		aDone <- outcome{res, err}
+	}()
+	<-aHanging
+	go func() {
+		res, err := hs.r.Run(context.Background(), b)
+		bDone <- outcome{res, err}
+	}()
+	<-bInFlight
+	requestStop(t, hs, "#7")
+
+	ao := <-aDone
+	if ao.err != nil || ao.res.Outcome != OutcomeHalted || ao.res.Reason != "parada pelo usuário (delamain stop)" {
+		t.Fatalf("the requested run must halt with the stop reason, got %s: %s (%v)", ao.res.Outcome, ao.res.Reason, ao.err)
+	}
+	close(releaseB)
+	bo := <-bDone
+	if bo.err != nil || bo.res.Outcome != OutcomeApproved {
+		t.Fatalf("the other run must go on to the end, got %s: %s (%v)", bo.res.Outcome, bo.res.Reason, bo.err)
+	}
+	if rec := hs.finalRun(t, bo.res.RunID); !strings.HasPrefix(rec.Reason, "approved") {
+		t.Fatalf("the other run is recorded as approved: %+v", rec)
+	}
+}
