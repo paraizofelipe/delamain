@@ -1,15 +1,23 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
 	"testing"
+	"time"
+	"unicode/utf8"
 
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 	"go.yaml.in/yaml/v3"
 
 	"github.com/paraizo/delamain/internal/budget"
@@ -503,4 +511,316 @@ func TestStatusShouldShowTheComplexityAndItsPerIssueBudget(t *testing.T) {
 	if s.Budget.PerIssue != 2e6 {
 		t.Errorf("per_issue = %v, want the config's", s.Budget.PerIssue)
 	}
+}
+
+// sampleStatus is a run with every optional line of the status table filled in.
+func sampleStatus() RunStatus {
+	t0 := time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)
+	plannerEnd, implEnd := t0.Add(90*time.Second), t0.Add(30*time.Second)
+	return RunStatus{
+		Run: RunView{
+			ID: 7, Kind: "issue", Repo: "/r/app", Issue: "#45", Title: "Bold labels", State: "review",
+			Iteration: 2, iterations: 5, Harness: "claude", Complexity: "medium",
+			Branch: "feat/45-x", Base: "main", Worktree: "/wt/app/feat/45-x", Workspace: "dm-7",
+			PR: "https://github.com/o/app/pull/9", Result: "halted: guardrail tripped", RunDir: "/s/runs/7",
+			Agents: []AgentView{
+				{Role: "planner", State: "done", Process: Process{PID: 41}, StartedAt: t0, EndedAt: &plannerEnd, Tokens: 1500, CostUSD: 0.25},
+				{Role: "implementer", State: "running", Process: Process{PID: 42, Alive: true}, StartedAt: t0, EndedAt: &implEnd},
+			},
+		},
+		WorktreesDir: "/wt/app",
+		Worktrees: []WorktreeView{
+			{Worktree: gitx.Worktree{Path: "/wt/app/feat/45-x", Branch: "feat/45-x", Head: "0123456789abcdef"}, ThisRun: true},
+			{Worktree: gitx.Worktree{Path: "/wt/app/fix/2-b", Head: "fedcba9876543210", Detached: true}},
+		},
+		Budget: BudgetView{Summary: "1.5K of 2M tokens"},
+	}
+}
+
+// sampleTable is sampleStatus as the tabwriter laid it out before colors: written by hand.
+const sampleTable = `RUN           7 · #45 Bold labels
+KIND          issue
+REPO          /r/app
+HARNESS       claude
+STATE         review
+INTERACTIONS  2/5
+COMPLEXITY    medium
+BRANCH        feat/45-x (base main)
+WORKTREE      /wt/app/feat/45-x
+OWNER         -
+BUDGET        1.5K of 2M tokens
+PR/MR         https://github.com/o/app/pull/9
+HERDR         dm-7
+RESULT        halted: guardrail tripped
+LOGS          /s/runs/7/logs (delamain logs 7 -f)
+
+WORKTREES in /wt/app
+   BRANCH      HEAD      PATH
+*  feat/45-x   01234567  /wt/app/feat/45-x
+   (detached)  fedcba98  /wt/app/fix/2-b
+
+AGENTS
+ROLE         STATE    PID  ALIVE  DURATION  TOKENS  US$
+planner      done     41   no     1m30s     1.5K    0.25
+implementer  running  42   yes    30s       0       0.00
+`
+
+func TestStatusShouldNotEmitANSIWhenNotATerminal(t *testing.T) {
+	t.Setenv("NO_COLOR", "")
+	t.Setenv("CLICOLOR_FORCE", "")
+	var out bytes.Buffer
+	if err := statusTable(&out, sampleStatus()); err != nil {
+		t.Fatal(err)
+	}
+	if out.String() != sampleTable {
+		t.Fatalf("a writer that is not a terminal gets the plain table, byte for byte:\n%q\nwant\n%q", out.String(), sampleTable)
+	}
+}
+
+// forcedStatus renders s as a terminal that supports ANSI colors shows it.
+func forcedStatus(t *testing.T, s RunStatus) string {
+	t.Helper()
+	var out bytes.Buffer
+	r := lipgloss.NewRenderer(&out)
+	r.SetColorProfile(termenv.ANSI)
+	if err := renderStatus(&out, s, newStyles(r)); err != nil {
+		t.Fatal(err)
+	}
+	return out.String()
+}
+
+var sgr = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+
+func stripANSI(s string) string { return sgr.ReplaceAllString(s, "") }
+
+// codesOf returns the SGR parameters applied to every rune of text, in the first line of out
+// whose plain text starts with prefix; found is false when that line has no such text.
+func codesOf(out, prefix, text string) (codes map[string]bool, found bool) {
+	for _, line := range strings.Split(out, "\n") {
+		if !strings.HasPrefix(stripANSI(line), prefix) {
+			continue
+		}
+		var runes []rune
+		var styles [][]string
+		var active []string
+		for i := 0; i < len(line); {
+			if loc := sgr.FindStringIndex(line[i:]); loc != nil && loc[0] == 0 {
+				params := line[i+2 : i+loc[1]-1]
+				if params == "" || params == "0" {
+					active = nil
+				} else {
+					active = append(append([]string{}, active...), strings.Split(params, ";")...)
+				}
+				i += loc[1]
+				continue
+			}
+			r, n := utf8.DecodeRuneInString(line[i:])
+			runes, styles = append(runes, r), append(styles, active)
+			i += n
+		}
+		at := strings.Index(string(runes), text)
+		if at < 0 {
+			return nil, false
+		}
+		start := utf8.RuneCountInString(string(runes)[:at])
+		codes = map[string]bool{}
+		for _, c := range styles[start] {
+			codes[c] = true
+		}
+		for _, st := range styles[start+1 : start+utf8.RuneCountInString(text)] {
+			for c := range codes {
+				if !slices.Contains(st, c) {
+					delete(codes, c)
+				}
+			}
+		}
+		return codes, true
+	}
+	return nil, false
+}
+
+// wantCodes fails unless text, in the line starting with prefix, carries exactly codes.
+func wantCodes(t *testing.T, out, prefix, text string, codes ...string) {
+	t.Helper()
+	got, found := codesOf(out, prefix, text)
+	if !found {
+		t.Errorf("%q not found in the line starting with %q:\n%s", text, prefix, out)
+		return
+	}
+	want := map[string]bool{}
+	for _, c := range codes {
+		want[c] = true
+	}
+	if !maps.Equal(got, want) {
+		t.Errorf("%q in the %q line has SGR %v, want %v:\n%q", text, prefix, got, want, out)
+	}
+}
+
+func TestStatusShouldBoldLabelsAndHeadings(t *testing.T) {
+	out := forcedStatus(t, sampleStatus())
+	for _, label := range []string{"RUN", "KIND", "REPO", "HARNESS", "STATE", "INTERACTIONS", "COMPLEXITY", "BRANCH", "WORKTREE ", "OWNER", "BUDGET", "PR/MR", "HERDR", "RESULT", "LOGS"} {
+		wantCodes(t, out, label, strings.TrimSpace(label), "1")
+	}
+	wantCodes(t, out, "WORKTREES", "WORKTREES", "1")
+	wantCodes(t, out, "WORKTREES", " in /wt/app")
+	wantCodes(t, out, "AGENTS", "AGENTS", "1")
+	for _, h := range []string{"BRANCH", "HEAD", "PATH"} {
+		wantCodes(t, out, "   BRANCH", h, "1")
+	}
+	for _, h := range []string{"ROLE", "STATE", "PID", "ALIVE", "DURATION", "TOKENS", "US$"} {
+		wantCodes(t, out, "ROLE", h, "1")
+	}
+	wantCodes(t, out, "HARNESS", "claude")
+	wantCodes(t, out, "BUDGET", "1.5K of 2M tokens")
+}
+
+func TestStatusShouldKeepColumnsAlignedWithColor(t *testing.T) {
+	out := forcedStatus(t, sampleStatus())
+	if !strings.Contains(out, "\x1b[") {
+		t.Fatalf("a forced ANSI renderer colors the table:\n%q", out)
+	}
+	if got := stripANSI(out); got != sampleTable {
+		t.Errorf("without the escapes the colored table is the plain one:\n%s\nwant\n%s", got, sampleTable)
+	}
+
+	// No worktree of this run: the marker column shrinks to the padding alone.
+	s := sampleStatus()
+	s.Worktrees[0].ThisRun, s.Run.PR, s.Run.Result = false, "", ""
+	want := strings.NewReplacer(
+		"PR/MR         https://github.com/o/app/pull/9\n", "",
+		"RESULT        halted: guardrail tripped\n", "",
+		"   BRANCH      HEAD      PATH\n", "  BRANCH      HEAD      PATH\n",
+		"*  feat/45-x   01234567", "  feat/45-x   01234567",
+		"   (detached)  fedcba98", "  (detached)  fedcba98",
+	).Replace(sampleTable)
+	if got := stripANSI(forcedStatus(t, s)); got != want {
+		t.Errorf("without a worktree of this run:\n%s\nwant\n%s", got, want)
+	}
+}
+
+// colorEnv sets the variables that decide color for the command, isolated from the caller's.
+func colorEnv(t *testing.T, force, noColor string) {
+	t.Helper()
+	t.Setenv("CLICOLOR_FORCE", force)
+	t.Setenv("NO_COLOR", noColor)
+	t.Setenv("CLICOLOR", "")
+}
+
+func TestStatusShouldColorWhenCLIColorForceIsSet(t *testing.T) {
+	f := newFixture(t)
+	f.run(t, "#1", "fix/1-a", store.StateImplement)
+	colorEnv(t, "", "")
+	plain := f.exec(t, "status", "1")
+
+	colorEnv(t, "1", "")
+	out := f.exec(t, "status", "1")
+	wantCodes(t, out, "STATE", "STATE", "1")
+	wantCodes(t, out, "AGENTS", "AGENTS", "1")
+	if got := stripANSI(out); got != plain {
+		t.Errorf("colors add escapes, not text:\n%s\nwant\n%s", got, plain)
+	}
+}
+
+func TestStatusShouldNotEmitANSIWhenNoColorIsSet(t *testing.T) {
+	f := newFixture(t)
+	f.run(t, "#1", "fix/1-a", store.StateImplement)
+	colorEnv(t, "1", "1") // NO_COLOR wins over CLICOLOR_FORCE
+	out := f.exec(t, "status", "1")
+	if strings.Contains(out, "\x1b") || !strings.Contains(out, "STATE") {
+		t.Fatalf("NO_COLOR prints the plain table:\n%q", out)
+	}
+}
+
+func TestStatusShouldNotEmitANSIInYAMLOrJSONWhenColorIsForced(t *testing.T) {
+	f := newFixture(t)
+	f.run(t, "#1", "fix/1-a", store.StateImplement)
+	colorEnv(t, "1", "")
+	var s RunStatus
+	jsonOut := f.exec(t, "status", "1", "-o", "json")
+	if err := json.Unmarshal([]byte(jsonOut), &s); err != nil || strings.Contains(jsonOut, "\x1b") {
+		t.Errorf("json stays plain: %v\n%q", err, jsonOut)
+	}
+	yamlOut := f.exec(t, "status", "1", "-o", "yaml")
+	if err := yaml.Unmarshal([]byte(yamlOut), &s); err != nil || strings.Contains(yamlOut, "\x1b") {
+		t.Errorf("yaml stays plain: %v\n%q", err, yamlOut)
+	}
+}
+
+func TestStatusShouldColorComplexityByLevel(t *testing.T) {
+	for level, codes := range map[string][]string{"low": {"32"}, "medium": {"33"}, "high": {"31"}, "": nil} {
+		s := sampleStatus()
+		s.Run.Complexity = level
+		wantCodes(t, forcedStatus(t, s), "COMPLEXITY", orDash(level), codes...)
+	}
+}
+
+func TestStatusShouldColorResultByOutcome(t *testing.T) {
+	cases := map[string][]string{
+		"approved": {"32"}, "reviewed": {"32"}, "answered": {"32"},
+		"exhausted": {"33"}, "needs_info": {"33"},
+		"halted":  {"31"},
+		"skipped": {"2"},
+		"mystery": nil, // an outcome this version does not know stays plain
+	}
+	for outcome, codes := range cases {
+		s := sampleStatus()
+		s.Run.Result = outcome
+		wantCodes(t, forcedStatus(t, s), "RESULT", outcome, codes...)
+	}
+
+	// Only the outcome is colored; the reason is free text and prints as is.
+	out := forcedStatus(t, sampleStatus())
+	wantCodes(t, out, "RESULT", "halted", "31")
+	wantCodes(t, out, "RESULT", ": guardrail tripped")
+}
+
+func TestStatusShouldColorRunState(t *testing.T) {
+	cases := map[store.RunState][]string{
+		store.StateRecorded: {"32"}, store.StateNeedsInfo: {"33"}, store.StateHalted: {"31"},
+		store.StateImplement: {"36"}, store.StateReview: {"36"}, store.StatePreflight: {"36"},
+		store.StateSetup: {"36"}, store.StateDeliver: {"36"}, store.StateDeliverDraft: {"36"},
+	}
+	for state, codes := range cases {
+		s := sampleStatus()
+		s.Run.State = string(state)
+		wantCodes(t, forcedStatus(t, s), "STATE", string(state), codes...)
+	}
+}
+
+func TestStatusShouldColorRunRefPRAndLogsHint(t *testing.T) {
+	out := forcedStatus(t, sampleStatus())
+	wantCodes(t, out, "RUN", "#45", "36")
+	wantCodes(t, out, "RUN", "7 · ")
+	wantCodes(t, out, "RUN", " Bold labels") // the title comes from the issue and prints as is
+	wantCodes(t, out, "PR/MR", "https://github.com/o/app/pull/9", "4", "36")
+	wantCodes(t, out, "LOGS", "(delamain logs 7 -f)", "2")
+	wantCodes(t, out, "LOGS", "/s/runs/7/logs ")
+}
+
+func TestStatusShouldHighlightThisRunWorktree(t *testing.T) {
+	out := forcedStatus(t, sampleStatus())
+	wantCodes(t, out, "*", "*", "1", "36")
+	wantCodes(t, out, "*", "feat/45-x", "1", "36")
+	wantCodes(t, out, "*", "01234567  /wt/app/feat/45-x")
+	wantCodes(t, out, "   (detached)", "(detached)")
+
+	s := sampleStatus()
+	s.Worktrees[0].ThisRun, s.Worktrees[1].ThisRun = false, true
+	out = forcedStatus(t, s)
+	wantCodes(t, out, "*", "(detached)", "1", "36")
+	wantCodes(t, out, "   feat/45-x", "feat/45-x")
+}
+
+func TestStatusShouldColorAgentState(t *testing.T) {
+	for state, codes := range map[store.AgentState][]string{store.AgentDone: {"32"}, store.AgentRunning: {"36"}, store.AgentFailed: {"31"}} {
+		s := sampleStatus()
+		s.Run.Agents[0].State = string(state)
+		wantCodes(t, forcedStatus(t, s), "planner", string(state), codes...)
+	}
+}
+
+func TestStatusShouldColorAgentAlive(t *testing.T) {
+	out := forcedStatus(t, sampleStatus())
+	wantCodes(t, out, "implementer", "yes", "32")
+	wantCodes(t, out, "planner", "no", "2")
 }
