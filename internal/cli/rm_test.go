@@ -94,3 +94,55 @@ func TestRmShouldNotGiveBackTheDailyBudget(t *testing.T) {
 		t.Fatalf("removing a run gives no budget back: before %v, after %v (%v)", before.Day, after.Day, err)
 	}
 }
+
+func TestRmShouldRefuseADirtyWorktreeUnlessForced(t *testing.T) {
+	f := newFixture(t)
+	rec := f.run(t, "#1", "fix/1-a", store.StateRecorded)
+	dir := f.runDir(t, rec)
+	if err := os.WriteFile(filepath.Join(rec.Worktree, "wip.go"), []byte("package wip\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := execute(t, "--config", f.cfgFile, "rm", "1")
+	if want := "worktree " + rec.Worktree + " has uncommitted changes; use --force to discard them"; err == nil || !strings.Contains(out, want) {
+		t.Fatalf("uncommitted work is not discarded without --force, want %q: %v\n%s", want, err, out)
+	}
+	if !exists(filepath.Join(rec.Worktree, "wip.go")) || !exists(dir) {
+		t.Fatal("a refused run keeps its worktree and directory")
+	}
+	if _, err := f.st.GetRun(context.Background(), rec.ID); err != nil {
+		t.Fatalf("a refused run keeps its record: %v", err)
+	}
+
+	if out := f.exec(t, "rm", "1", "--force"); !strings.Contains(out, "removed run 1") {
+		t.Fatalf("--force discards the changes:\n%s", out)
+	}
+	if exists(rec.Worktree) || exists(dir) {
+		t.Fatal("--force removes the worktree and the run directory")
+	}
+	if !f.branchExists("fix/1-a") {
+		t.Fatal("the branch stays, forced or not")
+	}
+}
+
+func TestRmShouldRemoveTheOthersWhenOneIDFails(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	first := f.run(t, "#1", "", store.StateRecorded)
+	last := f.run(t, "#2", "", store.StateNeedsInfo)
+
+	out, err := execute(t, "--config", f.cfgFile, "rm", "1", "999", "2")
+	if err == nil {
+		t.Fatalf("a run that could not be removed makes rm fail (exit 1):\n%s", out)
+	}
+	for _, want := range []string{"removed run 1", "run 999 not found", "removed run 2"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("each id is handled on its own, missing %q:\n%s", want, out)
+		}
+	}
+	for _, rec := range []store.Run{first, last} {
+		if _, err := f.st.GetRun(ctx, rec.ID); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("run %d must be removed despite the unknown one: %v", rec.ID, err)
+		}
+	}
+}

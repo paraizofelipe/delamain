@@ -15,12 +15,16 @@ import (
 )
 
 func newRmCmd(load func() (config.Config, error)) *cobra.Command {
+	var force bool
 	cmd := &cobra.Command{
 		Use:   "rm RUN_ID...",
 		Short: "Delete finished runs: their record, directory and leftover worktree",
 		Long: `Deletes each finished run: its worktree, if one is left, its run directory (logs, sessions,
 plan and report) and its record in the state database. A run that has not finished is refused
-and nothing of it is deleted: stop it first with delamain stop.
+and nothing of it is deleted: stop it first with delamain stop. A worktree with uncommitted
+changes, untracked files included, is refused too unless --force discards them.
+
+Each run is handled on its own: one that cannot be deleted does not keep the others.
 
 Branches, local or remote, and PRs/MRs are never touched: the branch may be the draft the run
 delivered. The run's token usage stays in the ledger, so deleting a run gives no daily budget
@@ -38,19 +42,24 @@ Exit codes: 0 every run deleted · 1 a run could not be deleted.`,
 				return err
 			}
 			defer func() { _ = st.Close() }()
+			failed := 0
 			for _, arg := range args {
-				if err := removeRun(c, cfg, st, arg); err != nil {
+				if err := removeRun(c, cfg, st, arg, force); err != nil {
 					fmt.Fprintln(c.ErrOrStderr(), err)
-					return fmt.Errorf("1 of %d runs failed", len(args))
+					failed++
 				}
+			}
+			if failed > 0 {
+				return fmt.Errorf("%d of %d runs failed", failed, len(args))
 			}
 			return nil
 		},
 	}
+	cmd.Flags().BoolVar(&force, "force", false, "remove a worktree even if it has uncommitted changes")
 	return cmd
 }
 
-func removeRun(c *cobra.Command, cfg config.Config, st *store.Store, arg string) error {
+func removeRun(c *cobra.Command, cfg config.Config, st *store.Store, arg string, force bool) error {
 	ctx := c.Context()
 	id, err := runID(arg)
 	if err != nil {
@@ -72,7 +81,17 @@ func removeRun(c *cobra.Command, cfg config.Config, st *store.Store, arg string)
 		return fmt.Errorf("run %d: its directory %s is outside %s", id, dir, runs)
 	}
 	if rec.Worktree != "" && exists(rec.Worktree) {
-		if err := gitx.New().RemoveWorktree(ctx, rec.Repo, rec.Worktree); err != nil {
+		git := gitx.New()
+		if !force {
+			status, err := git.Status(ctx, rec.Worktree)
+			if err != nil {
+				return fmt.Errorf("run %d: %w", id, err)
+			}
+			if status != "" {
+				return fmt.Errorf("worktree %s has uncommitted changes; use --force to discard them", rec.Worktree)
+			}
+		}
+		if err := git.RemoveWorktree(ctx, rec.Repo, rec.Worktree); err != nil {
 			return fmt.Errorf("run %d: %w", id, err)
 		}
 	}
