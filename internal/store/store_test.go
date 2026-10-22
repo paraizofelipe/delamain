@@ -541,11 +541,20 @@ func TestRequestStopShouldBeVisibleToStopRequested(t *testing.T) {
 	if stop, err := s.StopRequested(ctx, a.ID); err != nil || stop {
 		t.Fatalf("a new run has no stop request: %v %v", stop, err)
 	}
+	first := time.Date(2026, 10, 22, 9, 0, 0, 0, time.UTC)
+	s.now = func() time.Time { return first }
 	if err := s.RequestStop(ctx, a.ID); err != nil {
 		t.Fatal(err)
 	}
+	s.now = func() time.Time { return first.Add(time.Hour) }
 	if err := s.RequestStop(ctx, a.ID); err != nil {
 		t.Fatalf("asking twice is not an error: %v", err)
+	}
+	if got, err := s.GetRun(ctx, a.ID); err != nil || got.StopRequestedAt == nil || !got.StopRequestedAt.Equal(first) {
+		t.Fatalf("the first request's time is kept: %v %v", got.StopRequestedAt, err)
+	}
+	if got, err := s.GetRun(ctx, b.ID); err != nil || got.StopRequestedAt != nil {
+		t.Fatalf("a run nobody asked to stop has no request time: %v %v", got.StopRequestedAt, err)
 	}
 	if stop, err := s.StopRequested(ctx, a.ID); err != nil || !stop {
 		t.Fatalf("the stop request must be visible to the run's owner: %v %v", stop, err)

@@ -68,9 +68,11 @@ type Run struct {
 	PerIssue      float64
 	Complexity    string
 	// Kind is fixed when the run is created; runs older than v6 are KindIssue.
-	Kind      RunKind
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	Kind RunKind
+	// StopRequestedAt is when `delamain stop` first asked for the run to stop; nil if it never did.
+	StopRequestedAt *time.Time
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
 }
 
 // Usage is a cumulative token/cost snapshot of one omp session file.
@@ -258,13 +260,17 @@ func (r Run) Limits(defaultMaxIter int, defaultPerIssue float64) (maxIter int, p
 	return maxIter, perIssue
 }
 
-const runCols = `id, repo, issue_ref, title, branch, worktree, state, iteration, mr_url, reason, owner_pid, base, workspace, harness, max_iterations, per_issue, complexity, kind, created_at, updated_at`
+const runCols = `id, repo, issue_ref, title, branch, worktree, state, iteration, mr_url, reason, owner_pid, base, workspace, harness, max_iterations, per_issue, complexity, kind, stop_requested_at, created_at, updated_at`
 
 func scanRun(row interface{ Scan(...any) error }) (Run, error) {
 	var r Run
-	err := row.Scan(&r.ID, &r.Repo, &r.IssueRef, &r.Title, &r.Branch, &r.Worktree, &r.State, &r.Iteration, &r.MRURL, &r.Reason, &r.OwnerPID, &r.Base, &r.Workspace, &r.Harness, &r.MaxIterations, &r.PerIssue, &r.Complexity, &r.Kind, &r.CreatedAt, &r.UpdatedAt)
+	var stop sql.NullTime
+	err := row.Scan(&r.ID, &r.Repo, &r.IssueRef, &r.Title, &r.Branch, &r.Worktree, &r.State, &r.Iteration, &r.MRURL, &r.Reason, &r.OwnerPID, &r.Base, &r.Workspace, &r.Harness, &r.MaxIterations, &r.PerIssue, &r.Complexity, &r.Kind, &stop, &r.CreatedAt, &r.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Run{}, ErrNotFound
+	}
+	if stop.Valid {
+		r.StopRequestedAt = &stop.Time
 	}
 	return r, err
 }
