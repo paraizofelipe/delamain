@@ -93,15 +93,8 @@ func (m watchModel) frame() watchFrame {
 			f.strip = m.stripLines(m.width - left - 4)
 		}
 	default:
-		f.list, f.sel = m.listLines(leftWidth(m.width)-4, listCols{header: true, issue: true, more: true})
+		f.list, f.sel = m.listLines(m.width-4, listCols{header: true, issue: true, more: true})
 		f.status = m.statusLines()
-		n.listMust = len(f.list)
-		if len(m.data.active) > 0 || len(m.data.done) > 0 {
-			n.listMust = 2 + len(m.data.active) // column header, ACTIVE
-			if len(m.data.done) > 0 {
-				n.listMust++ // FINISHED
-			}
-		}
 	}
 	n.footer, n.list, n.strip, n.status = len(f.footer), len(f.list), len(f.strip), len(f.status)
 	f.panels = panelsFor(m.layout, m.width, m.height, n)

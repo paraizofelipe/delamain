@@ -43,17 +43,16 @@ type watchPanels struct {
 
 // panelNeeds is what the panels hold, in lines, and the state that shapes them.
 type panelNeeds struct {
-	footer   int  // lines of the footer
-	list     int  // lines of the list
-	listMust int  // lines of the list kept above the status panel
-	strip    int  // lines of the status strip
-	status   int  // lines of the status panel
-	zoom     bool // the logs take the whole body
-	full     bool // the full status takes the place of the strip and the logs
-	tab      miniTab
+	footer int  // lines of the footer
+	list   int  // lines of the list
+	strip  int  // lines of the status strip
+	status int  // lines of the status panel
+	zoom   bool // the logs take the whole body
+	full   bool // the full status takes the place of the strip and the logs
+	tab    miniTab
 }
 
-// leftWidth is the width of the left column of the wide layout.
+// leftWidth is the width of the status panel of the wide layout.
 func leftWidth(width int) int { return min(max(width*40/100, 56), 72, width) }
 
 // mediumLeft is the width of the left column of the medium layout.
@@ -88,13 +87,13 @@ func panelsFor(l watchLayout, width, height int, n panelNeeds) watchPanels {
 		return mediumPanels(width, body, n)
 	}
 	left := leftWidth(width)
-	// The list gets its rows that must be seen, then as many more as leave the status panel its
-	// whole height; the status panel takes the rest of the column.
-	listH := min(2+n.list, max(body-2-n.status, 2+min(n.listMust, n.list)), body)
+	// The list takes the top of the screen, its rows up to half the body; the status panel and
+	// the logs share the rest of it, side by side.
+	listH := min(2+n.list, body/2)
 	return watchPanels{
-		list:   rect{0, 1, left, listH},
+		list:   rect{0, 1, width, listH},
 		status: rect{0, 1 + listH, left, body - listH},
-		logs:   rect{left, 1, width - left, body},
+		logs:   rect{left, 1 + listH, width - left, body - listH},
 	}
 }
 
