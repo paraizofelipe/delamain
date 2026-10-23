@@ -31,6 +31,9 @@ type watchData struct {
 
 type watchDataMsg watchData
 
+// watchErrMsg is a reload that failed: the screen keeps the last data and shows why.
+type watchErrMsg struct{ err error }
+
 // watchTickMsg asks for the next reload.
 type watchTickMsg struct{}
 
@@ -44,6 +47,7 @@ type watchModel struct {
 	selectedID    int64 // the selection follows the run, wherever it moves in the list
 	selectedIdx   int
 	loading       bool // a reload is running: ticks are skipped until it ends
+	err           error
 }
 
 func newWatchModel(src watchSource, st styles, opts watchOptions) watchModel {
@@ -69,8 +73,10 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.loading = true
 		return m, tea.Batch(m.reload(), m.tick())
+	case watchErrMsg:
+		m.loading, m.err = false, msg.err
 	case watchDataMsg:
-		m.loading = false
+		m.loading, m.err = false, nil
 		m.data = watchData(msg)
 		m.selectedIdx = pick(m.runs(), m.selectedID, m.selectedIdx)
 		m.selectedID = 0
@@ -145,12 +151,19 @@ func (m watchModel) reload() tea.Cmd {
 	src, limit, id, idx := m.src, m.opts.limit, m.selectedID, m.selectedIdx
 	return func() tea.Msg {
 		ctx := context.Background()
-		active, done, _ := src.Runs(ctx, limit)
+		active, done, err := src.Runs(ctx, limit)
+		if err != nil {
+			return watchErrMsg{err}
+		}
 		d := watchData{active: active, done: done, daemon: src.DaemonRunning()}
-		d.today, _ = src.Today(ctx)
+		if d.today, err = src.Today(ctx); err != nil {
+			return watchErrMsg{err}
+		}
 		if runs := append(append([]RunView{}, active...), done...); len(runs) > 0 {
 			d.statusOf = runs[pick(runs, id, idx)].ID
-			d.status, _ = src.Status(ctx, d.statusOf)
+			if d.status, err = src.Status(ctx, d.statusOf); err != nil {
+				return watchErrMsg{err}
+			}
 		}
 		return watchDataMsg(d)
 	}

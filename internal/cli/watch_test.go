@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -494,5 +495,34 @@ func TestWatchShouldShowTheDaySpendInTheHeader(t *testing.T) {
 		if want := "\x1b[" + code + "mtoday 3.5M of 4M\x1b[0m"; !strings.Contains(m.View(), want) {
 			t.Errorf("level %v colors the day spend %q:\n%q", level, want, strings.Split(m.View(), "\n")[0])
 		}
+	}
+}
+
+func footer(m tea.Model) string {
+	lines := strings.Split(screen(m), "\n")
+	return lines[len(lines)-1]
+}
+
+func TestWatchShouldShowReadErrorsInTheFooterAndKeepRunning(t *testing.T) {
+	src := &fakeWatchSource{active: []RunView{active(1, "#11", "plan", "", "a")}}
+	m := startWatch(t, src, 160, 40)
+	if got := strings.TrimSpace(footer(m)); got != "↑↓ navigate  q quit" {
+		t.Fatalf("footer = %q", got)
+	}
+
+	src.err = errors.New("database is locked")
+	m = reload(t, m)
+	if got := strings.TrimSpace(footer(m)); got != "error: database is locked" {
+		t.Fatalf("a failed read is shown in the footer: %q", got)
+	}
+	if !strings.Contains(screen(m), "#11") {
+		t.Fatalf("a failed read keeps the last data:\n%s", screen(m))
+	}
+
+	src.err = nil
+	src.active = append(src.active, active(2, "#12", "plan", "", "b"))
+	m = reload(t, m)
+	if got := strings.TrimSpace(footer(m)); got != "↑↓ navigate  q quit" || !strings.Contains(screen(m), "#12") {
+		t.Fatalf("the next good read clears the error and keeps reloading: %q\n%s", got, screen(m))
 	}
 }

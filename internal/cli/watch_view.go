@@ -34,7 +34,17 @@ func (m watchModel) View() string {
 	for i := range body {
 		lines = append(lines, leftCol[i]+rightCol[i])
 	}
-	return strings.Join(lines, "\n")
+	return strings.Join(append(lines, m.footer()), "\n")
+}
+
+// footer shows the keys, or why the last reload failed until one succeeds.
+func (m watchModel) footer() string {
+	st := m.st
+	if m.err != nil {
+		return ansi.Truncate(paint(st.bad, "error: "+m.err.Error()), m.width, "…")
+	}
+	keys := paint(st.info.Bold(true), "↑↓") + paint(st.muted, " navigate") + "  " + paint(st.info.Bold(true), "q") + paint(st.muted, " quit")
+	return ansi.Truncate(keys, m.width, "…")
 }
 
 // header is the one line above the panels: version, daemon, run counts, the day's spend and the
