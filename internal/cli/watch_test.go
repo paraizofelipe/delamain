@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -1266,6 +1267,62 @@ func TestWatchShouldWrapTheFooterInsteadOfCuttingKeys(t *testing.T) {
 	}
 }
 
+func TestWatchShouldKeepSelectionFilterAndScrollAcrossResizes(t *testing.T) {
+	a, b := logRun(t, 1, "#11"), logRun(t, 2, "#12")
+	numbered(t, a, 1, 100)
+	numbered(t, b, 1, 100)
+	writeLog(t, b, "checks", "12:00:00 ▶ test: go test ./...\n")
+	src := &fakeWatchSource{active: []RunView{a, b}}
+	m := startLogs(t, src, 160, true)
+	m = send(t, m, keyPress("j"))
+	m = reload(t, m) // the logs of run 2
+	for _, k := range []string{"2", "tab", "pgup"} {
+		m = send(t, m, keyPress(k))
+	}
+	// first is the number of the first log line of the logs panel.
+	first := func(view string) int {
+		for _, r := range panelRows(view, "logs · run 2") {
+			if i := strings.Index(r, "line "); i >= 0 {
+				n, _ := strconv.Atoi(r[i+5 : i+8])
+				return n
+			}
+		}
+		return 0
+	}
+	top := first(screen(m))
+	if top <= 1 || top >= 70 {
+		t.Fatalf("pgup pauses in the middle of the logs, at line %d:\n%s", top, screen(m))
+	}
+	for _, s := range []struct {
+		width, height int
+		chip          string
+		list          bool
+	}{
+		{80, 27, "[delm]", true}, {56, 20, "[D]", false}, {160, 40, "[delamain]", true}, {120, 30, "[delamain]", true}, {160, 40, "[delamain]", true},
+	} {
+		m = resize(t, m, s.width, s.height)
+		view := screen(m)
+		if !strings.Contains(view, "╭ logs · run 2 · paused ") {
+			t.Fatalf("%dx%d: the logs of run 2 stay paused:\n%s", s.width, s.height, view)
+		}
+		if s.list && !strings.Contains(line(view, "▸"), "#12") {
+			t.Fatalf("%dx%d: run 2 stays selected:\n%s", s.width, s.height, view)
+		}
+		if !strings.Contains(view, s.chip) || strings.Contains(view, "▶ test") {
+			t.Fatalf("%dx%d: the filter stays on delamain:\n%s", s.width, s.height, view)
+		}
+		if got := first(view); got != top {
+			t.Fatalf("%dx%d: the logs stay at line %d, got %d:\n%s", s.width, s.height, top, got, view)
+		}
+		if s.list && border(m.View(), "logs · run 2") != "36" {
+			t.Fatalf("%dx%d: the logs keep the focus:\n%s", s.width, s.height, view)
+		}
+	}
+	if got := first(screen(send(t, m, keyPress("up")))); got != top-1 {
+		t.Fatalf("the keys still scroll the focused logs: line %d, want %d", got, top-1)
+	}
+}
+
 func TestWatchShouldStripControlSequencesFromRunText(t *testing.T) {
 	evil := "evil\x1b]52;c;ZXZpbA==\x07\x1b[2J\x1b[31mforged\u009b6n\x00\x7f\ttab"
 	v := active(1, "#1\x1b[1m", "implement\x1b[5m", "low", evil)
@@ -1274,18 +1331,34 @@ func TestWatchShouldStripControlSequencesFromRunText(t *testing.T) {
 	done := finished(2, "#2"+evil, "approved"+evil+": ok", evil)
 	src := &fakeWatchSource{active: []RunView{v}, done: []RunView{done}, status: map[int64]RunStatus{1: {Run: v, Budget: BudgetView{Summary: evil}}}}
 	m := startWatch(t, src, 160)
-	for _, view := range []string{m.View(), send(t, m, keyPress("j")).View()} {
+	compact := resize(t, m, 80, 27)
+	mini := resize(t, m, 56, 20)
+	views := map[string]string{
+		"wide": m.View(), "wide after j": send(t, m, keyPress("j")).View(),
+		"compact": compact.View(), "compact full status": send(t, compact, keyPress("enter")).View(),
+		"compact after j": send(t, compact, keyPress("j")).View(),
+		"mini logs":       mini.View(), "mini status": send(t, mini, keyPress("left")).View(),
+		"mini runs": send(t, send(t, mini, keyPress("left")), keyPress("left")).View(),
+	}
+	for name, view := range views {
 		if i := strings.IndexFunc(view, func(r rune) bool { return r != '\n' && (r < 0x20 || (r >= 0x7f && r <= 0x9f)) }); i >= 0 {
-			t.Fatalf("control character %q reached the terminal:\n%q", view[i], view)
+			t.Fatalf("%s: control character %q reached the terminal:\n%q", name, view[i], view)
 		}
-		if !strings.Contains(view, "evil]52;c;ZXZpbA==[2J[31mforged") {
-			t.Fatalf("only the control characters go, the text stays:\n%s", view)
+		if !strings.Contains(view, "evil]52;c;ZXZpbA==[2J[31mforged") && !strings.HasPrefix(name, "mini") {
+			t.Fatalf("%s: only the control characters go, the text stays:\n%s", name, view)
+		}
+		width := map[bool]int{true: 160, false: 80}[strings.HasPrefix(name, "wide")]
+		if strings.HasPrefix(name, "mini") {
+			width = 56
 		}
 		for i, l := range strings.Split(view, "\n") {
-			if w := lipgloss.Width(l); w > 160 {
-				t.Fatalf("line %d is %d wide", i, w)
+			if w := lipgloss.Width(l); w > width {
+				t.Fatalf("%s: line %d is %d wide", name, i, w)
 			}
 		}
+	}
+	if !strings.Contains(nospace(views["mini status"]), "ZXZpbA==") {
+		t.Fatalf("the mini status shows the text:\n%s", views["mini status"])
 	}
 	src.err = errors.New("read " + evil)
 	if view := reload(t, m).View(); strings.ContainsAny(view, "\x1b\x07") {
