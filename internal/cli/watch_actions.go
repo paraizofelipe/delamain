@@ -69,12 +69,13 @@ type watchDialog struct {
 	run    RunView
 	dirty  string    // why rm refused the worktree: F removes it anyway
 	scroll int       // lines of a dialog taller than the screen scrolled past
-	at     time.Time // when it opened: a removal is only confirmed confirmGrace later
+	at     time.Time // when it opened: it is only answered confirmGrace later
 }
 
-// confirmGrace is how long rm ignores its own key after the dialog opens: d opens it and d
-// confirms it, so a double tap or the autorepeat of a held key would delete the run before it
-// could be read. F is another key and needs no grace.
+// confirmGrace is how long a dialog ignores the key that opened it: s opens the stop and s
+// confirms it, d opens the rm and d confirms it, so a double tap or the autorepeat of a held key
+// would answer before the dialog could be read — losing the run's work, or its directory. F is
+// another key and needs no grace.
 const confirmGrace = 300 * time.Millisecond
 
 // toastFor is how long a toast stays on the footer.
@@ -198,6 +199,9 @@ func (m watchModel) dialogKey(msg tea.KeyMsg) (watchModel, tea.Cmd) {
 		}
 		if m.dialog.run.terminal { // a finished run has nothing to stop
 			return m, nil
+		}
+		if m.opts.now().Sub(m.dialog.at) < confirmGrace {
+			return m, nil // s opened this dialog: a second s this soon is a double tap, not a choice
 		}
 		id, acts := m.dialog.run.ID, m.opts.actions
 		m.dialog, m.acting = watchDialog{}, true

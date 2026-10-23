@@ -172,6 +172,7 @@ func TestWatchStopShouldAskAndThenStopOnlyTheSelectedRun(t *testing.T) {
 	for _, confirm := range []string{"s", "enter"} {
 		acts.stops = nil
 		m = send(t, m, keyPress("s"))
+		afterGrace(&now)
 		next, cmd := m.Update(keyPress(confirm))
 		if view := screen(next); strings.Contains(view, "delamain stop") || footerText(next)[0] != "stopping run 14…" {
 			t.Fatalf("%s closes the dialog and the footer says the stop is running:\n%s", confirm, view)
@@ -180,6 +181,7 @@ func TestWatchStopShouldAskAndThenStopOnlyTheSelectedRun(t *testing.T) {
 			t.Fatal("the stop runs in a tea.Cmd, off Update")
 		}
 		again, _ := next.Update(keyPress("s"))
+		afterGrace(&now) // what holds this stop back is the running one, not the grace
 		if _, cmd := again.Update(keyPress(confirm)); cmd != nil {
 			t.Fatal("a stop waits for the running one to end")
 		}
@@ -193,7 +195,9 @@ func TestWatchStopShouldAskAndThenStopOnlyTheSelectedRun(t *testing.T) {
 	}
 
 	acts.stopErr = errors.New("run 14: database is locked")
-	m = send(t, send(t, m, keyPress("s")), keyPress("s"))
+	m = send(t, m, keyPress("s"))
+	afterGrace(&now)
+	m = send(t, m, keyPress("s"))
 	if got := strings.Join(footerText(m), "\n"); !strings.Contains(got, "run 14: database is locked") {
 		t.Fatalf("a failed stop is the toast: %q", got)
 	}
@@ -256,6 +260,7 @@ func TestWatchToastShouldDisappearAfter5Seconds(t *testing.T) {
 
 	// The stop that runs keeps its toast as long as it runs.
 	m = send(t, m, keyPress("s"))
+	afterGrace(&now)
 	m, cmd := m.Update(keyPress("s"))
 	if m = timers.elapse(t, m, time.Minute); footerText(m)[0] != "stopping run 14…" {
 		t.Fatalf("the toast of a running stop stays: %q", footerText(m))
@@ -271,7 +276,9 @@ func TestWatchToastShouldDisappearAfter5Seconds(t *testing.T) {
 	}
 	// A new toast replaces the old one and has its own 5s.
 	acts.stopOut = "run 14 already finished (recorded)\n"
-	m = send(t, send(t, m, keyPress("s")), keyPress("s"))
+	m = send(t, m, keyPress("s"))
+	afterGrace(&now)
+	m = send(t, m, keyPress("s"))
 	if got := footerText(m); got[0] != "run 14 already finished (recorded)" || !strings.HasPrefix(got[1], keys) {
 		t.Fatalf("a new toast replaces the old one: %q", got)
 	}
@@ -325,6 +332,7 @@ func TestWatchStopShouldOfferRecoverWhenTheOwnerDied(t *testing.T) {
 	if strings.Contains(text, "only this run is cancelled") {
 		t.Fatalf("nobody is left to cancel the run:\n%s", text)
 	}
+	afterGrace(&now)
 	m = send(t, m, keyPress("enter"))
 	if len(acts.stops) != 1 || acts.stops[0] != 14 {
 		t.Fatalf("the confirmation stops the run, which takes the recover path: %v", acts.stops)
@@ -930,36 +938,60 @@ func TestWatchLongShouldEndWithTheTmuxPopupAndOSC52(t *testing.T) {
 	}
 }
 
-// d opens the rm dialog and d confirms it: a double tap, or the autorepeat of a held key, would
-// delete the run and its directory before the dialog could be read.
-func TestWatchRmShouldIgnoreItsOwnKeyUntilTheDialogCanBeRead(t *testing.T) {
-	now := watchNow
-	src := &fakeWatchSource{done: []RunView{removable(12)}}
-	acts := &fakeWatchActions{removeOut: "removed run 12\n"}
-	m := startActions(t, src, acts, 160, 40, &now)
+// d opens the rm dialog and d confirms it; s does the same for the stop. A double tap, or the
+// autorepeat of a held key, would answer before the dialog could be read: rm deletes the run's
+// directory, and stop throws away what a run that is going had done.
+func TestWatchDialogsShouldIgnoreTheKeyThatOpenedThemUntilTheyCanBeRead(t *testing.T) {
+	for _, c := range []struct {
+		name, key, title, toast string
+		src                     *fakeWatchSource
+		acts                    *fakeWatchActions
+		acted                   func(*fakeWatchActions) int
+	}{
+		{
+			name: "rm", key: "d", title: "delamain rm", toast: "removed run 12",
+			src:   &fakeWatchSource{done: []RunView{removable(12)}},
+			acts:  &fakeWatchActions{removeOut: "removed run 12\n"},
+			acted: func(f *fakeWatchActions) int { return len(f.removes) },
+		},
+		{
+			name: "stop", key: "s", title: "delamain stop", toast: "stop requested for run 14 (owner pid 51230)",
+			src:   &fakeWatchSource{active: []RunView{owned(14, "#55", "a", 51230, true)}},
+			acts:  &fakeWatchActions{stopOut: "stop requested for run 14 (owner pid 51230)\n"},
+			acted: func(f *fakeWatchActions) int { return len(f.stops) },
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			now := watchNow
+			m := startActions(t, c.src, c.acts, 160, 40, &now)
 
-	m = send(t, m, keyPress("d"))
-	for _, k := range []string{"d", "enter"} {
-		m = send(t, m, keyPress(k))
-		if len(acts.removes) != 0 {
-			t.Fatalf("%s right after the dialog opened is a double tap: %v", k, acts.removes)
-		}
-		if dialogText(screen(m), "delamain rm") == "" {
-			t.Fatalf("%s leaves the dialog open to be read:\n%s", k, screen(m))
-		}
-	}
+			m = send(t, m, keyPress(c.key))
+			for _, k := range []string{c.key, "enter"} {
+				m = send(t, m, keyPress(k))
+				if c.acted(c.acts) != 0 {
+					t.Fatalf("%s right after the dialog opened is a double tap, not a choice", k)
+				}
+				if dialogText(screen(m), c.title) == "" {
+					t.Fatalf("%s leaves the dialog open to be read:\n%s", k, screen(m))
+				}
+			}
 
-	now = now.Add(confirmGrace - time.Millisecond)
-	if m = send(t, m, keyPress("d")); len(acts.removes) != 0 {
-		t.Fatalf("the grace is %s, not less: %v", confirmGrace, acts.removes)
-	}
-	afterGrace(&now)
-	m = send(t, m, keyPress("d"))
-	if len(acts.removes) != 1 || acts.removes[0] != (removeCall{12, false}) {
-		t.Fatalf("d removes the run once the dialog could be read: %v", acts.removes)
-	}
-	if footerText(m)[0] != "removed run 12" {
-		t.Fatalf("the removal that went through is the toast: %q", footerText(m))
+			now = now.Add(confirmGrace - time.Millisecond)
+			if m = send(t, m, keyPress(c.key)); c.acted(c.acts) != 0 {
+				t.Fatalf("the grace is %s, not less", confirmGrace)
+			}
+			afterGrace(&now)
+			m = send(t, m, keyPress(c.key))
+			if n := c.acted(c.acts); n != 1 {
+				t.Fatalf("%s acts once the dialog could be read, %d times instead", c.key, n)
+			}
+			if got := footerText(m)[0]; got != c.toast {
+				t.Fatalf("what went through is the toast, want %q: %q", c.toast, got)
+			}
+			if dialogText(screen(m), c.title) != "" {
+				t.Fatalf("the answered dialog closes:\n%s", screen(m))
+			}
+		})
 	}
 }
 
@@ -1027,6 +1059,7 @@ func TestWatchToastShouldStayThroughReloadsAndComeBackAfterAQuickOne(t *testing.
 	// A copy beside a running stop takes the footer for its 5s; the stop is still running after
 	// it, so its toast comes back instead of leaving the footer silent.
 	m = send(t, m, keyPress("s"))
+	afterGrace(&now)
 	m, cmd := m.Update(keyPress("s"))
 	if got := footerText(m)[0]; got != "stopping run 14…" {
 		t.Fatalf("the stop that runs is on the footer: %q", got)
@@ -1078,6 +1111,7 @@ func TestWatchDialogsAndToastsShouldCarryTheColorOfWhatTheyDo(t *testing.T) {
 	m = send(t, send(t, m, keyPress("esc")), keyPress("s"))
 	look("stop", "delamain stop", st.warn)
 
+	afterGrace(&now)
 	next, cmd := m.Update(keyPress("s"))
 	m = next
 	toast("the stop that runs", "stopping run 14…", st.warn)
@@ -1085,7 +1119,9 @@ func TestWatchDialogsAndToastsShouldCarryTheColorOfWhatTheyDo(t *testing.T) {
 	toast("what the stop printed", "stop requested for run 14 (owner pid 51230)", st.ok)
 
 	acts.stopErr = errors.New("run 14: database is locked")
-	m = send(t, send(t, m, keyPress("s")), keyPress("s"))
+	m = send(t, m, keyPress("s"))
+	afterGrace(&now)
+	m = send(t, m, keyPress("s"))
 	toast("a failed stop", "run 14: database is locked", st.bad)
 
 	m = send(t, send(t, m, keyPress("j")), keyPress("d"))
