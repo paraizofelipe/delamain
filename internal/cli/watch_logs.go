@@ -325,7 +325,7 @@ func (p logPane) wrappedRows(st styles, inner, rows int, look logLook) []string 
 	var out []string
 	if !p.paused {
 		for i := len(p.shown) - 1; i >= 0 && len(out) < rows; i-- {
-			out = append(wrapRow(st, p.shown[i], inner, look), out...)
+			out = append(wrapRow(st, p.shown[i], inner, look, rows-len(out), true), out...)
 		}
 		if len(out) < rows && p.omit > 0 {
 			out = append(omitted(), out...)
@@ -340,15 +340,16 @@ func (p logPane) wrappedRows(st styles, inner, rows int, look logLook) []string 
 		top-- // the omitted line comes before the first one
 	}
 	for i := max(top, 0); i < len(p.shown) && len(out) < rows; i++ {
-		out = append(out, wrapRow(st, p.shown[i], inner, look)...)
+		out = append(out, wrapRow(st, p.shown[i], inner, look, rows-len(out), false)...)
 	}
 	return out[:min(len(out), rows)]
 }
 
 // wrapRow is logRow wrapped to inner columns: the continuations start under the text, past the
 // source, the │ and the time, which are not repeated. logsLetters shows the source as a letter
-// and the time without its seconds.
-func wrapRow(st styles, l logLine, inner int, look logLook) []string {
+// and the time without its seconds. Only what can fill need rows is wrapped, one row more so
+// that the last one breaks where the whole line would: its start, or its end when tail.
+func wrapRow(st styles, l logLine, inner int, look logLook, need int, tail bool) []string {
 	source, stamp := l.source+strings.Repeat(" ", max(0, 11-utf8.RuneCountInString(l.source))), 8
 	if look == logsLetters {
 		source, stamp = sourceLetter(l.source), 5
@@ -360,9 +361,18 @@ func wrapRow(st styles, l logLine, inner int, look logLook) []string {
 		text = colorRest(st, l.source, l.text[9:])
 	}
 	indent := lipgloss.Width(prefix)
+	headless := false // cut at its start: its first row is a continuation
+	if keep, w := (need+1)*max(inner-indent, 1), ansi.StringWidth(text); w > keep {
+		headless = tail
+		if tail {
+			text = ansi.TruncateLeft(text, w-keep, "")
+		} else {
+			text = ansi.Truncate(text, keep, "")
+		}
+	}
 	rows := wrapStyled(text, inner-indent)
 	for i := range rows {
-		if i == 0 {
+		if i == 0 && !headless {
 			rows[i] = prefix + rows[i]
 		} else {
 			rows[i] = strings.Repeat(" ", indent) + rows[i]
