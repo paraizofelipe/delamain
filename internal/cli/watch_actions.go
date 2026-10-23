@@ -278,6 +278,7 @@ func (m watchModel) dialogLines() (string, lipgloss.Style, dialogWriter) {
 		m.removeLines(&d)
 	case v.terminal:
 		d.text(st.none.Bold(true), fmt.Sprintf("run %d already finished", v.ID))
+		d.scroll()
 		d.blank()
 		d.row("state", paint(st.runStateStyle(v.State), v.State))
 		d.row("result", orDash(resultCell(st, v.Result).styled))
@@ -289,6 +290,7 @@ func (m watchModel) dialogLines() (string, lipgloss.Style, dialogWriter) {
 			owner, ownerLook = fmt.Sprintf("pid %d (dead): the run is finalized here, as delamain recover does", v.Owner.PID), st.bad
 		}
 		d.text(st.none.Bold(true), fmt.Sprintf("Stop run %d?", v.ID))
+		d.scroll()
 		d.styled(paint(st.info, v.Issue) + " " + v.Title)
 		d.blank()
 		d.row("owner", paint(ownerLook, owner))
@@ -321,7 +323,7 @@ func (m watchModel) helpLines(d *dialogWriter) {
 	d.text(m.st.none, "the list and the logs reload on their own every "+m.opts.interval.String())
 	d.blank()
 	d.labelW = 17 // the widest key and two spaces
-	d.from = len(d.lines)
+	d.scroll()
 	for _, k := range helpKeys {
 		d.row(paint(m.st.info.Bold(true), k[0]), k[1])
 	}
@@ -332,6 +334,7 @@ func (m watchModel) removeLines(d *dialogWriter) {
 	st, v := m.st, m.dialog.run
 	if !v.terminal {
 		d.text(st.bad.Bold(true), fmt.Sprintf("run %d is still %s", v.ID, v.State))
+		d.scroll()
 		d.text(st.bad, "stop it first with s: rm only deletes finished runs")
 		d.blank()
 		d.buttons([2]string{"ok", "esc"})
@@ -342,6 +345,7 @@ func (m watchModel) removeLines(d *dialogWriter) {
 		keeps = "branch " + v.Branch + " and the PR"
 	}
 	d.text(st.none.Bold(true), fmt.Sprintf("Remove run %d?", v.ID))
+	d.scroll()
 	d.styled(paint(st.info, v.Issue) + " " + v.Title)
 	d.blank()
 	d.row("deletes", "record, run directory and worktree")
@@ -374,6 +378,9 @@ func (d dialogWriter) scrollEnd() int {
 	return d.to
 }
 
+// scroll makes the lines written from here on scroll when the dialog is taller than the screen.
+func (d *dialogWriter) scroll() { d.from = len(d.lines) }
+
 func (d *dialogWriter) blank() { d.lines = append(d.lines, "") }
 
 // text writes s in look.
@@ -395,6 +402,7 @@ func (d *dialogWriter) row(label, value string) {
 
 // buttons writes the buttons, a button never split across lines.
 func (d *dialogWriter) buttons(bs ...[2]string) {
+	d.to = len(d.lines) // the buttons never scroll away
 	line := ""
 	for _, b := range bs {
 		item := "[ " + b[0] + "  " + paint(d.st.info.Bold(true), b[1]) + " ]"

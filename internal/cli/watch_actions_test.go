@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/paraizo/delamain/internal/config"
 	"github.com/paraizo/delamain/internal/notify"
@@ -717,5 +719,136 @@ func TestWatchHelpShouldScrollTheKeysWhenItDoesNotFitTheHeight(t *testing.T) {
 	}
 	if text = dialogText(screen(m), "help"); !strings.Contains(text, first[0]) {
 		t.Fatalf("↑ and k scroll back to the first key:\n%s", screen(m))
+	}
+}
+
+// dialogCase opens a dialog on a fresh TUI and says what it must show.
+type dialogCase struct {
+	name, title string
+	open        []string // keys, from the first run selected
+	acts        *fakeWatchActions
+	want        []string // phrases of the dialog, spaces collapsed
+	buttons     string
+}
+
+func dialogCases() []dialogCase {
+	dirty := fmt.Errorf("worktree /home/someone/projects/.worktrees/delamain/feat/49-logs-colors-by-source-level-gate %w", errDirtyWorktree)
+	return []dialogCase{
+		{"stop", "delamain stop", []string{"s"}, &fakeWatchActions{}, []string{
+			"Stop run 14?", "#55 artifacts: accept test_file and format_check in .delamain.yaml",
+			"pid 51230 (alive): only this run is cancelled", "halted: stopped by the user (delamain stop)",
+			"draft of what was already committed + needs-human label",
+		}, "[ stop s ] [ cancel esc ]"},
+		{"stop dead owner", "delamain stop", []string{"j", "s"}, &fakeWatchActions{}, []string{
+			"Stop run 15?", "pid 999999 (dead): the run is finalized here, as delamain recover does",
+		}, "[ stop s ] [ cancel esc ]"},
+		{"stop finished", "delamain stop", []string{"G", "s"}, &fakeWatchActions{}, []string{
+			"run 12 already finished", "recorded", "approved: merged",
+		}, "[ ok esc ]"},
+		{"rm active", "delamain rm", []string{"d"}, &fakeWatchActions{}, []string{
+			"run 14 is still implement", "stop it first with s: rm only deletes finished runs",
+		}, "[ ok esc ]"},
+		{"rm finished", "delamain rm", []string{"G", "d"}, &fakeWatchActions{}, []string{
+			"Remove run 12?", "#49 logs: colors by source, level, gate and agent marker",
+			"record, run directory and worktree", "branch feat/49-logs-colors-by-source-level-gate and the PR",
+			"the day's spend does not change (token_ledger stays)",
+		}, "[ remove d ] [ cancel esc ]"},
+		{"rm dirty", "delamain rm", []string{"G", "d", "d"}, &fakeWatchActions{removeErr: []error{dirty}}, []string{
+			"Remove run 12?", dirty.Error(),
+		}, "[ remove anyway F ] [ cancel esc ]"},
+		{"help", "help", []string{"?"}, &fakeWatchActions{}, []string{
+			"the list and the logs reload on their own every 1ms", "quit; the runs go on in the daemon",
+		}, ""},
+	}
+}
+
+// dialogRuns are an active run, one whose owner died and a finished one, with long texts.
+func dialogRuns() *fakeWatchSource {
+	done := finished(12, "#49", "approved: merged", "logs: colors by source, level, gate and agent marker")
+	done.Branch = "feat/49-logs-colors-by-source-level-gate"
+	return &fakeWatchSource{
+		active: []RunView{
+			owned(14, "#55", "artifacts: accept test_file and format_check in .delamain.yaml", 51230, true),
+			owned(15, "#56", "watch: actions", 999999, false),
+		},
+		done: []RunView{done},
+	}
+}
+
+func TestWatchDialogsShouldFitEveryLayout(t *testing.T) {
+	for _, size := range [][2]int{{200, 50}, {84, 26}, {44, 14}} {
+		w, h := size[0], size[1]
+		for _, c := range dialogCases() {
+			now := watchNow
+			m := startActions(t, dialogRuns(), c.acts, w, h, &now)
+			for _, k := range c.open {
+				m = send(t, m, keyPress(k))
+			}
+			if label := map[bool]string{true: "owner    pid", false: "owner      pid"}[w < 100]; c.name == "stop" && !strings.Contains(panelText(screen(m), c.title), label) {
+				t.Fatalf("%dx%d: the labels take %d columns:\n%s", w, h, len(label)-3, screen(m))
+			}
+			var seen []string
+			for i := range 30 {
+				if i > 0 {
+					m = send(t, m, keyPress("down"))
+				}
+				view := screen(m)
+				fits(t, m.View(), w, h)
+				rows := panelRows(view, c.title)
+				if rows == nil {
+					t.Fatalf("%dx%d %s: no dialog:\n%s", w, h, c.name, view)
+				}
+				if bw := lipgloss.Width(rows[0]) + 4; bw != min(64, w-4) {
+					t.Fatalf("%dx%d %s: the dialog is %d wide, want min(64, %d-4)", w, h, c.name, bw, w)
+				}
+				for _, r := range rows {
+					if strings.HasSuffix(strings.TrimSpace(r), "…") {
+						t.Fatalf("%dx%d %s: a line is cut:\n%s", w, h, c.name, view)
+					}
+				}
+				text := dialogText(view, c.title)
+				if c.buttons != "" && !strings.Contains(text, c.buttons) {
+					t.Fatalf("%dx%d %s: the buttons are always shown:\n%s", w, h, c.name, view)
+				}
+				seen = append(seen, nospace(text)) // a word longer than a line is broken in two
+			}
+			for _, want := range c.want {
+				if !slices.ContainsFunc(seen, func(s string) bool { return strings.Contains(s, nospace(want)) }) {
+					t.Fatalf("%dx%d %s: %q is never shown whole:\n%s", w, h, c.name, want, strings.Join(seen, "\n"))
+				}
+			}
+		}
+	}
+}
+
+func TestWatchDialogsShouldStripControlCharactersFromRunData(t *testing.T) {
+	evil := "evil\x1b]52;c;ZXZpbA==\x07\x1b[2J\u009b6n\x00"
+	v := owned(14, "#55"+evil, "title "+evil, 51230, true)
+	done := finished(12, "#49"+evil, "approved: "+evil, "title "+evil)
+	done.Branch = "feat/" + evil
+	src := &fakeWatchSource{active: []RunView{v}, done: []RunView{done}}
+	acts := &fakeWatchActions{
+		stopErr:   errors.New("stop " + evil),
+		removeErr: []error{fmt.Errorf("worktree /wt/%s %w", evil, errDirtyWorktree)},
+	}
+	now := watchNow
+	m := startActions(t, src, acts, 160, 40, &now)
+	views := map[string]string{
+		"stop":          send(t, m, keyPress("s")).View(),
+		"stop failed":   send(t, send(t, m, keyPress("s")), keyPress("s")).View(),
+		"stop finished": send(t, send(t, m, keyPress("G")), keyPress("s")).View(),
+		"rm":            send(t, send(t, m, keyPress("G")), keyPress("d")).View(),
+		"rm dirty":      send(t, send(t, send(t, m, keyPress("G")), keyPress("d")), keyPress("d")).View(),
+		"rm active":     send(t, m, keyPress("d")).View(),
+	}
+	acts.removeErr = []error{errors.New("rm " + evil)}
+	views["rm other error"] = send(t, send(t, send(t, m, keyPress("G")), keyPress("d")), keyPress("d")).View()
+	for name, view := range views {
+		if i := strings.IndexFunc(view, func(r rune) bool { return r != '\n' && (r < 0x20 || (r >= 0x7f && r <= 0x9f)) }); i >= 0 {
+			t.Fatalf("%s: control character %q reached the terminal:\n%q", name, view[i], view)
+		}
+		if !strings.Contains(nospace(view), "evil]52;c;ZXZpbA==[2J6n") {
+			t.Fatalf("%s: only the control characters go, the text stays:\n%s", name, view)
+		}
 	}
 }
