@@ -12,14 +12,18 @@ import (
 )
 
 var watchKeys = struct {
-	quit, up, down, first, last, source key.Binding
+	quit, up, down, first, last, source, pageUp, pageDown, follow, focus key.Binding
 }{
-	quit:   key.NewBinding(key.WithKeys("q", "ctrl+c")),
-	source: key.NewBinding(key.WithKeys("1", "2", "3", "4", "5", "6")),
-	up:     key.NewBinding(key.WithKeys("up", "k")),
-	down:   key.NewBinding(key.WithKeys("down", "j")),
-	first:  key.NewBinding(key.WithKeys("g", "home")),
-	last:   key.NewBinding(key.WithKeys("G", "end")),
+	quit:     key.NewBinding(key.WithKeys("q", "ctrl+c")),
+	source:   key.NewBinding(key.WithKeys("1", "2", "3", "4", "5", "6")),
+	pageUp:   key.NewBinding(key.WithKeys("pgup", "ctrl+u")),
+	pageDown: key.NewBinding(key.WithKeys("pgdown", "ctrl+d")),
+	follow:   key.NewBinding(key.WithKeys("f")),
+	focus:    key.NewBinding(key.WithKeys("tab")),
+	up:       key.NewBinding(key.WithKeys("up", "k")),
+	down:     key.NewBinding(key.WithKeys("down", "j")),
+	first:    key.NewBinding(key.WithKeys("g", "home")),
+	last:     key.NewBinding(key.WithKeys("G", "end")),
 }
 
 // watchData is one reload of everything the screen shows.
@@ -54,6 +58,7 @@ type watchModel struct {
 	loading       bool // a reload is running: ticks are skipped until it ends
 	err           error
 	logs          logPane
+	focusLogs     bool // the keys that move the selection scroll the logs instead
 }
 
 func newWatchModel(src watchSource, st styles, opts watchOptions) watchModel {
@@ -113,6 +118,21 @@ func (m watchModel) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	case key.Matches(msg, watchKeys.source):
 		m.logs.setFilter(int(msg.Runes[0] - '1'))
+		return m, nil
+	case key.Matches(msg, watchKeys.pageUp):
+		m.logs.pageUp()
+		return m, nil
+	case key.Matches(msg, watchKeys.pageDown):
+		m.logs.pageDown()
+		return m, nil
+	case key.Matches(msg, watchKeys.follow):
+		m.logs.toggleFollow()
+		return m, nil
+	case key.Matches(msg, watchKeys.focus):
+		m.focusLogs = !m.focusLogs
+		return m, nil
+	case m.focusLogs && key.Matches(msg, watchKeys.last):
+		m.logs.follow()
 		return m, nil
 	case key.Matches(msg, watchKeys.up):
 		idx--

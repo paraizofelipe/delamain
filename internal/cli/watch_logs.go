@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"unicode/utf8"
 
@@ -21,12 +22,13 @@ type logPane struct {
 	lines  []logLine    // control characters already dropped
 	source int          // index in logSources; it outlives reset
 	shown  []logLine    // the lines of source
+	paused bool         // the user scrolled away: new lines do not move the view
 	vp     viewport.Model
 }
 
 // reset points the pane at the logs of run, in dir, and forgets what was read; it does no I/O.
 func (p *logPane) reset(run int64, dir string) {
-	p.fl, p.run, p.lines = nil, run, nil
+	p.fl, p.run, p.lines, p.paused = nil, run, nil, false
 	if dir != "" {
 		p.fl = &logFollower{dir: dir, offsets: map[string]int64{}, partial: map[string][]byte{}, lastTS: map[string]string{}}
 	}
@@ -41,6 +43,29 @@ func (p *logPane) append(lines []logLine) {
 		p.lines = append(p.lines, logLine{ts: l.ts, source: clean(l.source), text: clean(l.text)})
 	}
 	p.refresh()
+}
+
+// pageUp goes up half a page and pauses; pageDown goes down half a page and stays paused.
+func (p *logPane) pageUp() {
+	p.vp.HalfPageUp()
+	p.paused = true
+}
+
+func (p *logPane) pageDown() { p.vp.HalfPageDown() }
+
+// follow goes back to the end and follows the new lines.
+func (p *logPane) follow() {
+	p.paused = false
+	p.vp.GotoBottom()
+}
+
+// toggleFollow pauses where the view is, or follows from the end.
+func (p *logPane) toggleFollow() {
+	if p.paused {
+		p.follow()
+		return
+	}
+	p.paused = true
 }
 
 // setFilter shows only the lines of logSources[i]; the others stay in memory.
@@ -73,7 +98,21 @@ func (p *logPane) refresh() {
 		}
 	}
 	p.vp.SetContent(strings.Join(texts, "\n"))
-	p.vp.GotoBottom()
+	if !p.paused {
+		p.vp.GotoBottom()
+	}
+	p.vp.SetYOffset(p.vp.YOffset) // within the content, which a filter may have shortened
+}
+
+// state is the title of the logs of run: ended, paused or following.
+func (p logPane) state(st styles, run RunView) string {
+	switch {
+	case run.terminal:
+		return paint(st.muted, "ended")
+	case p.paused:
+		return paint(st.warn, "paused")
+	}
+	return paint(st.ok, "● following")
 }
 
 // view is the inside of the panel for run, inner columns wide and at most height lines high:
@@ -129,11 +168,14 @@ func (p logPane) chips(st styles) string {
 
 // footer tells where the logs stand at the left and how many lines are shown at the right.
 func (p logPane) footer(st styles, run RunView, inner int) string {
-	left := ""
-	if run.terminal {
+	left := paint(st.muted, "following the end · G")
+	switch {
+	case run.terminal:
 		left = paint(st.muted, "ended · ") + resultCell(st, run.Result).styled
+	case p.paused:
+		left = paint(st.muted, "paused · G back to the end")
 	}
-	right := paint(st.muted, fmt.Sprintf("%d of %d lines", len(p.shown), len(p.lines)))
+	right := paint(st.muted, fmt.Sprintf("%d of %d lines · %d%%", len(p.shown), len(p.lines), int(math.Round(p.vp.ScrollPercent()*100))))
 	gap := inner - lipgloss.Width(left) - lipgloss.Width(right)
 	return ansi.Truncate(left+strings.Repeat(" ", max(gap, 1))+right, inner, "…")
 }

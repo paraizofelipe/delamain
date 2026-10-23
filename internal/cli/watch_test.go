@@ -287,6 +287,16 @@ func keyPress(k string) tea.KeyMsg {
 		return tea.KeyMsg{Type: tea.KeyHome}
 	case "end":
 		return tea.KeyMsg{Type: tea.KeyEnd}
+	case "pgup":
+		return tea.KeyMsg{Type: tea.KeyPgUp}
+	case "pgdown":
+		return tea.KeyMsg{Type: tea.KeyPgDown}
+	case "ctrl+u":
+		return tea.KeyMsg{Type: tea.KeyCtrlU}
+	case "ctrl+d":
+		return tea.KeyMsg{Type: tea.KeyCtrlD}
+	case "tab":
+		return tea.KeyMsg{Type: tea.KeyTab}
 	}
 	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(k)}
 }
@@ -901,4 +911,84 @@ func TestWatchLogsShouldFilterBySourceWithoutDroppingLines(t *testing.T) {
 			t.Fatalf("%s picks %s:\n%s", k, chip, view)
 		}
 	}
+}
+
+// numbered writes the lines "line <from>" to "line <to>" to the run's delamain.log.
+func numbered(t *testing.T, v RunView, from, to int) {
+	t.Helper()
+	var b strings.Builder
+	for i := from; i <= to; i++ {
+		fmt.Fprintf(&b, "12:%02d:%02d line %03d\n", i/60, i%60, i)
+	}
+	writeLog(t, v, "delamain", b.String())
+}
+
+// shows reports whether the view has the lines "line <from>" to "line <to>" and not the ones
+// around them.
+func shows(view string, from, to int) bool {
+	for i := from - 1; i <= to+1; i++ {
+		if strings.Contains(view, fmt.Sprintf("line %03d", i)) != (i >= from && i <= to) {
+			return false
+		}
+	}
+	return true
+}
+
+func TestWatchLogsShouldPauseWhenScrollingUpAndResumeWithG(t *testing.T) {
+	v := logRun(t, 14, "#55")
+	numbered(t, v, 1, 100)
+	m := startLogs(t, &fakeWatchSource{active: []RunView{v}}, 160, true)
+	// 40 lines: header, footer, borders, chips, two separators and the panel footer leave 32.
+	step := func(name string, from, to int, state, footer string) {
+		t.Helper()
+		view := screen(m)
+		if !shows(view, from, to) {
+			t.Fatalf("%s: want lines %d to %d:\n%s", name, from, to, view)
+		}
+		if !strings.Contains(line(view, "logs · run 14"), "logs · run 14 · "+state+" ") {
+			t.Fatalf("%s: title %q, want %q", name, line(view, "logs · run 14"), state)
+		}
+		if !has(view, footer) {
+			t.Fatalf("%s: panel footer %q, want %q", name, line(view, " lines · "), footer)
+		}
+	}
+	step("start", 69, 100, "● following", "following the end · G 100 of 100 lines · 100%")
+	if sgr := sgrBefore(m.View(), "● following"); sgr != "32" {
+		t.Fatalf("following is in ok, got SGR %q", sgr)
+	}
+
+	m = send(t, m, keyPress("pgup"))
+	step("pgup goes up half a page", 53, 84, "paused", "paused · G back to the end 100 of 100 lines · 76%")
+	if sgr := sgrBefore(m.View(), "paused"); sgr != "33" {
+		t.Fatalf("paused is in warn, got SGR %q", sgr)
+	}
+	numbered(t, v, 101, 101)
+	m = reload(t, m)
+	step("new lines keep a paused view", 53, 84, "paused", "paused · G back to the end 101 of 101 lines · 75%")
+	m = send(t, m, keyPress("ctrl+u"))
+	step("ctrl+u goes up half a page", 37, 68, "paused", "paused · G back to the end 101 of 101 lines · 52%")
+	m = send(t, m, keyPress("pgdown"))
+	step("pgdown goes down half a page", 53, 84, "paused", "paused · G back to the end 101 of 101 lines · 75%")
+	for range 3 {
+		m = send(t, m, keyPress("ctrl+d"))
+	}
+	step("the end reached by scrolling stays paused", 70, 101, "paused", "paused · G back to the end 101 of 101 lines · 100%")
+
+	m = send(t, m, keyPress("f"))
+	numbered(t, v, 102, 102)
+	m = reload(t, m)
+	step("f follows again", 71, 102, "● following", "following the end · G 102 of 102 lines · 100%")
+	m = send(t, m, keyPress("f"))
+	numbered(t, v, 103, 103)
+	m = reload(t, m)
+	step("f pauses where the view is", 71, 102, "paused", "paused · G back to the end 103 of 103 lines · 99%")
+	m = send(t, m, keyPress("f"))
+	step("f goes back to the end", 72, 103, "● following", "following the end · G 103 of 103 lines · 100%")
+
+	m = send(t, send(t, m, keyPress("tab")), keyPress("pgup"))
+	step("pgup with the logs focused", 56, 87, "paused", "paused · G back to the end 103 of 103 lines · 77%")
+	m = send(t, m, keyPress("G"))
+	step("G goes back to the end", 72, 103, "● following", "following the end · G 103 of 103 lines · 100%")
+	m = send(t, send(t, m, keyPress("ctrl+u")), keyPress("end"))
+	step("end goes back to the end", 72, 103, "● following", "following the end · G 103 of 103 lines · 100%")
 }
