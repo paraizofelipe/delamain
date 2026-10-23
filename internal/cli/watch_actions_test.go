@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -467,5 +468,67 @@ func TestWatchRmShouldRemoveAFinishedRunAndWarnOnOtherErrors(t *testing.T) {
 	m = send(t, send(t, m, keyPress("d")), keyPress("d"))
 	if strings.Contains(screen(m), "delamain rm") || footerText(m)[0] != "worktree /wt/x is in use by run 2 (implement)" {
 		t.Fatalf("another error closes the dialog and is the toast: %q\n%s", footerText(m), screen(m))
+	}
+}
+
+func TestWatchActionsShouldRemoveARunLikeRm(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	rec := f.run(t, "#1", "fix/1-a", store.StateRecorded)
+	dir := f.runDir(t, rec)
+	busy := f.run(t, "#2", "", store.StateImplement)
+	acts := f.actions(t, &bytes.Buffer{})
+
+	if out, err := acts.Remove(ctx, rec.ID, false); err != nil || out != "removed run 1\n" {
+		t.Fatalf("Remove prints what rm prints: %q %v", out, err)
+	}
+	if _, err := f.st.GetRun(ctx, rec.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("the record is gone, got %v", err)
+	}
+	if exists(dir) || exists(rec.Worktree) {
+		t.Fatal("the run directory and the worktree are gone")
+	}
+	if !f.branchExists("fix/1-a") {
+		t.Fatal("the branch may be the delivered draft: it stays")
+	}
+
+	_, err := acts.Remove(ctx, busy.ID, true)
+	if want := "run 2 is still implement: stop it first with 'delamain stop 2'"; err == nil || err.Error() != want {
+		t.Fatalf("an unfinished run is refused, even forced, want %q: %v", want, err)
+	}
+	if _, err := f.st.GetRun(ctx, busy.ID); err != nil {
+		t.Fatalf("a refused run keeps its record: %v", err)
+	}
+	if _, err := acts.Remove(ctx, 999, false); err == nil || err.Error() != "run 999 not found" {
+		t.Fatalf("an unknown run is an error: %v", err)
+	}
+}
+
+func TestWatchActionsShouldRefuseADirtyWorktreeWithErrDirtyWorktreeUnlessForced(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	rec := f.run(t, "#1", "fix/1-a", store.StateRecorded)
+	dir := f.runDir(t, rec)
+	if err := os.WriteFile(filepath.Join(rec.Worktree, "wip.go"), []byte("package wip\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	acts := f.actions(t, &bytes.Buffer{})
+
+	_, err := acts.Remove(ctx, rec.ID, false)
+	if !errors.Is(err, errDirtyWorktree) {
+		t.Fatalf("a dirty worktree is errDirtyWorktree: %v", err)
+	}
+	if want := "worktree " + rec.Worktree + " has uncommitted changes; use --force to discard them"; err.Error() != want {
+		t.Fatalf("the message is rm's, want %q: %q", want, err)
+	}
+	if !exists(filepath.Join(rec.Worktree, "wip.go")) || !exists(dir) {
+		t.Fatal("a refused run keeps its worktree and directory")
+	}
+
+	if out, err := acts.Remove(ctx, rec.ID, true); err != nil || out != "removed run 1\n" {
+		t.Fatalf("force discards the changes: %q %v", out, err)
+	}
+	if exists(rec.Worktree) || exists(dir) {
+		t.Fatal("force removes the worktree and the run directory")
 	}
 }

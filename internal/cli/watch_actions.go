@@ -328,8 +328,13 @@ func (a *storeWatchActions) Stop(ctx context.Context, id int64) (string, error) 
 	return out.String(), err
 }
 
-func (a *storeWatchActions) Remove(context.Context, int64, bool) (string, error) {
-	return "", errors.New("remove is not available")
+// Remove is `delamain rm id`, or `delamain rm --force id`.
+func (a *storeWatchActions) Remove(ctx context.Context, id int64, force bool) (string, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	var out strings.Builder
+	err := removeRun(ctx, &out, a.stop.cfg, a.stop.st, id, force)
+	return out.String(), err
 }
 
 func (a *storeWatchActions) OpenURL(string) error { return errors.New("open is not available") }
