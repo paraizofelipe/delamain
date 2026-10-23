@@ -44,6 +44,9 @@ the status of the selected run, whether the daemon is running and the day's spen
 everything every --interval. Quitting (q or ctrl+c) leaves every run as it is.`,
 		Args: cobra.NoArgs,
 		RunE: func(c *cobra.Command, _ []string) error {
+			if opts.interval <= 0 {
+				return errors.New("--interval must be greater than zero")
+			}
 			out, ok := c.OutOrStdout().(*os.File)
 			if !ok || !term.IsTerminal(out.Fd()) {
 				return errors.New("delamain watch needs a terminal; use 'delamain ls' or 'delamain status'")
