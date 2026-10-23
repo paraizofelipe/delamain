@@ -14,12 +14,16 @@ import (
 // logSources are the chips of the logs panel, picked with the keys 1 to 6; the first shows them all.
 var logSources = []string{"all", "delamain", "checks", "planner", "implementer", "reviewer"}
 
+// maxLogLines bounds the memory of the logs panel; older lines are dropped and counted.
+const maxLogLines = 5000
+
 // logPane is the logs panel of `watch`: the lines read so far of the selected run and the
 // viewport over them. Update only swaps fl; its fields are touched by the reload command alone.
 type logPane struct {
 	fl     *logFollower // nil without a selected run
 	run    int64        // the run fl reads
 	lines  []logLine    // control characters already dropped
+	omit   int          // lines dropped to keep maxLogLines
 	source int          // index in logSources; it outlives reset
 	shown  []logLine    // the lines of source
 	paused bool         // the user scrolled away: new lines do not move the view
@@ -28,7 +32,7 @@ type logPane struct {
 
 // reset points the pane at the logs of run, in dir, and forgets what was read; it does no I/O.
 func (p *logPane) reset(run int64, dir string) {
-	p.fl, p.run, p.lines, p.paused = nil, run, nil, false
+	p.fl, p.run, p.lines, p.omit, p.paused = nil, run, nil, 0, false
 	if dir != "" {
 		p.fl = &logFollower{dir: dir, offsets: map[string]int64{}, partial: map[string][]byte{}, lastTS: map[string]string{}}
 	}
@@ -41,6 +45,10 @@ func (p *logPane) reset(run int64, dir string) {
 func (p *logPane) append(lines []logLine) {
 	for _, l := range lines {
 		p.lines = append(p.lines, logLine{ts: l.ts, source: clean(l.source), text: clean(l.text)})
+	}
+	if drop := len(p.lines) - maxLogLines; drop > 0 {
+		p.omit += drop
+		p.lines = append([]logLine(nil), p.lines[drop:]...) // lets go of the dropped ones
 	}
 	p.refresh()
 }
@@ -104,6 +112,9 @@ func paneRows(height int) (seps, rows int) {
 func (p *logPane) refresh() {
 	p.shown = nil // a new array: copies of the model share the old one
 	texts := []string{}
+	if p.omit > 0 {
+		texts = append(texts, "") // the omitted line opens the content
+	}
 	for _, l := range p.lines {
 		if p.source == 0 || l.source == logSources[p.source] {
 			p.shown = append(p.shown, l)
@@ -142,11 +153,18 @@ func (p logPane) view(st styles, run RunView, inner, height int) []string {
 		out = append(out, sep)
 	}
 	body := []string{}
-	if len(p.lines) == 0 {
+	if len(p.lines) == 0 && rows > 0 {
 		body = append(body, paint(st.muted, ansi.Truncate("no logs yet in "+clean(p.fl.dir), inner, "…")))
 	}
-	top := min(p.vp.YOffset, len(p.shown))
-	for _, l := range p.shown[top:min(top+rows, len(p.shown))] {
+	top := p.vp.YOffset
+	if p.omit > 0 {
+		if top == 0 && rows > 0 {
+			body = append(body, paint(st.muted, ansi.Truncate(fmt.Sprintf("… %d earlier lines omitted", p.omit), inner, "…")))
+		}
+		top-- // the omitted line comes before the first one
+	}
+	top = min(max(top, 0), len(p.shown))
+	for _, l := range p.shown[top:max(top, min(top+rows-len(body), len(p.shown)))] {
 		body = append(body, ansi.Truncate(logRow(st, l), inner, "…"))
 	}
 	for i := range rows {

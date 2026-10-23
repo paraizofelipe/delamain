@@ -772,6 +772,12 @@ func TestWatchLogsShouldSayThereAreNoLogsYetWhenTheRunHasNone(t *testing.T) {
 	if want := "no logs yet in " + filepath.Join(v.RunDir, "logs"); !strings.Contains(view, want) {
 		t.Fatalf("a run without logs says where they will be: %q\n%s", want, view)
 	}
+	m := startLogs(t, &fakeWatchSource{active: []RunView{v}}, 200, false)
+	for height := 6; height <= 9; height++ {
+		if lines := strings.Split(send(t, m, tea.WindowSizeMsg{Width: 200, Height: height}).View(), "\n"); len(lines) > height {
+			t.Fatalf("%d lines high: %d lines", height, len(lines))
+		}
+	}
 }
 
 func TestWatchLogsShouldStripControlSequencesFromLogText(t *testing.T) {
@@ -1098,5 +1104,25 @@ func TestWatchLogsShouldScrollByLineOnlyWhenTheLogsHaveFocus(t *testing.T) {
 			t.Fatalf("%s with the logs focused: want lines %d to %d and %q:\n%s", s.key, s.from, s.to, s.footer, view)
 		}
 		selected(s.key+" with the logs focused", "#11")
+	}
+}
+
+func TestWatchLogsShouldKeepOnlyTheLast5000Lines(t *testing.T) {
+	v := logRun(t, 14, "#55")
+	numbered(t, v, 1, 5003)
+	m := startLogs(t, &fakeWatchSource{active: []RunView{v}}, 160, false)
+	if view := screen(m); !has(view, "following the end · G 5000 of 5000 lines · 100%") || !strings.Contains(view, " line 5003 ") {
+		t.Fatalf("the last 5000 lines are kept:\n%s", view)
+	}
+	m = send(t, send(t, m, keyPress("tab")), keyPress("g"))
+	view := screen(m)
+	if !has(view, "… 3 earlier lines omitted") || !strings.Contains(view, " line 004 ") || strings.Contains(view, " line 003 ") {
+		t.Fatalf("the first lines are dropped and counted at the top:\n%s", view)
+	}
+
+	numbered(t, v, 5004, 5005)
+	view = screen(reload(t, m))
+	if !has(view, "… 5 earlier lines omitted") || !strings.Contains(view, " line 006 ") || strings.Contains(view, " line 005 ") || !strings.Contains(view, "5000 of 5000 lines") {
+		t.Fatalf("new lines push the oldest out:\n%s", view)
 	}
 }
