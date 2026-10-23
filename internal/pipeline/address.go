@@ -306,7 +306,9 @@ func (r *Runner) address(ctx context.Context, ru *run, p *prRun, pending []forge
 
 // PendingThreads are the open threads of a PR waiting for delamain (user): the ones whose last
 // public comment is neither delamain's own reply nor one it already answered elsewhere. No
-// cursor over time is needed, so a comment older than the last review is not lost. Markers are
+// cursor over time is needed, so a comment older than the last review is not lost. A bot's
+// PR-level comment is a summary of the change (CodeRabbit's walkthrough, a coverage report),
+// not a question: its suggestions come inline, so it is never pending. Markers are
 // public, so only a comment by user that carries one counts as delamain's; without a known user
 // nothing is pending, or delamain could end up answering itself. Internal notes are never read:
 // the answer would be public.
@@ -322,7 +324,7 @@ func PendingThreads(ts []forge.Thread, user string) []forge.Thread {
 	var out []forge.Thread
 	for _, t := range ts {
 		last, ok := lastPublic(t)
-		if t.Resolved || !ok || ownComment(last, user) || posted[forge.Key(t.ID, last.ID)] {
+		if t.Resolved || !ok || ownComment(last, user) || posted[forge.Key(t.ID, last.ID)] || t.Path == "" && last.Bot {
 			continue
 		}
 		out = append(out, t)

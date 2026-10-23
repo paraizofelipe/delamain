@@ -413,6 +413,24 @@ func TestPendingThreadsShouldKeepAThreadOlderThanTheLastReviewOfThePR(t *testing
 	}
 }
 
+func TestPendingThreadsShouldSkipPRLevelSummariesOfBots(t *testing.T) {
+	// A review bot opens the PR with a walkthrough of the change: there is nothing in it to
+	// answer. Its suggestions come inline, and those still wait for delamain.
+	byBot := func(c forge.Comment) forge.Comment { c.Author, c.Bot = "coderabbitai[bot]", true; return c }
+	ts := []forge.Thread{
+		{ID: "issue-comment:1", Comments: []forge.Comment{byBot(forge.Comment{ID: "1", Body: "walkthrough", CreatedAt: t0})}},
+		{ID: "RT_1", Path: "a.go", Line: 3, Comments: []forge.Comment{byBot(forge.Comment{ID: "2", Body: "valide o intervalo", CreatedAt: t0.Add(time.Hour)})}},
+		{ID: "issue-comment:3", Comments: []forge.Comment{{ID: "3", Author: "bob", Body: "e o caso vazio?", CreatedAt: t0.Add(2 * time.Hour)}}},
+	}
+	var got []string
+	for _, th := range PendingThreads(ts, bot) {
+		got = append(got, th.ID)
+	}
+	if !slices.Equal(got, []string{"RT_1", "issue-comment:3"}) {
+		t.Fatalf("only the bot's PR-level summary is skipped, got %v", got)
+	}
+}
+
 func TestPendingThreadsShouldReturnNothingWithoutAKnownForgeUser(t *testing.T) {
 	ts := []forge.Thread{{ID: "t1", Comments: []forge.Comment{{ID: "1", Author: "bob", Body: "pergunta", CreatedAt: t0}}}}
 	if got := PendingThreads(ts, ""); len(got) != 0 {

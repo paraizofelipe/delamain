@@ -352,7 +352,7 @@ func (g *githubClient) Threads(ctx context.Context, n int) ([]Thread, error) {
 	for _, c := range cs {
 		id := strconv.FormatInt(c.GetID(), 10)
 		ts = append(ts, Thread{ID: issueCommentThread + id, Comments: []Comment{
-			{ID: id, Author: c.GetUser().GetLogin(), Body: c.GetBody(), CreatedAt: c.GetCreatedAt().Time},
+			{ID: id, Author: c.GetUser().GetLogin(), Body: c.GetBody(), CreatedAt: c.GetCreatedAt().Time, Bot: c.GetUser().GetType() == "Bot"},
 		}})
 	}
 	return byFirstComment(ts), nil
