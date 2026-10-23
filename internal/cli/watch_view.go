@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/paraizo/delamain/internal/budget"
 	"github.com/paraizo/delamain/internal/config"
+	"github.com/paraizo/delamain/internal/store"
 )
 
 // selectedBackground highlights the selected run's row.
@@ -39,8 +41,9 @@ func (m watchModel) View() string {
 	}
 	parts := []placed{
 		{p.list, panel("runs", scroll(f.list, f.sel, p.list.h-2), p.list.w, p.list.h, listLook)},
+		{p.strip, panel("status · enter details", f.strip, p.strip.w, p.strip.h, m.st.muted)},
 		{p.status, panel(statusTitle, f.status, p.status.w, p.status.h, m.st.muted)},
-		{p.logs, panel(logsTitle, m.logs.view(m.st, v, p.logs.w-4, p.logs.h-2), p.logs.w, p.logs.h, logsLook)},
+		{p.logs, panel(logsTitle, m.logs.view(m.st, v, p.logs.w-4, p.logs.h-2, m.logLook()), p.logs.w, p.logs.h, logsLook)},
 	}
 	lines := append([]string{m.header()}, compose(max(m.height-1-len(f.footer), 0), parts...)...)
 	lines = append(lines, f.footer...)
@@ -53,24 +56,31 @@ type watchFrame struct {
 	footer []string
 	list   []string
 	sel    int // the selected run's line of list
+	strip  []string
 	status []string
 }
 
 // frame lays the screen of the current layout out.
 func (m watchModel) frame() watchFrame {
 	f := watchFrame{footer: []string{m.footer()}}
-	f.list, f.sel = m.listLines(leftWidth(m.width) - 4)
-	f.status = m.statusLines()
-	must := len(f.list)
-	if len(m.data.active) > 0 || len(m.data.done) > 0 {
-		must = 2 + len(m.data.active) // column header, ACTIVE
-		if len(m.data.done) > 0 {
-			must++ // FINISHED
+	n := panelNeeds{zoom: m.zoom}
+	switch m.layout {
+	case layoutCompact:
+		f.list, f.sel = m.listLines(m.width-4, listCols{issue: true})
+		f.strip = m.stripLines(m.width - 4)
+	default:
+		f.list, f.sel = m.listLines(leftWidth(m.width)-4, listCols{header: true, issue: true, more: true})
+		f.status = m.statusLines()
+		n.listMust = len(f.list)
+		if len(m.data.active) > 0 || len(m.data.done) > 0 {
+			n.listMust = 2 + len(m.data.active) // column header, ACTIVE
+			if len(m.data.done) > 0 {
+				n.listMust++ // FINISHED
+			}
 		}
 	}
-	f.panels = panelsFor(m.layout, m.width, m.height, panelNeeds{
-		footer: len(f.footer), list: len(f.list), listMust: must, status: len(f.status), zoom: m.zoom,
-	})
+	n.footer, n.list, n.strip, n.status = len(f.footer), len(f.list), len(f.strip), len(f.status)
+	f.panels = panelsFor(m.layout, m.width, m.height, n)
 	return f
 }
 
@@ -88,10 +98,14 @@ func (m watchModel) tooSmall() string {
 	return strings.Join(out, "\n")
 }
 
-// scroll keeps the column header and as many rows as fit in n lines around the selected one.
+// scroll keeps the first line and as many rows as fit in n lines around the selected one; a
+// single line is the selected one.
 func scroll(lines []string, sel, n int) []string {
-	if len(lines) <= n || n < 2 || sel < n {
+	switch {
+	case len(lines) <= n || n < 1 || sel < n:
 		return lines // the panel cuts what does not fit
+	case n == 1:
+		return lines[sel : sel+1]
 	}
 	return append([]string{lines[0]}, lines[sel-n+2:sel+1]...)
 }
@@ -117,6 +131,10 @@ func (m watchModel) footer() string {
 // clock at the right edge.
 func (m watchModel) header() string {
 	st, today := m.st, m.data.today
+	look := map[budget.Level]lipgloss.Style{budget.OK: st.muted, budget.Soft: st.warn, budget.Hard: st.bad}[today.Level]
+	if m.layout != layoutWide {
+		return m.shortHeader(look)
+	}
 	daemon := paint(st.muted, "daemon ○")
 	if m.data.daemon {
 		daemon = paint(st.ok, "daemon ●")
@@ -125,7 +143,6 @@ func (m watchModel) header() string {
 	if today.Daily > 0 {
 		spend += " of " + budget.Format(today.Daily, today.Mode)
 	}
-	look := map[budget.Level]lipgloss.Style{budget.OK: st.muted, budget.Soft: st.warn, budget.Hard: st.bad}[today.Level]
 	left := strings.Join([]string{
 		paint(st.magenta.Bold(true), "delamain"), paint(st.muted, "watch · "+Version), daemon,
 		paint(st.info.Bold(true), fmt.Sprintf("%d active · %d finished", len(m.data.active), len(m.data.done))),
@@ -137,6 +154,32 @@ func (m watchModel) header() string {
 	}
 	left = ansi.Truncate(left, m.width-len(clock)-1, "…")
 	return left + strings.Repeat(" ", m.width-lipgloss.Width(left)-len(clock)) + paint(st.muted, clock)
+}
+
+// shortHeader is the header of the smaller layouts: the daemon, the run counts and the day's
+// spend in look, without the version and the clock.
+func (m watchModel) shortHeader(look lipgloss.Style) string {
+	st, today := m.st, m.data.today
+	spend := budget.Format(today.Day, today.Mode)
+	if today.Daily > 0 {
+		spend += "/" + budget.Format(today.Daily, today.Mode)
+	}
+	dot := paint(st.muted, "○")
+	if m.data.daemon {
+		dot = paint(st.ok, "●")
+	}
+	left := paint(st.magenta.Bold(true), "delamain") + " " + dot
+	right := paint(st.info.Bold(true), fmt.Sprintf("%d active · %d fin.", len(m.data.active), len(m.data.done))) + "  " + paint(look, spend)
+	return spread(left, right, m.width)
+}
+
+// spread puts left at the left edge of width columns and right at the right one.
+func spread(left, right string, width int) string {
+	gap := width - lipgloss.Width(left) - lipgloss.Width(right)
+	if gap < 1 {
+		return ansi.Truncate(left+" "+right, width, "…")
+	}
+	return left + strings.Repeat(" ", gap) + right
 }
 
 // panel draws a rounded box of exactly width × height cells with title in its top border and
@@ -174,29 +217,45 @@ func fit(s string, w int) string {
 	return s + strings.Repeat(" ", max(w-lipgloss.Width(s), 0))
 }
 
+// listCols are the columns of the list of a layout: header is the column header line, issue the
+// ISSUE column and more the CPLX and ITER ones.
+type listCols struct{ header, issue, more bool }
+
 // listLines are the rows of the runs panel: column header, the active runs, then the finished;
 // sel is the selected run's line.
-func (m watchModel) listLines(inner int) (lines []string, sel int) {
+func (m watchModel) listLines(inner int, cols listCols) (lines []string, sel int) {
 	st, runs := m.st, m.runs()
 	if len(runs) == 0 {
 		return []string{paint(st.muted, "no runs yet: label an issue with delamain:ready")}, 0
 	}
-	cols := [5]int{len("RUN"), len("ISSUE"), len("STATE"), len("CPLX"), len("ITER")}
-	for _, v := range runs {
-		for i, s := range watchColumns(v) {
-			cols[i] = max(cols[i], lipgloss.Width(s))
+	names := [5]string{"RUN", "ISSUE", "STATE", "CPLX", "ITER"}
+	use := []int{0}
+	if cols.issue {
+		use = append(use, 1)
+	}
+	use = append(use, 2)
+	if cols.more {
+		use = append(use, 3, 4)
+	}
+	var widths [5]int
+	for _, c := range use {
+		widths[c] = len(names[c])
+		for _, v := range runs {
+			widths[c] = max(widths[c], lipgloss.Width(watchColumns(v)[c]))
 		}
 	}
 	titleW := inner - 2
-	for _, w := range cols {
-		titleW -= w + 1
+	for _, c := range use {
+		titleW -= widths[c] + 1
 	}
 	pad := func(s string, w int) string { return s + strings.Repeat(" ", max(w-lipgloss.Width(s), 0)) }
-	header := "  "
-	for i, h := range []string{"RUN", "ISSUE", "STATE", "CPLX", "ITER"} {
-		header += pad(h, cols[i]) + " "
+	if cols.header {
+		header := "  "
+		for _, c := range use {
+			header += pad(names[c], widths[c]) + " "
+		}
+		lines = append(lines, paint(st.header, header+"TITLE"))
 	}
-	lines = []string{paint(st.header, header+"TITLE")}
 	section := func(name string, n int, look lipgloss.Style) {
 		lines = append(lines, paint(look.Bold(true), fmt.Sprintf("%s · %d", name, n)))
 	}
@@ -225,17 +284,83 @@ func (m watchModel) listLines(inner int) (lines []string, sel int) {
 		if v.terminal {
 			state, title = st.resultStyle(text[2]), st.muted
 		}
-		cells := []string{
-			paint(look(st.info), marker),
-			paint(look(run), pad(text[0], cols[0])), paint(look(st.info), pad(text[1], cols[1])),
-			paint(look(state), pad(text[2], cols[2])), paint(look(v.complexityStyle(st)), pad(text[3], cols[3])),
-			paint(look(st.none), pad(text[4], cols[4])),
+		colLooks := [5]lipgloss.Style{run, st.info, state, v.complexityStyle(st), st.none}
+		cells := []string{paint(look(st.info), marker)}
+		for _, c := range use {
+			cells = append(cells, paint(look(colLooks[c]), pad(text[c], widths[c])))
 		}
 		row := strings.Join(cells, paint(look(st.none), " ")) + paint(look(st.none), " ")
 		row += paint(look(title), pad(ansi.Truncate(v.Title, max(titleW, 0), "…"), max(titleW, 0)))
 		lines = append(lines, row)
 	}
 	return lines, sel
+}
+
+// stripLines are the status strip of the selected run, wrapped to inner columns: the run and its
+// title; its state, iteration, complexity and owner; its spend, the agents running or its
+// result, and its PR.
+func (m watchModel) stripLines(inner int) []string {
+	v, ok := m.selected()
+	if !ok {
+		return nil
+	}
+	st := m.st
+	tokens, cost := "-", "-"
+	if m.data.statusOf == v.ID {
+		tokens = budget.Format(float64(m.data.status.Budget.Tokens), config.BudgetTokens)
+		cost = fmt.Sprintf("%.2f", m.data.status.Budget.CostUSD)
+	}
+	spend := []string{tokens + " tokens", "US$ " + cost}
+	for _, a := range v.Agents {
+		if a.State == string(store.AgentRunning) {
+			spend = append(spend, paint(st.sourceStyle(a.Role), a.Role)+" "+m.opts.now().Sub(a.StartedAt).Round(time.Second).String())
+		}
+	}
+	if len(spend) == 2 && v.Result != "" {
+		spend = append(spend, resultCell(st, v.Result).styled)
+	}
+	if v.PR != "" {
+		spend = append(spend, paint(st.info.Underline(true), strings.TrimPrefix(v.PR, "https://github.com/")))
+	}
+	sep := paint(st.muted, " · ")
+	var out []string
+	for _, l := range []string{
+		paint(st.none.Bold(true), fmt.Sprintf("run %d", v.ID)) + " " + paint(st.info, v.Issue) + " " + v.Title,
+		strings.Join([]string{
+			paint(st.runStateStyle(v.State), v.State), "iter " + v.iter(),
+			paint(v.complexityStyle(st), v.complexity()), paint(v.ownerStyle(st), v.owner()),
+		}, sep),
+		strings.Join(spend, sep),
+	} {
+		out = append(out, wrapStyled(l, inner)...)
+	}
+	return out
+}
+
+// sgrSeq is an SGR escape sequence, as lipgloss writes them.
+var sgrSeq = regexp.MustCompile("\x1b\\[[0-9;:]*m")
+
+// wrapStyled wraps s to width columns: each line closes the styles still open at its end and
+// the next one opens them again, so a color never spills over a panel border.
+func wrapStyled(s string, width int) []string {
+	lines := strings.Split(ansi.Wrap(s, max(width, 1), ""), "\n")
+	open := ""
+	for i, l := range lines {
+		l = open + l
+		open = ""
+		for _, seq := range sgrSeq.FindAllString(l, -1) {
+			if seq == "\x1b[0m" || seq == "\x1b[m" {
+				open = ""
+			} else {
+				open += seq
+			}
+		}
+		if open != "" {
+			l += "\x1b[0m"
+		}
+		lines[i] = l
+	}
+	return lines
 }
 
 // statusLines describe the selected run as `status` does, with "-" for what it does not have yet.

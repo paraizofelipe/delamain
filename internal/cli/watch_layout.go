@@ -35,9 +35,10 @@ func layoutFor(width, height int) watchLayout {
 // rect is a panel's place on the screen; a zero height hides it.
 type rect struct{ x, y, w, h int }
 
-// watchPanels are the rectangles of the panels of a layout.
+// watchPanels are the rectangles of the panels of a layout: strip is the 3 line summary of the
+// status, status the whole of it.
 type watchPanels struct {
-	list, status, logs rect
+	list, strip, status, logs rect
 }
 
 // panelNeeds is what the panels hold, in lines, and the state that shapes them.
@@ -45,6 +46,7 @@ type panelNeeds struct {
 	footer   int  // lines of the footer
 	list     int  // lines of the list
 	listMust int  // lines of the list kept above the status panel
+	strip    int  // lines of the status strip
 	status   int  // lines of the status panel
 	zoom     bool // the logs take the whole body
 }
@@ -62,6 +64,9 @@ func panelsFor(l watchLayout, width, height int, n panelNeeds) watchPanels {
 	if n.zoom {
 		return watchPanels{logs: rect{0, 1, width, body}}
 	}
+	if l == layoutCompact {
+		return compactPanels(width, body, n)
+	}
 	left := leftWidth(width)
 	// The list gets its rows that must be seen, then as many more as leave the status panel its
 	// whole height; the status panel takes the rest of the column.
@@ -70,6 +75,22 @@ func panelsFor(l watchLayout, width, height int, n panelNeeds) watchPanels {
 		list:   rect{0, 1, left, listH},
 		status: rect{0, 1 + listH, left, body - listH},
 		logs:   rect{left, 1, width - left, body},
+	}
+}
+
+// minLogs is the height of the smallest logs panel: borders, chips, a log line and its footer.
+const minLogs = 5
+
+// compactPanels stacks the list, the status strip and the logs on the whole width: the logs keep
+// minLogs lines and the list its selected row, the strip takes what it needs of the rest, then
+// the list, and the logs get what is left.
+func compactPanels(width, body int, n panelNeeds) watchPanels {
+	strip := min(2+n.strip, max(body-minLogs-3, 0))
+	list := min(2+n.list, max(body-strip-minLogs, 0))
+	return watchPanels{
+		list:  rect{0, 1, width, list},
+		strip: rect{0, 1 + list, width, strip},
+		logs:  rect{0, 1 + list + strip, width, body - list - strip},
 	}
 }
 

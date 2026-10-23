@@ -19,6 +19,17 @@ import (
 // logSources are the chips of the logs panel, picked with the keys 1 to 6; the first shows them all.
 var logSources = []string{"all", "delamain", "checks", "planner", "implementer", "reviewer"}
 
+// logLook is how the logs panel fits its layout.
+type logLook int
+
+const (
+	logsFull  logLook = iota // separators, chips and footer in full
+	logsShort                // no separators, chips cut to 4 letters, a short footer
+)
+
+// shortSources are the chips of logsShort.
+var shortSources = []string{"all", "delm", "chec", "plan", "impl", "revi"}
+
 // maxLogLines, maxLogLineBytes and maxLogReadBytes bound the memory of the logs panel: the
 // lines it holds, the start of each line it keeps, and what one reload reads of each file.
 // Older lines are dropped and counted.
@@ -125,8 +136,11 @@ func (p *logPane) resize(rows int) {
 }
 
 // paneRows splits height between the separators and the log lines: the log lines give way
-// first, then the separators, so the chips and the footer stay.
-func paneRows(height int) (seps, rows int) {
+// first, then the separators, so the chips and the footer stay. Only logsFull has separators.
+func paneRows(height int, look logLook) (seps, rows int) {
+	if look != logsFull {
+		return 0, max(height-2, 0)
+	}
 	return min(max(height-2, 0), 2), max(height-4, 0)
 }
 
@@ -240,14 +254,14 @@ func (p logPane) state(st styles, run RunView) string {
 
 // view is the inside of the panel for run, inner columns wide and at most height lines high:
 // the log lines, then the footer.
-func (p logPane) view(st styles, run RunView, inner, height int) []string {
+func (p logPane) view(st styles, run RunView, inner, height int, look logLook) []string {
 	if p.fl == nil || height <= 0 {
 		return nil
 	}
-	seps, rows := paneRows(height)
+	seps, rows := paneRows(height, look)
 	rows = min(rows, p.vp.Height)
 	sep := paint(st.muted, strings.Repeat("─", max(inner, 0)))
-	out := []string{ansi.Truncate(p.chips(st), inner, "…")}
+	out := []string{ansi.Truncate(p.chips(st, look), inner, "…")}
 	if seps > 0 {
 		out = append(out, sep)
 	}
@@ -276,36 +290,43 @@ func (p logPane) view(st styles, run RunView, inner, height int) []string {
 	if seps > 1 {
 		out = append(out, sep)
 	}
-	return append(out, p.footer(st, run, inner))[:min(len(out)+1, height)]
+	return append(out, p.footer(st, run, inner, look))[:min(len(out)+1, height)]
 }
 
 // chips name the sources to filter by; the active one is in reverse video, in its color.
-func (p logPane) chips(st styles) string {
-	out := paint(st.muted, "source") + " "
-	for i, s := range logSources {
-		look := st.sourceStyle(s)
+func (p logPane) chips(st styles, look logLook) string {
+	out, names := paint(st.muted, "source")+" ", logSources
+	if look != logsFull {
+		out, names = "", shortSources
+	}
+	for i, s := range names {
+		color := st.sourceStyle(logSources[i])
 		if i == 0 {
-			look = st.none
+			color = st.none
 		}
 		if i == p.source {
-			out += paint(look.Reverse(true), "["+s+"]")
+			out += paint(color.Reverse(true), "["+s+"]")
 		} else {
-			out += paint(look, " "+s+" ")
+			out += paint(color, " "+s+" ")
 		}
 	}
 	return out
 }
 
 // footer tells where the logs stand at the left and how many lines are shown at the right.
-func (p logPane) footer(st styles, run RunView, inner int) string {
-	left := paint(st.muted, "following the end · G")
+func (p logPane) footer(st styles, run RunView, inner int, look logLook) string {
+	follow, pause, count := "following the end · G", "paused · G back to the end", "%d of %d lines · %d%%"
+	if look != logsFull {
+		follow, pause, count = "following · G", "paused · G", "%d/%d · %d%%"
+	}
+	left := paint(st.muted, follow)
 	switch {
 	case run.terminal:
 		left = paint(st.muted, "ended · ") + resultCell(st, run.Result).styled
 	case p.paused:
-		left = paint(st.muted, "paused · G back to the end")
+		left = paint(st.muted, pause)
 	}
-	right := paint(st.muted, fmt.Sprintf("%d of %d lines · %d%%", len(p.shown), len(p.lines), int(math.Round(p.vp.ScrollPercent()*100))))
+	right := paint(st.muted, fmt.Sprintf(count, len(p.shown), len(p.lines), int(math.Round(p.vp.ScrollPercent()*100))))
 	gap := inner - lipgloss.Width(left) - lipgloss.Width(right)
 	return ansi.Truncate(left+strings.Repeat(" ", max(gap, 1))+right, inner, "…")
 }

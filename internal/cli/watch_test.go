@@ -571,8 +571,9 @@ func TestWatchShouldNeverRenderWiderOrTallerThanTheWindow(t *testing.T) {
 	for i := range 300 {
 		writeLog(t, logs, []string{"delamain", "checks", "implementer"}[i%3], fmt.Sprintf("12:%02d:%02d %s\n", i/60, i%60, strings.Repeat("a very long log line that never fits ", 10)))
 	}
-	for _, width := range []int{80, 81, 99, 120, 137, 160, 179, 200} {
-		for _, height := range []int{6, 15, 24, 40, 60} {
+	for _, width := range []int{30, 40, 56, 70, 80, 84, 99, 120, 139, 160, 179, 200} {
+		for _, height := range []int{6, 10, 12, 15, 18, 20, 24, 26, 32, 40, 50} {
+			layout := layoutFor(width, height)
 			src := crowded()
 			for _, vs := range [][]RunView{src.active, src.done} {
 				for i := range vs {
@@ -581,7 +582,7 @@ func TestWatchShouldNeverRenderWiderOrTallerThanTheWindow(t *testing.T) {
 			}
 			m := tea.Model(newWatchModel(src, lineStyles(termenv.ANSI), watchOptions{limit: 20, interval: time.Millisecond, now: func() time.Time { return watchNow }}))
 			m = reload(t, settle(t, send(t, m, tea.WindowSizeMsg{Width: width, Height: height}), m.Init()))
-			if height >= 15 && !strings.Contains(stripANSI(m.View()), "implementer │") {
+			if layout != layoutMini && layout != layoutTooSmall && !strings.Contains(stripANSI(m.View()), "implementer │") {
 				t.Fatalf("%dx%d: the logs are shown:\n%s", width, height, stripANSI(m.View()))
 			}
 			for _, k := range []string{"", "G", "k"} {
@@ -597,7 +598,7 @@ func TestWatchShouldNeverRenderWiderOrTallerThanTheWindow(t *testing.T) {
 						t.Fatalf("%dx%d after %q: line %d is %d wide:\n%s", width, height, k, i, w, stripANSI(l))
 					}
 				}
-				if height >= 15 && !strings.Contains(m.View(), "▸") {
+				if layout != layoutMini && layout != layoutTooSmall && !strings.Contains(m.View(), "▸") {
 					t.Fatalf("%dx%d after %q: the selected run stays visible:\n%s", width, height, k, stripANSI(m.View()))
 				}
 			}
@@ -676,9 +677,134 @@ func TestWatchShouldShowTooSmallBelow40x12(t *testing.T) {
 	}
 }
 
+// panelText is the inside of the panel titled title, one trimmed line per row; "" without it.
+func panelText(view, title string) string {
+	lines := strings.Split(view, "\n")
+	for i, l := range lines {
+		at := strings.Index(l, "╭ "+title)
+		if at < 0 {
+			continue
+		}
+		col := lipgloss.Width(l[:at])
+		end := col + lipgloss.Width(l[at:at+strings.Index(l[at:], "╮")])
+		var out []string
+		for _, row := range lines[i+1:] {
+			if lipgloss.Width(row) <= end || ansi.Cut(row, col, col+1) == "╰" {
+				break
+			}
+			out = append(out, strings.TrimSpace(ansi.Cut(row, col+1, end)))
+		}
+		return strings.Join(out, "\n")
+	}
+	return ""
+}
+
+// words is s with its spaces and line breaks collapsed.
+func words(s string) string { return strings.Join(strings.Fields(s), " ") }
+
+func TestWatchCompactShouldStackTheListTheStatusStripAndTheLogs(t *testing.T) {
+	v := logRun(t, 14, "#55")
+	v.Title = "artifacts: accept test_file"
+	writeLog(t, v, "implementer", "12:46:58 💬 adjusted the fixture\n")
+	src := &fakeWatchSource{
+		active: []RunView{v, active(15, "#54", "plan", "", "tui: delamain watch")},
+		done:   []RunView{finished(12, "#49", "approved: merged", "logs: colors")},
+		today:  budget.Status{Mode: config.BudgetTokens, Day: 1_400_000, Daily: 4_000_000},
+		daemon: true,
+	}
+	m := startLogs(t, src, 80, false)
+	view := screen(m)
+	lines := strings.Split(view, "\n")
+	if head := lines[0]; !strings.HasPrefix(head, "delamain ● ") || !strings.HasSuffix(head, "2 active · 1 fin.  1.4M/4M") || lipgloss.Width(head) != 80 {
+		t.Errorf("compact header = %q", head)
+	}
+	at := 0
+	for _, title := range []string{"╭ runs ", "╭ status · enter details ", "╭ logs · run 14 · ● following "} {
+		i := at
+		for i < len(lines) && !strings.HasPrefix(lines[i], title) {
+			i++
+		}
+		if i == len(lines) || lipgloss.Width(lines[i]) != 80 {
+			t.Fatalf("the panels are stacked on the whole width, %q after line %d:\n%s", title, at, view)
+		}
+		at = i
+	}
+	if strings.Contains(view, "TITLE") || strings.Contains(view, "CPLX") {
+		t.Errorf("the compact list has no column header:\n%s", view)
+	}
+	for _, row := range []string{"▸ 14 #55 implement artifacts: accept test_file", "15 #54 plan tui: delamain watch"} {
+		if !has(view, row) {
+			t.Errorf("the list shows RUN ISSUE STATE TITLE, want %q:\n%s", row, view)
+		}
+	}
+	if !has(view, "[all] delm chec plan impl revi") {
+		t.Errorf("the chips are cut to 4 letters:\n%s", view)
+	}
+	if !has(view, "following · G 1/1 · 100%") {
+		t.Errorf("the logs footer is short:\n%s", view)
+	}
+	if !strings.HasPrefix(lines[len(lines)-2], "╰") || !strings.Contains(panelText(view, "logs · run 14"), "following · G") {
+		t.Errorf("the logs take the rest of the height, down to the footer:\n%s", view)
+	}
+
+	m = send(t, m, keyPress("3"))
+	if view := screen(m); !has(view, "all delm [chec] plan impl revi") {
+		t.Errorf("3 picks checks:\n%s", view)
+	}
+}
+
+// statusRun has every field of the status, with a title longer than any small layout.
+func statusRun() RunView {
+	v := active(14, "#55", "implement", "low", "artifacts: accept test_file and format_check in .delamain.yaml so that every gate reads them")
+	v.Harness, v.Branch, v.Base = "claude", "fix/55-artifacts-accept-test-file-and-format-check", "main"
+	v.Owner = Process{PID: 51230, Alive: true}
+	v.PR = "https://github.com/paraizofelipe/delamain/pull/61"
+	ended := watchNow.Add(-time.Hour + 131*time.Second)
+	v.Agents = []AgentView{
+		{Role: "planner", State: "done", StartedAt: watchNow.Add(-time.Hour), EndedAt: &ended, Tokens: 41_000, CostUSD: 0.38},
+		{Role: "implementer", State: "running", StartedAt: watchNow.Add(-402 * time.Second), Tokens: 141_000, CostUSD: 1.56},
+	}
+	return v
+}
+
+func TestWatchShouldNotLoseStatusFieldsInSmallLayouts(t *testing.T) {
+	run := statusRun()
+	done := finished(12, "#49", "approved: merged", "logs: colors")
+	src := &fakeWatchSource{
+		active: []RunView{run},
+		done:   []RunView{done},
+		status: map[int64]RunStatus{14: {Run: run, Budget: BudgetView{Tokens: 182_000, CostUSD: 1.94}}, 12: {Run: done, Budget: BudgetView{Tokens: 9_000, CostUSD: 0.12}}},
+	}
+	m := resize(t, startWatch(t, src, 160), 80, 27)
+	strip := panelText(screen(m), "status · enter details")
+	if n := len(strings.Split(strip, "\n")); n < 4 {
+		t.Errorf("the strip wraps its 3 lines instead of cutting them, %d lines:\n%s", n, strip)
+	}
+	for _, want := range []string{
+		"run 14 #55 artifacts: accept test_file and format_check in .delamain.yaml so that every gate reads them",
+		"implement · iter 1/3 · low · pid 51230 (alive)",
+		"182K tokens · US$ 1.94 · implementer 6m42s · paraizofelipe/delamain/pull/61",
+	} {
+		if !strings.Contains(words(strip), want) {
+			t.Errorf("the compact strip misses %q:\n%s", want, strip)
+		}
+	}
+	if strings.Contains(strip, "…") {
+		t.Errorf("the strip cuts nothing:\n%s", strip)
+	}
+
+	next, _ := m.Update(keyPress("j")) // the reload of its status has not ended
+	if strip := words(panelText(screen(next), "status · enter details")); !strings.Contains(strip, "- tokens · US$ - · approved: merged") || strings.Contains(strip, "pull") {
+		t.Errorf("an ended run without its status read shows - and its result:\n%s", strip)
+	}
+	if strip := words(panelText(screen(send(t, m, keyPress("j"))), "status · enter details")); !strings.Contains(strip, "9K tokens · US$ 0.12 · approved: merged") {
+		t.Errorf("then its spend:\n%s", strip)
+	}
+}
+
 func TestWatchShouldSplitTheWideLayoutFortyPercentLeft(t *testing.T) {
 	src := crowded()
-	for width, left := range map[int]int{80: 56, 160: 64, 200: 72} {
+	for width, left := range map[int]int{140: 56, 160: 64, 200: 72} {
 		lines := strings.Split(screen(startWatch(t, src, width)), "\n")
 		runs := lines[1]
 		if !strings.HasPrefix(runs, "╭ runs ") || lipgloss.Width(runs[:strings.Index(runs, "╮")+len("╮")]) != left {

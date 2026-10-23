@@ -206,8 +206,16 @@ func (m *watchModel) followSelection() {
 
 // logRows is how many log lines fit in the logs panel of the layout.
 func (m watchModel) logRows() int {
-	_, rows := paneRows(max(m.frame().panels.logs.h-2, 0)) // borders
+	_, rows := paneRows(max(m.frame().panels.logs.h-2, 0), m.logLook()) // borders
 	return rows
+}
+
+// logLook is how the logs panel fits the layout.
+func (m watchModel) logLook() logLook {
+	if m.layout == layoutCompact {
+		return logsShort
+	}
+	return logsFull
 }
 
 // runs is the list in screen order: the active runs, then the finished ones.
