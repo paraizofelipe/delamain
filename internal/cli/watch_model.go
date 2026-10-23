@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"path/filepath"
 	"time"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -27,6 +28,9 @@ type watchData struct {
 	statusOf     int64
 	today        budget.Status
 	daemon       bool
+	logs         []logLine    // new lines of logsOf, read by follower
+	logsOf       int64        // the run selected when the reload started
+	follower     *logFollower // the follower the lines come from
 }
 
 type watchDataMsg watchData
@@ -48,6 +52,7 @@ type watchModel struct {
 	selectedIdx   int
 	loading       bool // a reload is running: ticks are skipped until it ends
 	err           error
+	logs          logPane
 }
 
 func newWatchModel(src watchSource, st styles, opts watchOptions) watchModel {
@@ -67,6 +72,7 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
+		m.logs.resize(m.logsHeight())
 	case watchTickMsg:
 		if m.loading {
 			return m, m.tick()
@@ -77,12 +83,16 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loading, m.err = false, msg.err
 	case watchDataMsg:
 		m.loading, m.err = false, nil
+		if msg.follower != nil && msg.follower == m.logs.fl && msg.logsOf == m.selectedID {
+			m.logs.append(msg.logs) // lines of a run no longer selected are dropped
+		}
 		m.data = cleanData(watchData(msg))
 		m.selectedIdx = pick(m.runs(), m.selectedID, m.selectedIdx)
 		m.selectedID = 0
 		if runs := m.runs(); len(runs) > 0 {
 			m.selectedID = runs[m.selectedIdx].ID
 		}
+		m.followSelection()
 		if m.selectedID != m.data.statusOf {
 			// The selection moved while this reload ran: its status is still to be read.
 			m.loading = true
@@ -114,6 +124,7 @@ func (m watchModel) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.selectedIdx, m.selectedID = idx, runs[idx].ID
+	m.followSelection()
 	if m.loading {
 		return m, nil // the running reload reads the new selection's status when it ends
 	}
@@ -121,6 +132,22 @@ func (m watchModel) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	m.loading = true
 	return m, m.reload()
 }
+
+// followSelection points the logs panel at the selected run when it is another one.
+func (m *watchModel) followSelection() {
+	if m.logs.run == m.selectedID {
+		return
+	}
+	dir := ""
+	if v, ok := m.selected(); ok && v.RunDir != "" {
+		dir = filepath.Join(v.RunDir, "logs")
+	}
+	m.logs.reset(m.selectedID, dir)
+}
+
+// logsHeight is how many log lines fit in the logs panel: the window less the header, the
+// footer and the panel borders.
+func (m watchModel) logsHeight() int { return max(m.height-4, 0) }
 
 // runs is the list in screen order: the active runs, then the finished ones.
 func (m watchModel) runs() []RunView {
@@ -146,9 +173,11 @@ func pick(runs []RunView, id int64, idx int) int {
 	return max(min(idx, len(runs)-1), 0)
 }
 
-// reload reads the runs and the status of the selected one in a tea.Cmd, off the Update loop.
+// reload reads the runs, the status of the selected one and its new log lines in a tea.Cmd,
+// off the Update loop.
 func (m watchModel) reload() tea.Cmd {
 	src, limit, id, idx := m.src, m.opts.limit, m.selectedID, m.selectedIdx
+	fl, logsOf := m.logs.fl, m.logs.run
 	return func() tea.Msg {
 		ctx := context.Background()
 		active, done, err := src.Runs(ctx, limit)
@@ -162,6 +191,13 @@ func (m watchModel) reload() tea.Cmd {
 		if runs := append(append([]RunView{}, active...), done...); len(runs) > 0 {
 			d.statusOf = runs[pick(runs, id, idx)].ID
 			if d.status, err = src.Status(ctx, d.statusOf); err != nil {
+				return watchErrMsg{err}
+			}
+		}
+		// Read last: the lines read are lost if the reload fails after them.
+		d.logsOf, d.follower = logsOf, fl
+		if fl != nil {
+			if d.logs, err = fl.read(false); err != nil {
 				return watchErrMsg{err}
 			}
 		}

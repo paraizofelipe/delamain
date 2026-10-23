@@ -14,6 +14,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/termenv"
 
 	"github.com/paraizo/delamain/internal/budget"
@@ -255,7 +256,7 @@ func TestWatchShouldShowTheStatusOfTheSelectedRun(t *testing.T) {
 	for _, want := range []string{
 		"RUN 14 · #55 artifacts: accept tests", "KIND issue", "HARNESS claude", "STATE implement", "INTERACTIONS 1/3",
 		"COMPLEXITY low", "BRANCH fix/55-artifacts (base main)", "OWNER pid 51230 (alive)", "BUDGET 182K de 4M tokens · US$ 1.94",
-		"PR/MR -", "RESULT -", "AGENTS", "planner done 2m11s 41K · 0.38", "implementer running 6m42s 141K · 1.56", "logs: coming soon",
+		"PR/MR -", "RESULT -", "AGENTS", "planner done 2m11s 41K · 0.38", "implementer running 6m42s 141K · 1.56",
 	} {
 		if !has(view, want) {
 			t.Errorf("status panel misses %q:\n%s", want, view)
@@ -555,11 +556,23 @@ func crowded() *fakeWatchSource {
 }
 
 func TestWatchShouldNeverRenderWiderOrTallerThanTheWindow(t *testing.T) {
+	logs := logRun(t, 1, "#1")
+	for i := range 300 {
+		writeLog(t, logs, []string{"delamain", "checks", "implementer"}[i%3], fmt.Sprintf("12:%02d:%02d %s\n", i/60, i%60, strings.Repeat("a very long log line that never fits ", 10)))
+	}
 	for _, width := range []int{80, 81, 99, 120, 137, 160, 179, 200} {
 		for _, height := range []int{6, 15, 24, 40, 60} {
 			src := crowded()
+			for _, vs := range [][]RunView{src.active, src.done} {
+				for i := range vs {
+					vs[i].RunDir = logs.RunDir
+				}
+			}
 			m := tea.Model(newWatchModel(src, lineStyles(termenv.ANSI), watchOptions{limit: 20, interval: time.Millisecond, now: func() time.Time { return watchNow }}))
-			m = settle(t, send(t, m, tea.WindowSizeMsg{Width: width, Height: height}), m.Init())
+			m = reload(t, settle(t, send(t, m, tea.WindowSizeMsg{Width: width, Height: height}), m.Init()))
+			if height >= 15 && !strings.Contains(stripANSI(m.View()), "implementer │") {
+				t.Fatalf("%dx%d: the logs are shown:\n%s", width, height, stripANSI(m.View()))
+			}
 			for _, k := range []string{"", "G", "k"} {
 				if k != "" {
 					m = send(t, m, keyPress(k))
@@ -632,5 +645,132 @@ func TestWatchShouldStripControlSequencesFromRunText(t *testing.T) {
 	src.err = errors.New("read " + evil)
 	if view := reload(t, m).View(); strings.ContainsAny(view, "\x1b\x07") {
 		t.Fatalf("an error message is text from outside too:\n%q", view)
+	}
+}
+
+// logRun is an active run whose logs live in a temporary run dir.
+func logRun(t *testing.T, id int64, issue string) RunView {
+	t.Helper()
+	v := active(id, issue, "implement", "low", "logs")
+	v.RunDir = t.TempDir()
+	return v
+}
+
+// writeLog appends text to the run's logs/<source>.log.
+func writeLog(t *testing.T, v RunView, source, text string) {
+	t.Helper()
+	dir := filepath.Join(v.RunDir, "logs")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(filepath.Join(dir, source+".log"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600) //nolint:gosec // test dir
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if _, err := f.WriteString(text); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// startLogs is startWatch, with colors forced on when colored, after the first tick: the logs of
+// the run selected by the first reload are read from then on.
+func startLogs(t *testing.T, src *fakeWatchSource, width int, colored bool) tea.Model {
+	t.Helper()
+	st := noColors()
+	if colored {
+		st = lineStyles(termenv.ANSI)
+	}
+	m := tea.Model(newWatchModel(src, st, watchOptions{limit: 20, interval: time.Millisecond, now: func() time.Time { return watchNow }}))
+	m = send(t, m, tea.WindowSizeMsg{Width: width, Height: 40})
+	return reload(t, settle(t, m, m.Init()))
+}
+
+func TestWatchLogsShouldShowTheSelectedRunLogsColoredLikeDelamainLogs(t *testing.T) {
+	v := logRun(t, 14, "#55")
+	long := "12:46:58 💬 " + strings.Repeat("the test of gates used test_file with the old key ", 4)
+	writeLog(t, v, "delamain", "12:44:19 gate run=14 name=test exit=1\n12:44:19 WARN verify failed run=14 gate=test iteration=1\n")
+	writeLog(t, v, "implementer", "12:44:20 ▶ prompt (1380 caracteres)\n"+long+"\n")
+	writeLog(t, v, "checks", "12:44:19 ■ test: código 1\n--- FAIL: TestGates (0.00s)\n")
+	st := lineStyles(termenv.ANSI)
+	m := startLogs(t, &fakeWatchSource{active: []RunView{v}}, 160, true)
+
+	want := []logLine{
+		{"12:44:19", "checks", "12:44:19 ■ test: código 1"},
+		{"12:44:19", "checks", "--- FAIL: TestGates (0.00s)"},
+		{"12:44:19", "delamain", "12:44:19 gate run=14 name=test exit=1"},
+		{"12:44:19", "delamain", "12:44:19 WARN verify failed run=14 gate=test iteration=1"},
+		{"12:44:20", "implementer", "12:44:20 ▶ prompt (1380 caracteres)"},
+		{"12:46:58", "implementer", long},
+	}
+	view := m.View()
+	inner := 160 - 64 - 4 // the logs panel takes what the 64 columns of the left one leave
+	at := -1
+	for _, l := range want {
+		var out bytes.Buffer
+		if err := emit(&out, st, []logLine{l}); err != nil {
+			t.Fatal(err)
+		}
+		row := ansi.Truncate(strings.TrimSuffix(out.String(), "\n"), inner, "…")
+		i := strings.Index(view, row)
+		if i <= at {
+			t.Fatalf("want the line of `delamain logs`, in time order, cut at %d columns:\n%q\nin\n%s", inner, row, stripANSI(view))
+		}
+		at = i
+	}
+	if !strings.Contains(stripANSI(view), "…") {
+		t.Errorf("a line wider than the panel ends in …:\n%s", stripANSI(view))
+	}
+}
+
+func TestWatchLogsShouldAppendLinesWrittenAfterTheStart(t *testing.T) {
+	v := logRun(t, 14, "#55")
+	writeLog(t, v, "delamain", "12:44:19 state run=14 state=plan\n")
+	m := startLogs(t, &fakeWatchSource{active: []RunView{v}}, 160, false)
+	if view := screen(m); !strings.Contains(view, "12:44:19 state run=14 state=plan") {
+		t.Fatalf("the logs written before the start are shown:\n%s", view)
+	}
+
+	writeLog(t, v, "implementer", "12:44:20 ▶ prompt (900 caracteres)\n")
+	if strings.Contains(screen(m), "▶ prompt") {
+		t.Fatal("nothing is read outside a tick")
+	}
+	view := screen(reload(t, m))
+	if !strings.Contains(view, "implementer │ 12:44:20 ▶ prompt (900 caracteres)") {
+		t.Fatalf("a line written after the start shows up on the next tick:\n%s", view)
+	}
+	if strings.Count(view, "12:44:19 state run=14 state=plan") != 1 {
+		t.Fatalf("lines already shown are not read again:\n%s", view)
+	}
+}
+
+func TestWatchLogsShouldSayThereAreNoLogsYetWhenTheRunHasNone(t *testing.T) {
+	v := logRun(t, 14, "#55")
+	view := screen(startLogs(t, &fakeWatchSource{active: []RunView{v}}, 200, false))
+	if want := "no logs yet in " + filepath.Join(v.RunDir, "logs"); !strings.Contains(view, want) {
+		t.Fatalf("a run without logs says where they will be: %q\n%s", want, view)
+	}
+}
+
+func TestWatchLogsShouldStripControlSequencesFromLogText(t *testing.T) {
+	evil := "evil\x1b]52;c;ZXZpbA==\x07\x1b[2J\x1b[31mforged\u009b6n\x00\x7f\ttab"
+	v := logRun(t, 14, "#55")
+	writeLog(t, v, "delamain", "12:44:19 state run=14 "+evil+"\n")
+	empty := active(15, "#56", "plan", "", "x")
+	empty.RunDir = filepath.Join(t.TempDir(), "run"+evil)
+	m := startLogs(t, &fakeWatchSource{active: []RunView{v, empty}}, 200, true)
+	for _, view := range []string{m.View(), send(t, m, keyPress("j")).View()} {
+		if i := strings.IndexFunc(stripANSI(view), func(r rune) bool { return r != '\n' && (r < 0x20 || (r >= 0x7f && r <= 0x9f)) }); i >= 0 {
+			t.Fatalf("control character %q reached the terminal:\n%q", stripANSI(view)[i], view)
+		}
+		if strings.Contains(view, "\x1b]") || strings.Contains(view, "\x1b[2J") || strings.Contains(view, "\x07") {
+			t.Fatalf("an escape sequence of the log reached the terminal:\n%q", view)
+		}
+	}
+	if view := screen(m); !strings.Contains(view, "evil]52;c;ZXZpbA==[2J[31mforged") {
+		t.Fatalf("only the control characters go, the text stays:\n%s", view)
+	}
+	if view := screen(send(t, m, keyPress("j"))); !strings.Contains(view, "no logs yet in "+filepath.Join(filepath.Dir(empty.RunDir), "run")+"evil]52;c;") {
+		t.Fatalf("the dir of an empty run is cleaned too:\n%s", view)
 	}
 }
