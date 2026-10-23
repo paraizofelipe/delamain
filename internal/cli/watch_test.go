@@ -1048,6 +1048,62 @@ func TestWatchShouldSplitTheWideLayoutFortyPercentLeft(t *testing.T) {
 	}
 }
 
+func TestWatchShouldSplitTheMediumLayoutThirtyEightPercentLeft(t *testing.T) {
+	v := statusRun()
+	v.RunDir = logRun(t, 14, "#55").RunDir
+	writeLog(t, v, "implementer", "12:46:58 💬 "+numberedWords(40)+"\n")
+	src := &fakeWatchSource{
+		active: []RunView{v},
+		done:   []RunView{finished(12, "#49", "approved: merged", "logs: colors")},
+		status: map[int64]RunStatus{14: {Run: v, Budget: BudgetView{Tokens: 182_000, CostUSD: 1.94, Summary: "182K de 4M tokens · US$ 1.94"}}},
+		today:  budget.Status{Mode: config.BudgetTokens, Day: 1_400_000, Daily: 4_000_000, DayUsage: store.Usage{CostUSD: 21.37}},
+		daemon: true,
+	}
+	for width, left := range map[int]int{100: 38, 120: 45, 139: 48} {
+		m := resize(t, startLogs(t, src, 160, false), width, 30)
+		view := screen(m)
+		lines := strings.Split(view, "\n")
+		if head := lines[0]; !strings.HasPrefix(head, "delamain  daemon ● ") || !strings.HasSuffix(head, "1 active · 1 finished  1.4M/4M · US$ 21.37") || lipgloss.Width(head) != width {
+			t.Errorf("width %d: medium header = %q", width, head)
+		}
+		runs := lines[1]
+		if !strings.HasPrefix(runs, "╭ runs ") || lipgloss.Width(runs[:strings.Index(runs, "╮")+len("╮")]) != left {
+			t.Errorf("width %d: the runs panel is %d columns wide: %q", width, left, runs)
+		}
+		if right := runs[strings.Index(runs, "╮")+len("╮"):]; !strings.HasPrefix(right, "╭ status · enter details ") {
+			t.Errorf("width %d: the status strip is on top at the right: %q", width, runs)
+		}
+		if !strings.HasPrefix(lines[len(lines)-2], "╰") || !strings.Contains(lines[len(lines)-2], "╯╰") {
+			t.Errorf("width %d: the list takes the whole left column, the logs the rest of the right:\n%s", width, view)
+		}
+		if !has(view, "RUN ISSUE STATE TITLE") || strings.Contains(view, "CPLX") || !strings.Contains(words(view), "▸ 14 #55 implement artifacts") {
+			t.Errorf("width %d: the list has RUN ISSUE STATE TITLE:\n%s", width, view)
+		}
+		strip := words(panelText(view, "status · enter details"))
+		for _, want := range []string{"implement · iter 1/3 · low · pid 51230 (alive)", "182K tokens · US$ 1.94 · implementer 6m42s"} {
+			if !strings.Contains(strip, want) {
+				t.Errorf("width %d: the strip misses %q:\n%s", width, want, strip)
+			}
+		}
+		logs := panelText(view, "logs · run 14")
+		if !strings.Contains(logs, "implementer │ 12:46:58 💬 w001") || !strings.Contains(logs, "…") || strings.Contains(logs, "w040") {
+			t.Errorf("width %d: the log lines are cut with …:\n%s", width, logs)
+		}
+
+		m = send(t, m, keyPress("enter"))
+		view = screen(m)
+		if strings.Contains(view, "╭ logs") || !strings.Contains(lines[1], "╭ runs ") || !strings.Contains(strings.Split(view, "\n")[1], "╮╭ status · run 14 ") {
+			t.Errorf("width %d: enter puts the full status on the right:\n%s", width, view)
+		}
+		if full := panelText(view, "status · run 14 "); !strings.Contains(nospace(full), nospace("BRANCH fix/55-artifacts-accept-test-file-and-format-check (base main)")) || strings.Contains(full, "…") {
+			t.Errorf("width %d: the fields of the full status wrap:\n%s", width, full)
+		}
+		if view := screen(send(t, m, keyPress("esc"))); !strings.Contains(view, "╭ logs · run 14") {
+			t.Errorf("width %d: esc brings the logs back:\n%s", width, view)
+		}
+	}
+}
+
 func TestWatchShouldStripControlSequencesFromRunText(t *testing.T) {
 	evil := "evil\x1b]52;c;ZXZpbA==\x07\x1b[2J\x1b[31mforged\u009b6n\x00\x7f\ttab"
 	v := active(1, "#1\x1b[1m", "implement\x1b[5m", "low", evil)

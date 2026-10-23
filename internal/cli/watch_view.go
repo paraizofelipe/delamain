@@ -72,6 +72,14 @@ func (m watchModel) frame() watchFrame {
 		} else {
 			f.strip = m.stripLines(m.width - 4)
 		}
+	case layoutMedium:
+		left := mediumLeft(m.width)
+		f.list, f.sel = m.listLines(left-4, listCols{header: true, issue: true})
+		if m.fullStatus {
+			f.status = m.wrappedStatus(m.width - left - 4)
+		} else {
+			f.strip = m.stripLines(m.width - left - 4)
+		}
 	default:
 		f.list, f.sel = m.listLines(leftWidth(m.width)-4, listCols{header: true, issue: true, more: true})
 		f.status = m.statusLines()
@@ -161,7 +169,8 @@ func (m watchModel) header() string {
 }
 
 // shortHeader is the header of the smaller layouts: the daemon, the run counts and the day's
-// spend in look, without the version and the clock.
+// spend in look, without the version and the clock; the medium one also spells out the daemon,
+// the finished runs and the day's cost.
 func (m watchModel) shortHeader(look lipgloss.Style) string {
 	st, today := m.st, m.data.today
 	spend := budget.Format(today.Day, today.Mode)
@@ -172,9 +181,20 @@ func (m watchModel) shortHeader(look lipgloss.Style) string {
 	if m.data.daemon {
 		dot = paint(st.ok, "●")
 	}
-	left := paint(st.magenta.Bold(true), "delamain") + " " + dot
-	right := paint(st.info.Bold(true), fmt.Sprintf("%d active · %d fin.", len(m.data.active), len(m.data.done))) + "  " + paint(look, spend)
-	return spread(left, right, m.width)
+	name := paint(st.magenta.Bold(true), "delamain")
+	if m.layout == layoutMedium {
+		if today.Mode == config.BudgetTokens {
+			spend += fmt.Sprintf(" · US$ %.2f", today.DayUsage.CostUSD)
+		}
+		counts := paint(st.info.Bold(true), fmt.Sprintf("%d active · %d finished", len(m.data.active), len(m.data.done)))
+		daemon := paint(st.muted, "daemon ") + dot
+		if m.data.daemon {
+			daemon = paint(st.ok, "daemon ") + dot
+		}
+		return spread(name+"  "+daemon, counts+"  "+paint(look, spend), m.width)
+	}
+	counts := paint(st.info.Bold(true), fmt.Sprintf("%d active · %d fin.", len(m.data.active), len(m.data.done)))
+	return spread(name+" "+dot, counts+"  "+paint(look, spend), m.width)
 }
 
 // spread puts left at the left edge of width columns and right at the right one.

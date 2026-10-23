@@ -55,6 +55,9 @@ type panelNeeds struct {
 // leftWidth is the width of the left column of the wide layout.
 func leftWidth(width int) int { return min(max(width*40/100, 56), 72, width) }
 
+// mediumLeft is the width of the left column of the medium layout.
+func mediumLeft(width int) int { return min(max(width*38/100, 36), 48, width) }
+
 // panelsFor places the panels of layout l on a width × height screen: the header takes the
 // first line and the footer the last n.footer ones.
 func panelsFor(l watchLayout, width, height int, n panelNeeds) watchPanels {
@@ -65,8 +68,11 @@ func panelsFor(l watchLayout, width, height int, n panelNeeds) watchPanels {
 	if n.zoom {
 		return watchPanels{logs: rect{0, 1, width, body}}
 	}
-	if l == layoutCompact {
+	switch l {
+	case layoutCompact:
 		return compactPanels(width, body, n)
+	case layoutMedium:
+		return mediumPanels(width, body, n)
 	}
 	left := leftWidth(width)
 	// The list gets its rows that must be seen, then as many more as leave the status panel its
@@ -97,6 +103,20 @@ func compactPanels(width, body int, n panelNeeds) watchPanels {
 		strip: rect{0, 1 + list, width, strip},
 		logs:  rect{0, 1 + list + strip, width, body - list - strip},
 	}
+}
+
+// mediumPanels gives the list the whole left column, and the right one to the status strip on
+// top of the logs, which keep minLogs lines; the full status replaces the strip and the logs.
+func mediumPanels(width, body int, n panelNeeds) watchPanels {
+	left := mediumLeft(width)
+	p := watchPanels{list: rect{0, 1, left, body}}
+	if n.full {
+		p.status = rect{left, 1, width - left, body}
+		return p
+	}
+	strip := min(2+n.strip, max(body-minLogs, 0))
+	p.strip, p.logs = rect{left, 1, width - left, strip}, rect{left, 1 + strip, width - left, body - strip}
+	return p
 }
 
 // placed is a panel drawn in its rectangle.
