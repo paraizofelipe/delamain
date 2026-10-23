@@ -35,6 +35,7 @@ type watchData struct {
 	today        budget.Status
 	daemon       bool
 	logs         []logLine    // new lines of logsOf, read by follower
+	skipped      int          // lines of logsOf left unread before logs
 	logsOf       int64        // the run selected when the reload started
 	follower     *logFollower // the follower the lines come from
 }
@@ -93,7 +94,7 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case watchDataMsg:
 		m.loading, m.err = false, nil
 		if msg.follower != nil && msg.follower == m.logs.fl && msg.logsOf == m.selectedID {
-			m.logs.append(msg.logs) // lines of a run no longer selected are dropped
+			m.logs.append(msg.logs, msg.skipped) // lines of a run no longer selected are dropped
 		}
 		m.data = cleanData(watchData(msg))
 		m.selectedIdx = pick(m.runs(), m.selectedID, m.selectedIdx)
@@ -250,9 +251,13 @@ func (m watchModel) reload() tea.Cmd {
 		// Read last: the lines read are lost if the reload fails after them.
 		d.logsOf, d.follower = logsOf, fl
 		if fl != nil {
+			if d.skipped, err = skipBacklog(fl); err != nil {
+				return watchErrMsg{err}
+			}
 			if d.logs, err = fl.read(flush); err != nil {
 				return watchErrMsg{err}
 			}
+			capPartial(fl)
 		}
 		return watchDataMsg(d)
 	}

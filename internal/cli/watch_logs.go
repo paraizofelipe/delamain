@@ -1,8 +1,13 @@
 package cli
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
+	"io"
 	"math"
+	"os"
+	"path/filepath"
 	"strings"
 	"unicode/utf8"
 
@@ -14,8 +19,14 @@ import (
 // logSources are the chips of the logs panel, picked with the keys 1 to 6; the first shows them all.
 var logSources = []string{"all", "delamain", "checks", "planner", "implementer", "reviewer"}
 
-// maxLogLines bounds the memory of the logs panel; older lines are dropped and counted.
-const maxLogLines = 5000
+// maxLogLines, maxLogLineBytes and maxLogReadBytes bound the memory of the logs panel: the
+// lines it holds, the start of each line it keeps, and what one reload reads of each file.
+// Older lines are dropped and counted.
+const (
+	maxLogLines     = 5000
+	maxLogLineBytes = 4 << 10
+	maxLogReadBytes = 1 << 20
+)
 
 // logPane is the logs panel of `watch`: the lines read so far of the selected run and the
 // viewport over them. Update only swaps fl; its fields are touched by the reload command alone.
@@ -40,11 +51,20 @@ func (p *logPane) reset(run int64, dir string) {
 	p.refresh()
 }
 
-// append adds lines read from the files: their text is from third parties, so it loses its
-// control characters here.
-func (p *logPane) append(lines []logLine) {
+// append adds lines read from the files after skipped ones the reload did not read: their text
+// is from third parties, so it is cut to maxLogLineBytes and loses its control characters here.
+func (p *logPane) append(lines []logLine, skipped int) {
+	if skipped > 0 { // what is held is older than the lines skipped
+		p.omit += len(p.lines) + skipped
+		p.lines = nil
+	}
+	if drop := len(lines) - maxLogLines; drop > 0 {
+		p.omit += drop
+		lines = lines[drop:]
+	}
 	for _, l := range lines {
-		p.lines = append(p.lines, logLine{ts: l.ts, source: clean(l.source), text: clean(l.text)})
+		// Copies: a cut text or a stamp would keep the whole text of the reload in memory.
+		p.lines = append(p.lines, logLine{ts: strings.Clone(l.ts), source: strings.Clone(clean(l.source)), text: strings.Clone(clean(cutBytes(l.text)))})
 	}
 	if drop := len(p.lines) - maxLogLines; drop > 0 {
 		p.omit += drop
@@ -111,21 +131,98 @@ func paneRows(height int) (seps, rows int) {
 // refresh gives the viewport the lines of the source and keeps it at the end.
 func (p *logPane) refresh() {
 	p.shown = nil // a new array: copies of the model share the old one
-	texts := []string{}
-	if p.omit > 0 {
-		texts = append(texts, "") // the omitted line opens the content
-	}
 	for _, l := range p.lines {
 		if p.source == 0 || l.source == logSources[p.source] {
 			p.shown = append(p.shown, l)
-			texts = append(texts, l.text)
 		}
 	}
-	p.vp.SetContent(strings.Join(texts, "\n"))
+	n := len(p.shown)
+	if p.omit > 0 {
+		n++ // the omitted line opens the content
+	}
+	// The viewport only scrolls: view renders the lines, so it gets as many empty ones.
+	p.vp.SetContent(strings.Repeat("\n", max(n-1, 0)))
 	if !p.paused {
 		p.vp.GotoBottom()
 	}
 	p.vp.SetYOffset(p.vp.YOffset) // within the content, which a filter may have shortened
+}
+
+// cutBytes keeps the first maxLogLineBytes of s, whole runes only.
+func cutBytes(s string) string {
+	if len(s) <= maxLogLineBytes {
+		return s
+	}
+	n := maxLogLineBytes
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
+}
+
+// skipBacklog moves fl past what exceeds maxLogReadBytes in each file, so its next read stays
+// bounded, and returns how many lines it skipped; the line it lands in is read from there on.
+func skipBacklog(fl *logFollower) (int, error) {
+	paths, err := filepath.Glob(filepath.Join(fl.dir, "*.log"))
+	if err != nil {
+		return 0, err
+	}
+	skipped := 0
+	for _, path := range paths {
+		source := strings.TrimSuffix(filepath.Base(path), ".log")
+		info, err := os.Stat(path)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return 0, err
+		}
+		from := fl.offsets[source]
+		if info.Size() < from { // truncated: read starts over
+			from = 0
+		}
+		to := info.Size() - maxLogReadBytes
+		if to <= from {
+			continue
+		}
+		n, err := countLines(path, from, to)
+		if err != nil {
+			return 0, err
+		}
+		skipped += n
+		fl.offsets[source], fl.partial[source] = to, nil
+	}
+	return skipped, nil
+}
+
+// countLines counts the line breaks between the offsets from and to of path.
+func countLines(path string, from, to int64) (int, error) {
+	f, err := os.Open(path) //nolint:gosec // a log of the run dir
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+	n, buf := 0, make([]byte, 32<<10)
+	r := io.NewSectionReader(f, from, to-from)
+	for {
+		k, err := r.Read(buf)
+		n += bytes.Count(buf[:k], []byte{'\n'})
+		if errors.Is(err, io.EOF) {
+			return n, nil
+		}
+		if err != nil {
+			return 0, err
+		}
+	}
+}
+
+// capPartial keeps the start of each unterminated line of fl, as append keeps of a line.
+func capPartial(fl *logFollower) {
+	for source, b := range fl.partial {
+		if len(b) > maxLogLineBytes {
+			fl.partial[source] = bytes.Clone(b[:maxLogLineBytes])
+		}
+	}
 }
 
 // state is the title of the logs of run: ended, paused or following.

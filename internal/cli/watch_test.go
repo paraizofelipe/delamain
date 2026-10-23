@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"testing"
@@ -1124,5 +1125,96 @@ func TestWatchLogsShouldKeepOnlyTheLast5000Lines(t *testing.T) {
 	view = screen(reload(t, m))
 	if !has(view, "… 5 earlier lines omitted") || !strings.Contains(view, " line 006 ") || strings.Contains(view, " line 005 ") || !strings.Contains(view, "5000 of 5000 lines") {
 		t.Fatalf("new lines push the oldest out:\n%s", view)
+	}
+}
+
+// allocated is the heap bytes f allocates.
+func allocated(f func()) uint64 {
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	f()
+	runtime.ReadMemStats(&after)
+	return after.TotalAlloc - before.TotalAlloc
+}
+
+// held is the heap bytes still in use once m is built by f, after a collection.
+func held(f func() tea.Model) uint64 {
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	m := f()
+	runtime.GC()
+	runtime.ReadMemStats(&after)
+	runtime.KeepAlive(m)
+	return max(after.HeapAlloc, before.HeapAlloc) - before.HeapAlloc
+}
+
+const mib = 1 << 20
+
+func TestWatchLogsShouldBoundTheMemoryOfAGiantLine(t *testing.T) {
+	v := logRun(t, 14, "#55")
+	writeLog(t, v, "implementer", "12:00:00 💬 "+strings.Repeat("x", 32*mib)+"\n12:00:01 after the giant line\n")
+	m := startWatch(t, &fakeWatchSource{active: []RunView{v}}, 160)
+	if n := allocated(func() { m = reload(t, m) }); n > 8*mib {
+		t.Fatalf("reading a 32 MiB line allocated %d MiB", n/mib)
+	}
+	if view := screen(m); !strings.Contains(view, "12:00:01 after the giant line") {
+		t.Fatalf("the lines after a giant one are shown:\n%s", view)
+	}
+
+	// A line that never ends grows a bit on every tick.
+	for range 24 {
+		writeLog(t, v, "implementer", strings.Repeat("y", 512<<10))
+		if n := allocated(func() { m = reload(t, m) }); n > 4*mib {
+			t.Fatalf("an unterminated line is held whole: a reload allocated %d MiB", n/mib)
+		}
+	}
+	writeLog(t, v, "implementer", "\n12:00:02 after the endless line\n")
+	if view := screen(reload(t, m)); !strings.Contains(view, "12:00:02 after the endless line") || !strings.Contains(view, "implementer │ yyy") {
+		t.Fatalf("the endless line is shown cut, and the next ones after it:\n%s", view)
+	}
+}
+
+func TestWatchLogsShouldHoldOnlyTheStartOfEachLongLine(t *testing.T) {
+	v := logRun(t, 14, "#55")
+	long := strings.Repeat("z", 64<<10)
+	n := held(func() tea.Model {
+		m := startWatch(t, &fakeWatchSource{active: []RunView{v}}, 160)
+		for i := range 40 {
+			var b strings.Builder
+			for j := range 15 {
+				fmt.Fprintf(&b, "12:00:%02d %03d-%02d %s\n", i%60, i, j, long)
+			}
+			writeLog(t, v, "delamain", b.String())
+			m = reload(t, m)
+		}
+		if view := screen(m); !strings.Contains(view, "039-14 zzz") || !has(view, "following the end · G 600 of 600 lines · 100%") {
+			t.Fatalf("every long line is kept, cut:\n%s", view)
+		}
+		return m
+	})
+	if n > 12*mib {
+		t.Fatalf("600 lines of 64 KiB hold %d MiB: each line is held whole", n/mib)
+	}
+}
+
+func TestWatchLogsShouldReadALargeBacklogInBoundedSteps(t *testing.T) {
+	v := logRun(t, 14, "#55")
+	var b strings.Builder
+	for i := 1; i <= 200_000; i++ {
+		fmt.Fprintf(&b, "12:00:00 backlog line %06d %s\n", i, strings.Repeat("b", 70))
+	}
+	writeLog(t, v, "delamain", b.String())
+	m := startWatch(t, &fakeWatchSource{active: []RunView{v}}, 160)
+	if n := allocated(func() { m = reload(t, m) }); n > 16*mib {
+		t.Fatalf("a %d MiB backlog was read at once: %d MiB allocated", b.Len()/mib, n/mib)
+	}
+	view := screen(m)
+	if !has(view, "following the end · G 5000 of 5000 lines · 100%") || !strings.Contains(view, "backlog line 200000 ") {
+		t.Fatalf("the end of the backlog is shown:\n%s", view)
+	}
+	view = screen(send(t, send(t, m, keyPress("tab")), keyPress("g")))
+	if !has(view, "… 195000 earlier lines omitted") || !strings.Contains(view, "backlog line 195001 ") || strings.Contains(view, "backlog line 195000 ") {
+		t.Fatalf("the lines skipped are counted:\n%s", view)
 	}
 }
