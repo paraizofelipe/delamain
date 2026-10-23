@@ -63,7 +63,7 @@ type watchFrame struct {
 
 // frame lays the screen of the current layout out.
 func (m watchModel) frame() watchFrame {
-	f := watchFrame{footer: []string{m.footer()}}
+	f := watchFrame{footer: m.footer()}
 	n := panelNeeds{zoom: m.zoom, full: m.fullStatus, tab: m.tab}
 	switch m.layout {
 	case layoutMini:
@@ -130,21 +130,44 @@ func scroll(lines []string, sel, n int) []string {
 	return append([]string{lines[0]}, lines[sel-n+2:sel+1]...)
 }
 
-// footer shows the keys, or why the last reload failed until one succeeds.
-func (m watchModel) footer() string {
+// footer shows the keys of the layout, or why the last reload failed until one succeeds.
+func (m watchModel) footer() []string {
 	st := m.st
 	if m.err != nil {
-		return paint(st.bad, ansi.Truncate("error: "+clean(m.err.Error()), m.width, "…"))
+		return []string{paint(st.bad, ansi.Truncate("error: "+clean(m.err.Error()), m.width, "…"))}
 	}
 	zoom := "full screen"
 	if m.zoom {
 		zoom = "exit full screen"
 	}
-	var keys []string
-	for _, k := range [][2]string{{"↑↓", "navigate"}, {"tab", "focus"}, {"1-6", "source"}, {"f", "follow"}, {"z", zoom}, {"q", "quit"}} {
-		keys = append(keys, paint(st.info.Bold(true), k[0])+paint(st.muted, " "+k[1]))
+	keys := map[watchLayout][][2]string{
+		layoutMedium:  {{"↑↓", "navigate"}, {"enter", "status"}, {"1-6", "source"}, {"z", zoom}, {"q", "quit"}},
+		layoutCompact: {{"↑↓", "run"}, {"e", "finished"}, {"enter", "status"}, {"z", "logs"}, {"q", "quit"}},
+		layoutMini:    {{"←→", "tab"}, {"↑↓", "run"}, {"q", "quit"}},
+	}[m.layout]
+	if keys == nil {
+		keys = [][2]string{{"↑↓", "navigate"}, {"tab", "focus"}, {"1-6", "source"}, {"f", "follow"}, {"z", zoom}, {"q", "quit"}}
 	}
-	return ansi.Truncate(strings.Join(keys, "  "), m.width, "…")
+	return footerLines(st, keys, m.width)
+}
+
+// footerLines lays keys out on lines of width columns: a key that does not fit starts the next
+// line, so no key is cut unless it is wider than a line by itself.
+func footerLines(st styles, keys [][2]string, width int) []string {
+	var lines []string
+	line := ""
+	for _, k := range keys {
+		item := paint(st.info.Bold(true), k[0]) + paint(st.muted, " "+k[1])
+		switch {
+		case line == "":
+			line = item
+		case lipgloss.Width(line)+2+lipgloss.Width(item) <= width:
+			line += "  " + item
+		default:
+			lines, line = append(lines, ansi.Truncate(line, width, "…")), item
+		}
+	}
+	return append(lines, ansi.Truncate(line, width, "…"))
 }
 
 // header is the one line above the panels: version, daemon, run counts, the day's spend and the

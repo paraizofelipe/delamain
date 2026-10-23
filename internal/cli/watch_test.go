@@ -1221,6 +1221,51 @@ func TestWatchMiniShouldSwitchTabsWithArrows(t *testing.T) {
 	}
 }
 
+func TestWatchShouldWrapTheFooterInsteadOfCuttingKeys(t *testing.T) {
+	for _, c := range []struct {
+		width, height int
+		want          string
+	}{
+		{140, 32, "↑↓ navigate  tab focus  1-6 source  f follow  z full screen  q quit"},
+		{100, 24, "↑↓ navigate  enter status  1-6 source  z full screen  q quit"},
+		{70, 18, "↑↓ run  e finished  enter status  z logs  q quit"},
+		{40, 12, "←→ tab  ↑↓ run  q quit"},
+	} {
+		m := resize(t, startWatch(t, crowded(), 160), c.width, c.height)
+		if got := strings.TrimSpace(footer(m)); got != c.want {
+			t.Errorf("%dx%d footer = %q, want %q", c.width, c.height, got, c.want)
+		}
+		fits(t, m.View(), c.width, c.height)
+	}
+	m := send(t, resize(t, startWatch(t, crowded(), 160), 100, 24), keyPress("z"))
+	if got := strings.TrimSpace(footer(m)); got != "↑↓ navigate  enter status  1-6 source  z exit full screen  q quit" {
+		t.Errorf("medium full screen footer = %q", got)
+	}
+
+	keys := [][2]string{{"←→", "tab"}, {"↑↓", "run"}, {"enter", "status"}, {"1-6", "source"}, {"z", "full screen"}, {"q", "quit"}}
+	lines := footerLines(lineStyles(termenv.ANSI), keys, 24)
+	var got []string
+	for _, l := range lines {
+		if w := lipgloss.Width(l); w > 24 {
+			t.Fatalf("a footer line is %d wide: %q", w, stripANSI(l))
+		}
+		got = append(got, strings.Split(strings.TrimSpace(stripANSI(l)), "  ")...)
+	}
+	if want := []string{"←→ tab", "↑↓ run", "enter status", "1-6 source", "z full screen", "q quit"}; strings.Join(got, "|") != strings.Join(want, "|") || len(lines) != 3 {
+		t.Fatalf("the keys wrap whole on 3 lines: %q", got)
+	}
+	for _, l := range []watchLayout{layoutWide, layoutMedium, layoutCompact, layoutMini} {
+		for n := 1; n <= 3; n++ {
+			p := panelsFor(l, 140, 40, panelNeeds{footer: n, list: 30, strip: 30, status: 30})
+			for _, r := range []rect{p.tabs, p.list, p.strip, p.status, p.logs} {
+				if r.h > 0 && r.y+r.h > 40-n {
+					t.Fatalf("%v with a footer of %d lines: a panel reaches line %d", l, n, r.y+r.h)
+				}
+			}
+		}
+	}
+}
+
 func TestWatchShouldStripControlSequencesFromRunText(t *testing.T) {
 	evil := "evil\x1b]52;c;ZXZpbA==\x07\x1b[2J\x1b[31mforged\u009b6n\x00\x7f\ttab"
 	v := active(1, "#1\x1b[1m", "implement\x1b[5m", "low", evil)
