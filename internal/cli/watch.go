@@ -67,7 +67,7 @@ y copies the run ID through OSC 52; tmux needs ` + "`set -g set-clipboard on`.",
 				return err
 			}
 			defer done()
-			acts := newStoreWatchActions(in.cfg, in.st, out)
+			acts := newStoreWatchActions(ctx, in.cfg, in.st, out)
 			defer acts.close()
 			o := opts
 			o.actions = acts

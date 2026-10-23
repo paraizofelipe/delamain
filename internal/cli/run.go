@@ -169,7 +169,10 @@ func newRunner(cfg config.Config, st *store.Store, no notify.Options) (*pipeline
 		}
 	}
 	target := promptsTarget(cfg)
-	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	log := no.Log // a caller that holds the terminal, as `watch` does, passes its own
+	if log == nil {
+		log = slog.New(slog.NewTextHandler(os.Stderr, nil))
+	}
 	no.StateDir, no.Log = cfg.Paths.StateDir, log
 	return &pipeline.Runner{
 		Cfg:           cfg,

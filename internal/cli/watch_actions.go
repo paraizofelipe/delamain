@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/url"
 	"os"
 	"os/exec"
@@ -26,12 +27,16 @@ import (
 )
 
 // watchActions are what `watch` does to a run; the model calls them in a tea.Cmd, off Update.
+//
+// No action takes a context: Update has none to give, and a context.Background() here outlives
+// the TUI. Whoever implements it holds the context of the command, so quitting ends the action
+// instead of waiting for it.
 type watchActions interface {
 	// Stop is `delamain stop --no-wait id`: what it prints, or why it failed.
-	Stop(ctx context.Context, id int64) (string, error)
+	Stop(id int64) (string, error)
 	// Remove is `delamain rm id`, with --force when force is set: what it prints, or why it failed.
-	Remove(ctx context.Context, id int64, force bool) (string, error)
-	// OpenURL opens url in the browser without waiting for it.
+	Remove(id int64, force bool) (string, error)
+	// OpenURL opens url in the browser, waiting only long enough to report an opener that failed.
 	OpenURL(url string) error
 	// Copy puts text in the clipboard of the terminal.
 	Copy(text string) error
@@ -62,19 +67,25 @@ const (
 type watchDialog struct {
 	kind   dialogKind
 	run    RunView
-	dirty  string // why rm refused the worktree: F removes it anyway
-	scroll int    // lines of a dialog taller than the screen scrolled past
+	dirty  string    // why rm refused the worktree: F removes it anyway
+	scroll int       // lines of a dialog taller than the screen scrolled past
+	at     time.Time // when it opened: a removal is only confirmed confirmGrace later
 }
+
+// confirmGrace is how long rm ignores its own key after the dialog opens: d opens it and d
+// confirms it, so a double tap or the autorepeat of a held key would delete the run before it
+// could be read. F is another key and needs no grace.
+const confirmGrace = 300 * time.Millisecond
 
 // toastFor is how long a toast stays on the footer.
 const toastFor = 5 * time.Second
 
-// watchToast is the temporary message on the first line of the footer; one without a time stays
-// until another replaces it. seq tells it from the toasts before it.
+// watchToast is the temporary message on the first line of the footer; one with no timer of its
+// own stays until another replaces it. seq tells it from the toasts before it, and is what its
+// timer carries.
 type watchToast struct {
 	text string
 	look lipgloss.Style
-	at   time.Time
 	seq  int
 }
 
@@ -84,15 +95,24 @@ type watchToastMsg struct{ seq int }
 // showToast shows a toast from now on, and asks to drop it toastFor later.
 func (m watchModel) showToast(look lipgloss.Style, text string) (watchModel, tea.Cmd) {
 	m.toasts++
-	m.toast = watchToast{text: text, look: look, at: m.opts.now(), seq: m.toasts}
+	m.toast = watchToast{text: text, look: look, seq: m.toasts}
 	seq := m.toasts
 	return m, m.opts.after(toastFor, func(time.Time) tea.Msg { return watchToastMsg{seq} })
 }
 
-// expireToast drops the toast seq when its time is up; a newer toast has its own time.
+// expireToast drops the toast seq when its time is up; a newer toast has its own time and its
+// own timer. Only showToast asks for a timer, and every toast it shows takes a seq of its own,
+// so the seq alone says whether this timer is still the one of the toast on the footer.
+//
+// The toast of an action that is still running comes back: a quick open or copy beside it took
+// the footer for its 5s, and the action it hid has not ended.
 func (m watchModel) expireToast(seq int) watchModel {
-	if m.toast.seq == seq && !m.toast.at.IsZero() && m.opts.now().Sub(m.toast.at) >= toastFor {
-		m.toast = watchToast{}
+	if m.toast.seq != seq {
+		return m
+	}
+	m.toast = watchToast{}
+	if m.acting && m.actingToast.text != "" {
+		m.toast = m.actingToast
 	}
 	return m
 }
@@ -144,7 +164,7 @@ func (m watchModel) copyID() (watchModel, tea.Cmd) {
 // openDialog opens a dialog of kind on the selected run.
 func (m watchModel) openDialog(kind dialogKind) watchModel {
 	if v, ok := m.selected(); ok {
-		m.dialog = watchDialog{kind: kind, run: v}
+		m.dialog = watchDialog{kind: kind, run: v, at: m.opts.now()}
 	}
 	return m
 }
@@ -173,15 +193,21 @@ func (m watchModel) dialogKey(msg tea.KeyMsg) (watchModel, tea.Cmd) {
 	}
 	switch {
 	case key.Matches(msg, dialogKeys.stop):
-		if m.acting || m.dialog.run.terminal { // a finished run has nothing to stop // the action that runs reads and writes the same store: one at a time
+		if m.acting { // the action that runs reads and writes the same store: one at a time
+			return m, nil
+		}
+		if m.dialog.run.terminal { // a finished run has nothing to stop
 			return m, nil
 		}
 		id, acts := m.dialog.run.ID, m.opts.actions
 		m.dialog, m.acting = watchDialog{}, true
 		m.toasts++
-		m.toast = watchToast{text: fmt.Sprintf("stopping run %d…", id), look: m.st.warn, seq: m.toasts}
+		// No time and no timer: this toast stays while the stop runs, and comes back if a quick
+		// open or copy takes the footer in the meantime.
+		m.actingToast = watchToast{text: fmt.Sprintf("stopping run %d…", id), look: m.st.warn, seq: m.toasts}
+		m.toast = m.actingToast
 		return m, func() tea.Msg {
-			out, err := acts.Stop(context.Background(), id)
+			out, err := acts.Stop(id)
 			return watchActionMsg{out: out, err: err}
 		}
 	}
@@ -197,11 +223,13 @@ func (m watchModel) removeKey(msg tea.KeyMsg) (watchModel, tea.Cmd) {
 		return m, nil
 	case force && m.dialog.dirty == "", !force && !key.Matches(msg, dialogKeys.remove):
 		return m, nil
+	case !force && m.opts.now().Sub(m.dialog.at) < confirmGrace:
+		return m, nil // d opened this dialog: a second d this soon is a double tap, not a choice
 	}
 	id, acts := m.dialog.run.ID, m.opts.actions
 	m.acting = true
 	return m, func() tea.Msg {
-		out, err := acts.Remove(context.Background(), id, force)
+		out, err := acts.Remove(id, force)
 		return watchActionMsg{out: out, err: err, removed: id}
 	}
 }
@@ -209,7 +237,7 @@ func (m watchModel) removeKey(msg tea.KeyMsg) (watchModel, tea.Cmd) {
 // actionDone shows how an action ended: what it printed in ok, or why it failed in bad. A
 // worktree rm refused for its changes keeps the dialog open, offering F.
 func (m watchModel) actionDone(msg watchActionMsg) (watchModel, tea.Cmd) {
-	m.acting = false
+	m.acting, m.actingToast = false, watchToast{}
 	open := m.dialog.kind == dialogRemove && m.dialog.run.ID == msg.removed && msg.removed != 0
 	if open && errors.Is(msg.err, errDirtyWorktree) {
 		m.dialog.dirty = clean(msg.err.Error())
@@ -446,36 +474,51 @@ func (m watchModel) overlay(screen string, box []string) string {
 
 // storeWatchActions are the actions of `watch` on the state database, as the commands do them.
 type storeWatchActions struct {
-	mu     sync.Mutex // the stopper builds its runner on first use: one action at a time
+	mu sync.Mutex // the stopper builds its runner on first use: one action at a time
+	// ctx is the context of the command, which every action runs under: ctrl+c ends it, and so
+	// does close. Without it an action of its own would outlive the TUI, and quitting would wait
+	// on the mutex for a recover pushing a branch with no deadline of its own.
+	ctx    context.Context //nolint:containedctx // Update has no context to pass to an action
+	cancel context.CancelFunc
 	stop   *stopper
 	opener string    // the command that opens a URL in the browser
 	out    io.Writer // the terminal, for OSC 52
 	tmux   bool      // OSC 52 goes through tmux
 }
 
-func newStoreWatchActions(cfg config.Config, st *store.Store, out io.Writer) *storeWatchActions {
+func newStoreWatchActions(ctx context.Context, cfg config.Config, st *store.Store, out io.Writer) *storeWatchActions {
 	opener := "xdg-open"
 	if runtime.GOOS == "darwin" {
 		opener = "open"
 	}
-	return &storeWatchActions{stop: &stopper{cfg: cfg, st: st, noWait: true}, opener: opener, out: out, tmux: os.Getenv("TMUX") != ""}
+	ctx, cancel := context.WithCancel(ctx)
+	// The TUI owns the terminal: the logs of a recover would be drawn over the screen it holds.
+	quiet := slog.New(slog.DiscardHandler)
+	return &storeWatchActions{
+		ctx:    ctx,
+		cancel: cancel,
+		stop:   &stopper{cfg: cfg, st: st, noWait: true, log: quiet},
+		opener: opener,
+		out:    out,
+		tmux:   os.Getenv("TMUX") != "",
+	}
 }
 
 // Stop is `delamain stop --no-wait id`.
-func (a *storeWatchActions) Stop(ctx context.Context, id int64) (string, error) {
+func (a *storeWatchActions) Stop(id int64) (string, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	var out strings.Builder
-	err := a.stop.stopOne(ctx, &out, id)
+	err := a.stop.stopOne(a.ctx, &out, id)
 	return out.String(), err
 }
 
 // Remove is `delamain rm id`, or `delamain rm --force id`.
-func (a *storeWatchActions) Remove(ctx context.Context, id int64, force bool) (string, error) {
+func (a *storeWatchActions) Remove(id int64, force bool) (string, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	var out strings.Builder
-	err := removeRun(ctx, &out, a.stop.cfg, a.stop.st, id, force)
+	err := removeRun(a.ctx, &out, a.stop.cfg, a.stop.st, id, force)
 	return out.String(), err
 }
 
@@ -490,9 +533,23 @@ func (a *storeWatchActions) OpenURL(target string) error {
 	if err := cmd.Start(); err != nil {
 		return err
 	}
-	go func() { _ = cmd.Wait() }()
+	// The opener hands the URL to the browser and exits; one without a handler for https exits
+	// right away with a code of its own. Waiting openerWait for that code turns "o did nothing"
+	// into a warning, and a browser started in the foreground is not waited on.
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			return fmt.Errorf("could not open %s: %w", target, err)
+		}
+	case <-time.After(openerWait):
+	}
 	return nil
 }
+
+// openerWait is how long OpenURL waits for the opener's exit code before leaving it running.
+const openerWait = 2 * time.Second
 
 // Copy writes text to the terminal as an OSC 52 sequence, in one write beside the renderer's.
 func (a *storeWatchActions) Copy(text string) error {
@@ -504,8 +561,10 @@ func (a *storeWatchActions) Copy(text string) error {
 	return err
 }
 
-// close releases what the stops opened: the notifier of the recover.
+// close releases what the stops opened: the notifier of the recover. Cancelling first ends an
+// action that is still running, so quitting never waits on its mutex.
 func (a *storeWatchActions) close() {
+	a.cancel()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.stop.close()

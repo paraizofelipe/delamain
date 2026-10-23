@@ -79,6 +79,7 @@ type watchModel struct {
 	tab           miniTab
 	dialog        watchDialog // over the screen: only its keys act
 	toast         watchToast  // on the first line of the footer
+	actingToast   watchToast  // the toast of the running action: it comes back after a quick one
 	toasts        int         // toasts shown so far: the seq of the last one
 	acting        bool        // a stop or a remove is running
 }

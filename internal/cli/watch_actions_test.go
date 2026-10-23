@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -16,6 +17,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 
 	"github.com/paraizo/delamain/internal/config"
 	"github.com/paraizo/delamain/internal/notify"
@@ -43,14 +45,14 @@ type fakeWatchActions struct {
 	copyErr   error
 }
 
-func (f *fakeWatchActions) Stop(_ context.Context, id int64) (string, error) {
+func (f *fakeWatchActions) Stop(id int64) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.stops = append(f.stops, id)
 	return f.stopOut, f.stopErr
 }
 
-func (f *fakeWatchActions) Remove(_ context.Context, id int64, force bool) (string, error) {
+func (f *fakeWatchActions) Remove(id int64, force bool) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.removes = append(f.removes, removeCall{id, force})
@@ -90,6 +92,10 @@ func startActions(t *testing.T, src *fakeWatchSource, acts *fakeWatchActions, wi
 
 // noTimers drops the toast timers: the toasts of those tests stay.
 func noTimers(time.Duration, func(time.Time) tea.Msg) tea.Cmd { return nil }
+
+// afterGrace moves the clock past confirmGrace, as a user who read the dialog before answering
+// it: until then rm ignores the key that opened it.
+func afterGrace(now *time.Time) { *now = now.Add(confirmGrace) }
 
 // owned is an active run whose owner has pid and is alive or not.
 func owned(id int64, issue, title string, pid int, alive bool) RunView {
@@ -328,14 +334,15 @@ func TestWatchStopShouldOfferRecoverWhenTheOwnerDied(t *testing.T) {
 	}
 }
 
-// actions are the real actions of `watch` on the fixture's store; out is the terminal.
-func (f *fixture) actions(t *testing.T, out *bytes.Buffer) *storeWatchActions {
+// actions are the real actions of `watch` on the fixture's store, under ctx as the command
+// gives it; out is the terminal.
+func (f *fixture) actions(t *testing.T, ctx context.Context, out *bytes.Buffer) *storeWatchActions { //nolint:revive // ctx after t is the order of the other helpers
 	t.Helper()
 	cfg, err := config.Load(f.cfgFile, os.Getenv)
 	if err != nil {
 		t.Fatal(err)
 	}
-	acts := newStoreWatchActions(cfg, f.st, out)
+	acts := newStoreWatchActions(ctx, cfg, f.st, out)
 	t.Cleanup(acts.close)
 	return acts
 }
@@ -345,15 +352,13 @@ func TestWatchActionsShouldStopARunLikeStopNoWait(t *testing.T) {
 	ctx := context.Background()
 	rec := f.run(t, "#1", "", store.StateImplement) // owned by this test process, which is alive
 	done := f.run(t, "#2", "", store.StateRecorded)
-	acts := f.actions(t, &bytes.Buffer{})
+	acts := f.actions(t, ctx, &bytes.Buffer{})
 
-	start := time.Now()
-	out, err := acts.Stop(ctx, rec.ID)
+	// What proves Stop never waits is the message and the nil error: the stopper of `watch` has
+	// no timeout, so a Stop that waited would fail in waitStopped instead of printing this.
+	out, err := acts.Stop(rec.ID)
 	if want := "stop requested for run 1 (owner pid " + strconv.Itoa(os.Getpid()) + ")\n"; err != nil || out != want {
 		t.Fatalf("Stop prints what stop --no-wait prints, want %q: %q %v", want, out, err)
-	}
-	if time.Since(start) > 30*time.Second {
-		t.Fatal("Stop never waits for the run")
 	}
 	if !f.stopRequested(t, rec.ID) {
 		t.Fatal("the request is recorded for the owner to see")
@@ -362,13 +367,13 @@ func TestWatchActionsShouldStopARunLikeStopNoWait(t *testing.T) {
 		t.Fatalf("a live owner's run is finished by its owner, not by Stop: %+v", got)
 	}
 
-	if out, err := acts.Stop(ctx, done.ID); err != nil || out != "run 2 already finished (recorded)\n" {
+	if out, err := acts.Stop(done.ID); err != nil || out != "run 2 already finished (recorded)\n" {
 		t.Fatalf("a finished run is left as it is: %q %v", out, err)
 	}
 	if f.stopRequested(t, done.ID) {
 		t.Fatal("a finished run gets no stop request")
 	}
-	if _, err := acts.Stop(ctx, 999); err == nil || err.Error() != "run 999 not found" {
+	if _, err := acts.Stop(999); err == nil || err.Error() != "run 999 not found" {
 		t.Fatalf("an unknown run is an error: %v", err)
 	}
 }
@@ -385,9 +390,9 @@ func TestWatchActionsShouldRecoverARunWhoseOwnerDied(t *testing.T) {
 			t.Fatal("seed a run whose process died", err)
 		}
 	}
-	acts := f.actions(t, &bytes.Buffer{})
+	acts := f.actions(t, ctx, &bytes.Buffer{})
 
-	out, err := acts.Stop(ctx, rec.ID)
+	out, err := acts.Stop(rec.ID)
 	if err != nil || !strings.HasPrefix(out, "run 1 recovered:\n") || !strings.Contains(out, "halted") {
 		t.Fatalf("Stop prints the result as recover does: %q %v", out, err)
 	}
@@ -465,6 +470,7 @@ func TestWatchRmShouldOfferForceOnADirtyWorktree(t *testing.T) {
 		t.Fatalf("F is only offered after a dirty worktree: %v", acts.removes)
 	}
 
+	afterGrace(&now)
 	m = send(t, m, keyPress("d"))
 	if len(acts.removes) != 1 || acts.removes[0] != (removeCall{12, false}) {
 		t.Fatalf("d removes the run without force: %v", acts.removes)
@@ -495,7 +501,9 @@ func TestWatchRmShouldRemoveAFinishedRunAndWarnOnOtherErrors(t *testing.T) {
 		t.Fatalf("esc and n cancel: %v", acts.removes)
 	}
 
-	m = send(t, send(t, m, keyPress("d")), keyPress("enter"))
+	m = send(t, m, keyPress("d"))
+	afterGrace(&now)
+	m = send(t, m, keyPress("enter"))
 	if len(acts.removes) != 1 || acts.removes[0] != (removeCall{12, false}) || footerText(m)[0] != "removed run 12" {
 		t.Fatalf("enter removes the run and says so: %v %q", acts.removes, footerText(m))
 	}
@@ -504,7 +512,9 @@ func TestWatchRmShouldRemoveAFinishedRunAndWarnOnOtherErrors(t *testing.T) {
 	}
 
 	acts.removeErr = []error{errors.New("worktree /wt/x is in use by run 2 (implement)")}
-	m = send(t, send(t, m, keyPress("d")), keyPress("d"))
+	m = send(t, m, keyPress("d"))
+	afterGrace(&now)
+	m = send(t, m, keyPress("d"))
 	if strings.Contains(screen(m), "delamain rm") || footerText(m)[0] != "worktree /wt/x is in use by run 2 (implement)" {
 		t.Fatalf("another error closes the dialog and is the toast: %q\n%s", footerText(m), screen(m))
 	}
@@ -516,9 +526,9 @@ func TestWatchActionsShouldRemoveARunLikeRm(t *testing.T) {
 	rec := f.run(t, "#1", "fix/1-a", store.StateRecorded)
 	dir := f.runDir(t, rec)
 	busy := f.run(t, "#2", "", store.StateImplement)
-	acts := f.actions(t, &bytes.Buffer{})
+	acts := f.actions(t, ctx, &bytes.Buffer{})
 
-	if out, err := acts.Remove(ctx, rec.ID, false); err != nil || out != "removed run 1\n" {
+	if out, err := acts.Remove(rec.ID, false); err != nil || out != "removed run 1\n" {
 		t.Fatalf("Remove prints what rm prints: %q %v", out, err)
 	}
 	if _, err := f.st.GetRun(ctx, rec.ID); !errors.Is(err, store.ErrNotFound) {
@@ -531,14 +541,14 @@ func TestWatchActionsShouldRemoveARunLikeRm(t *testing.T) {
 		t.Fatal("the branch may be the delivered draft: it stays")
 	}
 
-	_, err := acts.Remove(ctx, busy.ID, true)
+	_, err := acts.Remove(busy.ID, true)
 	if want := "run 2 is still implement: stop it first with 'delamain stop 2'"; err == nil || err.Error() != want {
 		t.Fatalf("an unfinished run is refused, even forced, want %q: %v", want, err)
 	}
 	if _, err := f.st.GetRun(ctx, busy.ID); err != nil {
 		t.Fatalf("a refused run keeps its record: %v", err)
 	}
-	if _, err := acts.Remove(ctx, 999, false); err == nil || err.Error() != "run 999 not found" {
+	if _, err := acts.Remove(999, false); err == nil || err.Error() != "run 999 not found" {
 		t.Fatalf("an unknown run is an error: %v", err)
 	}
 }
@@ -551,9 +561,9 @@ func TestWatchActionsShouldRefuseADirtyWorktreeWithErrDirtyWorktreeUnlessForced(
 	if err := os.WriteFile(filepath.Join(rec.Worktree, "wip.go"), []byte("package wip\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	acts := f.actions(t, &bytes.Buffer{})
+	acts := f.actions(t, ctx, &bytes.Buffer{})
 
-	_, err := acts.Remove(ctx, rec.ID, false)
+	_, err := acts.Remove(rec.ID, false)
 	if !errors.Is(err, errDirtyWorktree) {
 		t.Fatalf("a dirty worktree is errDirtyWorktree: %v", err)
 	}
@@ -564,7 +574,7 @@ func TestWatchActionsShouldRefuseADirtyWorktreeWithErrDirtyWorktreeUnlessForced(
 		t.Fatal("a refused run keeps its worktree and directory")
 	}
 
-	if out, err := acts.Remove(ctx, rec.ID, true); err != nil || out != "removed run 1\n" {
+	if out, err := acts.Remove(rec.ID, true); err != nil || out != "removed run 1\n" {
 		t.Fatalf("force discards the changes: %q %v", out, err)
 	}
 	if exists(rec.Worktree) || exists(dir) {
@@ -606,13 +616,16 @@ func TestWatchActionsShouldOpenOnlyHTTPSURLs(t *testing.T) {
 	}
 	acts := &storeWatchActions{opener: opener}
 	for _, bad := range []string{
-		"file:///etc/passwd", "http://github.com/o/r/pull/7", "https://user:pw@github.com/o/r/pull/7",
+		"file:///etc/passwd", "http://github.com/o/r/pull/7",
+		"https://user:pw@github.com/o/r/pull/7", //gitleaks:allow // test data: OpenURL refuses a URL carrying credentials
 		"-https://github.com", "https:///o/r", "javascript:alert(1)", "/usr/share/applications/x.desktop", "",
 	} {
 		if err := acts.OpenURL(bad); err == nil {
 			t.Fatalf("%q is refused", bad)
 		}
 	}
+	// OpenURL waits for the opener's exit code, so an accepted URL has already run it by the
+	// time it returns: the file is there, or no process was ever started.
 	if exists(got) {
 		t.Fatal("a refused URL starts no process")
 	}
@@ -621,20 +634,33 @@ func TestWatchActionsShouldOpenOnlyHTTPSURLs(t *testing.T) {
 	if err := acts.OpenURL(url); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		if b, _ := os.ReadFile(got); string(b) == url { //nolint:gosec // inside the test's temp dir
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the opener gets the URL as its only argument")
-		}
-		time.Sleep(10 * time.Millisecond)
+	if b, err := os.ReadFile(got); err != nil || string(b) != url { //nolint:gosec // inside the test's temp dir
+		t.Fatalf("the opener gets the URL as its only argument: %q %v", b, err)
 	}
 
 	acts.opener = filepath.Join(dir, "missing")
 	if err := acts.OpenURL(url); err == nil {
 		t.Fatal("an opener that cannot start is an error")
+	}
+}
+
+// Without a handler for https, xdg-open exits with a code of its own and opens nothing: o would
+// look like it did nothing at all.
+func TestWatchActionsShouldWarnWhenTheOpenerExitsWithAnError(t *testing.T) {
+	dir := t.TempDir()
+	opener := filepath.Join(dir, "opener")
+	if err := os.WriteFile(opener, []byte("#!/bin/sh\nexit 3\n"), 0o700); err != nil { //nolint:gosec // a test script
+		t.Fatal(err)
+	}
+	acts := &storeWatchActions{opener: opener}
+	err := acts.OpenURL("https://github.com/o/r/pull/7")
+	if err == nil {
+		t.Fatal("an opener that exits with an error is reported, not dropped")
+	}
+	for _, want := range []string{"could not open https://github.com/o/r/pull/7", "exit status 3"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the warning says %q: %v", want, err)
+		}
 	}
 }
 
@@ -664,7 +690,7 @@ func TestWatchActionsShouldCopyThroughOSC52AndWrapItForTmux(t *testing.T) {
 	} {
 		t.Setenv("TMUX", c.tmux)
 		var out bytes.Buffer
-		acts := newStoreWatchActions(config.Config{}, nil, &out)
+		acts := newStoreWatchActions(context.Background(), config.Config{}, nil, &out)
 		if err := acts.Copy("14"); err != nil {
 			t.Fatal(err)
 		}
@@ -820,6 +846,7 @@ func TestWatchDialogsShouldFitEveryLayout(t *testing.T) {
 			m := startActions(t, dialogRuns(), c.acts, w, h, &now)
 			for _, k := range c.open {
 				m = send(t, m, keyPress(k))
+				afterGrace(&now) // every dialog here is read before it is answered
 			}
 			if label := map[bool]string{true: "owner    pid", false: "owner      pid"}[w < 100]; c.name == "stop" && !strings.Contains(panelText(screen(m), c.title), label) {
 				t.Fatalf("%dx%d: the labels take %d columns:\n%s", w, h, len(label)-3, screen(m))
@@ -900,5 +927,218 @@ func TestWatchLongShouldEndWithTheTmuxPopupAndOSC52(t *testing.T) {
 	}
 	if strings.Contains(long, "read-only") {
 		t.Fatalf("watch is no longer read-only:\n%s", long)
+	}
+}
+
+// d opens the rm dialog and d confirms it: a double tap, or the autorepeat of a held key, would
+// delete the run and its directory before the dialog could be read.
+func TestWatchRmShouldIgnoreItsOwnKeyUntilTheDialogCanBeRead(t *testing.T) {
+	now := watchNow
+	src := &fakeWatchSource{done: []RunView{removable(12)}}
+	acts := &fakeWatchActions{removeOut: "removed run 12\n"}
+	m := startActions(t, src, acts, 160, 40, &now)
+
+	m = send(t, m, keyPress("d"))
+	for _, k := range []string{"d", "enter"} {
+		m = send(t, m, keyPress(k))
+		if len(acts.removes) != 0 {
+			t.Fatalf("%s right after the dialog opened is a double tap: %v", k, acts.removes)
+		}
+		if dialogText(screen(m), "delamain rm") == "" {
+			t.Fatalf("%s leaves the dialog open to be read:\n%s", k, screen(m))
+		}
+	}
+
+	now = now.Add(confirmGrace - time.Millisecond)
+	if m = send(t, m, keyPress("d")); len(acts.removes) != 0 {
+		t.Fatalf("the grace is %s, not less: %v", confirmGrace, acts.removes)
+	}
+	afterGrace(&now)
+	m = send(t, m, keyPress("d"))
+	if len(acts.removes) != 1 || acts.removes[0] != (removeCall{12, false}) {
+		t.Fatalf("d removes the run once the dialog could be read: %v", acts.removes)
+	}
+	if footerText(m)[0] != "removed run 12" {
+		t.Fatalf("the removal that went through is the toast: %q", footerText(m))
+	}
+}
+
+func TestWatchActionsShouldDoNothingWithNoRunSelectedOrWhileOneRuns(t *testing.T) {
+	now := watchNow
+	acts := &fakeWatchActions{}
+	m := startActions(t, &fakeWatchSource{}, acts, 160, 40, &now)
+	for _, k := range []string{"s", "d", "o", "y"} {
+		next, cmd := m.Update(keyPress(k))
+		if cmd != nil {
+			t.Fatalf("%s acts on no run when the list is empty", k)
+		}
+		for _, open := range []string{"delamain stop", "delamain rm"} {
+			if dialogText(screen(next), open) != "" {
+				t.Fatalf("%s opens no dialog without a run:\n%s", k, screen(next))
+			}
+		}
+		m = settle(t, next, cmd)
+	}
+	if len(acts.stops) != 0 || len(acts.removes) != 0 || len(acts.opened) != 0 || len(acts.copied) != 0 {
+		t.Fatalf("an empty list has nothing to act on: %+v", acts)
+	}
+
+	// A remove that runs keeps the dialog open: a second d must wait for it, as the store takes
+	// one writer at a time.
+	src := &fakeWatchSource{done: []RunView{removable(21)}}
+	m = startActions(t, src, acts, 160, 40, &now)
+	m = send(t, m, keyPress("d"))
+	afterGrace(&now)
+	next, _ := m.Update(keyPress("d")) // the Cmd is not run: the remove is still going
+	if _, cmd := next.Update(keyPress("d")); cmd != nil {
+		t.Fatal("a remove waits for the running one to end")
+	}
+	if _, cmd := next.Update(keyPress("F")); cmd != nil {
+		t.Fatal("F waits for the running remove too")
+	}
+}
+
+func TestWatchToastShouldStayThroughReloadsAndComeBackAfterAQuickOne(t *testing.T) {
+	now := watchNow
+	timers := &fakeTimers{now: &now}
+	withPR := owned(14, "#55", "a", 51230, true)
+	withPR.PR = "https://github.com/o/r/pull/7"
+	src := &fakeWatchSource{active: []RunView{withPR}}
+	acts := &fakeWatchActions{stopOut: "stop requested for run 14 (owner pid 51230)\n"}
+	opts := watchOptions{limit: 20, interval: time.Millisecond, now: func() time.Time { return now }, actions: acts, after: timers.after}
+	m := tea.Model(newWatchModel(src, noColors(), opts))
+	m = send(t, m, tea.WindowSizeMsg{Width: 160, Height: 40})
+	m = settle(t, m, m.Init())
+
+	// A toast is on its own 5s: the reloads in between neither drop it nor cut it short.
+	m = send(t, send(t, m, keyPress("y")), keyPress("y"))
+	if got := footerText(m)[0]; got != "run 14 copied" {
+		t.Fatalf("y says what it copied: %q", got)
+	}
+	m = timers.elapse(t, reload(t, m), 2*time.Second)
+	m = reload(t, m)
+	if got := footerText(m)[0]; got != "run 14 copied" {
+		t.Fatalf("a reload is not what ends a toast: %q", got)
+	}
+	if m = timers.elapse(t, m, 3*time.Second); len(footerText(m)) != 1 {
+		t.Fatalf("the toast still goes after its 5s: %q", footerText(m))
+	}
+
+	// A copy beside a running stop takes the footer for its 5s; the stop is still running after
+	// it, so its toast comes back instead of leaving the footer silent.
+	m = send(t, m, keyPress("s"))
+	m, cmd := m.Update(keyPress("s"))
+	if got := footerText(m)[0]; got != "stopping run 14…" {
+		t.Fatalf("the stop that runs is on the footer: %q", got)
+	}
+	m = send(t, m, keyPress("y"))
+	if got := footerText(m)[0]; got != "run 14 copied" {
+		t.Fatalf("the copy says so even with a stop running: %q", got)
+	}
+	if m = timers.elapse(t, m, 5*time.Second); footerText(m)[0] != "stopping run 14…" {
+		t.Fatalf("the toast of the running stop comes back: %q", footerText(m))
+	}
+	m = settle(t, m, cmd)
+	if got := footerText(m)[0]; got != "stop requested for run 14 (owner pid 51230)" {
+		t.Fatalf("what the stop printed replaces it when it ends: %q", got)
+	}
+	if m = timers.elapse(t, m, 5*time.Second); len(footerText(m)) != 1 {
+		t.Fatalf("the stop ended: nothing comes back after this toast: %q", footerText(m))
+	}
+}
+
+// sgrOf is the SGR parameters look paints with.
+func sgrOf(look lipgloss.Style) string { return sgrBefore(paint(look, "x"), "x") }
+
+func TestWatchDialogsAndToastsShouldCarryTheColorOfWhatTheyDo(t *testing.T) {
+	now := watchNow
+	st := lineStyles(termenv.ANSI)
+	src := &fakeWatchSource{active: []RunView{owned(14, "#55", "a", 51230, true)}, done: []RunView{removable(12)}}
+	acts := &fakeWatchActions{stopOut: "stop requested for run 14 (owner pid 51230)\n", removeOut: "removed run 12\n"}
+	opts := watchOptions{limit: 20, interval: time.Millisecond, now: func() time.Time { return now }, actions: acts, after: noTimers}
+	m := tea.Model(newWatchModel(src, st, opts))
+	m = send(t, m, tea.WindowSizeMsg{Width: 160, Height: 40})
+	m = settle(t, m, m.Init())
+
+	look := func(name, title string, want lipgloss.Style) {
+		t.Helper()
+		if got := border(m.View(), title); got != sgrOf(want) {
+			t.Fatalf("%s: the border of %q is SGR %q, want %q", name, title, got, sgrOf(want))
+		}
+	}
+	toast := func(name, text string, want lipgloss.Style) {
+		t.Helper()
+		if got := sgrBefore(m.(watchModel).footer()[0], text); got != sgrOf(want) {
+			t.Fatalf("%s: the toast %q is SGR %q, want %q", name, text, got, sgrOf(want))
+		}
+	}
+
+	m = send(t, m, keyPress("?"))
+	look("help", "help", st.info)
+	m = send(t, send(t, m, keyPress("esc")), keyPress("s"))
+	look("stop", "delamain stop", st.warn)
+
+	next, cmd := m.Update(keyPress("s"))
+	m = next
+	toast("the stop that runs", "stopping run 14…", st.warn)
+	m = settle(t, m, cmd)
+	toast("what the stop printed", "stop requested for run 14 (owner pid 51230)", st.ok)
+
+	acts.stopErr = errors.New("run 14: database is locked")
+	m = send(t, send(t, m, keyPress("s")), keyPress("s"))
+	toast("a failed stop", "run 14: database is locked", st.bad)
+
+	m = send(t, send(t, m, keyPress("j")), keyPress("d"))
+	look("rm", "delamain rm", st.bad)
+	afterGrace(&now)
+	m = send(t, m, keyPress("d"))
+	toast("what rm printed", "removed run 12", st.ok)
+}
+
+func TestWatchActionsShouldRunUnderTheContextOfTheCommand(t *testing.T) {
+	f := newFixture(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	rec := f.run(t, "#1", "", store.StateImplement)
+
+	// The TUI has no context to pass: without the command's, an action would outlive it and
+	// quitting would wait on its mutex, with the alternate screen already closed.
+	ended := f.actions(t, ctx, &bytes.Buffer{})
+	cancel()
+	if _, err := ended.Stop(rec.ID); !errors.Is(err, context.Canceled) {
+		t.Fatalf("a stop ends with the command, got %v", err)
+	}
+	if _, err := ended.Remove(rec.ID, false); !errors.Is(err, context.Canceled) {
+		t.Fatalf("a remove ends with the command, got %v", err)
+	}
+
+	closed := f.actions(t, context.Background(), &bytes.Buffer{})
+	closed.close()
+	if _, err := closed.Stop(rec.ID); !errors.Is(err, context.Canceled) {
+		t.Fatalf("quitting ends a running action instead of waiting for it, got %v", err)
+	}
+}
+
+// The TUI holds the terminal: a recover of an orphan writes its warnings through the runner's
+// logger, which would be drawn over the screen if it were the default stderr one.
+func TestWatchActionsShouldKeepTheRecoverLogsOffTheTerminal(t *testing.T) {
+	f := newFixture(t)
+	acts := f.actions(t, context.Background(), &bytes.Buffer{})
+	if acts.stop.log == nil {
+		t.Fatal("the stopper of watch carries a logger of its own, never the default stderr one")
+	}
+
+	var logs bytes.Buffer
+	cfg, err := config.Load(f.cfgFile, os.Getenv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := newRunner(cfg, f.st, notify.Options{Log: slog.New(slog.NewTextHandler(&logs, nil))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = r.Notify.Close() })
+	r.Log.Warn("recovered", "run", 1)
+	if !strings.Contains(logs.String(), "recovered") {
+		t.Fatalf("the runner logs where its caller asked: %q", logs.String())
 	}
 }

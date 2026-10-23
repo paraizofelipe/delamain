@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"time"
 
@@ -79,6 +80,9 @@ type stopper struct {
 	noWait  bool
 	timeout time.Duration
 	runner  *pipeline.Runner
+	// log is where the recover of an orphan writes; nil leaves it on stderr, as the commands
+	// want it. `watch` holds the terminal and passes a logger that drops the lines.
+	log *slog.Logger
 }
 
 func (s *stopper) close() {
@@ -128,7 +132,7 @@ func (s *stopper) stopOne(ctx context.Context, w io.Writer, id int64) error {
 // recoverOne finalizes a run whose owner died, as `delamain recover` does, but only that one.
 func (s *stopper) recoverOne(ctx context.Context, w io.Writer, id int64) error {
 	if s.runner == nil {
-		r, err := newRunner(s.cfg, s.st, notify.Options{})
+		r, err := newRunner(s.cfg, s.st, notify.Options{Log: s.log})
 		if err != nil {
 			return err
 		}
