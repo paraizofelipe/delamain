@@ -48,7 +48,11 @@ func (m watchModel) View() string {
 	}
 	lines := append([]string{m.header()}, compose(max(m.height-1-len(f.footer), 0), parts...)...)
 	lines = append(lines, f.footer...)
-	return strings.Join(lines[:min(len(lines), m.height)], "\n")
+	view := strings.Join(lines[:min(len(lines), m.height)], "\n")
+	if m.dialog.kind != dialogNone {
+		return m.overlay(view, m.dialogBox())
+	}
+	return view
 }
 
 // watchFrame is the screen of a layout: the panels' rectangles and the content they are sized by.
@@ -133,22 +137,26 @@ func scroll(lines []string, sel, n int) []string {
 // footer shows the keys of the layout, or why the last reload failed until one succeeds.
 func (m watchModel) footer() []string {
 	st := m.st
+	toast := m.toastLines()
 	if m.err != nil {
-		return []string{paint(st.bad, ansi.Truncate("error: "+clean(m.err.Error()), m.width, "…"))}
+		return append(toast, paint(st.bad, ansi.Truncate("error: "+clean(m.err.Error()), m.width, "…")))
 	}
 	zoom := "full screen"
 	if m.zoom {
 		zoom = "exit full screen"
 	}
 	keys := map[watchLayout][][2]string{
-		layoutMedium:  {{"↑↓", "navigate"}, {"enter", "status"}, {"1-6", "source"}, {"z", zoom}, {"q", "quit"}},
-		layoutCompact: {{"↑↓", "run"}, {"e", "finished"}, {"enter", "status"}, {"z", "logs"}, {"q", "quit"}},
-		layoutMini:    {{"←→", "tab"}, {"↑↓", "run"}, {"q", "quit"}},
+		layoutMedium:  {{"↑↓", "navigate"}, {"enter", "status"}, {"1-6", "source"}, {"z", zoom}, {"s", "stop"}, {"d", "remove"}, {"?", "help"}, {"q", "quit"}},
+		layoutCompact: {{"↑↓", "run"}, {"e", "finished"}, {"enter", "status"}, {"z", "logs"}, {"s", "stop"}, {"d", "remove"}, {"?", "help"}, {"q", "quit"}},
+		layoutMini:    {{"←→", "tab"}, {"↑↓", "run"}, {"s", "stop"}, {"d", "remove"}, {"?", "help"}, {"q", "quit"}},
 	}[m.layout]
 	if keys == nil {
-		keys = [][2]string{{"↑↓", "navigate"}, {"tab", "focus"}, {"1-6", "source"}, {"f", "follow"}, {"z", zoom}, {"q", "quit"}}
+		keys = [][2]string{
+			{"↑↓", "navigate"}, {"tab", "focus"}, {"1-6", "source"}, {"f", "follow"}, {"z", zoom},
+			{"s", "stop"}, {"d", "remove"}, {"o", "open PR"}, {"?", "help"}, {"q", "quit"},
+		}
 	}
-	return footerLines(st, keys, m.width)
+	return append(toast, footerLines(st, keys, m.width)...)
 }
 
 // footerLines lays keys out on lines of width columns: a key that does not fit starts the next

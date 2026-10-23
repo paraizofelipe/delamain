@@ -32,6 +32,8 @@ type watchOptions struct {
 	limit    int           // finished runs to show
 	interval time.Duration // between reloads
 	now      func() time.Time
+	actions  watchActions                                         // what s, d, o and y do
+	after    func(time.Duration, func(time.Time) tea.Msg) tea.Cmd // the toast timer: tea.Tick
 }
 
 func newWatchCmd(load func() (config.Config, error)) *cobra.Command {
@@ -39,9 +41,17 @@ func newWatchCmd(load func() (config.Config, error)) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "watch",
 		Short: "Follow runs, the daemon and the day's spend in a terminal UI",
-		Long: `Open a read-only terminal UI that lists the active runs and the latest finished ones, shows
-the status of the selected run, whether the daemon is running and the day's spend, and reloads
-everything every --interval. Quitting (q or ctrl+c) leaves every run as it is.`,
+		Long: `Open a terminal UI that lists the active runs and the latest finished ones, shows the status
+of the selected run, whether the daemon is running and the day's spend, and reloads everything
+every --interval. s stops the selected run as delamain stop --no-wait does and d removes it as
+delamain rm does, each after a confirmation; o opens its PR/MR, y copies its ID and ? lists every
+key. Quitting (q or ctrl+c) leaves every run as it is.
+
+In tmux, open it in a floating popup:
+
+  bind D display-popup -E -w 50% -h 60% "delamain watch"
+
+y copies the run ID through OSC 52; tmux needs ` + "`set -g set-clipboard on`.",
 		Args: cobra.NoArgs,
 		RunE: func(c *cobra.Command, _ []string) error {
 			if opts.interval <= 0 {
@@ -57,7 +67,11 @@ everything every --interval. Quitting (q or ctrl+c) leaves every run as it is.`,
 				return err
 			}
 			defer done()
-			return runWatch(ctx, c.InOrStdin(), out, inspectorWatchSource{in: in}, newStyles(lipgloss.NewRenderer(os.Stdout)), opts)
+			acts := newStoreWatchActions(ctx, in.cfg, in.st, out)
+			defer acts.close()
+			o := opts
+			o.actions = acts
+			return runWatch(ctx, c.InOrStdin(), out, inspectorWatchSource{in: in}, newStyles(lipgloss.NewRenderer(os.Stdout)), o)
 		},
 	}
 	cmd.Flags().IntVar(&opts.limit, "limit", 20, "finished runs to show")

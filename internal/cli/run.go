@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -85,7 +86,7 @@ Exit codes: 0 approved · 1 interrupted · 3 iterations exhausted · 4 task lack
 			if err != nil {
 				return err
 			}
-			printResult(c, res)
+			printResult(c.OutOrStdout(), res)
 			if code := outcomeExit[res.Outcome]; code != 0 {
 				return ExitError{Code: code}
 			}
@@ -168,7 +169,10 @@ func newRunner(cfg config.Config, st *store.Store, no notify.Options) (*pipeline
 		}
 	}
 	target := promptsTarget(cfg)
-	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	log := no.Log // a caller that holds the terminal, as `watch` does, passes its own
+	if log == nil {
+		log = slog.New(slog.NewTextHandler(os.Stderr, nil))
+	}
 	no.StateDir, no.Log = cfg.Paths.StateDir, log
 	return &pipeline.Runner{
 		Cfg:           cfg,
@@ -201,8 +205,7 @@ func openStore(ctx context.Context, cfg config.Config) (*store.Store, error) {
 	return store.Open(ctx, filepath.Join(cfg.Paths.StateDir, "delamain.db"))
 }
 
-func printResult(c *cobra.Command, res pipeline.Result) {
-	w := c.OutOrStdout()
+func printResult(w io.Writer, res pipeline.Result) {
 	icon := map[pipeline.Outcome]string{
 		pipeline.OutcomeApproved: "✅", pipeline.OutcomeExhausted: "⚠️ ", pipeline.OutcomeHalted: "❌", pipeline.OutcomeNeedsInfo: "❓",
 	}[res.Outcome]

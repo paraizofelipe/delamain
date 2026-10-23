@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
@@ -14,6 +15,9 @@ import (
 	"github.com/paraizo/delamain/internal/pipeline"
 	"github.com/paraizo/delamain/internal/store"
 )
+
+// errDirtyWorktree refuses a worktree with uncommitted changes, unless forced.
+var errDirtyWorktree = errors.New("has uncommitted changes; use --force to discard them")
 
 func newRmCmd(load func() (config.Config, error)) *cobra.Command {
 	var force bool
@@ -46,7 +50,11 @@ Exit codes: 0 every run deleted · 1 a run could not be deleted.`,
 			defer func() { _ = st.Close() }()
 			failed := 0
 			for _, arg := range args {
-				if err := removeRun(c, cfg, st, arg, force); err != nil {
+				id, err := runID(arg)
+				if err == nil {
+					err = removeRun(c.Context(), c.OutOrStdout(), cfg, st, id, force)
+				}
+				if err != nil {
 					fmt.Fprintln(c.ErrOrStderr(), err)
 					failed++
 				}
@@ -61,12 +69,8 @@ Exit codes: 0 every run deleted · 1 a run could not be deleted.`,
 	return cmd
 }
 
-func removeRun(c *cobra.Command, cfg config.Config, st *store.Store, arg string, force bool) error {
-	ctx := c.Context()
-	id, err := runID(arg)
-	if err != nil {
-		return err
-	}
+// removeRun deletes finished run id, its directory and its worktree, and writes to w that it did.
+func removeRun(ctx context.Context, w io.Writer, cfg config.Config, st *store.Store, id int64, force bool) error {
 	rec, err := st.GetRun(ctx, id)
 	if errors.Is(err, store.ErrNotFound) {
 		return fmt.Errorf("run %d not found", id)
@@ -93,7 +97,7 @@ func removeRun(c *cobra.Command, cfg config.Config, st *store.Store, arg string,
 				return fmt.Errorf("run %d: %w", id, err)
 			}
 			if status != "" {
-				return fmt.Errorf("worktree %s has uncommitted changes; use --force to discard them", rec.Worktree)
+				return fmt.Errorf("worktree %s %w", rec.Worktree, errDirtyWorktree)
 			}
 		}
 		if err := git.RemoveWorktree(ctx, rec.Repo, rec.Worktree); err != nil {
@@ -106,7 +110,7 @@ func removeRun(c *cobra.Command, cfg config.Config, st *store.Store, arg string,
 	if err := st.DeleteRun(ctx, id); err != nil {
 		return fmt.Errorf("run %d: %w", id, err)
 	}
-	fmt.Fprintf(c.OutOrStdout(), "removed run %d\n", id)
+	fmt.Fprintf(w, "removed run %d\n", id)
 	return nil
 }
 

@@ -12,9 +12,14 @@ import (
 )
 
 var watchKeys = struct {
-	quit, up, down, first, last, source, pageUp, pageDown, follow, focus, zoom, details, back, expand, prevTab, nextTab key.Binding
+	quit, up, down, first, last, source, pageUp, pageDown, follow, focus, zoom, details, back, expand, prevTab, nextTab, stop, remove, open, copyID, help key.Binding
 }{
 	quit:     key.NewBinding(key.WithKeys("q", "ctrl+c")),
+	stop:     key.NewBinding(key.WithKeys("s")),
+	remove:   key.NewBinding(key.WithKeys("d")),
+	open:     key.NewBinding(key.WithKeys("o")),
+	copyID:   key.NewBinding(key.WithKeys("y")),
+	help:     key.NewBinding(key.WithKeys("?")),
 	details:  key.NewBinding(key.WithKeys("enter")),
 	expand:   key.NewBinding(key.WithKeys("e")),
 	prevTab:  key.NewBinding(key.WithKeys("left", "h")),
@@ -72,6 +77,11 @@ type watchModel struct {
 	fullStatus    bool // the full status takes the place of the strip and the logs
 	expanded      bool // the compact list shows the finished runs
 	tab           miniTab
+	dialog        watchDialog // over the screen: only its keys act
+	toast         watchToast  // on the first line of the footer
+	actingToast   watchToast  // the toast of the running action: it comes back after a quick one
+	toasts        int         // toasts shown so far: the seq of the last one
+	acting        bool        // a stop or a remove is running
 }
 
 // miniTab is the panel the mini layout shows.
@@ -86,6 +96,9 @@ const (
 func newWatchModel(src watchSource, st styles, opts watchOptions) watchModel {
 	if opts.now == nil {
 		opts.now = time.Now
+	}
+	if opts.after == nil {
+		opts.after = tea.Tick
 	}
 	return watchModel{src: src, st: st, opts: opts, loading: true, tab: tabLogs} // Init starts the first reload
 }
@@ -136,6 +149,12 @@ func (m watchModel) update(msg tea.Msg) (watchModel, tea.Cmd) {
 			m.loading = true
 			return m, m.reload()
 		}
+	case watchActionMsg:
+		return m.actionDone(msg)
+	case watchQuickMsg:
+		return m.result(watchActionMsg(msg))
+	case watchToastMsg:
+		m = m.expireToast(msg.seq)
 	case tea.KeyMsg:
 		return m.key(msg)
 	}
@@ -145,9 +164,26 @@ func (m watchModel) update(msg tea.Msg) (watchModel, tea.Cmd) {
 func (m watchModel) key(msg tea.KeyMsg) (watchModel, tea.Cmd) {
 	runs := m.runs()
 	idx := m.selectedIdx
+	if m.dialog.kind != dialogNone {
+		if msg.Type == tea.KeyCtrlC { // the way out, whatever is open
+			return m, tea.Quit
+		}
+		return m.dialogKey(msg)
+	}
 	switch {
 	case key.Matches(msg, watchKeys.quit):
 		return m, tea.Quit
+	case key.Matches(msg, watchKeys.stop):
+		return m.openDialog(dialogStop), nil
+	case key.Matches(msg, watchKeys.remove):
+		return m.openDialog(dialogRemove), nil
+	case key.Matches(msg, watchKeys.open):
+		return m.openPR()
+	case key.Matches(msg, watchKeys.copyID):
+		return m.copyID()
+	case key.Matches(msg, watchKeys.help):
+		m.dialog = watchDialog{kind: dialogHelp}
+		return m, nil
 	case key.Matches(msg, watchKeys.source):
 		m.logs.setFilter(int(msg.Runes[0] - '1'))
 		return m, nil
