@@ -298,6 +298,14 @@ func keyPress(k string) tea.KeyMsg {
 		return tea.KeyMsg{Type: tea.KeyCtrlD}
 	case "tab":
 		return tea.KeyMsg{Type: tea.KeyTab}
+	case "enter":
+		return tea.KeyMsg{Type: tea.KeyEnter}
+	case "esc":
+		return tea.KeyMsg{Type: tea.KeyEsc}
+	case "left":
+		return tea.KeyMsg{Type: tea.KeyLeft}
+	case "right":
+		return tea.KeyMsg{Type: tea.KeyRight}
 	}
 	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(k)}
 }
@@ -906,6 +914,57 @@ func TestWatchLogsShouldWrapOnlyTheLinesThatFitOnScreen(t *testing.T) {
 	}
 	if !strings.Contains(stripANSI(view), "implementer │ 12:00:00 word word") || strings.Contains(stripANSI(view), "END-0000") {
 		t.Fatalf("paused at the top, the first line starts the panel:\n%s", stripANSI(view))
+	}
+}
+
+// nospace is s without spaces: a wrapped text, joined, equals it whatever the breaks.
+func nospace(s string) string { return strings.Join(strings.Fields(s), "") }
+
+func TestWatchShouldOpenTheFullStatusWithEnterAndCloseWithEsc(t *testing.T) {
+	v := statusRun()
+	v.RunDir = logRun(t, 14, "#55").RunDir
+	writeLog(t, v, "implementer", "12:46:58 💬 adjusted the fixture\n")
+	src := &fakeWatchSource{active: []RunView{v}, status: map[int64]RunStatus{14: {Run: v, Budget: BudgetView{Summary: "182K de 4M tokens · US$ 1.94"}}}}
+	m := resize(t, startLogs(t, src, 160, false), 80, 27)
+	logs := screen(m)
+	if view := screen(send(t, m, keyPress("esc"))); view != logs {
+		t.Fatalf("esc without the full status does nothing:\n%s", view)
+	}
+
+	m = send(t, m, keyPress("enter"))
+	view := screen(m)
+	if strings.Contains(view, "╭ logs") || strings.Contains(view, "╭ status · enter details") || !strings.Contains(view, "╭ runs") {
+		t.Fatalf("enter puts the full status where the logs and the strip were, under the list:\n%s", view)
+	}
+	full := panelText(view, "status · run 14 ")
+	for _, want := range []string{
+		"RUN 14 · #55 artifacts: accept test_file and format_check in .delamain.yaml so that every gate reads them",
+		"HARNESS claude", "STATE implement", "INTERACTIONS 1/3", "COMPLEXITY low",
+		"BRANCH fix/55-artifacts-accept-test-file-and-format-check (base main)", "OWNER pid 51230 (alive)",
+		"BUDGET 182K de 4M tokens · US$ 1.94", "PR/MR https://github.com/paraizofelipe/delamain/pull/61",
+		"planner done 2m11s 41K · 0.38", "implementer running 6m42s 141K · 1.56",
+	} {
+		if !strings.Contains(nospace(full), nospace(want)) {
+			t.Errorf("the full status misses %q:\n%s", want, full)
+		}
+	}
+	if strings.Contains(full, "…") {
+		t.Errorf("the fields of the full status wrap instead of being cut:\n%s", full)
+	}
+
+	for _, keys := range [][]string{{"esc"}, {"enter"}} {
+		back := m
+		for _, k := range keys {
+			back = send(t, back, keyPress(k))
+		}
+		if view := screen(back); view != logs {
+			t.Errorf("%s goes back to the logs:\n%s", keys, view)
+		}
+	}
+
+	wide := startLogs(t, src, 160, false)
+	if screen(send(t, wide, keyPress("enter"))) != screen(wide) {
+		t.Errorf("the wide layout shows the full status already: enter does nothing")
 	}
 }
 

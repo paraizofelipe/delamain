@@ -12,9 +12,11 @@ import (
 )
 
 var watchKeys = struct {
-	quit, up, down, first, last, source, pageUp, pageDown, follow, focus, zoom key.Binding
+	quit, up, down, first, last, source, pageUp, pageDown, follow, focus, zoom, details, back key.Binding
 }{
 	quit:     key.NewBinding(key.WithKeys("q", "ctrl+c")),
+	details:  key.NewBinding(key.WithKeys("enter")),
+	back:     key.NewBinding(key.WithKeys("esc")),
 	source:   key.NewBinding(key.WithKeys("1", "2", "3", "4", "5", "6")),
 	pageUp:   key.NewBinding(key.WithKeys("pgup", "ctrl+u")),
 	pageDown: key.NewBinding(key.WithKeys("pgdown", "ctrl+d")),
@@ -64,6 +66,7 @@ type watchModel struct {
 	focusLogs     bool // the keys that move the selection scroll the logs instead
 	zoom          bool // the logs take the whole width
 	zoomedFrom    bool // focusLogs before the zoom
+	fullStatus    bool // the full status takes the place of the strip and the logs
 }
 
 func newWatchModel(src watchSource, st styles, opts watchOptions) watchModel {
@@ -143,6 +146,16 @@ func (m watchModel) key(msg tea.KeyMsg) (watchModel, tea.Cmd) {
 	case key.Matches(msg, watchKeys.focus):
 		if !m.zoom { // the list is hidden in full screen
 			m.focusLogs = !m.focusLogs
+		}
+		return m, nil
+	case key.Matches(msg, watchKeys.details):
+		if m.layout == layoutMedium || m.layout == layoutCompact { // the others show it already
+			m.fullStatus = !m.fullStatus
+		}
+		return m, nil
+	case key.Matches(msg, watchKeys.back):
+		if m.layout == layoutMedium || m.layout == layoutCompact {
+			m.fullStatus = false
 		}
 		return m, nil
 	case key.Matches(msg, watchKeys.zoom):

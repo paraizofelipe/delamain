@@ -49,6 +49,7 @@ type panelNeeds struct {
 	strip    int  // lines of the status strip
 	status   int  // lines of the status panel
 	zoom     bool // the logs take the whole body
+	full     bool // the full status takes the place of the strip and the logs
 }
 
 // leftWidth is the width of the left column of the wide layout.
@@ -83,8 +84,12 @@ const minLogs = 5
 
 // compactPanels stacks the list, the status strip and the logs on the whole width: the logs keep
 // minLogs lines and the list its selected row, the strip takes what it needs of the rest, then
-// the list, and the logs get what is left.
+// the list, and the logs get what is left. The full status replaces the strip and the logs.
 func compactPanels(width, body int, n panelNeeds) watchPanels {
+	if n.full { // the list shrinks to its selected row before the status does
+		list := min(2+n.list, max(body-2-n.status, 3), body)
+		return watchPanels{list: rect{0, 1, width, list}, status: rect{0, 1 + list, width, body - list}}
+	}
 	strip := min(2+n.strip, max(body-minLogs-3, 0))
 	list := min(2+n.list, max(body-strip-minLogs, 0))
 	return watchPanels{

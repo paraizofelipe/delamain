@@ -63,11 +63,15 @@ type watchFrame struct {
 // frame lays the screen of the current layout out.
 func (m watchModel) frame() watchFrame {
 	f := watchFrame{footer: []string{m.footer()}}
-	n := panelNeeds{zoom: m.zoom}
+	n := panelNeeds{zoom: m.zoom, full: m.fullStatus}
 	switch m.layout {
 	case layoutCompact:
 		f.list, f.sel = m.listLines(m.width-4, listCols{issue: true})
-		f.strip = m.stripLines(m.width - 4)
+		if m.fullStatus {
+			f.status = m.wrappedStatus(m.width - 4)
+		} else {
+			f.strip = m.stripLines(m.width - 4)
+		}
 	default:
 		f.list, f.sel = m.listLines(leftWidth(m.width)-4, listCols{header: true, issue: true, more: true})
 		f.status = m.statusLines()
@@ -423,6 +427,15 @@ func (m watchModel) statusLines() []string {
 			tookW, took[i], budget.Format(float64(a.Tokens), config.BudgetTokens), a.CostUSD))
 	}
 	return lines
+}
+
+// wrappedStatus is statusLines with each line wrapped to inner columns.
+func (m watchModel) wrappedStatus(inner int) []string {
+	var out []string
+	for _, l := range m.statusLines() {
+		out = append(out, wrapStyled(l, inner)...)
+	}
+	return out
 }
 
 // watchColumns are the texts of a run's RUN, ISSUE, STATE, CPLX and ITER cells; a finished
