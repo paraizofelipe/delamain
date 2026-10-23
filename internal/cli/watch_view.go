@@ -4,9 +4,13 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+
+	"github.com/paraizo/delamain/internal/budget"
+	"github.com/paraizo/delamain/internal/config"
 )
 
 // selectedBackground highlights the selected run's row.
@@ -19,7 +23,17 @@ func (m watchModel) View() string {
 	left := min(max(m.width*40/100, 56), 72, m.width)
 	body := m.height - 2 // header and footer lines
 	list := m.listLines(left - 4)
-	lines := append([]string{""}, m.panel("runs", list, left, min(len(list)+2, body))...)
+	listH := min(len(list)+2, body)
+	status, logs := "status", "logs"
+	if v, ok := m.selected(); ok {
+		status, logs = fmt.Sprintf("status · run %d", v.ID), fmt.Sprintf("logs · run %d", v.ID)
+	}
+	leftCol := append(m.panel("runs", list, left, listH), m.panel(status, m.statusLines(), left, body-listH)...)
+	rightCol := m.panel(logs, []string{paint(m.st.muted, "logs: coming soon")}, m.width-left, body)
+	lines := []string{""}
+	for i := range body {
+		lines = append(lines, leftCol[i]+rightCol[i])
+	}
 	return strings.Join(lines, "\n")
 }
 
@@ -101,6 +115,66 @@ func (m watchModel) listLines(inner int) []string {
 		row := strings.Join(cells, paint(look(st.none), " ")) + paint(look(st.none), " ")
 		row += paint(look(title), pad(ansi.Truncate(v.Title, max(titleW, 0), "…"), max(titleW, 0)))
 		lines = append(lines, row)
+	}
+	return lines
+}
+
+// statusLines describe the selected run as `status` does, with "-" for what it does not have yet.
+func (m watchModel) statusLines() []string {
+	v, ok := m.selected()
+	if !ok {
+		return nil
+	}
+	st := m.st
+	field := func(label string, value cell) string { return paint(st.label, fmt.Sprintf("%-14s", label)) + value.styled }
+	dash := func(text string, look lipgloss.Style) cell {
+		if text == "" {
+			return plain("-")
+		}
+		return styled(look, text)
+	}
+	spend, branch, result := "-", "-", plain("-")
+	if m.data.status.Run.ID == v.ID && m.data.status.Budget.Summary != "" {
+		spend = m.data.status.Budget.Summary
+	}
+	if v.Branch != "" {
+		branch = fmt.Sprintf("%s (base %s)", v.Branch, v.Base)
+	}
+	if v.Result != "" {
+		result = resultCell(st, v.Result)
+	}
+	lines := []string{
+		field("RUN", join(plain(fmt.Sprintf("%d · ", v.ID)), styled(st.info, v.Issue), plain(" "+v.Title))),
+		field("KIND", plain(orDash(v.Kind))),
+		field("HARNESS", plain(orDash(v.Harness))),
+		field("STATE", styled(st.runStateStyle(v.State), v.State)),
+		field("INTERACTIONS", plain(v.iter())),
+		field("COMPLEXITY", dash(v.Complexity, st.complexityStyle(v.Complexity))),
+		field("BRANCH", plain(branch)),
+		field("OWNER", plain(v.owner())),
+		field("BUDGET", plain(spend)),
+		field("PR/MR", dash(v.PR, st.info.Underline(true))),
+		field("RESULT", result),
+		paint(st.heading, "AGENTS"),
+	}
+	if len(v.Agents) == 0 {
+		return append(lines, paint(st.muted, "no agents yet"))
+	}
+	var roleW, stateW, tookW int
+	took := make([]string, len(v.Agents))
+	for i, a := range v.Agents {
+		end := m.opts.now()
+		if a.EndedAt != nil {
+			end = *a.EndedAt
+		}
+		took[i] = end.Sub(a.StartedAt).Round(time.Second).String()
+		roleW, stateW, tookW = max(roleW, lipgloss.Width(a.Role)), max(stateW, lipgloss.Width(a.State)), max(tookW, len(took[i]))
+	}
+	for i, a := range v.Agents {
+		lines = append(lines, fmt.Sprintf("%s  %s  %-*s  %s · %.2f",
+			paint(st.sourceStyle(a.Role), a.Role)+strings.Repeat(" ", roleW-lipgloss.Width(a.Role)),
+			paint(st.agentStateStyle(a.State), a.State)+strings.Repeat(" ", stateW-lipgloss.Width(a.State)),
+			tookW, took[i], budget.Format(float64(a.Tokens), config.BudgetTokens), a.CostUSD))
 	}
 	return lines
 }

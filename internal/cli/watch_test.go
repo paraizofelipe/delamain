@@ -45,7 +45,7 @@ func noColors() styles { return newStyles(lipgloss.NewRenderer(&bytes.Buffer{}))
 // startWatch is the TUI after its first window size and first reload.
 func startWatch(t *testing.T, src *fakeWatchSource, width, height int) tea.Model {
 	t.Helper()
-	m := tea.Model(newWatchModel(src, noColors(), watchOptions{limit: 20, interval: time.Millisecond}))
+	m := tea.Model(newWatchModel(src, noColors(), watchOptions{limit: 20, interval: time.Millisecond, now: func() time.Time { return watchNow }}))
 	m = send(t, m, tea.WindowSizeMsg{Width: width, Height: height})
 	return settle(t, m, m.Init())
 }
@@ -74,7 +74,15 @@ func settle(t *testing.T, m tea.Model, cmd tea.Cmd) tea.Model {
 	return m
 }
 
+// watchNow is the clock of every test model.
+var watchNow = time.Date(2026, 10, 23, 12, 47, 5, 0, time.Local)
+
 func screen(m tea.Model) string { return stripANSI(m.View()) }
+
+// has reports whether a panel of view has a row reading want, spaces collapsed.
+func has(view, want string) bool {
+	return strings.Contains(strings.Join(strings.Fields(view), " "), "│ "+want+" │")
+}
 
 // line is the first screen line containing s, or "".
 func line(view, s string) string {
@@ -106,9 +114,8 @@ func TestWatchShouldListActiveAndFinishedRuns(t *testing.T) {
 	if !strings.Contains(view, "╭ runs ") {
 		t.Errorf("the list is a rounded panel titled runs:\n%s", view)
 	}
-	header := strings.Fields(line(view, "TITLE"))
-	if strings.Join(header, " ") != "│ RUN ISSUE STATE CPLX ITER TITLE │" {
-		t.Errorf("column header = %q:\n%s", header, view)
+	if !has(view, "RUN ISSUE STATE CPLX ITER TITLE") {
+		t.Errorf("column header = %q:\n%s", line(view, "TITLE"), view)
 	}
 	order := []string{"ACTIVE · 2", "#55", "#54", "FINISHED · 2", "#49", "#43"}
 	at := -1
@@ -125,9 +132,8 @@ func TestWatchShouldListActiveAndFinishedRuns(t *testing.T) {
 		"#49": "12 #49 approved medium 1/3 logs: colors",
 		"#43": "9 #43 halted medium 1/3 daemon: lock",
 	} {
-		row := strings.Join(strings.Fields(strings.Trim(line(view, issue), "│")), " ")
-		if row != want {
-			t.Errorf("row of %s = %q, want %q", issue, row, want)
+		if !has(view, want) {
+			t.Errorf("row of %s = %q, want %q", issue, line(view, issue), want)
 		}
 	}
 	if src.finished != 20 {
@@ -219,5 +225,46 @@ func TestWatchSourceShouldReadRunsFromTheStore(t *testing.T) {
 	}
 	if today.Day != 1500 || today.Daily != 10_000_000 || today.Mode != config.BudgetTokens {
 		t.Errorf("today = %+v", today)
+	}
+}
+
+func TestWatchShouldShowTheStatusOfTheSelectedRun(t *testing.T) {
+	run := active(14, "#55", "implement", "low", "artifacts: accept tests")
+	run.Harness, run.Branch, run.Base = "claude", "fix/55-artifacts", "main"
+	run.Owner = Process{PID: 51230, Alive: true}
+	ended := watchNow.Add(-time.Hour + 131*time.Second)
+	run.Agents = []AgentView{
+		{Role: "planner", State: "done", StartedAt: watchNow.Add(-time.Hour), EndedAt: &ended, Tokens: 41_000, CostUSD: 0.38},
+		{Role: "implementer", State: "running", StartedAt: watchNow.Add(-402 * time.Second), Tokens: 141_000, CostUSD: 1.56},
+	}
+	bare := active(15, "#54", "plan", "", "tui")
+	bare.Iteration = 0
+	src := &fakeWatchSource{
+		active: []RunView{run, bare},
+		status: map[int64]RunStatus{14: {Run: run, Budget: BudgetView{Summary: "182K de 4M tokens · US$ 1.94"}}},
+	}
+	view := screen(startWatch(t, src, 160, 40))
+
+	for _, want := range []string{
+		"RUN 14 · #55 artifacts: accept tests", "KIND issue", "HARNESS claude", "STATE implement", "INTERACTIONS 1/3",
+		"COMPLEXITY low", "BRANCH fix/55-artifacts (base main)", "OWNER pid 51230 (alive)", "BUDGET 182K de 4M tokens · US$ 1.94",
+		"PR/MR -", "RESULT -", "AGENTS", "planner done 2m11s 41K · 0.38", "implementer running 6m42s 141K · 1.56", "logs: coming soon",
+	} {
+		if !has(view, want) {
+			t.Errorf("status panel misses %q:\n%s", want, view)
+		}
+	}
+	for _, title := range []string{"╭ status · run 14 ", "╭ logs · run 14 "} {
+		if !strings.Contains(view, title) {
+			t.Errorf("missing panel %q:\n%s", title, view)
+		}
+	}
+
+	src.active = []RunView{bare}
+	view = screen(startWatch(t, src, 160, 40))
+	for _, want := range []string{"HARNESS -", "INTERACTIONS -", "COMPLEXITY -", "BRANCH -", "OWNER -", "BUDGET -", "no agents yet"} {
+		if !has(view, want) {
+			t.Errorf("a run with nothing yet shows %q:\n%s", want, view)
+		}
 	}
 }

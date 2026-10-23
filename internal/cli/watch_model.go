@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"time"
 
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
@@ -37,6 +38,9 @@ type watchModel struct {
 }
 
 func newWatchModel(src watchSource, st styles, opts watchOptions) watchModel {
+	if opts.now == nil {
+		opts.now = time.Now
+	}
 	return watchModel{src: src, st: st, opts: opts}
 }
 
@@ -66,6 +70,15 @@ func (m watchModel) runs() []RunView {
 	return append(append([]RunView{}, m.data.active...), m.data.done...)
 }
 
+// selected is the run the status panel shows.
+func (m watchModel) selected() (RunView, bool) {
+	runs := m.runs()
+	if len(runs) == 0 {
+		return RunView{}, false
+	}
+	return runs[m.selectedIdx], true
+}
+
 // pick is the index of the run with id, or the one at idx when it is gone, or the last one.
 func pick(runs []RunView, id int64, idx int) int {
 	for i, v := range runs {
@@ -78,9 +91,14 @@ func pick(runs []RunView, id int64, idx int) int {
 
 // reload reads the runs and the status of the selected one in a tea.Cmd, off the Update loop.
 func (m watchModel) reload() tea.Cmd {
-	src, limit := m.src, m.opts.limit
+	src, limit, id, idx := m.src, m.opts.limit, m.selectedID, m.selectedIdx
 	return func() tea.Msg {
-		active, done, _ := src.Runs(context.Background(), limit)
-		return watchDataMsg{active: active, done: done}
+		ctx := context.Background()
+		active, done, _ := src.Runs(ctx, limit)
+		d := watchData{active: active, done: done}
+		if runs := append(append([]RunView{}, active...), done...); len(runs) > 0 {
+			d.status, _ = src.Status(ctx, runs[pick(runs, id, idx)].ID)
+		}
+		return watchDataMsg(d)
 	}
 }

@@ -29,6 +29,7 @@ type watchSource interface {
 type watchOptions struct {
 	limit    int           // finished runs to show
 	interval time.Duration // between reloads
+	now      func() time.Time
 }
 
 func newWatchCmd(load func() (config.Config, error)) *cobra.Command {
