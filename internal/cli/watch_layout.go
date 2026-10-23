@@ -38,7 +38,7 @@ type rect struct{ x, y, w, h int }
 // watchPanels are the rectangles of the panels of a layout: strip is the 3 line summary of the
 // status, status the whole of it.
 type watchPanels struct {
-	list, strip, status, logs rect
+	tabs, list, strip, status, logs rect
 }
 
 // panelNeeds is what the panels hold, in lines, and the state that shapes them.
@@ -50,6 +50,7 @@ type panelNeeds struct {
 	status   int  // lines of the status panel
 	zoom     bool // the logs take the whole body
 	full     bool // the full status takes the place of the strip and the logs
+	tab      miniTab
 }
 
 // leftWidth is the width of the left column of the wide layout.
@@ -62,8 +63,20 @@ func mediumLeft(width int) int { return min(max(width*38/100, 36), 48, width) }
 // first line and the footer the last n.footer ones.
 func panelsFor(l watchLayout, width, height int, n panelNeeds) watchPanels {
 	body := max(height-1-n.footer, 0)
-	if l == layoutTooSmall {
+	switch l {
+	case layoutTooSmall:
 		return watchPanels{}
+	case layoutMini: // the tabs line, then the panel of the tab on the rest
+		p, tab := watchPanels{tabs: rect{0, 1, width, min(body, 1)}}, rect{0, 2, width, max(body-1, 0)}
+		switch n.tab {
+		case tabRuns:
+			p.list = tab
+		case tabStatus:
+			p.status = tab
+		default:
+			p.logs = tab
+		}
+		return p
 	}
 	if n.zoom {
 		return watchPanels{logs: rect{0, 1, width, body}}

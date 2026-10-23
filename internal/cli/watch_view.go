@@ -40,6 +40,7 @@ func (m watchModel) View() string {
 		listLook, logsLook = logsLook, listLook
 	}
 	parts := []placed{
+		{p.tabs, []string{m.tabs()}},
 		{p.list, panel("runs", scroll(f.list, f.sel, p.list.h-2), p.list.w, p.list.h, listLook)},
 		{p.strip, panel("status · enter details", f.strip, p.strip.w, p.strip.h, m.st.muted)},
 		{p.status, panel(statusTitle, f.status, p.status.w, p.status.h, m.st.muted)},
@@ -63,8 +64,15 @@ type watchFrame struct {
 // frame lays the screen of the current layout out.
 func (m watchModel) frame() watchFrame {
 	f := watchFrame{footer: []string{m.footer()}}
-	n := panelNeeds{zoom: m.zoom, full: m.fullStatus}
+	n := panelNeeds{zoom: m.zoom, full: m.fullStatus, tab: m.tab}
 	switch m.layout {
+	case layoutMini:
+		switch m.tab {
+		case tabRuns:
+			f.list, f.sel = m.listLines(m.width-4, listCols{header: true})
+		case tabStatus:
+			f.status = m.wrappedStatus(m.width - 4)
+		}
 	case layoutCompact:
 		f.list, f.sel = m.listLines(m.width-4, listCols{issue: true, fold: !m.expanded})
 		if m.fullStatus {
@@ -182,7 +190,11 @@ func (m watchModel) shortHeader(look lipgloss.Style) string {
 		dot = paint(st.ok, "●")
 	}
 	name := paint(st.magenta.Bold(true), "delamain")
-	if m.layout == layoutMedium {
+	switch m.layout {
+	case layoutMini:
+		counts := paint(st.info, fmt.Sprintf("%d▶ %d■", len(m.data.active), len(m.data.done)))
+		return spread(name, counts+"  "+paint(look, spend), m.width)
+	case layoutMedium:
 		if today.Mode == config.BudgetTokens {
 			spend += fmt.Sprintf(" · US$ %.2f", today.DayUsage.CostUSD)
 		}
@@ -195,6 +207,20 @@ func (m watchModel) shortHeader(look lipgloss.Style) string {
 	}
 	counts := paint(st.info.Bold(true), fmt.Sprintf("%d active · %d fin.", len(m.data.active), len(m.data.done)))
 	return spread(name+" "+dot, counts+"  "+paint(look, spend), m.width)
+}
+
+// tabs is the line of the mini tabs, the active one in reverse video, and the keys that switch
+// them at the right.
+func (m watchModel) tabs() string {
+	var out string
+	for i, name := range []string{"runs", "status", "logs"} {
+		if miniTab(i) == m.tab {
+			out += paint(m.st.none.Reverse(true), "["+name+"]")
+		} else {
+			out += " " + name + " "
+		}
+	}
+	return spread(out, paint(m.st.muted, "←→"), m.width)
 }
 
 // spread puts left at the left edge of width columns and right at the right one.

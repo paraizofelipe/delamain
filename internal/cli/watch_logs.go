@@ -23,12 +23,16 @@ var logSources = []string{"all", "delamain", "checks", "planner", "implementer",
 type logLook int
 
 const (
-	logsFull  logLook = iota // separators, chips and footer in full
-	logsShort                // no separators, chips cut to 4 letters, a short footer
+	logsFull    logLook = iota // separators, chips and footer in full
+	logsShort                  // no separators, chips cut to 4 letters, a short footer
+	logsLetters                // logsShort with a letter for each source and the time in HH:MM
 )
 
-// shortSources are the chips of logsShort.
-var shortSources = []string{"all", "delm", "chec", "plan", "impl", "revi"}
+// shortSources are the chips of logsShort, letterSources those of logsLetters.
+var (
+	shortSources  = []string{"all", "delm", "chec", "plan", "impl", "revi"}
+	letterSources = []string{"all", "D", "C", "P", "I", "R"}
+)
 
 // maxLogLines, maxLogLineBytes and maxLogReadBytes bound the memory of the logs panel: the
 // lines it holds, the start of each line it keeps, and what one reload reads of each file.
@@ -269,7 +273,7 @@ func (p logPane) view(st styles, run RunView, inner, height int, look logLook) [
 	if look == logsFull {
 		body = p.cutRows(st, inner, rows)
 	} else {
-		body = p.wrappedRows(st, inner, rows)
+		body = p.wrappedRows(st, inner, rows, look)
 	}
 	for i := range rows {
 		if i < len(body) {
@@ -308,7 +312,7 @@ func (p logPane) cutRows(st styles, inner, rows int) []string {
 // wrappedRows are the log lines wrapped to inner columns that fill rows lines: the last ones
 // when following, the ones from the top of the viewport when paused. Only the lines that show
 // are wrapped: a line may be thousands of columns long and there may be thousands of them.
-func (p logPane) wrappedRows(st styles, inner, rows int) []string {
+func (p logPane) wrappedRows(st styles, inner, rows int, look logLook) []string {
 	if rows <= 0 {
 		return nil
 	}
@@ -321,7 +325,7 @@ func (p logPane) wrappedRows(st styles, inner, rows int) []string {
 	var out []string
 	if !p.paused {
 		for i := len(p.shown) - 1; i >= 0 && len(out) < rows; i-- {
-			out = append(wrapRow(st, p.shown[i], inner), out...)
+			out = append(wrapRow(st, p.shown[i], inner, look), out...)
 		}
 		if len(out) < rows && p.omit > 0 {
 			out = append(omitted(), out...)
@@ -336,18 +340,23 @@ func (p logPane) wrappedRows(st styles, inner, rows int) []string {
 		top-- // the omitted line comes before the first one
 	}
 	for i := max(top, 0); i < len(p.shown) && len(out) < rows; i++ {
-		out = append(out, wrapRow(st, p.shown[i], inner)...)
+		out = append(out, wrapRow(st, p.shown[i], inner, look)...)
 	}
 	return out[:min(len(out), rows)]
 }
 
 // wrapRow is logRow wrapped to inner columns: the continuations start under the text, past the
-// source, the │ and the time, which are not repeated.
-func wrapRow(st styles, l logLine, inner int) []string {
-	prefix := paint(st.sourceStyle(l.source), l.source) + strings.Repeat(" ", max(0, 11-utf8.RuneCountInString(l.source))) + " " + paint(st.muted, "│") + " "
+// source, the │ and the time, which are not repeated. logsLetters shows the source as a letter
+// and the time without its seconds.
+func wrapRow(st styles, l logLine, inner int, look logLook) []string {
+	source, stamp := l.source+strings.Repeat(" ", max(0, 11-utf8.RuneCountInString(l.source))), 8
+	if look == logsLetters {
+		source, stamp = sourceLetter(l.source), 5
+	}
+	prefix := paint(st.sourceStyle(l.source), source) + " " + paint(st.muted, "│") + " "
 	text := colorLine(st, l.source, l.text)
 	if stampRe.MatchString(l.text) {
-		prefix += paint(st.muted, l.text[:8]) + " "
+		prefix += paint(st.muted, l.text[:stamp]) + " "
 		text = colorRest(st, l.source, l.text[9:])
 	}
 	indent := lipgloss.Width(prefix)
@@ -362,11 +371,25 @@ func wrapRow(st styles, l logLine, inner int) []string {
 	return rows
 }
 
+// sourceLetter is the letter of a log source in logsLetters: its chip's, or its first one.
+func sourceLetter(source string) string {
+	for i, s := range logSources {
+		if s == source && i > 0 {
+			return letterSources[i]
+		}
+	}
+	r, _ := utf8.DecodeRuneInString(source)
+	return strings.ToUpper(string(r))
+}
+
 // chips name the sources to filter by; the active one is in reverse video, in its color.
 func (p logPane) chips(st styles, look logLook) string {
 	out, names := paint(st.muted, "source")+" ", logSources
-	if look != logsFull {
+	switch look {
+	case logsShort:
 		out, names = "", shortSources
+	case logsLetters:
+		out, names = "", letterSources
 	}
 	for i, s := range names {
 		color := st.sourceStyle(logSources[i])

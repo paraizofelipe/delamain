@@ -12,11 +12,13 @@ import (
 )
 
 var watchKeys = struct {
-	quit, up, down, first, last, source, pageUp, pageDown, follow, focus, zoom, details, back, expand key.Binding
+	quit, up, down, first, last, source, pageUp, pageDown, follow, focus, zoom, details, back, expand, prevTab, nextTab key.Binding
 }{
 	quit:     key.NewBinding(key.WithKeys("q", "ctrl+c")),
 	details:  key.NewBinding(key.WithKeys("enter")),
 	expand:   key.NewBinding(key.WithKeys("e")),
+	prevTab:  key.NewBinding(key.WithKeys("left", "h")),
+	nextTab:  key.NewBinding(key.WithKeys("right", "l")),
 	back:     key.NewBinding(key.WithKeys("esc")),
 	source:   key.NewBinding(key.WithKeys("1", "2", "3", "4", "5", "6")),
 	pageUp:   key.NewBinding(key.WithKeys("pgup", "ctrl+u")),
@@ -69,13 +71,23 @@ type watchModel struct {
 	zoomedFrom    bool // focusLogs before the zoom
 	fullStatus    bool // the full status takes the place of the strip and the logs
 	expanded      bool // the compact list shows the finished runs
+	tab           miniTab
 }
+
+// miniTab is the panel the mini layout shows.
+type miniTab int
+
+const (
+	tabRuns miniTab = iota
+	tabStatus
+	tabLogs
+)
 
 func newWatchModel(src watchSource, st styles, opts watchOptions) watchModel {
 	if opts.now == nil {
 		opts.now = time.Now
 	}
-	return watchModel{src: src, st: st, opts: opts, loading: true} // Init starts the first reload
+	return watchModel{src: src, st: st, opts: opts, loading: true, tab: tabLogs} // Init starts the first reload
 }
 
 func (m watchModel) Init() tea.Cmd { return tea.Batch(m.reload(), m.tick()) }
@@ -168,6 +180,12 @@ func (m watchModel) key(msg tea.KeyMsg) (watchModel, tea.Cmd) {
 			m.expanded = !m.expanded
 		}
 		return m, nil
+	case key.Matches(msg, watchKeys.prevTab), key.Matches(msg, watchKeys.nextTab):
+		if m.layout == layoutMini {
+			step := map[bool]miniTab{true: -1, false: 1}[key.Matches(msg, watchKeys.prevTab)]
+			m.tab = min(max(m.tab+step, tabRuns), tabLogs)
+		}
+		return m, nil
 	case key.Matches(msg, watchKeys.zoom):
 		if m.zoom = !m.zoom; m.zoom {
 			m.zoomedFrom, m.focusLogs = m.focusLogs, true
@@ -175,7 +193,7 @@ func (m watchModel) key(msg tea.KeyMsg) (watchModel, tea.Cmd) {
 			m.focusLogs = m.zoomedFrom
 		}
 		return m, nil
-	case m.focusLogs:
+	case m.focusLogs && (m.layout != layoutMini || m.tab == tabLogs): // the other tabs move the selection
 		return m.scrollLogs(msg), nil
 	case key.Matches(msg, watchKeys.up):
 		idx--
@@ -235,8 +253,11 @@ func (m watchModel) logRows() int {
 
 // logLook is how the logs panel fits the layout.
 func (m watchModel) logLook() logLook {
-	if m.layout == layoutCompact {
+	switch m.layout {
+	case layoutCompact:
 		return logsShort
+	case layoutMini:
+		return logsLetters
 	}
 	return logsFull
 }

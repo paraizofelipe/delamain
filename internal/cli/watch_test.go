@@ -590,7 +590,7 @@ func TestWatchShouldNeverRenderWiderOrTallerThanTheWindow(t *testing.T) {
 			}
 			m := tea.Model(newWatchModel(src, lineStyles(termenv.ANSI), watchOptions{limit: 20, interval: time.Millisecond, now: func() time.Time { return watchNow }}))
 			m = reload(t, settle(t, send(t, m, tea.WindowSizeMsg{Width: width, Height: height}), m.Init()))
-			if layout != layoutMini && layout != layoutTooSmall && !strings.Contains(panelText(stripANSI(m.View()), "logs · run 1 "), "fits") { // the end of a log line
+			if layout != layoutTooSmall && !strings.Contains(panelText(stripANSI(m.View()), "logs · run 1 "), "fits") { // the end of a log line
 				t.Fatalf("%dx%d: the logs are shown:\n%s", width, height, stripANSI(m.View()))
 			}
 			for _, k := range []string{"", "G", "k"} {
@@ -790,7 +790,10 @@ func TestWatchShouldNotLoseStatusFieldsInSmallLayouts(t *testing.T) {
 	src := &fakeWatchSource{
 		active: []RunView{run},
 		done:   []RunView{done},
-		status: map[int64]RunStatus{14: {Run: run, Budget: BudgetView{Tokens: 182_000, CostUSD: 1.94}}, 12: {Run: done, Budget: BudgetView{Tokens: 9_000, CostUSD: 0.12}}},
+		status: map[int64]RunStatus{
+			14: {Run: run, Budget: BudgetView{Tokens: 182_000, CostUSD: 1.94, Summary: "182K de 4M tokens · US$ 1.94"}},
+			12: {Run: done, Budget: BudgetView{Tokens: 9_000, CostUSD: 0.12}},
+		},
 	}
 	m := resize(t, startWatch(t, src, 160), 80, 27)
 	strip := panelText(screen(m), "status · enter details")
@@ -816,6 +819,22 @@ func TestWatchShouldNotLoseStatusFieldsInSmallLayouts(t *testing.T) {
 	}
 	if strip := words(panelText(screen(send(t, m, keyPress("j"))), "status · enter details")); !strings.Contains(strip, "9K tokens · US$ 0.12 · approved: merged") {
 		t.Errorf("then its spend:\n%s", strip)
+	}
+
+	mini := send(t, resize(t, m, 69, 60), keyPress("left"))
+	full := panelText(screen(mini), "status · run 14 ")
+	for _, want := range []string{
+		"RUN 14 · #55 artifacts: accept test_file and format_check in .delamain.yaml so that every gate reads them",
+		"STATE implement", "INTERACTIONS 1/3", "COMPLEXITY low", "OWNER pid 51230 (alive)",
+		"BUDGET 182K de 4M tokens · US$ 1.94", "PR/MR https://github.com/paraizofelipe/delamain/pull/61",
+	} {
+		if !strings.Contains(nospace(full), nospace(want)) {
+			t.Errorf("the mini status tab misses %q:\n%s", want, full)
+		}
+	}
+	small := panelText(screen(resize(t, mini, 40, 12)), "status · run 14 ")
+	if strings.Contains(full, "…") || strings.Contains(small, "…") || !strings.HasPrefix(words(small), "RUN 14 · #55 artifacts: accept") {
+		t.Errorf("the mini status tab wraps its fields:\n%s\n%s", full, small)
 	}
 }
 
@@ -871,6 +890,23 @@ func TestWatchShouldWrapLogLinesInCompactAndMini(t *testing.T) {
 	if !strings.Contains(rows[len(rows)-1], "3/3 · 100%") {
 		t.Errorf("the footer counts lines, not rows: %q", rows[len(rows)-1])
 	}
+	mini := screen(resize(t, m, 69, 40))
+	if !has(mini, "[all] D C P I R") {
+		t.Errorf("the mini chips are letters:\n%s", mini)
+	}
+	rows = panelRows(mini, "logs · run 14")
+	text, n = wrapped(t, rows, "I │ 12:46 ", 10)
+	if want := strings.ReplaceAll("💬 "+long, " ", ""); text != want || n < 4 {
+		t.Errorf("in mini the source is a letter and the time HH:MM, the line whole on %d rows:\n%s", n, strings.Join(rows, "\n"))
+	}
+	text, _ = wrapped(t, rows, "C │ ", 4)
+	if want := strings.ReplaceAll("--- FAIL: TestGates "+long, " ", ""); text != want {
+		t.Errorf("a mini line without a time wraps right after │:\n%s", strings.Join(rows, "\n"))
+	}
+	if sgr := sgrBefore(line(resize(t, m, 56, 20).View(), "12:46"), "I"); !strings.Contains(sgr, "36") {
+		t.Errorf("the letter is in the color of its source, SGR %q", sgr)
+	}
+
 	// The ✗ line is red: so are its continuations, and the color stops before the border.
 	for _, w := range []string{"w001", "w020", "w040"} {
 		row := ""
@@ -1100,6 +1136,87 @@ func TestWatchShouldSplitTheMediumLayoutThirtyEightPercentLeft(t *testing.T) {
 		}
 		if view := screen(send(t, m, keyPress("esc"))); !strings.Contains(view, "╭ logs · run 14") {
 			t.Errorf("width %d: esc brings the logs back:\n%s", width, view)
+		}
+	}
+}
+
+func TestWatchMiniShouldSwitchTabsWithArrows(t *testing.T) {
+	v := logRun(t, 14, "#55")
+	v.Title = "artifacts"
+	numbered(t, v, 1, 30)
+	other := logRun(t, 15, "#54")
+	other.State, other.Title = "plan", "tui"
+	writeLog(t, other, "planner", "12:50:00 ▶ prompt of run 15\n")
+	src := &fakeWatchSource{
+		active: []RunView{v, other},
+		done:   []RunView{finished(12, "#49", "approved: merged", "logs: colors")},
+		today:  budget.Status{Mode: config.BudgetTokens, Day: 1_400_000, Daily: 4_000_000},
+	}
+	m := resize(t, startLogs(t, src, 160, true), 56, 20)
+	tab := func(name, want, panel string) {
+		t.Helper()
+		view := screen(m)
+		lines := strings.Split(view, "\n")
+		if got := words(lines[1]); got != want+" ←→" {
+			t.Fatalf("%s: tabs %q, want %q", name, got, want)
+		}
+		if !strings.HasPrefix(lines[2], "╭ "+panel) || strings.Count(view, "╭") != 1 {
+			t.Fatalf("%s: one panel, %q:\n%s", name, panel, view)
+		}
+	}
+	tab("start", "runs status [logs]", "logs · run 14 ")
+	if head := strings.Split(screen(m), "\n")[0]; !strings.HasPrefix(head, "delamain ") || !strings.HasSuffix(head, "2▶ 1■  1.4M/4M") || lipgloss.Width(head) != 56 {
+		t.Errorf("mini header = %q", head)
+	}
+	if sgr := sgrBefore(line(m.View(), "←→"), "[logs]"); !strings.Contains(sgr, "7") {
+		t.Errorf("the active tab is in reverse video, SGR %q", sgr)
+	}
+	for _, k := range []string{"right", "l"} {
+		m = send(t, m, keyPress(k))
+		tab(k+" on the last tab", "runs status [logs]", "logs · run 14 ")
+	}
+	m = send(t, m, keyPress("left"))
+	tab("left", "runs [status] logs", "status · run 14 ")
+	if !has(screen(m), "STATE implement") {
+		t.Errorf("the status tab shows the full status:\n%s", screen(m))
+	}
+	m = send(t, m, keyPress("h"))
+	tab("h", "[runs] status logs", "runs ")
+	view := screen(m)
+	for _, row := range []string{"RUN STATE TITLE", "ACTIVE · 2", "▸ 14 implement artifacts", "15 plan tui", "FINISHED · 1", "12 approved logs: colors"} {
+		if !strings.Contains(words(view), row) {
+			t.Errorf("the runs tab lists %q:\n%s", row, view)
+		}
+	}
+	m = send(t, m, keyPress("left"))
+	tab("left on the first tab", "[runs] status logs", "runs ")
+
+	m = send(t, m, keyPress("down"))
+	if row := line(screen(m), "▸"); !strings.Contains(row, "15 ") {
+		t.Fatalf("↓ moves the selection on the runs tab: %q", row)
+	}
+	m = send(t, m, keyPress("l"))
+	tab("l", "runs [status] logs", "status · run 15 ")
+	m = send(t, m, keyPress("up"))
+	tab("↑ on the status tab", "runs [status] logs", "status · run 14 ")
+	m = send(t, send(t, m, keyPress("down")), keyPress("right"))
+	tab("↓ then right", "runs status [logs]", "logs · run 15 ")
+	if !strings.Contains(screen(m), "P │ 12:50 ▶ prompt of run 15") {
+		t.Errorf("the logs follow the selection:\n%s", screen(m))
+	}
+
+	m = send(t, m, keyPress("up"))
+	tab("↑ on the logs tab without the focus", "runs status [logs]", "logs · run 14 ")
+	m = send(t, send(t, m, keyPress("tab")), keyPress("up"))
+	tab("↑ with the logs focused", "runs status [logs]", "logs · run 14 · paused ")
+	m = send(t, m, keyPress("left"))
+	m = send(t, m, keyPress("down"))
+	tab("↓ on the status tab with the logs focused", "runs [status] logs", "status · run 15 ")
+
+	compact := resize(t, m, 80, 27)
+	for _, k := range []string{"left", "right", "h", "l"} {
+		if screen(send(t, compact, keyPress(k))) != screen(compact) {
+			t.Errorf("%s does nothing out of mini", k)
 		}
 	}
 }
