@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -363,5 +364,108 @@ func TestWatchActionsShouldRecoverARunWhoseOwnerDied(t *testing.T) {
 	acts.close()
 	if !n.closed {
 		t.Fatal("closing the actions closes the notifier of the recover")
+	}
+}
+
+func TestWatchRmShouldRefuseActiveRuns(t *testing.T) {
+	now := watchNow
+	src := &fakeWatchSource{active: []RunView{owned(14, "#55", "a", 51230, true)}}
+	acts := &fakeWatchActions{}
+	m := send(t, startActions(t, src, acts, 160, 40, &now), keyPress("d"))
+	text := dialogText(screen(m), "delamain rm")
+	for _, want := range []string{"run 14 is still implement", "stop it first with s: rm only deletes finished runs", "[ ok esc ]"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("an active run's rm dialog says %q:\n%s", want, screen(m))
+		}
+	}
+	if strings.Contains(text, "Remove run") || strings.Contains(text, "[ remove d ]") {
+		t.Fatalf("an active run is never offered for removal:\n%s", text)
+	}
+	for _, k := range []string{"d", "enter", "F"} {
+		if m = send(t, m, keyPress(k)); dialogText(screen(m), "delamain rm") == "" {
+			t.Fatalf("%s does not close the refusal", k)
+		}
+	}
+	if m = send(t, m, keyPress("esc")); strings.Contains(screen(m), "delamain rm") {
+		t.Fatalf("esc closes it:\n%s", screen(m))
+	}
+	if len(acts.removes) != 0 {
+		t.Fatalf("an active run is never removed: %v", acts.removes)
+	}
+}
+
+// removable is a finished run with a branch, as rm finds it.
+func removable(id int64) RunView {
+	v := finished(id, "#49", "approved: merged", "logs: colors by source")
+	v.Branch = "feat/49-logs-colors"
+	return v
+}
+
+func TestWatchRmShouldOfferForceOnADirtyWorktree(t *testing.T) {
+	now := watchNow
+	src := &fakeWatchSource{done: []RunView{removable(12)}}
+	dirty := "worktree /wt/app/feat/49-logs-colors has uncommitted changes; use --force to discard them"
+	acts := &fakeWatchActions{removeOut: "removed run 12\n", removeErr: []error{
+		fmt.Errorf("worktree /wt/app/feat/49-logs-colors %w", errDirtyWorktree),
+	}}
+	m := send(t, startActions(t, src, acts, 160, 40, &now), keyPress("d"))
+	text := dialogText(screen(m), "delamain rm")
+	for _, want := range []string{
+		"Remove run 12?", "#49 logs: colors by source",
+		"deletes record, run directory and worktree",
+		"keeps branch feat/49-logs-colors and the PR",
+		"budget the day's spend does not change (token_ledger stays)",
+		"[ remove d ] [ cancel esc ]",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("the rm dialog says %q:\n%s", want, screen(m))
+		}
+	}
+	if m = send(t, m, keyPress("F")); len(acts.removes) != 0 {
+		t.Fatalf("F is only offered after a dirty worktree: %v", acts.removes)
+	}
+
+	m = send(t, m, keyPress("d"))
+	if len(acts.removes) != 1 || acts.removes[0] != (removeCall{12, false}) {
+		t.Fatalf("d removes the run without force: %v", acts.removes)
+	}
+	text = dialogText(screen(m), "delamain rm")
+	if !strings.Contains(text, dirty) || !strings.Contains(text, "[ remove anyway F ]") {
+		t.Fatalf("a dirty worktree keeps the dialog open with the error and F:\n%s", screen(m))
+	}
+
+	m = send(t, m, keyPress("F"))
+	if len(acts.removes) != 2 || acts.removes[1] != (removeCall{12, true}) {
+		t.Fatalf("F removes with force: %v", acts.removes)
+	}
+	if strings.Contains(screen(m), "delamain rm") || footerText(m)[0] != "removed run 12" {
+		t.Fatalf("the removal closes the dialog and is the toast: %q\n%s", footerText(m), screen(m))
+	}
+}
+
+func TestWatchRmShouldRemoveAFinishedRunAndWarnOnOtherErrors(t *testing.T) {
+	now := watchNow
+	src := &fakeWatchSource{done: []RunView{removable(12)}}
+	acts := &fakeWatchActions{removeOut: "removed run 12\n"}
+	m := startActions(t, src, acts, 160, 40, &now)
+
+	m = send(t, send(t, m, keyPress("d")), keyPress("esc"))
+	m = send(t, send(t, m, keyPress("d")), keyPress("n"))
+	if len(acts.removes) != 0 || strings.Contains(screen(m), "delamain rm") {
+		t.Fatalf("esc and n cancel: %v", acts.removes)
+	}
+
+	m = send(t, send(t, m, keyPress("d")), keyPress("enter"))
+	if len(acts.removes) != 1 || acts.removes[0] != (removeCall{12, false}) || footerText(m)[0] != "removed run 12" {
+		t.Fatalf("enter removes the run and says so: %v %q", acts.removes, footerText(m))
+	}
+	if strings.Contains(screen(m), "delamain rm") {
+		t.Fatalf("the dialog closes:\n%s", screen(m))
+	}
+
+	acts.removeErr = []error{errors.New("worktree /wt/x is in use by run 2 (implement)")}
+	m = send(t, send(t, m, keyPress("d")), keyPress("d"))
+	if strings.Contains(screen(m), "delamain rm") || footerText(m)[0] != "worktree /wt/x is in use by run 2 (implement)" {
+		t.Fatalf("another error closes the dialog and is the toast: %q\n%s", footerText(m), screen(m))
 	}
 }

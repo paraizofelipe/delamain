@@ -12,10 +12,11 @@ import (
 )
 
 var watchKeys = struct {
-	quit, up, down, first, last, source, pageUp, pageDown, follow, focus, zoom, details, back, expand, prevTab, nextTab, stop key.Binding
+	quit, up, down, first, last, source, pageUp, pageDown, follow, focus, zoom, details, back, expand, prevTab, nextTab, stop, remove key.Binding
 }{
 	quit:     key.NewBinding(key.WithKeys("q", "ctrl+c")),
 	stop:     key.NewBinding(key.WithKeys("s")),
+	remove:   key.NewBinding(key.WithKeys("d")),
 	details:  key.NewBinding(key.WithKeys("enter")),
 	expand:   key.NewBinding(key.WithKeys("e")),
 	prevTab:  key.NewBinding(key.WithKeys("left", "h")),
@@ -162,7 +163,9 @@ func (m watchModel) key(msg tea.KeyMsg) (watchModel, tea.Cmd) {
 	case key.Matches(msg, watchKeys.quit):
 		return m, tea.Quit
 	case key.Matches(msg, watchKeys.stop):
-		return m.openStop(), nil
+		return m.openDialog(dialogStop), nil
+	case key.Matches(msg, watchKeys.remove):
+		return m.openDialog(dialogRemove), nil
 	case key.Matches(msg, watchKeys.source):
 		m.logs.setFilter(int(msg.Runes[0] - '1'))
 		return m, nil

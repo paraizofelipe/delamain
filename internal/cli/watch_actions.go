@@ -32,9 +32,11 @@ type watchActions interface {
 
 // dialogKeys are the keys of the open dialog: nothing else acts while it is open.
 var dialogKeys = struct {
-	stop, cancel key.Binding
+	stop, remove, force, cancel key.Binding
 }{
 	stop:   key.NewBinding(key.WithKeys("s", "enter")),
+	remove: key.NewBinding(key.WithKeys("d", "enter")),
+	force:  key.NewBinding(key.WithKeys("F")),
 	cancel: key.NewBinding(key.WithKeys("esc", "n")),
 }
 
@@ -43,13 +45,15 @@ type dialogKind int
 
 const (
 	dialogNone dialogKind = iota
-	dialogStop            // stop an active run
+	dialogStop            // stop the run
+	dialogRemove          // remove the run
 )
 
 // watchDialog is the open dialog and the run it acts on, as it was when it opened.
 type watchDialog struct {
-	kind dialogKind
-	run  RunView
+	kind  dialogKind
+	run   RunView
+	dirty string // why rm refused the worktree: F removes it anyway
 }
 
 // toastFor is how long a toast stays on the footer.
@@ -76,25 +80,32 @@ func (m watchModel) expireToast() watchModel {
 	return m
 }
 
-// watchActionMsg is what an action printed, or why it failed.
+// watchActionMsg is what an action printed, or why it failed; removed is the run a remove was
+// asked for.
 type watchActionMsg struct {
-	out string
-	err error
+	out     string
+	err     error
+	removed int64
 }
 
-// openStop opens the stop dialog of the selected run.
-func (m watchModel) openStop() watchModel {
+// openDialog opens a dialog of kind on the selected run.
+func (m watchModel) openDialog(kind dialogKind) watchModel {
 	if v, ok := m.selected(); ok {
-		m.dialog = watchDialog{kind: dialogStop, run: v}
+		m.dialog = watchDialog{kind: kind, run: v}
 	}
 	return m
 }
 
 // dialogKey handles a key while a dialog is open.
 func (m watchModel) dialogKey(msg tea.KeyMsg) (watchModel, tea.Cmd) {
-	switch {
-	case key.Matches(msg, dialogKeys.cancel):
+	if key.Matches(msg, dialogKeys.cancel) {
 		m.dialog = watchDialog{}
+		return m, nil
+	}
+	if m.dialog.kind == dialogRemove {
+		return m.removeKey(msg)
+	}
+	switch {
 	case key.Matches(msg, dialogKeys.stop):
 		if m.acting || m.dialog.run.terminal { // a finished run has nothing to stop // the action that runs reads and writes the same store: one at a time
 			return m, nil
@@ -110,9 +121,36 @@ func (m watchModel) dialogKey(msg tea.KeyMsg) (watchModel, tea.Cmd) {
 	return m, nil
 }
 
-// actionDone shows how an action ended: what it printed in ok, or why it failed in bad.
+// removeKey handles a key of the rm dialog: rm only deletes finished runs, and F forces it after
+// a dirty worktree. The dialog stays open while rm runs.
+func (m watchModel) removeKey(msg tea.KeyMsg) (watchModel, tea.Cmd) {
+	force := key.Matches(msg, dialogKeys.force)
+	switch {
+	case m.acting || !m.dialog.run.terminal:
+		return m, nil
+	case force && m.dialog.dirty == "", !force && !key.Matches(msg, dialogKeys.remove):
+		return m, nil
+	}
+	id, acts := m.dialog.run.ID, m.opts.actions
+	m.acting = true
+	return m, func() tea.Msg {
+		out, err := acts.Remove(context.Background(), id, force)
+		return watchActionMsg{out: out, err: err, removed: id}
+	}
+}
+
+// actionDone shows how an action ended: what it printed in ok, or why it failed in bad. A
+// worktree rm refused for its changes keeps the dialog open, offering F.
 func (m watchModel) actionDone(msg watchActionMsg) watchModel {
 	m.acting = false
+	open := m.dialog.kind == dialogRemove && m.dialog.run.ID == msg.removed && msg.removed != 0
+	if open && errors.Is(msg.err, errDirtyWorktree) {
+		m.dialog.dirty = clean(msg.err.Error())
+		return m
+	}
+	if open {
+		m.dialog = watchDialog{}
+	}
 	if msg.err != nil {
 		m.toast = m.newToast(m.st.bad, clean(msg.err.Error()))
 		return m
@@ -149,6 +187,9 @@ func (m watchModel) dialogBox() []string {
 	st, v := m.st, m.dialog.run
 	title, look := "delamain stop", st.warn
 	switch {
+	case m.dialog.kind == dialogRemove:
+		title, look = "delamain rm", st.bad
+		m.removeLines(&d)
 	case v.terminal:
 		d.text(st.none.Bold(true), fmt.Sprintf("run %d already finished", v.ID))
 		d.blank()
@@ -171,6 +212,36 @@ func (m watchModel) dialogBox() []string {
 		d.buttons([2]string{"stop", "s"}, [2]string{"cancel", "esc"})
 	}
 	return panel(title, d.lines, w, len(d.lines)+2, look)
+}
+
+// removeLines are the rm dialog: rm refuses a run that has not finished.
+func (m watchModel) removeLines(d *dialogWriter) {
+	st, v := m.st, m.dialog.run
+	if !v.terminal {
+		d.text(st.bad.Bold(true), fmt.Sprintf("run %d is still %s", v.ID, v.State))
+		d.text(st.bad, "stop it first with s: rm only deletes finished runs")
+		d.blank()
+		d.buttons([2]string{"ok", "esc"})
+		return
+	}
+	keeps := "the PR"
+	if v.Branch != "" {
+		keeps = "branch " + v.Branch + " and the PR"
+	}
+	d.text(st.none.Bold(true), fmt.Sprintf("Remove run %d?", v.ID))
+	d.styled(paint(st.info, v.Issue) + " " + v.Title)
+	d.blank()
+	d.row("deletes", "record, run directory and worktree")
+	d.row("keeps", keeps)
+	d.row("budget", "the day's spend does not change (token_ledger stays)")
+	d.blank()
+	if m.dialog.dirty != "" {
+		d.text(st.bad, m.dialog.dirty)
+		d.blank()
+		d.buttons([2]string{"remove anyway", "F"}, [2]string{"cancel", "esc"})
+		return
+	}
+	d.buttons([2]string{"remove", "d"}, [2]string{"cancel", "esc"})
 }
 
 // dialogWriter writes the lines of a dialog inner columns wide, wrapping every text.

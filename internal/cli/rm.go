@@ -15,6 +15,9 @@ import (
 	"github.com/paraizo/delamain/internal/store"
 )
 
+// errDirtyWorktree refuses a worktree with uncommitted changes, unless forced.
+var errDirtyWorktree = errors.New("has uncommitted changes; use --force to discard them")
+
 func newRmCmd(load func() (config.Config, error)) *cobra.Command {
 	var force bool
 	cmd := &cobra.Command{
