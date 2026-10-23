@@ -806,3 +806,34 @@ func TestWatchLogsShouldResetWhenTheSelectionChanges(t *testing.T) {
 		t.Fatalf("back on run one, its logs are read again from the start:\n%s", view)
 	}
 }
+
+func TestWatchLogsShouldFlushThePartialLineWhenTheRunEnds(t *testing.T) {
+	v := logRun(t, 14, "#55")
+	writeLog(t, v, "delamain", "12:00:01 state run=14 state=deliver\n12:00:02 delivered run=14 url=https://x/pull/1")
+	src := &fakeWatchSource{active: []RunView{v}}
+	m := reload(t, startLogs(t, src, 160, true))
+	if view := screen(m); !strings.Contains(view, "state=deliver") || strings.Contains(view, "delivered") {
+		t.Fatalf("an active run's unterminated line waits for its end:\n%s", view)
+	}
+	if strings.Contains(screen(m), "ended") {
+		t.Fatalf("an active run has not ended:\n%s", screen(m))
+	}
+
+	done := finished(14, "#55", "approved: merged", "logs")
+	done.RunDir = v.RunDir
+	src.active, src.done = nil, []RunView{done}
+	m = reload(t, reload(t, m))
+	view := screen(m)
+	if !strings.Contains(view, "delamain    │ 12:00:02 delivered run=14 url=https://x/pull/1") {
+		t.Fatalf("once the run ended its last line is shown:\n%s", view)
+	}
+	if title := line(m.View(), "logs · run 14"); !strings.Contains(title, "logs · run 14 · \x1b[2mended\x1b[0m") {
+		t.Fatalf("the title says the run ended, in muted: %q", title)
+	}
+	if row := line(m.View(), "ended · "); !strings.Contains(row, "\x1b[2mended · \x1b[0m\x1b[32mapproved\x1b[0m: merged") {
+		t.Fatalf("the panel footer shows the result in its color: %q\n%s", row, view)
+	}
+	if view := screen(reload(t, m)); strings.Count(view, "delivered run=14") != 1 {
+		t.Fatalf("the flushed line is not read again:\n%s", view)
+	}
+}

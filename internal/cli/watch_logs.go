@@ -36,9 +36,9 @@ func (p *logPane) append(lines []logLine) {
 	p.refresh()
 }
 
-// resize sets how many log lines the panel shows.
+// resize fits the pane in height lines: the log lines take what the footer leaves.
 func (p *logPane) resize(height int) {
-	p.vp.Height = max(height, 0)
+	p.vp.Height = max(height-1, 0)
 	p.refresh()
 }
 
@@ -52,21 +52,29 @@ func (p *logPane) refresh() {
 	p.vp.GotoBottom()
 }
 
-// view is the inside of the panel, inner columns wide and at most height lines high.
-func (p logPane) view(st styles, inner, height int) []string {
+// view is the inside of the panel for run, inner columns wide and at most height lines high:
+// the log lines, then the footer.
+func (p logPane) view(st styles, run RunView, inner, height int) []string {
 	if p.fl == nil || height <= 0 {
 		return nil
 	}
-	if len(p.lines) == 0 {
-		return []string{paint(st.muted, ansi.Truncate("no logs yet in "+clean(p.fl.dir), inner, "…"))}
+	rows := min(p.vp.Height, height-1)
+	out := make([]string, 0, height)
+	if len(p.lines) == 0 && rows > 0 {
+		out = append(out, paint(st.muted, ansi.Truncate("no logs yet in "+clean(p.fl.dir), inner, "…")))
 	}
 	top := min(p.vp.YOffset, len(p.lines))
-	shown := p.lines[top:min(top+min(height, p.vp.Height), len(p.lines))]
-	out := make([]string, len(shown))
-	for i, l := range shown {
-		out[i] = ansi.Truncate(logRow(st, l), inner, "…")
+	for _, l := range p.lines[top:min(top+max(rows, 0), len(p.lines))] {
+		out = append(out, ansi.Truncate(logRow(st, l), inner, "…"))
 	}
-	return out
+	for len(out) < rows {
+		out = append(out, "")
+	}
+	footer := ""
+	if run.terminal {
+		footer = paint(st.muted, "ended · ") + resultCell(st, run.Result).styled
+	}
+	return append(out, ansi.Truncate(footer, inner, "…"))
 }
 
 // logRow is a line as emit prints it: the source padded by its plain name, a muted │ and the

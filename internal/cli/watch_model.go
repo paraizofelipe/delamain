@@ -178,6 +178,9 @@ func pick(runs []RunView, id int64, idx int) int {
 func (m watchModel) reload() tea.Cmd {
 	src, limit, id, idx := m.src, m.opts.limit, m.selectedID, m.selectedIdx
 	fl, logsOf := m.logs.fl, m.logs.run
+	// An ended run writes nothing more: its unterminated last lines are complete.
+	v, _ := m.selected()
+	flush := v.ID == logsOf && v.terminal
 	return func() tea.Msg {
 		ctx := context.Background()
 		active, done, err := src.Runs(ctx, limit)
@@ -197,7 +200,7 @@ func (m watchModel) reload() tea.Cmd {
 		// Read last: the lines read are lost if the reload fails after them.
 		d.logsOf, d.follower = logsOf, fl
 		if fl != nil {
-			if d.logs, err = fl.read(false); err != nil {
+			if d.logs, err = fl.read(flush); err != nil {
 				return watchErrMsg{err}
 			}
 		}

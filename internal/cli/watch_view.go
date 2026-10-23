@@ -28,11 +28,15 @@ func (m watchModel) View() string {
 	status := m.statusLines()
 	listH := m.listHeight(len(list), len(status), body)
 	statusTitle, logsTitle := "status", "logs"
-	if v, ok := m.selected(); ok {
+	v, ok := m.selected()
+	if ok {
 		statusTitle, logsTitle = fmt.Sprintf("status · run %d", v.ID), fmt.Sprintf("logs · run %d", v.ID)
+		if v.terminal {
+			logsTitle += " · " + paint(m.st.muted, "ended")
+		}
 	}
 	leftCol := append(panel("runs", scroll(list, sel, listH-2), left, listH), panel(statusTitle, status, left, body-listH)...)
-	rightCol := panel(logsTitle, m.logs.view(m.st, m.width-left-4, body-2), m.width-left, body)
+	rightCol := panel(logsTitle, m.logs.view(m.st, v, m.width-left-4, body-2), m.width-left, body)
 	lines := []string{m.header()}
 	for i := range body {
 		lines = append(lines, leftCol[i]+rightCol[i])
