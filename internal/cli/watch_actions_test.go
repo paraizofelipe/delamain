@@ -598,3 +598,39 @@ func TestWatchActionsShouldOpenOnlyHTTPSURLs(t *testing.T) {
 		t.Fatal("an opener that cannot start is an error")
 	}
 }
+
+func TestWatchCopyShouldCopyTheRunID(t *testing.T) {
+	now := watchNow
+	evil := owned(14, "#55\x1b]52;c;ZXZpbA==\x07", "title\x1b]52;c;ZXZpbA==\x07", 51230, true)
+	src := &fakeWatchSource{active: []RunView{evil}}
+	acts := &fakeWatchActions{}
+	m := send(t, startActions(t, src, acts, 160, 40, &now), keyPress("y"))
+	if len(acts.copied) != 1 || acts.copied[0] != "14" {
+		t.Fatalf("y copies only the run ID: %q", acts.copied)
+	}
+	if got := footerText(m)[0]; got != "run 14 copied" {
+		t.Fatalf("the copy is the toast: %q", got)
+	}
+
+	acts.copyErr = errors.New("write /dev/pts/3: input/output error")
+	if m = send(t, m, keyPress("y")); footerText(m)[0] != "write /dev/pts/3: input/output error" {
+		t.Fatalf("a failed copy is the toast: %q", footerText(m))
+	}
+}
+
+func TestWatchActionsShouldCopyThroughOSC52AndWrapItForTmux(t *testing.T) {
+	for _, c := range []struct{ tmux, want string }{
+		{"", "\x1b]52;c;MTQ=\x07"}, // base64("14")
+		{"/tmp/tmux-1000/default,4242,0", "\x1bPtmux;\x1b\x1b]52;c;MTQ=\x07\x1b\\"}, // tmux passes it on
+	} {
+		t.Setenv("TMUX", c.tmux)
+		var out bytes.Buffer
+		acts := newStoreWatchActions(config.Config{}, nil, &out)
+		if err := acts.Copy("14"); err != nil {
+			t.Fatal(err)
+		}
+		if got := out.String(); got != c.want {
+			t.Fatalf("TMUX=%q: wrote %q, want %q", c.tmux, got, c.want)
+		}
+	}
+}

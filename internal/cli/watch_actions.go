@@ -6,12 +6,15 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"os"
 	"os/exec"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/aymanbagabas/go-osc52/v2"
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -110,6 +113,21 @@ func (m watchModel) openPR() (watchModel, tea.Cmd) {
 			return watchQuickMsg{err: err}
 		}
 		return nil
+	}
+}
+
+// copyID copies the selected run's ID, and only it, to the clipboard of the terminal, off Update.
+func (m watchModel) copyID() (watchModel, tea.Cmd) {
+	v, ok := m.selected()
+	if !ok {
+		return m, nil
+	}
+	acts, id := m.opts.actions, v.ID
+	return m, func() tea.Msg {
+		if err := acts.Copy(strconv.FormatInt(id, 10)); err != nil {
+			return watchQuickMsg{err: err}
+		}
+		return watchQuickMsg{out: fmt.Sprintf("run %d copied", id)}
 	}
 }
 
@@ -343,15 +361,17 @@ func (m watchModel) overlay(screen string, box []string) string {
 type storeWatchActions struct {
 	mu     sync.Mutex // the stopper builds its runner on first use: one action at a time
 	stop   *stopper
-	opener string // the command that opens a URL in the browser
+	opener string    // the command that opens a URL in the browser
+	out    io.Writer // the terminal, for OSC 52
+	tmux   bool      // OSC 52 goes through tmux
 }
 
-func newStoreWatchActions(cfg config.Config, st *store.Store, _ io.Writer) *storeWatchActions {
+func newStoreWatchActions(cfg config.Config, st *store.Store, out io.Writer) *storeWatchActions {
 	opener := "xdg-open"
 	if runtime.GOOS == "darwin" {
 		opener = "open"
 	}
-	return &storeWatchActions{stop: &stopper{cfg: cfg, st: st, noWait: true}, opener: opener}
+	return &storeWatchActions{stop: &stopper{cfg: cfg, st: st, noWait: true}, opener: opener, out: out, tmux: os.Getenv("TMUX") != ""}
 }
 
 // Stop is `delamain stop --no-wait id`.
@@ -387,7 +407,15 @@ func (a *storeWatchActions) OpenURL(target string) error {
 	return nil
 }
 
-func (a *storeWatchActions) Copy(string) error { return errors.New("copy is not available") }
+// Copy writes text to the terminal as an OSC 52 sequence, in one write beside the renderer's.
+func (a *storeWatchActions) Copy(text string) error {
+	seq := osc52.New(text)
+	if a.tmux {
+		seq = seq.Tmux()
+	}
+	_, err := seq.WriteTo(a.out)
+	return err
+}
 
 // close releases what the stops opened: the notifier of the recover.
 func (a *storeWatchActions) close() {
