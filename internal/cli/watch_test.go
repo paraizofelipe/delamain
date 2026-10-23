@@ -624,6 +624,58 @@ func TestWatchShouldNeverRenderWiderOrTallerThanTheWindow(t *testing.T) {
 	}
 }
 
+// resize delivers a new window size.
+func resize(t *testing.T, m tea.Model, width, height int) tea.Model {
+	t.Helper()
+	return send(t, m, tea.WindowSizeMsg{Width: width, Height: height})
+}
+
+// fits fails the test when a line of view is wider than width or view is taller than height.
+func fits(t *testing.T, view string, width, height int) {
+	t.Helper()
+	lines := strings.Split(view, "\n")
+	if len(lines) > height {
+		t.Fatalf("%dx%d: %d lines:\n%s", width, height, len(lines), stripANSI(view))
+	}
+	for i, l := range lines {
+		if w := lipgloss.Width(l); w > width {
+			t.Fatalf("%dx%d: line %d is %d wide:\n%s", width, height, i, w, stripANSI(view))
+		}
+	}
+}
+
+func TestWatchShouldShowTooSmallBelow40x12(t *testing.T) {
+	m := startWatch(t, crowded(), 160)
+	for _, size := range [][2]int{{39, 12}, {40, 11}, {30, 10}, {12, 3}} {
+		m = resize(t, m, size[0], size[1])
+		view := screen(m)
+		fits(t, m.View(), size[0], size[1])
+		want := fmt.Sprintf("terminal too small: %d×%d (minimum 40×12)", size[0], size[1])
+		if got := strings.Join(strings.Fields(view), " "); got != want && size[0] >= 30 {
+			t.Fatalf("%dx%d shows only %q, got:\n%s", size[0], size[1], want, view)
+		}
+		if strings.Contains(view, "╭") || strings.Contains(view, "#") {
+			t.Fatalf("%dx%d draws no panel:\n%s", size[0], size[1], view)
+		}
+	}
+	m = resize(t, m, 60, 11)
+	lines := strings.Split(screen(m), "\n")
+	for i, l := range lines {
+		if text := strings.TrimSpace(l); (i == 5) != (text != "") {
+			t.Fatalf("the message is alone on the middle line of 11:\n%s", strings.Join(lines, "\n"))
+		}
+	}
+	if left, right := len(lines[5])-len(strings.TrimLeft(lines[5], " ")), 60-lipgloss.Width(strings.TrimRight(lines[5], " ")); left != right && left != right-1 {
+		t.Fatalf("the message is centered: %d columns left, %d right: %q", left, right, lines[5])
+	}
+	if _, cmd := m.Update(keyPress("q")); cmd == nil || cmd() != tea.Quit() {
+		t.Fatal("q still quits")
+	}
+	if view := screen(resize(t, m, 80, 27)); !strings.Contains(view, "╭ runs") {
+		t.Fatalf("growing the window brings the panels back:\n%s", view)
+	}
+}
+
 func TestWatchShouldSplitTheWideLayoutFortyPercentLeft(t *testing.T) {
 	src := crowded()
 	for width, left := range map[int]int{80: 56, 160: 64, 200: 72} {

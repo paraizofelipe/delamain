@@ -115,10 +115,12 @@ func (p *logPane) setFilter(i int) {
 	p.refresh()
 }
 
-// resize fits the pane in height lines: the log lines take what the chips, the separators and
-// the footer leave.
-func (p *logPane) resize(height int) {
-	_, p.vp.Height = paneRows(height)
+// resize gives the log lines rows lines of the pane; it does nothing when they already have them.
+func (p *logPane) resize(rows int) {
+	if p.vp.Height == rows {
+		return
+	}
+	p.vp.Height = rows
 	p.refresh()
 }
 

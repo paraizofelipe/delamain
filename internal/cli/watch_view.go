@@ -22,11 +22,11 @@ func (m watchModel) View() string {
 	if m.width <= 0 || m.height <= 0 {
 		return ""
 	}
-	left := min(max(m.width*40/100, 56), 72, m.width)
-	if m.zoom {
-		left = 0
+	if m.layout == layoutTooSmall {
+		return m.tooSmall()
 	}
-	body := max(m.height-2, 0) // header and footer lines
+	f := m.frame()
+	p := f.panels
 	statusTitle, logsTitle := "status", "logs"
 	v, ok := m.selected()
 	if ok {
@@ -37,33 +37,55 @@ func (m watchModel) View() string {
 	if m.focusLogs {
 		listLook, logsLook = logsLook, listLook
 	}
-	leftCol := make([]string, body)
-	if !m.zoom {
-		list, sel := m.listLines(left - 4)
-		status := m.statusLines()
-		listH := m.listHeight(len(list), len(status), body)
-		leftCol = append(panel("runs", scroll(list, sel, listH-2), left, listH, listLook), panel(statusTitle, status, left, body-listH, m.st.muted)...)
+	parts := []placed{
+		{p.list, panel("runs", scroll(f.list, f.sel, p.list.h-2), p.list.w, p.list.h, listLook)},
+		{p.status, panel(statusTitle, f.status, p.status.w, p.status.h, m.st.muted)},
+		{p.logs, panel(logsTitle, m.logs.view(m.st, v, p.logs.w-4, p.logs.h-2), p.logs.w, p.logs.h, logsLook)},
 	}
-	rightCol := panel(logsTitle, m.logs.view(m.st, v, m.width-left-4, body-2), m.width-left, body, logsLook)
-	lines := []string{m.header()}
-	for i := range body {
-		lines = append(lines, leftCol[i]+rightCol[i])
-	}
-	lines = append(lines, m.footer())
+	lines := append([]string{m.header()}, compose(max(m.height-1-len(f.footer), 0), parts...)...)
+	lines = append(lines, f.footer...)
 	return strings.Join(lines[:min(len(lines), m.height)], "\n")
 }
 
-// listHeight gives the runs panel every active run, then as many finished ones as leave the
-// status panel its whole height; the status panel takes the rest of the column.
-func (m watchModel) listHeight(list, status, body int) int {
-	needed := 2 + list // borders
+// watchFrame is the screen of a layout: the panels' rectangles and the content they are sized by.
+type watchFrame struct {
+	panels watchPanels
+	footer []string
+	list   []string
+	sel    int // the selected run's line of list
+	status []string
+}
+
+// frame lays the screen of the current layout out.
+func (m watchModel) frame() watchFrame {
+	f := watchFrame{footer: []string{m.footer()}}
+	f.list, f.sel = m.listLines(leftWidth(m.width) - 4)
+	f.status = m.statusLines()
+	must := len(f.list)
 	if len(m.data.active) > 0 || len(m.data.done) > 0 {
-		needed = 2 + 2 + len(m.data.active) // borders, column header, ACTIVE
+		must = 2 + len(m.data.active) // column header, ACTIVE
 		if len(m.data.done) > 0 {
-			needed++ // FINISHED
+			must++ // FINISHED
 		}
 	}
-	return min(2+list, max(body-2-status, min(needed, 2+list)), body)
+	f.panels = panelsFor(m.layout, m.width, m.height, panelNeeds{
+		footer: len(f.footer), list: len(f.list), listMust: must, status: len(f.status), zoom: m.zoom,
+	})
+	return f
+}
+
+// tooSmall is the screen of a terminal smaller than every layout: why, in the middle.
+func (m watchModel) tooSmall() string {
+	msg := fmt.Sprintf("terminal too small: %d×%d (minimum 40×12)", m.width, m.height)
+	text := strings.Split(ansi.Wrap(msg, m.width, ""), "\n")
+	text = text[:min(len(text), m.height)]
+	out := make([]string, m.height)
+	top := (m.height - len(text)) / 2
+	for i, l := range text {
+		l = ansi.Truncate(l, m.width, "")
+		out[top+i] = strings.Repeat(" ", (m.width-lipgloss.Width(l))/2) + paint(m.st.warn, l)
+	}
+	return strings.Join(out, "\n")
 }
 
 // scroll keeps the column header and as many rows as fit in n lines around the selected one.

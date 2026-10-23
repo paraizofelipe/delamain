@@ -54,6 +54,7 @@ type watchModel struct {
 	st            styles
 	opts          watchOptions
 	width, height int
+	layout        watchLayout
 	data          watchData
 	selectedID    int64 // the selection follows the run, wherever it moves in the list
 	selectedIdx   int
@@ -79,10 +80,17 @@ func (m watchModel) tick() tea.Cmd {
 }
 
 func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	m, cmd := m.update(msg)
+	// The panels follow the window, the data and the keys: the logs scroll by what they show.
+	m.logs.resize(m.logRows())
+	return m, cmd
+}
+
+func (m watchModel) update(msg tea.Msg) (watchModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
-		m.logs.resize(m.logsHeight())
+		m.layout = layoutFor(m.width, m.height)
 	case watchTickMsg:
 		if m.loading {
 			return m, m.tick()
@@ -114,7 +122,7 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m watchModel) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m watchModel) key(msg tea.KeyMsg) (watchModel, tea.Cmd) {
 	runs := m.runs()
 	idx := m.selectedIdx
 	switch {
@@ -196,9 +204,11 @@ func (m *watchModel) followSelection() {
 	m.logs.reset(m.selectedID, dir)
 }
 
-// logsHeight is how many log lines fit in the logs panel: the window less the header, the
-// footer and the panel borders.
-func (m watchModel) logsHeight() int { return max(m.height-4, 0) }
+// logRows is how many log lines fit in the logs panel of the layout.
+func (m watchModel) logRows() int {
+	_, rows := paneRows(max(m.frame().panels.logs.h-2, 0)) // borders
+	return rows
+}
 
 // runs is the list in screen order: the active runs, then the finished ones.
 func (m watchModel) runs() []RunView {
