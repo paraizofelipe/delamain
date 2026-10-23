@@ -382,7 +382,8 @@ func TestGitHubThreadsShouldMergeReviewThreadsAndIssueComments(t *testing.T) {
 			{"id":"RT_1","isResolved":false,"path":"b.go","line":null,"comments":{"nodes":[
 				{"databaseId":101,"author":{"login":"bob"},"body":"why?","createdAt":"2026-01-01T08:00:00Z"}]}}]}}}}}`),
 		"GET /repos/acme/api/issues/12/comments": reply(200, `[
-			{"id":301,"user":{"login":"carol"},"body":"lgtm","created_at":"2026-01-01T09:00:00Z"}]`),
+			{"id":301,"user":{"login":"carol"},"body":"lgtm","created_at":"2026-01-01T09:00:00Z"},
+			{"id":302,"user":{"login":"coderabbitai[bot]","type":"Bot"},"body":"walkthrough","created_at":"2026-01-01T09:30:00Z"}]`),
 	})
 	ts, err := f.Threads(context.Background(), 12)
 	if err != nil {
@@ -391,6 +392,7 @@ func TestGitHubThreadsShouldMergeReviewThreadsAndIssueComments(t *testing.T) {
 	want := []Thread{
 		{ID: "RT_1", Path: "b.go", Comments: []Comment{{ID: "101", Author: "bob", Body: "why?", CreatedAt: at(t, "2026-01-01T08:00:00Z")}}},
 		{ID: "issue-comment:301", Comments: []Comment{{ID: "301", Author: "carol", Body: "lgtm", CreatedAt: at(t, "2026-01-01T09:00:00Z")}}},
+		{ID: "issue-comment:302", Comments: []Comment{{ID: "302", Author: "coderabbitai[bot]", Body: "walkthrough", CreatedAt: at(t, "2026-01-01T09:30:00Z"), Bot: true}}},
 		{ID: "RT_2", Path: "a.go", Line: 10, Resolved: true, Comments: []Comment{
 			{ID: "201", Author: "ana", Body: "fix this", CreatedAt: at(t, "2026-01-01T10:00:00Z")},
 			{ID: "202", Body: "done", CreatedAt: at(t, "2026-01-01T12:00:00Z")},

@@ -76,6 +76,7 @@ type Comment struct {
 	Body      string
 	CreatedAt time.Time
 	Internal  bool // GitLab internal note: hidden from who only sees the MR
+	Bot       bool // GitHub PR-level comment of a bot account; GitLab does not say
 }
 
 // Thread is a review thread (inline) or a PR-level comment, oldest comment first.
