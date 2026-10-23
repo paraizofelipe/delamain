@@ -146,7 +146,8 @@ func (m watchModel) reload() tea.Cmd {
 	return func() tea.Msg {
 		ctx := context.Background()
 		active, done, _ := src.Runs(ctx, limit)
-		d := watchData{active: active, done: done}
+		d := watchData{active: active, done: done, daemon: src.DaemonRunning()}
+		d.today, _ = src.Today(ctx)
 		if runs := append(append([]RunView{}, active...), done...); len(runs) > 0 {
 			d.statusOf = runs[pick(runs, id, idx)].ID
 			d.status, _ = src.Status(ctx, d.statusOf)

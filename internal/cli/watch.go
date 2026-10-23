@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"syscall"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -121,4 +123,19 @@ func (s inspectorWatchSource) Today(ctx context.Context) (budget.Status, error) 
 	return budget.Meter{Store: s.in.st, Cfg: s.in.cfg.Budget}.Today(ctx)
 }
 
-func (s inspectorWatchSource) DaemonRunning() bool { return false }
+func (s inspectorWatchSource) DaemonRunning() bool { return daemonRunning(s.in.cfg.Paths.StateDir) }
+
+// daemonRunning reports whether a daemon holds the lock of stateDir (see lockDaemon); it never
+// creates the file, and a lock it gets is released at once.
+func daemonRunning(stateDir string) bool {
+	f, err := os.Open(filepath.Join(stateDir, "daemon.lock")) //nolint:gosec // inside the state dir
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) //nolint:gosec // fd fits in int
+	if err == nil {
+		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN) //nolint:gosec // fd fits in int
+	}
+	return errors.Is(err, syscall.EWOULDBLOCK)
+}

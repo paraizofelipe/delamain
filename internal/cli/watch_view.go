@@ -30,11 +30,34 @@ func (m watchModel) View() string {
 	}
 	leftCol := append(m.panel("runs", list, left, listH), m.panel(status, m.statusLines(), left, body-listH)...)
 	rightCol := m.panel(logs, []string{paint(m.st.muted, "logs: coming soon")}, m.width-left, body)
-	lines := []string{""}
+	lines := []string{m.header()}
 	for i := range body {
 		lines = append(lines, leftCol[i]+rightCol[i])
 	}
 	return strings.Join(lines, "\n")
+}
+
+// header is the one line above the panels: version, daemon, run counts, the day's spend and the
+// clock at the right edge.
+func (m watchModel) header() string {
+	st, today := m.st, m.data.today
+	daemon := paint(st.muted, "daemon ○")
+	if m.data.daemon {
+		daemon = paint(st.ok, "daemon ●")
+	}
+	spend := "today " + budget.Format(today.Day, today.Mode)
+	if today.Daily > 0 {
+		spend += " of " + budget.Format(today.Daily, today.Mode)
+	}
+	look := map[budget.Level]lipgloss.Style{budget.OK: st.muted, budget.Soft: st.warn, budget.Hard: st.bad}[today.Level]
+	left := strings.Join([]string{
+		paint(st.magenta.Bold(true), "delamain"), paint(st.muted, "watch · "+Version), daemon,
+		paint(st.info.Bold(true), fmt.Sprintf("%d active · %d finished", len(m.data.active), len(m.data.done))),
+		paint(look, spend),
+	}, "  ")
+	clock := m.opts.now().Format("15:04:05")
+	left = ansi.Truncate(left, max(m.width-len(clock)-1, 0), "…")
+	return left + strings.Repeat(" ", max(m.width-lipgloss.Width(left)-len(clock), 1)) + paint(st.muted, clock)
 }
 
 // panel draws a rounded box of width × height cells with title in its top border; the lines

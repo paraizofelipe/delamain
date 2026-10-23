@@ -7,11 +7,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 
 	"github.com/paraizo/delamain/internal/budget"
 	"github.com/paraizo/delamain/internal/config"
@@ -420,5 +422,77 @@ func TestWatchShouldMoveTheSelectionWhenTheSelectedRunDisappears(t *testing.T) {
 	src.active = nil
 	if view := screen(reload(t, m)); !strings.Contains(view, "no runs yet") || strings.Contains(view, "▸") {
 		t.Fatalf("without runs nothing is selected:\n%s", view)
+	}
+}
+
+func TestWatchShouldShowTheDaemonState(t *testing.T) {
+	dir := t.TempDir()
+	lock := filepath.Join(dir, "daemon.lock")
+	if daemonRunning(dir) {
+		t.Fatal("without daemon.lock no daemon runs")
+	}
+	if _, err := os.Stat(lock); !os.IsNotExist(err) {
+		t.Fatalf("watch must not create the daemon lock: %v", err)
+	}
+	f, err := os.Create(lock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if daemonRunning(dir) {
+		t.Fatal("a lock nobody holds means no daemon")
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil { //nolint:gosec // fd fits in int
+		t.Fatal(err)
+	}
+	if !daemonRunning(dir) || !daemonRunning(dir) {
+		t.Fatal("a held lock means the daemon runs, and probing must leave it held")
+	}
+
+	for running, want := range map[bool]string{true: "daemon ●", false: "daemon ○"} {
+		view := screen(startWatch(t, &fakeWatchSource{daemon: running}, 160, 40))
+		if head := strings.Split(view, "\n")[0]; !strings.Contains(head, want) {
+			t.Errorf("daemon running=%v: header %q, want %q", running, head, want)
+		}
+	}
+}
+
+func TestWatchShouldShowTheDaySpendInTheHeader(t *testing.T) {
+	src := &fakeWatchSource{
+		active: []RunView{active(1, "#11", "plan", "", "a"), active(2, "#12", "plan", "", "b")},
+		done:   []RunView{finished(3, "#13", "approved: ok", "c")},
+		today:  budget.Status{Mode: config.BudgetTokens, Day: 1_400_000, Daily: 4_000_000},
+	}
+	head := strings.Split(screen(startWatch(t, src, 160, 40)), "\n")[0]
+	for _, want := range []string{"delamain", "watch · " + Version, "2 active · 1 finished", "today 1.4M of 4M"} {
+		if !strings.Contains(head, want) {
+			t.Errorf("header %q misses %q", head, want)
+		}
+	}
+	if !strings.HasSuffix(head, " 12:47:05") || lipgloss.Width(head) != 160 {
+		t.Errorf("the clock is right-aligned on the 160 columns: %q (%d)", head, lipgloss.Width(head))
+	}
+
+	for _, c := range []struct {
+		today budget.Status
+		want  string
+	}{
+		{budget.Status{Mode: config.BudgetTokens, Day: 1_400_000}, "today 1.4M"}, // no daily limit
+		{budget.Status{Mode: config.BudgetUSD, Day: 1.2, Daily: 5}, "today US$ 1.20 of US$ 5.00"},
+	} {
+		src.today = c.today
+		head := strings.Split(screen(startWatch(t, src, 160, 40)), "\n")[0]
+		if !strings.Contains(head, c.want+" ") || strings.Contains(head, c.want+" of") {
+			t.Errorf("header %q, want %q", head, c.want)
+		}
+	}
+
+	for level, code := range map[budget.Level]string{budget.OK: "2", budget.Soft: "33", budget.Hard: "31"} {
+		src.today = budget.Status{Mode: config.BudgetTokens, Day: 3_500_000, Daily: 4_000_000, Level: level}
+		m := tea.Model(newWatchModel(src, lineStyles(termenv.ANSI), watchOptions{limit: 20, interval: time.Millisecond, now: func() time.Time { return watchNow }}))
+		m = settle(t, send(t, m, tea.WindowSizeMsg{Width: 160, Height: 40}), m.Init())
+		if want := "\x1b[" + code + "mtoday 3.5M of 4M\x1b[0m"; !strings.Contains(m.View(), want) {
+			t.Errorf("level %v colors the day spend %q:\n%q", level, want, strings.Split(m.View(), "\n")[0])
+		}
 	}
 }
