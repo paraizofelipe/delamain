@@ -2,14 +2,20 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+
+	"github.com/paraizo/delamain/internal/config"
+	"github.com/paraizo/delamain/internal/store"
 )
 
 // watchActions are what `watch` does to a run; the model calls them in a tea.Cmd, off Update.
@@ -230,4 +236,38 @@ func (m watchModel) overlay(screen string, box []string) string {
 		lines[i] = paint(m.st.muted, left) + box[i-y] + paint(m.st.muted, ansi.TruncateLeft(plain, x+bw, ""))
 	}
 	return strings.Join(lines[:min(len(lines), m.height)], "\n")
+}
+
+// storeWatchActions are the actions of `watch` on the state database, as the commands do them.
+type storeWatchActions struct {
+	mu   sync.Mutex // the stopper builds its runner on first use: one action at a time
+	stop *stopper
+}
+
+func newStoreWatchActions(cfg config.Config, st *store.Store, _ io.Writer) *storeWatchActions {
+	return &storeWatchActions{stop: &stopper{cfg: cfg, st: st, noWait: true}}
+}
+
+// Stop is `delamain stop --no-wait id`.
+func (a *storeWatchActions) Stop(ctx context.Context, id int64) (string, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	var out strings.Builder
+	err := a.stop.stopOne(ctx, &out, id)
+	return out.String(), err
+}
+
+func (a *storeWatchActions) Remove(context.Context, int64, bool) (string, error) {
+	return "", errors.New("remove is not available")
+}
+
+func (a *storeWatchActions) OpenURL(string) error { return errors.New("open is not available") }
+
+func (a *storeWatchActions) Copy(string) error { return errors.New("copy is not available") }
+
+// close releases what the stops opened: the notifier of the recover.
+func (a *storeWatchActions) close() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.stop.close()
 }

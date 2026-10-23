@@ -1,14 +1,21 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/paraizo/delamain/internal/config"
+	"github.com/paraizo/delamain/internal/notify"
+	"github.com/paraizo/delamain/internal/store"
 )
 
 // removeCall is one call of fakeWatchActions.Remove.
@@ -277,5 +284,84 @@ func TestWatchStopShouldOfferRecoverWhenTheOwnerDied(t *testing.T) {
 	}
 	if got := footerText(m)[0]; got != "run 14 recovered: · ❌ halted — halted: run interrompida · report: /r/report.md" {
 		t.Fatalf("the lines recover prints are one toast: %q", got)
+	}
+}
+
+// actions are the real actions of `watch` on the fixture's store; out is the terminal.
+func (f *fixture) actions(t *testing.T, out *bytes.Buffer) *storeWatchActions {
+	t.Helper()
+	cfg, err := config.Load(f.cfgFile, os.Getenv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	acts := newStoreWatchActions(cfg, f.st, out)
+	t.Cleanup(acts.close)
+	return acts
+}
+
+func TestWatchActionsShouldStopARunLikeStopNoWait(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	rec := f.run(t, "#1", "", store.StateImplement) // owned by this test process, which is alive
+	done := f.run(t, "#2", "", store.StateRecorded)
+	acts := f.actions(t, &bytes.Buffer{})
+
+	start := time.Now()
+	out, err := acts.Stop(ctx, rec.ID)
+	if want := "stop requested for run 1 (owner pid " + strconv.Itoa(os.Getpid()) + ")\n"; err != nil || out != want {
+		t.Fatalf("Stop prints what stop --no-wait prints, want %q: %q %v", want, out, err)
+	}
+	if time.Since(start) > 30*time.Second {
+		t.Fatal("Stop never waits for the run")
+	}
+	if !f.stopRequested(t, rec.ID) {
+		t.Fatal("the request is recorded for the owner to see")
+	}
+	if got, _ := f.st.GetRun(ctx, rec.ID); got.State != store.StateImplement {
+		t.Fatalf("a live owner's run is finished by its owner, not by Stop: %+v", got)
+	}
+
+	if out, err := acts.Stop(ctx, done.ID); err != nil || out != "run 2 already finished (recorded)\n" {
+		t.Fatalf("a finished run is left as it is: %q %v", out, err)
+	}
+	if f.stopRequested(t, done.ID) {
+		t.Fatal("a finished run gets no stop request")
+	}
+	if _, err := acts.Stop(ctx, 999); err == nil || err.Error() != "run 999 not found" {
+		t.Fatalf("an unknown run is an error: %v", err)
+	}
+}
+
+func TestWatchActionsShouldRecoverARunWhoseOwnerDied(t *testing.T) {
+	n := &fakeNotifier{}
+	useFakeNotifier(t, n, nil)
+	f := newFixture(t)
+	ctx := context.Background()
+	rec := f.run(t, "#1", "fix/1-a", store.StateImplement)
+	other := f.run(t, "#2", "fix/2-b", store.StateImplement)
+	for _, id := range []int64{rec.ID, other.ID} {
+		if ok, err := f.st.ClaimRun(ctx, id, os.Getpid(), deadPID); err != nil || !ok {
+			t.Fatal("seed a run whose process died", err)
+		}
+	}
+	acts := f.actions(t, &bytes.Buffer{})
+
+	out, err := acts.Stop(ctx, rec.ID)
+	if err != nil || !strings.HasPrefix(out, "run 1 recovered:\n") || !strings.Contains(out, "halted") {
+		t.Fatalf("Stop prints the result as recover does: %q %v", out, err)
+	}
+	got, err := f.st.GetRun(ctx, rec.ID)
+	if err != nil || got.State != store.StateRecorded || !strings.HasPrefix(got.Reason, "halted: run interrompida") {
+		t.Fatalf("the orphan is finalized as recover would: %+v %v", got, err)
+	}
+	if got, _ := f.st.GetRun(ctx, other.ID); got.State != store.StateImplement {
+		t.Fatalf("only the given run is recovered: %+v", got)
+	}
+	if ev := n.events(); len(ev) != 1 || ev[0] != notify.EventRecover {
+		t.Fatalf("the recover toast is sent as recover sends it: %v", ev)
+	}
+	acts.close()
+	if !n.closed {
+		t.Fatal("closing the actions closes the notifier of the recover")
 	}
 }

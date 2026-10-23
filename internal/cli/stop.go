@@ -88,11 +88,15 @@ func (s *stopper) close() {
 }
 
 func (s *stopper) stop(c *cobra.Command, arg string) error {
-	ctx := c.Context()
 	id, err := runID(arg)
 	if err != nil {
 		return err
 	}
+	return s.stopOne(c.Context(), c.OutOrStdout(), id)
+}
+
+// stopOne stops run id and writes to w how it went.
+func (s *stopper) stopOne(ctx context.Context, w io.Writer, id int64) error {
 	rec, err := s.st.GetRun(ctx, id)
 	if errors.Is(err, store.ErrNotFound) {
 		return fmt.Errorf("run %d not found", id)
@@ -100,13 +104,12 @@ func (s *stopper) stop(c *cobra.Command, arg string) error {
 	if err != nil {
 		return err
 	}
-	w := c.OutOrStdout()
 	if rec.State.Terminal() {
 		fmt.Fprintf(w, "run %d already finished (%s)\n", id, rec.State)
 		return nil
 	}
 	if rec.OwnerPID != os.Getpid() && !pipeline.ProcessAlive(rec.OwnerPID) {
-		return s.recover(c, id)
+		return s.recoverOne(ctx, w, id)
 	}
 	if err := s.st.RequestStop(ctx, id); err != nil {
 		return fmt.Errorf("run %d: %w", id, err)
@@ -122,9 +125,8 @@ func (s *stopper) stop(c *cobra.Command, arg string) error {
 	return printStopped(w, rec)
 }
 
-// recover finalizes a run whose owner died, as `delamain recover` does, but only that one.
-func (s *stopper) recover(c *cobra.Command, id int64) error {
-	ctx := c.Context()
+// recoverOne finalizes a run whose owner died, as `delamain recover` does, but only that one.
+func (s *stopper) recoverOne(ctx context.Context, w io.Writer, id int64) error {
 	if s.runner == nil {
 		r, err := newRunner(s.cfg, s.st, notify.Options{})
 		if err != nil {
@@ -136,7 +138,7 @@ func (s *stopper) recover(c *cobra.Command, id int64) error {
 	if err != nil {
 		return err
 	}
-	reportRecovered(c, s.runner, []pipeline.Result{res})
+	reportRecovered(ctx, w, s.runner, []pipeline.Result{res})
 	return nil
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"math"
 	"os"
@@ -170,17 +171,16 @@ func recoverRuns(c *cobra.Command, cfg config.Config, base *pipeline.Runner) err
 		fmt.Fprintln(c.OutOrStdout(), "no orphaned run to recover")
 		return nil
 	}
-	reportRecovered(c, base, results)
+	reportRecovered(ctx, c.OutOrStdout(), base, results)
 	return nil
 }
 
 // reportRecovered prints each recovered run and sums them up in one recover toast.
-func reportRecovered(c *cobra.Command, base *pipeline.Runner, results []pipeline.Result) {
-	ctx := c.Context()
+func reportRecovered(ctx context.Context, w io.Writer, base *pipeline.Runner, results []pipeline.Result) {
 	var recovered []notify.Recovered
 	for _, res := range results {
-		fmt.Fprintf(c.OutOrStdout(), "run %d recovered:\n", res.RunID)
-		printResult(c, res)
+		fmt.Fprintf(w, "run %d recovered:\n", res.RunID)
+		printResult(w, res)
 		rec, err := base.Store.GetRun(ctx, res.RunID)
 		if err != nil { // the toast is a courtesy: it never fails the recovery
 			base.Log.Warn("recover toast: run not found", "run", res.RunID, "err", err)

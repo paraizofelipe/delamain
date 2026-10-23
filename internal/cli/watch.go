@@ -58,7 +58,11 @@ everything every --interval. Quitting (q or ctrl+c) leaves every run as it is.`,
 				return err
 			}
 			defer done()
-			return runWatch(ctx, c.InOrStdin(), out, inspectorWatchSource{in: in}, newStyles(lipgloss.NewRenderer(os.Stdout)), opts)
+			acts := newStoreWatchActions(in.cfg, in.st, out)
+			defer acts.close()
+			o := opts
+			o.actions = acts
+			return runWatch(ctx, c.InOrStdin(), out, inspectorWatchSource{in: in}, newStyles(lipgloss.NewRenderer(os.Stdout)), o)
 		},
 	}
 	cmd.Flags().IntVar(&opts.limit, "limit", 20, "finished runs to show")
