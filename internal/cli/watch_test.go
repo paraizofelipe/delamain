@@ -968,6 +968,66 @@ func TestWatchShouldOpenTheFullStatusWithEnterAndCloseWithEsc(t *testing.T) {
 	}
 }
 
+func TestWatchCompactShouldFoldFinishedRunsAndExpandWithE(t *testing.T) {
+	src := &fakeWatchSource{
+		active: []RunView{active(14, "#55", "implement", "low", "artifacts"), active(15, "#54", "plan", "", "tui")},
+		done:   []RunView{finished(12, "#49", "approved: merged", "logs: colors"), finished(11, "#48", "halted: budget", "daemon"), finished(9, "#43", "approved: ok", "lock")},
+	}
+	start := func() tea.Model {
+		m := tea.Model(newWatchModel(src, lineStyles(termenv.ANSI), watchOptions{limit: 20, interval: time.Millisecond, now: func() time.Time { return watchNow }}))
+		return settle(t, resize(t, m, 80, 27), m.Init())
+	}
+	folded := func(name string, m tea.Model) {
+		t.Helper()
+		view := screen(m)
+		if !has(view, "FINISHED · 3 · e expands") || strings.Contains(view, "#49") || strings.Contains(view, "#43") {
+			t.Fatalf("%s: the finished runs are folded in one line:\n%s", name, view)
+		}
+	}
+	expanded := func(name string, m tea.Model) {
+		t.Helper()
+		view := screen(m)
+		if !has(view, "FINISHED · 3") || strings.Contains(view, "e expands") {
+			t.Fatalf("%s: the finished runs are listed:\n%s", name, view)
+		}
+		for _, row := range []string{"12 #49 approved logs: colors", "11 #48 halted daemon", "9 #43 approved lock"} {
+			if !strings.Contains(words(view), row) {
+				t.Fatalf("%s: %q is listed:\n%s", name, row, view)
+			}
+		}
+	}
+
+	m := start()
+	folded("start", m)
+	if sgr := sgrBefore(line(m.View(), "FINISHED"), "e\x1b[0m"); !strings.Contains(sgr, "1") || !strings.Contains(sgr, "36") {
+		t.Errorf("the e of e expands is in info bold, SGR %q", sgr)
+	}
+	m = send(t, m, keyPress("e"))
+	expanded("e", m)
+	m = send(t, m, keyPress("e"))
+	folded("e again", m)
+
+	for _, keys := range [][]string{{"j", "j"}, {"G"}, {"end"}} {
+		m := start()
+		for _, k := range keys {
+			m = send(t, m, keyPress(k))
+		}
+		expanded(fmt.Sprint(keys), m)
+		if row := line(screen(m), "▸"); !strings.Contains(row, "#4") {
+			t.Fatalf("%s: the finished run selected is on screen: %q", keys, row)
+		}
+	}
+
+	wide := startWatch(t, src, 160)
+	if view := screen(send(t, wide, keyPress("e"))); view != screen(wide) || !strings.Contains(view, "#49") {
+		t.Errorf("only the compact layout folds:\n%s", view)
+	}
+	src.done = nil
+	if view := screen(start()); strings.Contains(view, "FINISHED") {
+		t.Errorf("without finished runs there is no FINISHED line:\n%s", view)
+	}
+}
+
 func TestWatchShouldSplitTheWideLayoutFortyPercentLeft(t *testing.T) {
 	src := crowded()
 	for width, left := range map[int]int{140: 56, 160: 64, 200: 72} {

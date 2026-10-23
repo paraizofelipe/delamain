@@ -12,10 +12,11 @@ import (
 )
 
 var watchKeys = struct {
-	quit, up, down, first, last, source, pageUp, pageDown, follow, focus, zoom, details, back key.Binding
+	quit, up, down, first, last, source, pageUp, pageDown, follow, focus, zoom, details, back, expand key.Binding
 }{
 	quit:     key.NewBinding(key.WithKeys("q", "ctrl+c")),
 	details:  key.NewBinding(key.WithKeys("enter")),
+	expand:   key.NewBinding(key.WithKeys("e")),
 	back:     key.NewBinding(key.WithKeys("esc")),
 	source:   key.NewBinding(key.WithKeys("1", "2", "3", "4", "5", "6")),
 	pageUp:   key.NewBinding(key.WithKeys("pgup", "ctrl+u")),
@@ -67,6 +68,7 @@ type watchModel struct {
 	zoom          bool // the logs take the whole width
 	zoomedFrom    bool // focusLogs before the zoom
 	fullStatus    bool // the full status takes the place of the strip and the logs
+	expanded      bool // the compact list shows the finished runs
 }
 
 func newWatchModel(src watchSource, st styles, opts watchOptions) watchModel {
@@ -84,6 +86,9 @@ func (m watchModel) tick() tea.Cmd {
 
 func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	m, cmd := m.update(msg)
+	if v, ok := m.selected(); ok && v.terminal {
+		m.expanded = true // a folded list would hide the selection
+	}
 	// The panels follow the window, the data and the keys: the logs scroll by what they show.
 	m.logs.resize(m.logRows())
 	return m, cmd
@@ -156,6 +161,11 @@ func (m watchModel) key(msg tea.KeyMsg) (watchModel, tea.Cmd) {
 	case key.Matches(msg, watchKeys.back):
 		if m.layout == layoutMedium || m.layout == layoutCompact {
 			m.fullStatus = false
+		}
+		return m, nil
+	case key.Matches(msg, watchKeys.expand):
+		if m.layout == layoutCompact { // the others always list the finished runs
+			m.expanded = !m.expanded
 		}
 		return m, nil
 	case key.Matches(msg, watchKeys.zoom):

@@ -66,7 +66,7 @@ func (m watchModel) frame() watchFrame {
 	n := panelNeeds{zoom: m.zoom, full: m.fullStatus}
 	switch m.layout {
 	case layoutCompact:
-		f.list, f.sel = m.listLines(m.width-4, listCols{issue: true})
+		f.list, f.sel = m.listLines(m.width-4, listCols{issue: true, fold: !m.expanded})
 		if m.fullStatus {
 			f.status = m.wrappedStatus(m.width - 4)
 		} else {
@@ -222,8 +222,8 @@ func fit(s string, w int) string {
 }
 
 // listCols are the columns of the list of a layout: header is the column header line, issue the
-// ISSUE column and more the CPLX and ITER ones.
-type listCols struct{ header, issue, more bool }
+// ISSUE column and more the CPLX and ITER ones; fold leaves the finished runs out.
+type listCols struct{ header, issue, more, fold bool }
 
 // listLines are the rows of the runs panel: column header, the active runs, then the finished;
 // sel is the selected run's line.
@@ -265,6 +265,10 @@ func (m watchModel) listLines(inner int, cols listCols) (lines []string, sel int
 	}
 	section("ACTIVE", len(m.data.active), st.info)
 	for i, v := range runs {
+		if i == len(m.data.active) && cols.fold {
+			lines = append(lines, paint(st.muted.Bold(true), fmt.Sprintf("FINISHED · %d · ", len(m.data.done)))+paint(st.info.Bold(true), "e")+paint(st.muted, " expands"))
+			break
+		}
 		if i == len(m.data.active) {
 			section("FINISHED", len(m.data.done), st.muted)
 		}
