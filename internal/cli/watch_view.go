@@ -146,12 +146,15 @@ func (m watchModel) footer() []string {
 		zoom = "exit full screen"
 	}
 	keys := map[watchLayout][][2]string{
-		layoutMedium:  {{"↑↓", "navigate"}, {"enter", "status"}, {"1-6", "source"}, {"z", zoom}, {"q", "quit"}},
-		layoutCompact: {{"↑↓", "run"}, {"e", "finished"}, {"enter", "status"}, {"z", "logs"}, {"q", "quit"}},
-		layoutMini:    {{"←→", "tab"}, {"↑↓", "run"}, {"q", "quit"}},
+		layoutMedium:  {{"↑↓", "navigate"}, {"enter", "status"}, {"1-6", "source"}, {"z", zoom}, {"s", "stop"}, {"d", "remove"}, {"?", "help"}, {"q", "quit"}},
+		layoutCompact: {{"↑↓", "run"}, {"e", "finished"}, {"enter", "status"}, {"z", "logs"}, {"s", "stop"}, {"d", "remove"}, {"?", "help"}, {"q", "quit"}},
+		layoutMini:    {{"←→", "tab"}, {"↑↓", "run"}, {"s", "stop"}, {"d", "remove"}, {"?", "help"}, {"q", "quit"}},
 	}[m.layout]
 	if keys == nil {
-		keys = [][2]string{{"↑↓", "navigate"}, {"tab", "focus"}, {"1-6", "source"}, {"f", "follow"}, {"z", zoom}, {"q", "quit"}}
+		keys = [][2]string{
+			{"↑↓", "navigate"}, {"tab", "focus"}, {"1-6", "source"}, {"f", "follow"}, {"z", zoom},
+			{"s", "stop"}, {"d", "remove"}, {"o", "open PR"}, {"?", "help"}, {"q", "quit"},
+		}
 	}
 	return append(toast, footerLines(st, keys, m.width)...)
 }

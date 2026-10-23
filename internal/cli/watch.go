@@ -40,9 +40,17 @@ func newWatchCmd(load func() (config.Config, error)) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "watch",
 		Short: "Follow runs, the daemon and the day's spend in a terminal UI",
-		Long: `Open a read-only terminal UI that lists the active runs and the latest finished ones, shows
-the status of the selected run, whether the daemon is running and the day's spend, and reloads
-everything every --interval. Quitting (q or ctrl+c) leaves every run as it is.`,
+		Long: `Open a terminal UI that lists the active runs and the latest finished ones, shows the status
+of the selected run, whether the daemon is running and the day's spend, and reloads everything
+every --interval. s stops the selected run as delamain stop --no-wait does and d removes it as
+delamain rm does, each after a confirmation; o opens its PR/MR, y copies its ID and ? lists every
+key. Quitting (q or ctrl+c) leaves every run as it is.
+
+In tmux, open it in a floating popup:
+
+  bind D display-popup -E -w 50% -h 60% "delamain watch"
+
+y copies the run ID through OSC 52; tmux needs ` + "`set -g set-clipboard on`.",
 		Args: cobra.NoArgs,
 		RunE: func(c *cobra.Command, _ []string) error {
 			if opts.interval <= 0 {

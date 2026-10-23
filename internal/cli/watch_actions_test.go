@@ -852,3 +852,16 @@ func TestWatchDialogsShouldStripControlCharactersFromRunData(t *testing.T) {
 		}
 	}
 }
+
+func TestWatchLongShouldEndWithTheTmuxPopupAndOSC52(t *testing.T) {
+	long := newWatchCmd(nil).Long
+	want := "In tmux, open it in a floating popup:\n\n" +
+		"  bind D display-popup -E -w 50% -h 60% \"delamain watch\"\n\n" +
+		"y copies the run ID through OSC 52; tmux needs `set -g set-clipboard on`."
+	if !strings.HasSuffix(long, want) {
+		t.Fatalf("the help of watch ends with the tmux section, want %q:\n%s", want, long)
+	}
+	if strings.Contains(long, "read-only") {
+		t.Fatalf("watch is no longer read-only:\n%s", long)
+	}
+}

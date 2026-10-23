@@ -529,7 +529,7 @@ func footer(m tea.Model) string {
 func TestWatchShouldShowReadErrorsInTheFooterAndKeepRunning(t *testing.T) {
 	src := &fakeWatchSource{active: []RunView{active(1, "#11", "plan", "", "a")}}
 	m := startWatch(t, src, 160)
-	if got := strings.TrimSpace(footer(m)); got != "↑↓ navigate  tab focus  1-6 source  f follow  z full screen  q quit" {
+	if got := strings.Join(footerText(m), "  "); got != "↑↓ navigate  tab focus  1-6 source  f follow  z full screen  s stop  d remove  o open PR  ? help  q quit" {
 		t.Fatalf("footer = %q", got)
 	}
 
@@ -545,7 +545,7 @@ func TestWatchShouldShowReadErrorsInTheFooterAndKeepRunning(t *testing.T) {
 	src.err = nil
 	src.active = append(src.active, active(2, "#12", "plan", "", "b"))
 	m = reload(t, m)
-	if got := strings.TrimSpace(footer(m)); got != "↑↓ navigate  tab focus  1-6 source  f follow  z full screen  q quit" || !strings.Contains(screen(m), "#12") {
+	if got := strings.Join(footerText(m), "  "); got != "↑↓ navigate  tab focus  1-6 source  f follow  z full screen  s stop  d remove  o open PR  ? help  q quit" || !strings.Contains(screen(m), "#12") {
 		t.Fatalf("the next good read clears the error and keeps reloading: %q\n%s", got, screen(m))
 	}
 }
@@ -1227,19 +1227,19 @@ func TestWatchShouldWrapTheFooterInsteadOfCuttingKeys(t *testing.T) {
 		width, height int
 		want          string
 	}{
-		{140, 32, "↑↓ navigate  tab focus  1-6 source  f follow  z full screen  q quit"},
-		{100, 24, "↑↓ navigate  enter status  1-6 source  z full screen  q quit"},
-		{70, 18, "↑↓ run  e finished  enter status  z logs  q quit"},
-		{40, 12, "←→ tab  ↑↓ run  q quit"},
+		{140, 32, "↑↓ navigate  tab focus  1-6 source  f follow  z full screen  s stop  d remove  o open PR  ? help  q quit"},
+		{100, 24, "↑↓ navigate  enter status  1-6 source  z full screen  s stop  d remove  ? help  q quit"},
+		{70, 18, "↑↓ run  e finished  enter status  z logs  s stop  d remove  ? help  q quit"},
+		{40, 12, "←→ tab  ↑↓ run  s stop  d remove  ? help  q quit"},
 	} {
 		m := resize(t, startWatch(t, crowded(), 160), c.width, c.height)
-		if got := strings.TrimSpace(footer(m)); got != c.want {
+		if got := strings.Join(footerText(m), "  "); got != c.want {
 			t.Errorf("%dx%d footer = %q, want %q", c.width, c.height, got, c.want)
 		}
 		fits(t, m.View(), c.width, c.height)
 	}
 	m := send(t, resize(t, startWatch(t, crowded(), 160), 100, 24), keyPress("z"))
-	if got := strings.TrimSpace(footer(m)); got != "↑↓ navigate  enter status  1-6 source  z exit full screen  q quit" {
+	if got := strings.Join(footerText(m), "  "); got != "↑↓ navigate  enter status  1-6 source  z exit full screen  s stop  d remove  ? help  q quit" {
 		t.Errorf("medium full screen footer = %q", got)
 	}
 
@@ -1746,7 +1746,7 @@ func TestWatchShouldToggleFocusWithTabAndZoomWithZ(t *testing.T) {
 	if border(m.View(), "logs · run 14") != "36" {
 		t.Fatalf("z moves the focus to the logs:\n%q", m.View())
 	}
-	if got := strings.TrimSpace(footer(m)); got != "↑↓ navigate  tab focus  1-6 source  f follow  z exit full screen  q quit" {
+	if got := strings.Join(footerText(m), "  "); got != "↑↓ navigate  tab focus  1-6 source  f follow  z exit full screen  s stop  d remove  o open PR  ? help  q quit" {
 		t.Fatalf("full screen footer = %q", got)
 	}
 	m = send(t, m, keyPress("z"))
