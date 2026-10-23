@@ -12,13 +12,14 @@ import (
 )
 
 var watchKeys = struct {
-	quit, up, down, first, last key.Binding
+	quit, up, down, first, last, source key.Binding
 }{
-	quit:  key.NewBinding(key.WithKeys("q", "ctrl+c")),
-	up:    key.NewBinding(key.WithKeys("up", "k")),
-	down:  key.NewBinding(key.WithKeys("down", "j")),
-	first: key.NewBinding(key.WithKeys("g", "home")),
-	last:  key.NewBinding(key.WithKeys("G", "end")),
+	quit:   key.NewBinding(key.WithKeys("q", "ctrl+c")),
+	source: key.NewBinding(key.WithKeys("1", "2", "3", "4", "5", "6")),
+	up:     key.NewBinding(key.WithKeys("up", "k")),
+	down:   key.NewBinding(key.WithKeys("down", "j")),
+	first:  key.NewBinding(key.WithKeys("g", "home")),
+	last:   key.NewBinding(key.WithKeys("G", "end")),
 }
 
 // watchData is one reload of everything the screen shows.
@@ -110,6 +111,9 @@ func (m watchModel) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, watchKeys.quit):
 		return m, tea.Quit
+	case key.Matches(msg, watchKeys.source):
+		m.logs.setFilter(int(msg.Runes[0] - '1'))
+		return m, nil
 	case key.Matches(msg, watchKeys.up):
 		idx--
 	case key.Matches(msg, watchKeys.down):

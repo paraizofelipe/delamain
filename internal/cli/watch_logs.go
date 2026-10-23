@@ -1,20 +1,27 @@
 package cli
 
 import (
+	"fmt"
 	"strings"
 	"unicode/utf8"
 
 	"github.com/charmbracelet/bubbles/viewport"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 )
+
+// logSources are the chips of the logs panel, picked with the keys 1 to 6; the first shows them all.
+var logSources = []string{"all", "delamain", "checks", "planner", "implementer", "reviewer"}
 
 // logPane is the logs panel of `watch`: the lines read so far of the selected run and the
 // viewport over them. Update only swaps fl; its fields are touched by the reload command alone.
 type logPane struct {
-	fl    *logFollower // nil without a selected run
-	run   int64        // the run fl reads
-	lines []logLine    // control characters already dropped
-	vp    viewport.Model
+	fl     *logFollower // nil without a selected run
+	run    int64        // the run fl reads
+	lines  []logLine    // control characters already dropped
+	source int          // index in logSources; it outlives reset
+	shown  []logLine    // the lines of source
+	vp     viewport.Model
 }
 
 // reset points the pane at the logs of run, in dir, and forgets what was read; it does no I/O.
@@ -36,17 +43,34 @@ func (p *logPane) append(lines []logLine) {
 	p.refresh()
 }
 
-// resize fits the pane in height lines: the log lines take what the footer leaves.
-func (p *logPane) resize(height int) {
-	p.vp.Height = max(height-1, 0)
+// setFilter shows only the lines of logSources[i]; the others stay in memory.
+func (p *logPane) setFilter(i int) {
+	p.source = i
 	p.refresh()
 }
 
-// refresh gives the viewport what it scrolls over and keeps it at the end.
+// resize fits the pane in height lines: the log lines take what the chips, the separators and
+// the footer leave.
+func (p *logPane) resize(height int) {
+	_, p.vp.Height = paneRows(height)
+	p.refresh()
+}
+
+// paneRows splits height between the separators and the log lines: the log lines give way
+// first, then the separators, so the chips and the footer stay.
+func paneRows(height int) (seps, rows int) {
+	return min(max(height-2, 0), 2), max(height-4, 0)
+}
+
+// refresh gives the viewport the lines of the source and keeps it at the end.
 func (p *logPane) refresh() {
-	texts := make([]string, len(p.lines))
-	for i, l := range p.lines {
-		texts[i] = l.text
+	p.shown = nil // a new array: copies of the model share the old one
+	texts := []string{}
+	for _, l := range p.lines {
+		if p.source == 0 || l.source == logSources[p.source] {
+			p.shown = append(p.shown, l)
+			texts = append(texts, l.text)
+		}
 	}
 	p.vp.SetContent(strings.Join(texts, "\n"))
 	p.vp.GotoBottom()
@@ -58,23 +82,60 @@ func (p logPane) view(st styles, run RunView, inner, height int) []string {
 	if p.fl == nil || height <= 0 {
 		return nil
 	}
-	rows := min(p.vp.Height, height-1)
-	out := make([]string, 0, height)
-	if len(p.lines) == 0 && rows > 0 {
-		out = append(out, paint(st.muted, ansi.Truncate("no logs yet in "+clean(p.fl.dir), inner, "…")))
+	seps, rows := paneRows(height)
+	rows = min(rows, p.vp.Height)
+	sep := paint(st.muted, strings.Repeat("─", max(inner, 0)))
+	out := []string{ansi.Truncate(p.chips(st), inner, "…")}
+	if seps > 0 {
+		out = append(out, sep)
 	}
-	top := min(p.vp.YOffset, len(p.lines))
-	for _, l := range p.lines[top:min(top+max(rows, 0), len(p.lines))] {
-		out = append(out, ansi.Truncate(logRow(st, l), inner, "…"))
+	body := []string{}
+	if len(p.lines) == 0 {
+		body = append(body, paint(st.muted, ansi.Truncate("no logs yet in "+clean(p.fl.dir), inner, "…")))
 	}
-	for len(out) < rows {
-		out = append(out, "")
+	top := min(p.vp.YOffset, len(p.shown))
+	for _, l := range p.shown[top:min(top+rows, len(p.shown))] {
+		body = append(body, ansi.Truncate(logRow(st, l), inner, "…"))
 	}
-	footer := ""
+	for i := range rows {
+		if i < len(body) {
+			out = append(out, body[i])
+		} else {
+			out = append(out, "")
+		}
+	}
+	if seps > 1 {
+		out = append(out, sep)
+	}
+	return append(out, p.footer(st, run, inner))[:min(len(out)+1, height)]
+}
+
+// chips name the sources to filter by; the active one is in reverse video, in its color.
+func (p logPane) chips(st styles) string {
+	out := paint(st.muted, "source") + " "
+	for i, s := range logSources {
+		look := st.sourceStyle(s)
+		if i == 0 {
+			look = st.none
+		}
+		if i == p.source {
+			out += paint(look.Reverse(true), "["+s+"]")
+		} else {
+			out += paint(look, " "+s+" ")
+		}
+	}
+	return out
+}
+
+// footer tells where the logs stand at the left and how many lines are shown at the right.
+func (p logPane) footer(st styles, run RunView, inner int) string {
+	left := ""
 	if run.terminal {
-		footer = paint(st.muted, "ended · ") + resultCell(st, run.Result).styled
+		left = paint(st.muted, "ended · ") + resultCell(st, run.Result).styled
 	}
-	return append(out, ansi.Truncate(footer, inner, "…"))
+	right := paint(st.muted, fmt.Sprintf("%d of %d lines", len(p.shown), len(p.lines)))
+	gap := inner - lipgloss.Width(left) - lipgloss.Width(right)
+	return ansi.Truncate(left+strings.Repeat(" ", max(gap, 1))+right, inner, "…")
 }
 
 // logRow is a line as emit prints it: the source padded by its plain name, a muted │ and the

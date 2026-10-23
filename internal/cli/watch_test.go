@@ -837,3 +837,68 @@ func TestWatchLogsShouldFlushThePartialLineWhenTheRunEnds(t *testing.T) {
 		t.Fatalf("the flushed line is not read again:\n%s", view)
 	}
 }
+
+// sgrBefore is the parameters of the last SGR sequence before text in s, "" when text is not
+// preceded by one.
+func sgrBefore(s, text string) string {
+	i := strings.Index(s, text)
+	if i < 0 || !strings.HasSuffix(s[:i], "m") {
+		return ""
+	}
+	start := strings.LastIndex(s[:i], "\x1b[")
+	return s[start+2 : i-1]
+}
+
+func TestWatchLogsShouldFilterBySourceWithoutDroppingLines(t *testing.T) {
+	a, b := logRun(t, 1, "#11"), logRun(t, 2, "#12")
+	writeLog(t, a, "delamain", "12:00:01 state run=1 state=verify\n12:00:03 gate run=1 name=test exit=1\n")
+	writeLog(t, a, "checks", "12:00:02 ▶ test: go test ./...\n")
+	writeLog(t, a, "implementer", "12:00:04 ▶ prompt (900 caracteres)\n")
+	writeLog(t, b, "checks", "12:00:05 ▶ lint: make lint\n")
+	writeLog(t, b, "planner", "12:00:06 ▶ prompt (100 caracteres)\n")
+	m := startLogs(t, &fakeWatchSource{active: []RunView{a, b}}, 160, true)
+
+	view := screen(m)
+	if !has(view, "source [all] delamain checks planner implementer reviewer") {
+		t.Fatalf("the chips of every source are above the logs, all active:\n%s", view)
+	}
+	if !strings.Contains(view, "4 of 4 lines") {
+		t.Fatalf("the footer counts the lines shown of the lines read:\n%s", view)
+	}
+
+	m = send(t, m, keyPress("3"))
+	view = screen(m)
+	if !has(view, "source all delamain [checks] planner implementer reviewer") {
+		t.Fatalf("3 picks checks:\n%s", view)
+	}
+	if sgr := sgrBefore(m.View(), "[checks]"); !strings.Contains(sgr, "7") || !strings.Contains(sgr, "33") {
+		t.Fatalf("the active chip is in reverse video in the source color, got SGR %q", sgr)
+	}
+	if !strings.Contains(view, "checks      │ 12:00:02 ▶ test: go test ./...") || strings.Contains(view, "state=verify") || strings.Contains(view, "▶ prompt") {
+		t.Fatalf("only the checks lines are shown:\n%s", view)
+	}
+	if !strings.Contains(view, "1 of 4 lines") {
+		t.Fatalf("the filter only hides lines:\n%s", view)
+	}
+
+	view = screen(send(t, m, keyPress("j")))
+	if !has(view, "source all delamain [checks] planner implementer reviewer") || !strings.Contains(view, "▶ lint: make lint") || strings.Contains(view, "▶ prompt") {
+		t.Fatalf("the filter stays on for the next run:\n%s", view)
+	}
+
+	m = send(t, m, keyPress("1"))
+	view = screen(m)
+	for _, want := range []string{"state=verify", "▶ test: go test", "name=test exit=1", "▶ prompt (900 caracteres)", "4 of 4 lines"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("1 shows every line again, %q missing:\n%s", want, view)
+		}
+	}
+	if sgr := sgrBefore(m.View(), "[all]"); sgr != "7" {
+		t.Fatalf("the all chip is in reverse video with no color, got SGR %q", sgr)
+	}
+	for k, chip := range map[string]string{"2": "[delamain]", "4": "[planner]", "5": "[implementer]", "6": "[reviewer]"} {
+		if view := screen(send(t, m, keyPress(k))); !strings.Contains(view, chip) {
+			t.Fatalf("%s picks %s:\n%s", k, chip, view)
+		}
+	}
+}
