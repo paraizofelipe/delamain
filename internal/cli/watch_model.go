@@ -12,9 +12,10 @@ import (
 )
 
 var watchKeys = struct {
-	quit, up, down, first, last, source, pageUp, pageDown, follow, focus, zoom, details, back, expand, prevTab, nextTab key.Binding
+	quit, up, down, first, last, source, pageUp, pageDown, follow, focus, zoom, details, back, expand, prevTab, nextTab, stop key.Binding
 }{
 	quit:     key.NewBinding(key.WithKeys("q", "ctrl+c")),
+	stop:     key.NewBinding(key.WithKeys("s")),
 	details:  key.NewBinding(key.WithKeys("enter")),
 	expand:   key.NewBinding(key.WithKeys("e")),
 	prevTab:  key.NewBinding(key.WithKeys("left", "h")),
@@ -72,6 +73,9 @@ type watchModel struct {
 	fullStatus    bool // the full status takes the place of the strip and the logs
 	expanded      bool // the compact list shows the finished runs
 	tab           miniTab
+	dialog        watchDialog // over the screen: only its keys act
+	toast         watchToast  // on the first line of the footer
+	acting        bool        // a stop or a remove is running
 }
 
 // miniTab is the panel the mini layout shows.
@@ -136,6 +140,8 @@ func (m watchModel) update(msg tea.Msg) (watchModel, tea.Cmd) {
 			m.loading = true
 			return m, m.reload()
 		}
+	case watchActionMsg:
+		m = m.actionDone(msg)
 	case tea.KeyMsg:
 		return m.key(msg)
 	}
@@ -145,9 +151,17 @@ func (m watchModel) update(msg tea.Msg) (watchModel, tea.Cmd) {
 func (m watchModel) key(msg tea.KeyMsg) (watchModel, tea.Cmd) {
 	runs := m.runs()
 	idx := m.selectedIdx
+	if m.dialog.kind != dialogNone {
+		if msg.Type == tea.KeyCtrlC { // the way out, whatever is open
+			return m, tea.Quit
+		}
+		return m.dialogKey(msg)
+	}
 	switch {
 	case key.Matches(msg, watchKeys.quit):
 		return m, tea.Quit
+	case key.Matches(msg, watchKeys.stop):
+		return m.openStop(), nil
 	case key.Matches(msg, watchKeys.source):
 		m.logs.setFilter(int(msg.Runes[0] - '1'))
 		return m, nil
