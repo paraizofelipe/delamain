@@ -79,6 +79,7 @@ type watchModel struct {
 	tab           miniTab
 	dialog        watchDialog // over the screen: only its keys act
 	toast         watchToast  // on the first line of the footer
+	toasts        int         // toasts shown so far: the seq of the last one
 	acting        bool        // a stop or a remove is running
 }
 
@@ -94,6 +95,9 @@ const (
 func newWatchModel(src watchSource, st styles, opts watchOptions) watchModel {
 	if opts.now == nil {
 		opts.now = time.Now
+	}
+	if opts.after == nil {
+		opts.after = tea.Tick
 	}
 	return watchModel{src: src, st: st, opts: opts, loading: true, tab: tabLogs} // Init starts the first reload
 }
@@ -120,7 +124,6 @@ func (m watchModel) update(msg tea.Msg) (watchModel, tea.Cmd) {
 		m.width, m.height = msg.Width, msg.Height
 		m.layout = layoutFor(m.width, m.height)
 	case watchTickMsg:
-		m = m.expireToast()
 		if m.loading {
 			return m, m.tick()
 		}
@@ -146,9 +149,11 @@ func (m watchModel) update(msg tea.Msg) (watchModel, tea.Cmd) {
 			return m, m.reload()
 		}
 	case watchActionMsg:
-		m = m.actionDone(msg)
+		return m.actionDone(msg)
 	case watchQuickMsg:
-		m = m.result(watchActionMsg(msg))
+		return m.result(watchActionMsg(msg))
+	case watchToastMsg:
+		m = m.expireToast(msg.seq)
 	case tea.KeyMsg:
 		return m.key(msg)
 	}

@@ -82,11 +82,14 @@ func (f *fakeWatchActions) Copy(text string) error {
 // reads *now.
 func startActions(t *testing.T, src *fakeWatchSource, acts *fakeWatchActions, width, height int, now *time.Time) tea.Model {
 	t.Helper()
-	opts := watchOptions{limit: 20, interval: time.Millisecond, now: func() time.Time { return *now }, actions: acts}
+	opts := watchOptions{limit: 20, interval: time.Millisecond, now: func() time.Time { return *now }, actions: acts, after: noTimers}
 	m := tea.Model(newWatchModel(src, noColors(), opts))
 	m = send(t, m, tea.WindowSizeMsg{Width: width, Height: height})
 	return settle(t, m, m.Init())
 }
+
+// noTimers drops the toast timers: the toasts of those tests stay.
+func noTimers(time.Duration, func(time.Time) tea.Msg) tea.Cmd { return nil }
 
 // owned is an active run whose owner has pid and is alive or not.
 func owned(id int64, issue, title string, pid int, alive bool) RunView {
@@ -199,20 +202,57 @@ func footerText(m tea.Model) []string {
 	return out
 }
 
+// fakeTimers are the toast timers of a test: they fire when the test moves the clock past them.
+type fakeTimers struct {
+	now *time.Time
+	due []fakeTimer
+}
+
+type fakeTimer struct {
+	at time.Time
+	fn func(time.Time) tea.Msg
+}
+
+func (f *fakeTimers) after(d time.Duration, fn func(time.Time) tea.Msg) tea.Cmd {
+	f.due = append(f.due, fakeTimer{f.now.Add(d), fn})
+	return nil
+}
+
+// elapse moves the clock d ahead and delivers the timers that are due.
+func (f *fakeTimers) elapse(t *testing.T, m tea.Model, d time.Duration) tea.Model {
+	t.Helper()
+	*f.now = f.now.Add(d)
+	var left []fakeTimer
+	due := f.due
+	f.due = nil
+	for _, tm := range due {
+		if tm.at.After(*f.now) {
+			left = append(left, tm)
+			continue
+		}
+		m = send(t, m, tm.fn(*f.now))
+	}
+	f.due = append(left, f.due...)
+	return m
+}
+
 func TestWatchToastShouldDisappearAfter5Seconds(t *testing.T) {
 	now := watchNow
+	timers := &fakeTimers{now: &now}
 	src := &fakeWatchSource{active: []RunView{owned(14, "#55", "a", 51230, true)}}
 	acts := &fakeWatchActions{stopOut: "stop requested for run 14 (owner pid 51230)\n"}
-	m := startActions(t, src, acts, 160, 40, &now)
+	// No reload tick is delivered here: the toast goes on its own 5s, whatever --interval is.
+	opts := watchOptions{limit: 20, interval: time.Millisecond, now: func() time.Time { return now }, actions: acts, after: timers.after}
+	m := tea.Model(newWatchModel(src, noColors(), opts))
+	m = send(t, m, tea.WindowSizeMsg{Width: 160, Height: 40})
+	m = settle(t, m, m.Init())
 	keys := "↑↓ navigate  tab focus  1-6 source"
 
 	// The stop that runs keeps its toast as long as it runs.
 	m = send(t, m, keyPress("s"))
 	m, cmd := m.Update(keyPress("s"))
-	now = now.Add(time.Minute)
-	m = reload(t, m)
-	if got := footerText(m); got[0] != "stopping run 14…" {
-		t.Fatalf("the toast of a running stop stays: %q", got)
+	if m = timers.elapse(t, m, time.Minute); footerText(m)[0] != "stopping run 14…" {
+		t.Fatalf("the toast of a running stop stays: %q", footerText(m))
 	}
 	m = settle(t, m, cmd)
 	got := footerText(m)
@@ -220,8 +260,7 @@ func TestWatchToastShouldDisappearAfter5Seconds(t *testing.T) {
 		t.Fatalf("the toast takes the first footer line and pushes the keys down: %q", got)
 	}
 
-	now = now.Add(4 * time.Second)
-	if m = reload(t, m); footerText(m)[0] != "stop requested for run 14 (owner pid 51230)" {
+	if m = timers.elapse(t, m, 4*time.Second); footerText(m)[0] != "stop requested for run 14 (owner pid 51230)" {
 		t.Fatalf("the toast stays for 5s: %q", footerText(m))
 	}
 	// A new toast replaces the old one and has its own 5s.
@@ -230,14 +269,12 @@ func TestWatchToastShouldDisappearAfter5Seconds(t *testing.T) {
 	if got := footerText(m); got[0] != "run 14 already finished (recorded)" || !strings.HasPrefix(got[1], keys) {
 		t.Fatalf("a new toast replaces the old one: %q", got)
 	}
-	now = now.Add(2 * time.Second)
-	if m = reload(t, m); footerText(m)[0] != "run 14 already finished (recorded)" {
+	if m = timers.elapse(t, m, 2*time.Second); footerText(m)[0] != "run 14 already finished (recorded)" {
 		t.Fatalf("the new toast does not go with the old one's time: %q", footerText(m))
 	}
-	now = now.Add(3 * time.Second)
-	m = reload(t, m)
+	m = timers.elapse(t, m, 3*time.Second)
 	if got := footerText(m); len(got) != 1 || !strings.HasPrefix(got[0], keys) {
-		t.Fatalf("the toast is gone after 5s and the keys come back up: %q", got)
+		t.Fatalf("the toast is gone 5s after it showed, with no reload in between: %q", got)
 	}
 }
 

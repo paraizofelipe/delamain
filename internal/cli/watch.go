@@ -32,7 +32,8 @@ type watchOptions struct {
 	limit    int           // finished runs to show
 	interval time.Duration // between reloads
 	now      func() time.Time
-	actions  watchActions // what s, d, o and y do
+	actions  watchActions                                         // what s, d, o and y do
+	after    func(time.Duration, func(time.Time) tea.Msg) tea.Cmd // the toast timer: tea.Tick
 }
 
 func newWatchCmd(load func() (config.Config, error)) *cobra.Command {

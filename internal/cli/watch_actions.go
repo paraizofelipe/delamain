@@ -70,21 +70,28 @@ type watchDialog struct {
 const toastFor = 5 * time.Second
 
 // watchToast is the temporary message on the first line of the footer; one without a time stays
-// until another replaces it.
+// until another replaces it. seq tells it from the toasts before it.
 type watchToast struct {
 	text string
 	look lipgloss.Style
 	at   time.Time
+	seq  int
 }
 
-// newToast is a toast shown from now on for toastFor.
-func (m watchModel) newToast(look lipgloss.Style, text string) watchToast {
-	return watchToast{text: text, look: look, at: m.opts.now()}
+// watchToastMsg is the end of the time of toast seq.
+type watchToastMsg struct{ seq int }
+
+// showToast shows a toast from now on, and asks to drop it toastFor later.
+func (m watchModel) showToast(look lipgloss.Style, text string) (watchModel, tea.Cmd) {
+	m.toasts++
+	m.toast = watchToast{text: text, look: look, at: m.opts.now(), seq: m.toasts}
+	seq := m.toasts
+	return m, m.opts.after(toastFor, func(time.Time) tea.Msg { return watchToastMsg{seq} })
 }
 
-// expireToast drops the toast once its time is up; the reload ticks call it.
-func (m watchModel) expireToast() watchModel {
-	if !m.toast.at.IsZero() && m.opts.now().Sub(m.toast.at) >= toastFor {
+// expireToast drops the toast seq when its time is up; a newer toast has its own time.
+func (m watchModel) expireToast(seq int) watchModel {
+	if m.toast.seq == seq && !m.toast.at.IsZero() && m.opts.now().Sub(m.toast.at) >= toastFor {
 		m.toast = watchToast{}
 	}
 	return m
@@ -108,8 +115,7 @@ func (m watchModel) openPR() (watchModel, tea.Cmd) {
 	case !ok:
 		return m, nil
 	case v.PR == "":
-		m.toast = m.newToast(m.st.muted, fmt.Sprintf("run %d has no PR/MR", v.ID))
-		return m, nil
+		return m.showToast(m.st.muted, fmt.Sprintf("run %d has no PR/MR", v.ID))
 	}
 	acts, url := m.opts.actions, v.PR
 	return m, func() tea.Msg {
@@ -172,7 +178,8 @@ func (m watchModel) dialogKey(msg tea.KeyMsg) (watchModel, tea.Cmd) {
 		}
 		id, acts := m.dialog.run.ID, m.opts.actions
 		m.dialog, m.acting = watchDialog{}, true
-		m.toast = watchToast{text: fmt.Sprintf("stopping run %d…", id), look: m.st.warn}
+		m.toasts++
+		m.toast = watchToast{text: fmt.Sprintf("stopping run %d…", id), look: m.st.warn, seq: m.toasts}
 		return m, func() tea.Msg {
 			out, err := acts.Stop(context.Background(), id)
 			return watchActionMsg{out: out, err: err}
@@ -201,12 +208,12 @@ func (m watchModel) removeKey(msg tea.KeyMsg) (watchModel, tea.Cmd) {
 
 // actionDone shows how an action ended: what it printed in ok, or why it failed in bad. A
 // worktree rm refused for its changes keeps the dialog open, offering F.
-func (m watchModel) actionDone(msg watchActionMsg) watchModel {
+func (m watchModel) actionDone(msg watchActionMsg) (watchModel, tea.Cmd) {
 	m.acting = false
 	open := m.dialog.kind == dialogRemove && m.dialog.run.ID == msg.removed && msg.removed != 0
 	if open && errors.Is(msg.err, errDirtyWorktree) {
 		m.dialog.dirty = clean(msg.err.Error())
-		return m
+		return m, nil
 	}
 	if open {
 		m.dialog = watchDialog{}
@@ -215,10 +222,9 @@ func (m watchModel) actionDone(msg watchActionMsg) watchModel {
 }
 
 // result is the toast of how an action ended: what it printed in ok, or why it failed in bad.
-func (m watchModel) result(msg watchActionMsg) watchModel {
+func (m watchModel) result(msg watchActionMsg) (watchModel, tea.Cmd) {
 	if msg.err != nil {
-		m.toast = m.newToast(m.st.bad, clean(msg.err.Error()))
-		return m
+		return m.showToast(m.st.bad, clean(msg.err.Error()))
 	}
 	var lines []string // the columns of the lines of recover are lost on one line: so are their spaces
 	for _, l := range strings.Split(msg.out, "\n") {
@@ -226,8 +232,7 @@ func (m watchModel) result(msg watchActionMsg) watchModel {
 			lines = append(lines, l)
 		}
 	}
-	m.toast = m.newToast(m.st.ok, strings.Join(lines, " · "))
-	return m
+	return m.showToast(m.st.ok, strings.Join(lines, " · "))
 }
 
 // toastLines are the toast wrapped to the width of the screen, none without one.
