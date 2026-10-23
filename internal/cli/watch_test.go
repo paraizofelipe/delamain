@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -298,6 +299,14 @@ func keyPress(k string) tea.KeyMsg {
 		return tea.KeyMsg{Type: tea.KeyCtrlD}
 	case "tab":
 		return tea.KeyMsg{Type: tea.KeyTab}
+	case "enter":
+		return tea.KeyMsg{Type: tea.KeyEnter}
+	case "esc":
+		return tea.KeyMsg{Type: tea.KeyEsc}
+	case "left":
+		return tea.KeyMsg{Type: tea.KeyLeft}
+	case "right":
+		return tea.KeyMsg{Type: tea.KeyRight}
 	}
 	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(k)}
 }
@@ -571,8 +580,9 @@ func TestWatchShouldNeverRenderWiderOrTallerThanTheWindow(t *testing.T) {
 	for i := range 300 {
 		writeLog(t, logs, []string{"delamain", "checks", "implementer"}[i%3], fmt.Sprintf("12:%02d:%02d %s\n", i/60, i%60, strings.Repeat("a very long log line that never fits ", 10)))
 	}
-	for _, width := range []int{80, 81, 99, 120, 137, 160, 179, 200} {
-		for _, height := range []int{6, 15, 24, 40, 60} {
+	for _, width := range []int{30, 40, 56, 70, 80, 84, 99, 120, 139, 160, 179, 200} {
+		for _, height := range []int{6, 10, 12, 15, 18, 20, 24, 26, 32, 40, 50} {
+			layout := layoutFor(width, height)
 			src := crowded()
 			for _, vs := range [][]RunView{src.active, src.done} {
 				for i := range vs {
@@ -581,7 +591,7 @@ func TestWatchShouldNeverRenderWiderOrTallerThanTheWindow(t *testing.T) {
 			}
 			m := tea.Model(newWatchModel(src, lineStyles(termenv.ANSI), watchOptions{limit: 20, interval: time.Millisecond, now: func() time.Time { return watchNow }}))
 			m = reload(t, settle(t, send(t, m, tea.WindowSizeMsg{Width: width, Height: height}), m.Init()))
-			if height >= 15 && !strings.Contains(stripANSI(m.View()), "implementer │") {
+			if layout != layoutTooSmall && !strings.Contains(panelText(stripANSI(m.View()), "logs · run 1 "), "fits") { // the end of a log line
 				t.Fatalf("%dx%d: the logs are shown:\n%s", width, height, stripANSI(m.View()))
 			}
 			for _, k := range []string{"", "G", "k"} {
@@ -597,7 +607,7 @@ func TestWatchShouldNeverRenderWiderOrTallerThanTheWindow(t *testing.T) {
 						t.Fatalf("%dx%d after %q: line %d is %d wide:\n%s", width, height, k, i, w, stripANSI(l))
 					}
 				}
-				if height >= 15 && !strings.Contains(m.View(), "▸") {
+				if layout != layoutMini && layout != layoutTooSmall && !strings.Contains(m.View(), "▸") {
 					t.Fatalf("%dx%d after %q: the selected run stays visible:\n%s", width, height, k, stripANSI(m.View()))
 				}
 			}
@@ -624,9 +634,440 @@ func TestWatchShouldNeverRenderWiderOrTallerThanTheWindow(t *testing.T) {
 	}
 }
 
+// resize delivers a new window size.
+func resize(t *testing.T, m tea.Model, width, height int) tea.Model {
+	t.Helper()
+	return send(t, m, tea.WindowSizeMsg{Width: width, Height: height})
+}
+
+// fits fails the test when a line of view is wider than width or view is taller than height.
+func fits(t *testing.T, view string, width, height int) {
+	t.Helper()
+	lines := strings.Split(view, "\n")
+	if len(lines) > height {
+		t.Fatalf("%dx%d: %d lines:\n%s", width, height, len(lines), stripANSI(view))
+	}
+	for i, l := range lines {
+		if w := lipgloss.Width(l); w > width {
+			t.Fatalf("%dx%d: line %d is %d wide:\n%s", width, height, i, w, stripANSI(view))
+		}
+	}
+}
+
+func TestWatchShouldShowTooSmallBelow40x12(t *testing.T) {
+	m := startWatch(t, crowded(), 160)
+	for _, size := range [][2]int{{39, 12}, {40, 11}, {30, 10}, {12, 3}} {
+		m = resize(t, m, size[0], size[1])
+		view := screen(m)
+		fits(t, m.View(), size[0], size[1])
+		want := fmt.Sprintf("terminal too small: %d×%d (minimum 40×12)", size[0], size[1])
+		if got := strings.Join(strings.Fields(view), " "); got != want && size[0] >= 30 {
+			t.Fatalf("%dx%d shows only %q, got:\n%s", size[0], size[1], want, view)
+		}
+		if strings.Contains(view, "╭") || strings.Contains(view, "#") {
+			t.Fatalf("%dx%d draws no panel:\n%s", size[0], size[1], view)
+		}
+	}
+	m = resize(t, m, 60, 11)
+	lines := strings.Split(screen(m), "\n")
+	for i, l := range lines {
+		if text := strings.TrimSpace(l); (i == 5) != (text != "") {
+			t.Fatalf("the message is alone on the middle line of 11:\n%s", strings.Join(lines, "\n"))
+		}
+	}
+	if left, right := len(lines[5])-len(strings.TrimLeft(lines[5], " ")), 60-lipgloss.Width(strings.TrimRight(lines[5], " ")); left != right && left != right-1 {
+		t.Fatalf("the message is centered: %d columns left, %d right: %q", left, right, lines[5])
+	}
+	if _, cmd := m.Update(keyPress("q")); cmd == nil || cmd() != tea.Quit() {
+		t.Fatal("q still quits")
+	}
+	if view := screen(resize(t, m, 80, 27)); !strings.Contains(view, "╭ runs") {
+		t.Fatalf("growing the window brings the panels back:\n%s", view)
+	}
+}
+
+// panelRows are the rows inside the panel titled title of a screen without colors, nil without it.
+func panelRows(view, title string) []string {
+	lines := strings.Split(view, "\n")
+	for i, l := range lines {
+		at := strings.Index(l, "╭ "+title)
+		if at < 0 {
+			continue
+		}
+		col := lipgloss.Width(l[:at])
+		end := col + lipgloss.Width(l[at:at+strings.Index(l[at:], "╮")])
+		var out []string
+		for _, row := range lines[i+1:] {
+			if lipgloss.Width(row) <= end || ansi.Cut(row, col, col+1) == "╰" {
+				break
+			}
+			out = append(out, ansi.Cut(row, col+2, end-1))
+		}
+		return out
+	}
+	return nil
+}
+
+// panelText is the inside of the panel titled title, one trimmed line per row; "" without it.
+func panelText(view, title string) string {
+	rows := panelRows(view, title)
+	for i, r := range rows {
+		rows[i] = strings.TrimSpace(r)
+	}
+	return strings.Join(rows, "\n")
+}
+
+// words is s with its spaces and line breaks collapsed.
+func words(s string) string { return strings.Join(strings.Fields(s), " ") }
+
+func TestWatchCompactShouldStackTheListTheStatusStripAndTheLogs(t *testing.T) {
+	v := logRun(t, 14, "#55")
+	v.Title = "artifacts: accept test_file"
+	writeLog(t, v, "implementer", "12:46:58 💬 adjusted the fixture\n")
+	src := &fakeWatchSource{
+		active: []RunView{v, active(15, "#54", "plan", "", "tui: delamain watch")},
+		done:   []RunView{finished(12, "#49", "approved: merged", "logs: colors")},
+		today:  budget.Status{Mode: config.BudgetTokens, Day: 1_400_000, Daily: 4_000_000},
+		daemon: true,
+	}
+	m := startLogs(t, src, 80, false)
+	view := screen(m)
+	lines := strings.Split(view, "\n")
+	if head := lines[0]; !strings.HasPrefix(head, "delamain ● ") || !strings.HasSuffix(head, "2 active · 1 fin.  1.4M/4M") || lipgloss.Width(head) != 80 {
+		t.Errorf("compact header = %q", head)
+	}
+	at := 0
+	for _, title := range []string{"╭ runs ", "╭ status · enter details ", "╭ logs · run 14 · ● following "} {
+		i := at
+		for i < len(lines) && !strings.HasPrefix(lines[i], title) {
+			i++
+		}
+		if i == len(lines) || lipgloss.Width(lines[i]) != 80 {
+			t.Fatalf("the panels are stacked on the whole width, %q after line %d:\n%s", title, at, view)
+		}
+		at = i
+	}
+	if strings.Contains(view, "TITLE") || strings.Contains(view, "CPLX") {
+		t.Errorf("the compact list has no column header:\n%s", view)
+	}
+	for _, row := range []string{"▸ 14 #55 implement artifacts: accept test_file", "15 #54 plan tui: delamain watch"} {
+		if !has(view, row) {
+			t.Errorf("the list shows RUN ISSUE STATE TITLE, want %q:\n%s", row, view)
+		}
+	}
+	if !has(view, "[all] delm chec plan impl revi") {
+		t.Errorf("the chips are cut to 4 letters:\n%s", view)
+	}
+	if !has(view, "following · G 1/1 · 100%") {
+		t.Errorf("the logs footer is short:\n%s", view)
+	}
+	if !strings.HasPrefix(lines[len(lines)-2], "╰") || !strings.Contains(panelText(view, "logs · run 14"), "following · G") {
+		t.Errorf("the logs take the rest of the height, down to the footer:\n%s", view)
+	}
+
+	m = send(t, m, keyPress("3"))
+	if view := screen(m); !has(view, "all delm [chec] plan impl revi") {
+		t.Errorf("3 picks checks:\n%s", view)
+	}
+}
+
+// statusRun has every field of the status, with a title longer than any small layout.
+func statusRun() RunView {
+	v := active(14, "#55", "implement", "low", "artifacts: accept test_file and format_check in .delamain.yaml so that every gate reads them")
+	v.Harness, v.Branch, v.Base = "claude", "fix/55-artifacts-accept-test-file-and-format-check", "main"
+	v.Owner = Process{PID: 51230, Alive: true}
+	v.PR = "https://github.com/paraizofelipe/delamain/pull/61"
+	ended := watchNow.Add(-time.Hour + 131*time.Second)
+	v.Agents = []AgentView{
+		{Role: "planner", State: "done", StartedAt: watchNow.Add(-time.Hour), EndedAt: &ended, Tokens: 41_000, CostUSD: 0.38},
+		{Role: "implementer", State: "running", StartedAt: watchNow.Add(-402 * time.Second), Tokens: 141_000, CostUSD: 1.56},
+	}
+	return v
+}
+
+func TestWatchShouldNotLoseStatusFieldsInSmallLayouts(t *testing.T) {
+	run := statusRun()
+	done := finished(12, "#49", "approved: merged", "logs: colors")
+	src := &fakeWatchSource{
+		active: []RunView{run},
+		done:   []RunView{done},
+		status: map[int64]RunStatus{
+			14: {Run: run, Budget: BudgetView{Tokens: 182_000, CostUSD: 1.94, Summary: "182K de 4M tokens · US$ 1.94"}},
+			12: {Run: done, Budget: BudgetView{Tokens: 9_000, CostUSD: 0.12}},
+		},
+	}
+	m := resize(t, startWatch(t, src, 160), 80, 27)
+	strip := panelText(screen(m), "status · enter details")
+	if n := len(strings.Split(strip, "\n")); n < 4 {
+		t.Errorf("the strip wraps its 3 lines instead of cutting them, %d lines:\n%s", n, strip)
+	}
+	for _, want := range []string{
+		"run 14 #55 artifacts: accept test_file and format_check in .delamain.yaml so that every gate reads them",
+		"implement · iter 1/3 · low · pid 51230 (alive)",
+		"182K tokens · US$ 1.94 · implementer 6m42s · paraizofelipe/delamain/pull/61",
+	} {
+		if !strings.Contains(words(strip), want) {
+			t.Errorf("the compact strip misses %q:\n%s", want, strip)
+		}
+	}
+	if strings.Contains(strip, "…") {
+		t.Errorf("the strip cuts nothing:\n%s", strip)
+	}
+
+	next, _ := m.Update(keyPress("j")) // the reload of its status has not ended
+	if strip := words(panelText(screen(next), "status · enter details")); !strings.Contains(strip, "- tokens · US$ - · approved: merged") || strings.Contains(strip, "pull") {
+		t.Errorf("an ended run without its status read shows - and its result:\n%s", strip)
+	}
+	if strip := words(panelText(screen(send(t, m, keyPress("j"))), "status · enter details")); !strings.Contains(strip, "9K tokens · US$ 0.12 · approved: merged") {
+		t.Errorf("then its spend:\n%s", strip)
+	}
+
+	mini := send(t, resize(t, m, 69, 60), keyPress("left"))
+	full := panelText(screen(mini), "status · run 14 ")
+	for _, want := range []string{
+		"RUN 14 · #55 artifacts: accept test_file and format_check in .delamain.yaml so that every gate reads them",
+		"STATE implement", "INTERACTIONS 1/3", "COMPLEXITY low", "OWNER pid 51230 (alive)",
+		"BUDGET 182K de 4M tokens · US$ 1.94", "PR/MR https://github.com/paraizofelipe/delamain/pull/61",
+	} {
+		if !strings.Contains(nospace(full), nospace(want)) {
+			t.Errorf("the mini status tab misses %q:\n%s", want, full)
+		}
+	}
+	small := panelText(screen(resize(t, mini, 40, 12)), "status · run 14 ")
+	if strings.Contains(full, "…") || strings.Contains(small, "…") || !strings.HasPrefix(words(small), "RUN 14 · #55 artifacts: accept") {
+		t.Errorf("the mini status tab wraps its fields:\n%s\n%s", full, small)
+	}
+}
+
+// numberedWords is n words "w001 w002 …", 5 columns each.
+func numberedWords(n int) string {
+	ws := make([]string, n)
+	for i := range ws {
+		ws[i] = fmt.Sprintf("w%03d", i+1)
+	}
+	return strings.Join(ws, " ")
+}
+
+// wrapped is the text of the log row starting with prefix and of the rows after it that start
+// with indent spaces then text: the continuations of a wrapped line, joined without spaces.
+func wrapped(t *testing.T, rows []string, prefix string, indent int) (text string, n int) {
+	t.Helper()
+	for i, r := range rows {
+		if !strings.HasPrefix(r, prefix) {
+			continue
+		}
+		text, n = r[len(prefix):], 1
+		for _, c := range rows[i+1:] {
+			if !strings.HasPrefix(c, strings.Repeat(" ", indent)) || strings.HasPrefix(c, strings.Repeat(" ", indent+1)) {
+				break
+			}
+			text, n = text+c[indent:], n+1
+		}
+		return strings.ReplaceAll(text, " ", ""), n
+	}
+	t.Fatalf("no log row starts with %q:\n%s", prefix, strings.Join(rows, "\n"))
+	return "", 0
+}
+
+func TestWatchShouldWrapLogLinesInCompactAndMini(t *testing.T) {
+	v := logRun(t, 14, "#55")
+	long := numberedWords(40) // 200 columns
+	writeLog(t, v, "implementer", "12:46:58 💬 "+long+"\n12:46:59 ✗ failed "+long+"\n")
+	writeLog(t, v, "checks", "--- FAIL: TestGates "+long+"\n")
+	m := startLogs(t, &fakeWatchSource{active: []RunView{v}}, 80, true)
+	rows := panelRows(screen(m), "logs · run 14")
+
+	text, n := wrapped(t, rows, "implementer │ 12:46:58 ", 23)
+	if want := strings.ReplaceAll("💬 "+long, " ", ""); text != want || n < 4 {
+		t.Errorf("the 200 columns line is whole on %d rows, its continuations under its text:\n%s", n, strings.Join(rows, "\n"))
+	}
+	text, n = wrapped(t, rows, "checks      │ ", 14)
+	if want := strings.ReplaceAll("--- FAIL: TestGates "+long, " ", ""); text != want || n < 4 {
+		t.Errorf("a line without a time wraps right after │, on %d rows:\n%s", n, strings.Join(rows, "\n"))
+	}
+	if strings.Contains(strings.Join(rows, "\n"), "…") {
+		t.Errorf("no log line is cut:\n%s", strings.Join(rows, "\n"))
+	}
+	if !strings.Contains(rows[len(rows)-1], "3/3 · 100%") {
+		t.Errorf("the footer counts lines, not rows: %q", rows[len(rows)-1])
+	}
+	mini := screen(resize(t, m, 69, 40))
+	if !has(mini, "[all] D C P I R") {
+		t.Errorf("the mini chips are letters:\n%s", mini)
+	}
+	rows = panelRows(mini, "logs · run 14")
+	text, n = wrapped(t, rows, "I │ 12:46 ", 10)
+	if want := strings.ReplaceAll("💬 "+long, " ", ""); text != want || n < 4 {
+		t.Errorf("in mini the source is a letter and the time HH:MM, the line whole on %d rows:\n%s", n, strings.Join(rows, "\n"))
+	}
+	text, _ = wrapped(t, rows, "C │ ", 4)
+	if want := strings.ReplaceAll("--- FAIL: TestGates "+long, " ", ""); text != want {
+		t.Errorf("a mini line without a time wraps right after │:\n%s", strings.Join(rows, "\n"))
+	}
+	if sgr := sgrBefore(line(resize(t, m, 56, 20).View(), "12:46"), "I"); !strings.Contains(sgr, "36") {
+		t.Errorf("the letter is in the color of its source, SGR %q", sgr)
+	}
+
+	// The ✗ line is red: so are its continuations, and the color stops before the border.
+	for _, w := range []string{"w001", "w020", "w040"} {
+		row := ""
+		for _, l := range strings.Split(m.View(), "\n") {
+			if strings.Contains(l, w) && strings.Contains(l, "\x1b[31m") {
+				row = l
+			}
+		}
+		at := strings.Index(row, w)
+		if seqs := sgr.FindAllString(row[:max(at, 0)], -1); at < 0 || len(seqs) == 0 || !strings.Contains(seqs[len(seqs)-1], "31") {
+			t.Errorf("%s of the ✗ line keeps its red:\n%q", w, row)
+			continue
+		}
+		if !strings.Contains(row[at:strings.LastIndex(row, "│")], "\x1b[0m") {
+			t.Errorf("the red of %s stops before the border:\n%q", w, row)
+		}
+	}
+}
+
+func TestWatchLogsShouldWrapOnlyTheLinesThatFitOnScreen(t *testing.T) {
+	v := logRun(t, 14, "#55")
+	m := startLogs(t, &fakeWatchSource{active: []RunView{v}}, 80, false)
+	for r := range 4 { // 1000 lines of 4 KiB, 250 a reload
+		var b strings.Builder
+		for i := range 250 {
+			fmt.Fprintf(&b, "12:00:00 %s END-%04d\n", strings.Repeat("word ", 800), r*250+i)
+		}
+		writeLog(t, v, "implementer", b.String())
+		m = reload(t, m)
+	}
+	var view string
+	if n := allocated(func() { view = m.View() }); n > mib {
+		t.Fatalf("a frame of 1000 lines of 4 KiB allocated %d KiB: every line is wrapped", n>>10)
+	}
+	if !strings.Contains(stripANSI(view), "END-0999") || !strings.Contains(stripANSI(view), "1000/1000 · 100%") {
+		t.Fatalf("the end of the last line is on screen:\n%s", stripANSI(view))
+	}
+	m = send(t, send(t, m, keyPress("tab")), keyPress("g"))
+	if n := allocated(func() { view = m.View() }); n > mib {
+		t.Fatalf("a paused frame allocated %d KiB: every line is wrapped", n>>10)
+	}
+	if !strings.Contains(stripANSI(view), "implementer │ 12:00:00 word word") || strings.Contains(stripANSI(view), "END-0000") {
+		t.Fatalf("paused at the top, the first line starts the panel:\n%s", stripANSI(view))
+	}
+}
+
+// nospace is s without spaces: a wrapped text, joined, equals it whatever the breaks.
+func nospace(s string) string { return strings.Join(strings.Fields(s), "") }
+
+func TestWatchShouldOpenTheFullStatusWithEnterAndCloseWithEsc(t *testing.T) {
+	v := statusRun()
+	v.RunDir = logRun(t, 14, "#55").RunDir
+	writeLog(t, v, "implementer", "12:46:58 💬 adjusted the fixture\n")
+	src := &fakeWatchSource{active: []RunView{v}, status: map[int64]RunStatus{14: {Run: v, Budget: BudgetView{Summary: "182K de 4M tokens · US$ 1.94"}}}}
+	m := resize(t, startLogs(t, src, 160, false), 80, 27)
+	logs := screen(m)
+	if view := screen(send(t, m, keyPress("esc"))); view != logs {
+		t.Fatalf("esc without the full status does nothing:\n%s", view)
+	}
+
+	m = send(t, m, keyPress("enter"))
+	view := screen(m)
+	if strings.Contains(view, "╭ logs") || strings.Contains(view, "╭ status · enter details") || !strings.Contains(view, "╭ runs") {
+		t.Fatalf("enter puts the full status where the logs and the strip were, under the list:\n%s", view)
+	}
+	full := panelText(view, "status · run 14 ")
+	for _, want := range []string{
+		"RUN 14 · #55 artifacts: accept test_file and format_check in .delamain.yaml so that every gate reads them",
+		"HARNESS claude", "STATE implement", "INTERACTIONS 1/3", "COMPLEXITY low",
+		"BRANCH fix/55-artifacts-accept-test-file-and-format-check (base main)", "OWNER pid 51230 (alive)",
+		"BUDGET 182K de 4M tokens · US$ 1.94", "PR/MR https://github.com/paraizofelipe/delamain/pull/61",
+		"planner done 2m11s 41K · 0.38", "implementer running 6m42s 141K · 1.56",
+	} {
+		if !strings.Contains(nospace(full), nospace(want)) {
+			t.Errorf("the full status misses %q:\n%s", want, full)
+		}
+	}
+	if strings.Contains(full, "…") {
+		t.Errorf("the fields of the full status wrap instead of being cut:\n%s", full)
+	}
+
+	for _, keys := range [][]string{{"esc"}, {"enter"}} {
+		back := m
+		for _, k := range keys {
+			back = send(t, back, keyPress(k))
+		}
+		if view := screen(back); view != logs {
+			t.Errorf("%s goes back to the logs:\n%s", keys, view)
+		}
+	}
+
+	wide := startLogs(t, src, 160, false)
+	if screen(send(t, wide, keyPress("enter"))) != screen(wide) {
+		t.Errorf("the wide layout shows the full status already: enter does nothing")
+	}
+}
+
+func TestWatchCompactShouldFoldFinishedRunsAndExpandWithE(t *testing.T) {
+	src := &fakeWatchSource{
+		active: []RunView{active(14, "#55", "implement", "low", "artifacts"), active(15, "#54", "plan", "", "tui")},
+		done:   []RunView{finished(12, "#49", "approved: merged", "logs: colors"), finished(11, "#48", "halted: budget", "daemon"), finished(9, "#43", "approved: ok", "lock")},
+	}
+	start := func() tea.Model {
+		m := tea.Model(newWatchModel(src, lineStyles(termenv.ANSI), watchOptions{limit: 20, interval: time.Millisecond, now: func() time.Time { return watchNow }}))
+		return settle(t, resize(t, m, 80, 27), m.Init())
+	}
+	folded := func(name string, m tea.Model) {
+		t.Helper()
+		view := screen(m)
+		if !has(view, "FINISHED · 3 · e expands") || strings.Contains(view, "#49") || strings.Contains(view, "#43") {
+			t.Fatalf("%s: the finished runs are folded in one line:\n%s", name, view)
+		}
+	}
+	expanded := func(name string, m tea.Model) {
+		t.Helper()
+		view := screen(m)
+		if !has(view, "FINISHED · 3") || strings.Contains(view, "e expands") {
+			t.Fatalf("%s: the finished runs are listed:\n%s", name, view)
+		}
+		for _, row := range []string{"12 #49 approved logs: colors", "11 #48 halted daemon", "9 #43 approved lock"} {
+			if !strings.Contains(words(view), row) {
+				t.Fatalf("%s: %q is listed:\n%s", name, row, view)
+			}
+		}
+	}
+
+	m := start()
+	folded("start", m)
+	if sgr := sgrBefore(line(m.View(), "FINISHED"), "e\x1b[0m"); !strings.Contains(sgr, "1") || !strings.Contains(sgr, "36") {
+		t.Errorf("the e of e expands is in info bold, SGR %q", sgr)
+	}
+	m = send(t, m, keyPress("e"))
+	expanded("e", m)
+	m = send(t, m, keyPress("e"))
+	folded("e again", m)
+
+	for _, keys := range [][]string{{"j", "j"}, {"G"}, {"end"}} {
+		m := start()
+		for _, k := range keys {
+			m = send(t, m, keyPress(k))
+		}
+		expanded(fmt.Sprint(keys), m)
+		if row := line(screen(m), "▸"); !strings.Contains(row, "#4") {
+			t.Fatalf("%s: the finished run selected is on screen: %q", keys, row)
+		}
+	}
+
+	wide := startWatch(t, src, 160)
+	if view := screen(send(t, wide, keyPress("e"))); view != screen(wide) || !strings.Contains(view, "#49") {
+		t.Errorf("only the compact layout folds:\n%s", view)
+	}
+	src.done = nil
+	if view := screen(start()); strings.Contains(view, "FINISHED") {
+		t.Errorf("without finished runs there is no FINISHED line:\n%s", view)
+	}
+}
+
 func TestWatchShouldSplitTheWideLayoutFortyPercentLeft(t *testing.T) {
 	src := crowded()
-	for width, left := range map[int]int{80: 56, 160: 64, 200: 72} {
+	for width, left := range map[int]int{140: 56, 160: 64, 200: 72} {
 		lines := strings.Split(screen(startWatch(t, src, width)), "\n")
 		runs := lines[1]
 		if !strings.HasPrefix(runs, "╭ runs ") || lipgloss.Width(runs[:strings.Index(runs, "╮")+len("╮")]) != left {
@@ -644,6 +1085,244 @@ func TestWatchShouldSplitTheWideLayoutFortyPercentLeft(t *testing.T) {
 	}
 }
 
+func TestWatchShouldSplitTheMediumLayoutThirtyEightPercentLeft(t *testing.T) {
+	v := statusRun()
+	v.RunDir = logRun(t, 14, "#55").RunDir
+	writeLog(t, v, "implementer", "12:46:58 💬 "+numberedWords(40)+"\n")
+	src := &fakeWatchSource{
+		active: []RunView{v},
+		done:   []RunView{finished(12, "#49", "approved: merged", "logs: colors")},
+		status: map[int64]RunStatus{14: {Run: v, Budget: BudgetView{Tokens: 182_000, CostUSD: 1.94, Summary: "182K de 4M tokens · US$ 1.94"}}},
+		today:  budget.Status{Mode: config.BudgetTokens, Day: 1_400_000, Daily: 4_000_000, DayUsage: store.Usage{CostUSD: 21.37}},
+		daemon: true,
+	}
+	for width, left := range map[int]int{100: 38, 120: 45, 139: 48} {
+		m := resize(t, startLogs(t, src, 160, false), width, 30)
+		view := screen(m)
+		lines := strings.Split(view, "\n")
+		if head := lines[0]; !strings.HasPrefix(head, "delamain  daemon ● ") || !strings.HasSuffix(head, "1 active · 1 finished  1.4M/4M · US$ 21.37") || lipgloss.Width(head) != width {
+			t.Errorf("width %d: medium header = %q", width, head)
+		}
+		runs := lines[1]
+		if !strings.HasPrefix(runs, "╭ runs ") || lipgloss.Width(runs[:strings.Index(runs, "╮")+len("╮")]) != left {
+			t.Errorf("width %d: the runs panel is %d columns wide: %q", width, left, runs)
+		}
+		if right := runs[strings.Index(runs, "╮")+len("╮"):]; !strings.HasPrefix(right, "╭ status · enter details ") {
+			t.Errorf("width %d: the status strip is on top at the right: %q", width, runs)
+		}
+		if !strings.HasPrefix(lines[len(lines)-2], "╰") || !strings.Contains(lines[len(lines)-2], "╯╰") {
+			t.Errorf("width %d: the list takes the whole left column, the logs the rest of the right:\n%s", width, view)
+		}
+		if !has(view, "RUN ISSUE STATE TITLE") || strings.Contains(view, "CPLX") || !strings.Contains(words(view), "▸ 14 #55 implement artifacts") {
+			t.Errorf("width %d: the list has RUN ISSUE STATE TITLE:\n%s", width, view)
+		}
+		strip := words(panelText(view, "status · enter details"))
+		for _, want := range []string{"implement · iter 1/3 · low · pid 51230 (alive)", "182K tokens · US$ 1.94 · implementer 6m42s"} {
+			if !strings.Contains(strip, want) {
+				t.Errorf("width %d: the strip misses %q:\n%s", width, want, strip)
+			}
+		}
+		logs := panelText(view, "logs · run 14")
+		if !strings.Contains(logs, "implementer │ 12:46:58 💬 w001") || !strings.Contains(logs, "…") || strings.Contains(logs, "w040") {
+			t.Errorf("width %d: the log lines are cut with …:\n%s", width, logs)
+		}
+
+		m = send(t, m, keyPress("enter"))
+		view = screen(m)
+		if strings.Contains(view, "╭ logs") || !strings.Contains(lines[1], "╭ runs ") || !strings.Contains(strings.Split(view, "\n")[1], "╮╭ status · run 14 ") {
+			t.Errorf("width %d: enter puts the full status on the right:\n%s", width, view)
+		}
+		if full := panelText(view, "status · run 14 "); !strings.Contains(nospace(full), nospace("BRANCH fix/55-artifacts-accept-test-file-and-format-check (base main)")) || strings.Contains(full, "…") {
+			t.Errorf("width %d: the fields of the full status wrap:\n%s", width, full)
+		}
+		if view := screen(send(t, m, keyPress("esc"))); !strings.Contains(view, "╭ logs · run 14") {
+			t.Errorf("width %d: esc brings the logs back:\n%s", width, view)
+		}
+	}
+}
+
+func TestWatchMiniShouldSwitchTabsWithArrows(t *testing.T) {
+	v := logRun(t, 14, "#55")
+	v.Title = "artifacts"
+	numbered(t, v, 1, 30)
+	other := logRun(t, 15, "#54")
+	other.State, other.Title = "plan", "tui"
+	writeLog(t, other, "planner", "12:50:00 ▶ prompt of run 15\n")
+	src := &fakeWatchSource{
+		active: []RunView{v, other},
+		done:   []RunView{finished(12, "#49", "approved: merged", "logs: colors")},
+		today:  budget.Status{Mode: config.BudgetTokens, Day: 1_400_000, Daily: 4_000_000},
+	}
+	m := resize(t, startLogs(t, src, 160, true), 56, 20)
+	tab := func(name, want, panel string) {
+		t.Helper()
+		view := screen(m)
+		lines := strings.Split(view, "\n")
+		if got := words(lines[1]); got != want+" ←→" {
+			t.Fatalf("%s: tabs %q, want %q", name, got, want)
+		}
+		if !strings.HasPrefix(lines[2], "╭ "+panel) || strings.Count(view, "╭") != 1 {
+			t.Fatalf("%s: one panel, %q:\n%s", name, panel, view)
+		}
+	}
+	tab("start", "runs status [logs]", "logs · run 14 ")
+	if head := strings.Split(screen(m), "\n")[0]; !strings.HasPrefix(head, "delamain ") || !strings.HasSuffix(head, "2▶ 1■  1.4M/4M") || lipgloss.Width(head) != 56 {
+		t.Errorf("mini header = %q", head)
+	}
+	if sgr := sgrBefore(line(m.View(), "←→"), "[logs]"); !strings.Contains(sgr, "7") {
+		t.Errorf("the active tab is in reverse video, SGR %q", sgr)
+	}
+	for _, k := range []string{"right", "l"} {
+		m = send(t, m, keyPress(k))
+		tab(k+" on the last tab", "runs status [logs]", "logs · run 14 ")
+	}
+	m = send(t, m, keyPress("left"))
+	tab("left", "runs [status] logs", "status · run 14 ")
+	if !has(screen(m), "STATE implement") {
+		t.Errorf("the status tab shows the full status:\n%s", screen(m))
+	}
+	m = send(t, m, keyPress("h"))
+	tab("h", "[runs] status logs", "runs ")
+	view := screen(m)
+	for _, row := range []string{"RUN STATE TITLE", "ACTIVE · 2", "▸ 14 implement artifacts", "15 plan tui", "FINISHED · 1", "12 approved logs: colors"} {
+		if !strings.Contains(words(view), row) {
+			t.Errorf("the runs tab lists %q:\n%s", row, view)
+		}
+	}
+	m = send(t, m, keyPress("left"))
+	tab("left on the first tab", "[runs] status logs", "runs ")
+
+	m = send(t, m, keyPress("down"))
+	if row := line(screen(m), "▸"); !strings.Contains(row, "15 ") {
+		t.Fatalf("↓ moves the selection on the runs tab: %q", row)
+	}
+	m = send(t, m, keyPress("l"))
+	tab("l", "runs [status] logs", "status · run 15 ")
+	m = send(t, m, keyPress("up"))
+	tab("↑ on the status tab", "runs [status] logs", "status · run 14 ")
+	m = send(t, send(t, m, keyPress("down")), keyPress("right"))
+	tab("↓ then right", "runs status [logs]", "logs · run 15 ")
+	if !strings.Contains(screen(m), "P │ 12:50 ▶ prompt of run 15") {
+		t.Errorf("the logs follow the selection:\n%s", screen(m))
+	}
+
+	m = send(t, m, keyPress("up"))
+	tab("↑ on the logs tab without the focus", "runs status [logs]", "logs · run 14 ")
+	m = send(t, send(t, m, keyPress("tab")), keyPress("up"))
+	tab("↑ with the logs focused", "runs status [logs]", "logs · run 14 · paused ")
+	m = send(t, m, keyPress("left"))
+	m = send(t, m, keyPress("down"))
+	tab("↓ on the status tab with the logs focused", "runs [status] logs", "status · run 15 ")
+
+	compact := resize(t, m, 80, 27)
+	for _, k := range []string{"left", "right", "h", "l"} {
+		if screen(send(t, compact, keyPress(k))) != screen(compact) {
+			t.Errorf("%s does nothing out of mini", k)
+		}
+	}
+}
+
+func TestWatchShouldWrapTheFooterInsteadOfCuttingKeys(t *testing.T) {
+	for _, c := range []struct {
+		width, height int
+		want          string
+	}{
+		{140, 32, "↑↓ navigate  tab focus  1-6 source  f follow  z full screen  q quit"},
+		{100, 24, "↑↓ navigate  enter status  1-6 source  z full screen  q quit"},
+		{70, 18, "↑↓ run  e finished  enter status  z logs  q quit"},
+		{40, 12, "←→ tab  ↑↓ run  q quit"},
+	} {
+		m := resize(t, startWatch(t, crowded(), 160), c.width, c.height)
+		if got := strings.TrimSpace(footer(m)); got != c.want {
+			t.Errorf("%dx%d footer = %q, want %q", c.width, c.height, got, c.want)
+		}
+		fits(t, m.View(), c.width, c.height)
+	}
+	m := send(t, resize(t, startWatch(t, crowded(), 160), 100, 24), keyPress("z"))
+	if got := strings.TrimSpace(footer(m)); got != "↑↓ navigate  enter status  1-6 source  z exit full screen  q quit" {
+		t.Errorf("medium full screen footer = %q", got)
+	}
+
+	keys := [][2]string{{"←→", "tab"}, {"↑↓", "run"}, {"enter", "status"}, {"1-6", "source"}, {"z", "full screen"}, {"q", "quit"}}
+	lines := footerLines(lineStyles(termenv.ANSI), keys, 24)
+	var got []string
+	for _, l := range lines {
+		if w := lipgloss.Width(l); w > 24 {
+			t.Fatalf("a footer line is %d wide: %q", w, stripANSI(l))
+		}
+		got = append(got, strings.Split(strings.TrimSpace(stripANSI(l)), "  ")...)
+	}
+	if want := []string{"←→ tab", "↑↓ run", "enter status", "1-6 source", "z full screen", "q quit"}; strings.Join(got, "|") != strings.Join(want, "|") || len(lines) != 3 {
+		t.Fatalf("the keys wrap whole on 3 lines: %q", got)
+	}
+	for _, l := range []watchLayout{layoutWide, layoutMedium, layoutCompact, layoutMini} {
+		for n := 1; n <= 3; n++ {
+			p := panelsFor(l, 140, 40, panelNeeds{footer: n, list: 30, strip: 30, status: 30})
+			for _, r := range []rect{p.tabs, p.list, p.strip, p.status, p.logs} {
+				if r.h > 0 && r.y+r.h > 40-n {
+					t.Fatalf("%v with a footer of %d lines: a panel reaches line %d", l, n, r.y+r.h)
+				}
+			}
+		}
+	}
+}
+
+func TestWatchShouldKeepSelectionFilterAndScrollAcrossResizes(t *testing.T) {
+	a, b := logRun(t, 1, "#11"), logRun(t, 2, "#12")
+	numbered(t, a, 1, 100)
+	numbered(t, b, 1, 100)
+	writeLog(t, b, "checks", "12:00:00 ▶ test: go test ./...\n")
+	src := &fakeWatchSource{active: []RunView{a, b}}
+	m := startLogs(t, src, 160, true)
+	m = send(t, m, keyPress("j"))
+	m = reload(t, m) // the logs of run 2
+	for _, k := range []string{"2", "tab", "pgup"} {
+		m = send(t, m, keyPress(k))
+	}
+	// first is the number of the first log line of the logs panel.
+	first := func(view string) int {
+		for _, r := range panelRows(view, "logs · run 2") {
+			if i := strings.Index(r, "line "); i >= 0 {
+				n, _ := strconv.Atoi(r[i+5 : i+8])
+				return n
+			}
+		}
+		return 0
+	}
+	top := first(screen(m))
+	if top <= 1 || top >= 70 {
+		t.Fatalf("pgup pauses in the middle of the logs, at line %d:\n%s", top, screen(m))
+	}
+	for _, s := range []struct {
+		width, height int
+		chip          string
+		list          bool
+	}{
+		{80, 27, "[delm]", true}, {56, 20, "[D]", false}, {160, 40, "[delamain]", true}, {120, 30, "[delamain]", true}, {160, 40, "[delamain]", true},
+	} {
+		m = resize(t, m, s.width, s.height)
+		view := screen(m)
+		if !strings.Contains(view, "╭ logs · run 2 · paused ") {
+			t.Fatalf("%dx%d: the logs of run 2 stay paused:\n%s", s.width, s.height, view)
+		}
+		if s.list && !strings.Contains(line(view, "▸"), "#12") {
+			t.Fatalf("%dx%d: run 2 stays selected:\n%s", s.width, s.height, view)
+		}
+		if !strings.Contains(view, s.chip) || strings.Contains(view, "▶ test") {
+			t.Fatalf("%dx%d: the filter stays on delamain:\n%s", s.width, s.height, view)
+		}
+		if got := first(view); got != top {
+			t.Fatalf("%dx%d: the logs stay at line %d, got %d:\n%s", s.width, s.height, top, got, view)
+		}
+		if s.list && border(m.View(), "logs · run 2") != "36" {
+			t.Fatalf("%dx%d: the logs keep the focus:\n%s", s.width, s.height, view)
+		}
+	}
+	if got := first(screen(send(t, m, keyPress("up")))); got != top-1 {
+		t.Fatalf("the keys still scroll the focused logs: line %d, want %d", got, top-1)
+	}
+}
+
 func TestWatchShouldStripControlSequencesFromRunText(t *testing.T) {
 	evil := "evil\x1b]52;c;ZXZpbA==\x07\x1b[2J\x1b[31mforged\u009b6n\x00\x7f\ttab"
 	v := active(1, "#1\x1b[1m", "implement\x1b[5m", "low", evil)
@@ -652,18 +1331,34 @@ func TestWatchShouldStripControlSequencesFromRunText(t *testing.T) {
 	done := finished(2, "#2"+evil, "approved"+evil+": ok", evil)
 	src := &fakeWatchSource{active: []RunView{v}, done: []RunView{done}, status: map[int64]RunStatus{1: {Run: v, Budget: BudgetView{Summary: evil}}}}
 	m := startWatch(t, src, 160)
-	for _, view := range []string{m.View(), send(t, m, keyPress("j")).View()} {
+	compact := resize(t, m, 80, 27)
+	mini := resize(t, m, 56, 20)
+	views := map[string]string{
+		"wide": m.View(), "wide after j": send(t, m, keyPress("j")).View(),
+		"compact": compact.View(), "compact full status": send(t, compact, keyPress("enter")).View(),
+		"compact after j": send(t, compact, keyPress("j")).View(),
+		"mini logs":       mini.View(), "mini status": send(t, mini, keyPress("left")).View(),
+		"mini runs": send(t, send(t, mini, keyPress("left")), keyPress("left")).View(),
+	}
+	for name, view := range views {
 		if i := strings.IndexFunc(view, func(r rune) bool { return r != '\n' && (r < 0x20 || (r >= 0x7f && r <= 0x9f)) }); i >= 0 {
-			t.Fatalf("control character %q reached the terminal:\n%q", view[i], view)
+			t.Fatalf("%s: control character %q reached the terminal:\n%q", name, view[i], view)
 		}
-		if !strings.Contains(view, "evil]52;c;ZXZpbA==[2J[31mforged") {
-			t.Fatalf("only the control characters go, the text stays:\n%s", view)
+		if !strings.Contains(view, "evil]52;c;ZXZpbA==[2J[31mforged") && !strings.HasPrefix(name, "mini") {
+			t.Fatalf("%s: only the control characters go, the text stays:\n%s", name, view)
+		}
+		width := map[bool]int{true: 160, false: 80}[strings.HasPrefix(name, "wide")]
+		if strings.HasPrefix(name, "mini") {
+			width = 56
 		}
 		for i, l := range strings.Split(view, "\n") {
-			if w := lipgloss.Width(l); w > 160 {
-				t.Fatalf("line %d is %d wide", i, w)
+			if w := lipgloss.Width(l); w > width {
+				t.Fatalf("%s: line %d is %d wide", name, i, w)
 			}
 		}
+	}
+	if !strings.Contains(nospace(views["mini status"]), "ZXZpbA==") {
+		t.Fatalf("the mini status shows the text:\n%s", views["mini status"])
 	}
 	src.err = errors.New("read " + evil)
 	if view := reload(t, m).View(); strings.ContainsAny(view, "\x1b\x07") {
