@@ -200,16 +200,20 @@ func colorLine(st styles, source, text string) string {
 		}
 		return text
 	}
-	stamp, rest := paint(st.muted, text[:8])+" ", text[9:]
+	return paint(st.muted, text[:8]) + " " + colorRest(st, source, text[9:])
+}
+
+// colorRest styles what follows the time of a stamped log line of source.
+func colorRest(st styles, source, rest string) string {
 	switch source {
 	case "delamain":
-		return stamp + colorOrchestrator(st, rest)
+		return colorOrchestrator(st, rest)
 	case "checks":
-		return stamp + colorGate(st, rest)
+		return colorGate(st, rest)
 	case "planner", "implementer", "reviewer":
-		return stamp + colorAgent(st, rest)
+		return colorAgent(st, rest)
 	}
-	return stamp + rest
+	return rest
 }
 
 // colorAgent styles an agent line by its marker, which "⑂ " precedes in a subagent's lines;

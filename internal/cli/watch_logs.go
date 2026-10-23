@@ -265,6 +265,28 @@ func (p logPane) view(st styles, run RunView, inner, height int, look logLook) [
 	if seps > 0 {
 		out = append(out, sep)
 	}
+	var body []string
+	if look == logsFull {
+		body = p.cutRows(st, inner, rows)
+	} else {
+		body = p.wrappedRows(st, inner, rows)
+	}
+	for i := range rows {
+		if i < len(body) {
+			out = append(out, body[i])
+		} else {
+			out = append(out, "")
+		}
+	}
+	if seps > 1 {
+		out = append(out, sep)
+	}
+	return append(out, p.footer(st, run, inner, look))[:min(len(out)+1, height)]
+}
+
+// cutRows are the log lines from the top of the viewport that fill rows lines, each cut to
+// inner columns.
+func (p logPane) cutRows(st styles, inner, rows int) []string {
 	body := []string{}
 	if len(p.lines) == 0 && rows > 0 {
 		body = append(body, paint(st.muted, ansi.Truncate("no logs yet in "+clean(p.fl.dir), inner, "…")))
@@ -280,17 +302,64 @@ func (p logPane) view(st styles, run RunView, inner, height int, look logLook) [
 	for _, l := range p.shown[top:max(top, min(top+rows-len(body), len(p.shown)))] {
 		body = append(body, ansi.Truncate(logRow(st, l), inner, "…"))
 	}
+	return body
+}
+
+// wrappedRows are the log lines wrapped to inner columns that fill rows lines: the last ones
+// when following, the ones from the top of the viewport when paused. Only the lines that show
+// are wrapped: a line may be thousands of columns long and there may be thousands of them.
+func (p logPane) wrappedRows(st styles, inner, rows int) []string {
+	if rows <= 0 {
+		return nil
+	}
+	if len(p.lines) == 0 {
+		return wrapStyled(paint(st.muted, "no logs yet in "+clean(p.fl.dir)), inner)
+	}
+	omitted := func() []string {
+		return wrapStyled(paint(st.muted, fmt.Sprintf("… %d earlier lines omitted", p.omit)), inner)
+	}
+	var out []string
+	if !p.paused {
+		for i := len(p.shown) - 1; i >= 0 && len(out) < rows; i-- {
+			out = append(wrapRow(st, p.shown[i], inner), out...)
+		}
+		if len(out) < rows && p.omit > 0 {
+			out = append(omitted(), out...)
+		}
+		return out[max(len(out)-rows, 0):]
+	}
+	top := p.vp.YOffset
+	if p.omit > 0 {
+		if top == 0 {
+			out = omitted()
+		}
+		top-- // the omitted line comes before the first one
+	}
+	for i := max(top, 0); i < len(p.shown) && len(out) < rows; i++ {
+		out = append(out, wrapRow(st, p.shown[i], inner)...)
+	}
+	return out[:min(len(out), rows)]
+}
+
+// wrapRow is logRow wrapped to inner columns: the continuations start under the text, past the
+// source, the │ and the time, which are not repeated.
+func wrapRow(st styles, l logLine, inner int) []string {
+	prefix := paint(st.sourceStyle(l.source), l.source) + strings.Repeat(" ", max(0, 11-utf8.RuneCountInString(l.source))) + " " + paint(st.muted, "│") + " "
+	text := colorLine(st, l.source, l.text)
+	if stampRe.MatchString(l.text) {
+		prefix += paint(st.muted, l.text[:8]) + " "
+		text = colorRest(st, l.source, l.text[9:])
+	}
+	indent := lipgloss.Width(prefix)
+	rows := wrapStyled(text, inner-indent)
 	for i := range rows {
-		if i < len(body) {
-			out = append(out, body[i])
+		if i == 0 {
+			rows[i] = prefix + rows[i]
 		} else {
-			out = append(out, "")
+			rows[i] = strings.Repeat(" ", indent) + rows[i]
 		}
 	}
-	if seps > 1 {
-		out = append(out, sep)
-	}
-	return append(out, p.footer(st, run, inner, look))[:min(len(out)+1, height)]
+	return rows
 }
 
 // chips name the sources to filter by; the active one is in reverse video, in its color.

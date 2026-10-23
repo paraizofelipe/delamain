@@ -582,7 +582,7 @@ func TestWatchShouldNeverRenderWiderOrTallerThanTheWindow(t *testing.T) {
 			}
 			m := tea.Model(newWatchModel(src, lineStyles(termenv.ANSI), watchOptions{limit: 20, interval: time.Millisecond, now: func() time.Time { return watchNow }}))
 			m = reload(t, settle(t, send(t, m, tea.WindowSizeMsg{Width: width, Height: height}), m.Init()))
-			if layout != layoutMini && layout != layoutTooSmall && !strings.Contains(stripANSI(m.View()), "implementer │") {
+			if layout != layoutMini && layout != layoutTooSmall && !strings.Contains(panelText(stripANSI(m.View()), "logs · run 1 "), "fits") { // the end of a log line
 				t.Fatalf("%dx%d: the logs are shown:\n%s", width, height, stripANSI(m.View()))
 			}
 			for _, k := range []string{"", "G", "k"} {
@@ -677,8 +677,8 @@ func TestWatchShouldShowTooSmallBelow40x12(t *testing.T) {
 	}
 }
 
-// panelText is the inside of the panel titled title, one trimmed line per row; "" without it.
-func panelText(view, title string) string {
+// panelRows are the rows inside the panel titled title of a screen without colors, nil without it.
+func panelRows(view, title string) []string {
 	lines := strings.Split(view, "\n")
 	for i, l := range lines {
 		at := strings.Index(l, "╭ "+title)
@@ -692,11 +692,20 @@ func panelText(view, title string) string {
 			if lipgloss.Width(row) <= end || ansi.Cut(row, col, col+1) == "╰" {
 				break
 			}
-			out = append(out, strings.TrimSpace(ansi.Cut(row, col+1, end)))
+			out = append(out, ansi.Cut(row, col+2, end-1))
 		}
-		return strings.Join(out, "\n")
+		return out
 	}
-	return ""
+	return nil
+}
+
+// panelText is the inside of the panel titled title, one trimmed line per row; "" without it.
+func panelText(view, title string) string {
+	rows := panelRows(view, title)
+	for i, r := range rows {
+		rows[i] = strings.TrimSpace(r)
+	}
+	return strings.Join(rows, "\n")
 }
 
 // words is s with its spaces and line breaks collapsed.
@@ -799,6 +808,104 @@ func TestWatchShouldNotLoseStatusFieldsInSmallLayouts(t *testing.T) {
 	}
 	if strip := words(panelText(screen(send(t, m, keyPress("j"))), "status · enter details")); !strings.Contains(strip, "9K tokens · US$ 0.12 · approved: merged") {
 		t.Errorf("then its spend:\n%s", strip)
+	}
+}
+
+// numberedWords is n words "w001 w002 …", 5 columns each.
+func numberedWords(n int) string {
+	ws := make([]string, n)
+	for i := range ws {
+		ws[i] = fmt.Sprintf("w%03d", i+1)
+	}
+	return strings.Join(ws, " ")
+}
+
+// wrapped is the text of the log row starting with prefix and of the rows after it that start
+// with indent spaces then text: the continuations of a wrapped line, joined without spaces.
+func wrapped(t *testing.T, rows []string, prefix string, indent int) (text string, n int) {
+	t.Helper()
+	for i, r := range rows {
+		if !strings.HasPrefix(r, prefix) {
+			continue
+		}
+		text, n = r[len(prefix):], 1
+		for _, c := range rows[i+1:] {
+			if !strings.HasPrefix(c, strings.Repeat(" ", indent)) || strings.HasPrefix(c, strings.Repeat(" ", indent+1)) {
+				break
+			}
+			text, n = text+c[indent:], n+1
+		}
+		return strings.ReplaceAll(text, " ", ""), n
+	}
+	t.Fatalf("no log row starts with %q:\n%s", prefix, strings.Join(rows, "\n"))
+	return "", 0
+}
+
+func TestWatchShouldWrapLogLinesInCompactAndMini(t *testing.T) {
+	v := logRun(t, 14, "#55")
+	long := numberedWords(40) // 200 columns
+	writeLog(t, v, "implementer", "12:46:58 💬 "+long+"\n12:46:59 ✗ failed "+long+"\n")
+	writeLog(t, v, "checks", "--- FAIL: TestGates "+long+"\n")
+	m := startLogs(t, &fakeWatchSource{active: []RunView{v}}, 80, true)
+	rows := panelRows(screen(m), "logs · run 14")
+
+	text, n := wrapped(t, rows, "implementer │ 12:46:58 ", 23)
+	if want := strings.ReplaceAll("💬 "+long, " ", ""); text != want || n < 4 {
+		t.Errorf("the 200 columns line is whole on %d rows, its continuations under its text:\n%s", n, strings.Join(rows, "\n"))
+	}
+	text, n = wrapped(t, rows, "checks      │ ", 14)
+	if want := strings.ReplaceAll("--- FAIL: TestGates "+long, " ", ""); text != want || n < 4 {
+		t.Errorf("a line without a time wraps right after │, on %d rows:\n%s", n, strings.Join(rows, "\n"))
+	}
+	if strings.Contains(strings.Join(rows, "\n"), "…") {
+		t.Errorf("no log line is cut:\n%s", strings.Join(rows, "\n"))
+	}
+	if !strings.Contains(rows[len(rows)-1], "3/3 · 100%") {
+		t.Errorf("the footer counts lines, not rows: %q", rows[len(rows)-1])
+	}
+	// The ✗ line is red: so are its continuations, and the color stops before the border.
+	for _, w := range []string{"w001", "w020", "w040"} {
+		row := ""
+		for _, l := range strings.Split(m.View(), "\n") {
+			if strings.Contains(l, w) && strings.Contains(l, "\x1b[31m") {
+				row = l
+			}
+		}
+		at := strings.Index(row, w)
+		if seqs := sgr.FindAllString(row[:max(at, 0)], -1); at < 0 || len(seqs) == 0 || !strings.Contains(seqs[len(seqs)-1], "31") {
+			t.Errorf("%s of the ✗ line keeps its red:\n%q", w, row)
+			continue
+		}
+		if !strings.Contains(row[at:strings.LastIndex(row, "│")], "\x1b[0m") {
+			t.Errorf("the red of %s stops before the border:\n%q", w, row)
+		}
+	}
+}
+
+func TestWatchLogsShouldWrapOnlyTheLinesThatFitOnScreen(t *testing.T) {
+	v := logRun(t, 14, "#55")
+	m := startLogs(t, &fakeWatchSource{active: []RunView{v}}, 80, false)
+	for r := range 4 { // 1000 lines of 4 KiB, 250 a reload
+		var b strings.Builder
+		for i := range 250 {
+			fmt.Fprintf(&b, "12:00:00 %s END-%04d\n", strings.Repeat("word ", 800), r*250+i)
+		}
+		writeLog(t, v, "implementer", b.String())
+		m = reload(t, m)
+	}
+	var view string
+	if n := allocated(func() { view = m.View() }); n > mib {
+		t.Fatalf("a frame of 1000 lines of 4 KiB allocated %d KiB: every line is wrapped", n>>10)
+	}
+	if !strings.Contains(stripANSI(view), "END-0999") || !strings.Contains(stripANSI(view), "1000/1000 · 100%") {
+		t.Fatalf("the end of the last line is on screen:\n%s", stripANSI(view))
+	}
+	m = send(t, send(t, m, keyPress("tab")), keyPress("g"))
+	if n := allocated(func() { view = m.View() }); n > mib {
+		t.Fatalf("a paused frame allocated %d KiB: every line is wrapped", n>>10)
+	}
+	if !strings.Contains(stripANSI(view), "implementer │ 12:00:00 word word") || strings.Contains(stripANSI(view), "END-0000") {
+		t.Fatalf("paused at the top, the first line starts the panel:\n%s", stripANSI(view))
 	}
 }
 
