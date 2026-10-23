@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
@@ -45,10 +46,28 @@ type watchDialog struct {
 	run  RunView
 }
 
-// watchToast is the temporary message on the first line of the footer.
+// toastFor is how long a toast stays on the footer.
+const toastFor = 5 * time.Second
+
+// watchToast is the temporary message on the first line of the footer; one without a time stays
+// until another replaces it.
 type watchToast struct {
 	text string
 	look lipgloss.Style
+	at   time.Time
+}
+
+// newToast is a toast shown from now on for toastFor.
+func (m watchModel) newToast(look lipgloss.Style, text string) watchToast {
+	return watchToast{text: text, look: look, at: m.opts.now()}
+}
+
+// expireToast drops the toast once its time is up; the reload ticks call it.
+func (m watchModel) expireToast() watchModel {
+	if !m.toast.at.IsZero() && m.opts.now().Sub(m.toast.at) >= toastFor {
+		m.toast = watchToast{}
+	}
+	return m
 }
 
 // watchActionMsg is what an action printed, or why it failed.
@@ -89,7 +108,7 @@ func (m watchModel) dialogKey(msg tea.KeyMsg) (watchModel, tea.Cmd) {
 func (m watchModel) actionDone(msg watchActionMsg) watchModel {
 	m.acting = false
 	if msg.err != nil {
-		m.toast = watchToast{text: clean(msg.err.Error()), look: m.st.bad}
+		m.toast = m.newToast(m.st.bad, clean(msg.err.Error()))
 		return m
 	}
 	var lines []string
@@ -98,7 +117,7 @@ func (m watchModel) actionDone(msg watchActionMsg) watchModel {
 			lines = append(lines, l)
 		}
 	}
-	m.toast = watchToast{text: strings.Join(lines, " · "), look: m.st.ok}
+	m.toast = m.newToast(m.st.ok, strings.Join(lines, " · "))
 	return m
 }
 

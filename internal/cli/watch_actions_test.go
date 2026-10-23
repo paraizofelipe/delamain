@@ -187,3 +187,45 @@ func footerText(m tea.Model) []string {
 	}
 	return out
 }
+
+func TestWatchToastShouldDisappearAfter5Seconds(t *testing.T) {
+	now := watchNow
+	src := &fakeWatchSource{active: []RunView{owned(14, "#55", "a", 51230, true)}}
+	acts := &fakeWatchActions{stopOut: "stop requested for run 14 (owner pid 51230)\n"}
+	m := startActions(t, src, acts, 160, 40, &now)
+	keys := "↑↓ navigate  tab focus  1-6 source"
+
+	// The stop that runs keeps its toast as long as it runs.
+	m = send(t, m, keyPress("s"))
+	m, cmd := m.Update(keyPress("s"))
+	now = now.Add(time.Minute)
+	m = reload(t, m)
+	if got := footerText(m); got[0] != "stopping run 14…" {
+		t.Fatalf("the toast of a running stop stays: %q", got)
+	}
+	m = settle(t, m, cmd)
+	got := footerText(m)
+	if got[0] != "stop requested for run 14 (owner pid 51230)" || !strings.HasPrefix(got[1], keys) {
+		t.Fatalf("the toast takes the first footer line and pushes the keys down: %q", got)
+	}
+
+	now = now.Add(4 * time.Second)
+	if m = reload(t, m); footerText(m)[0] != "stop requested for run 14 (owner pid 51230)" {
+		t.Fatalf("the toast stays for 5s: %q", footerText(m))
+	}
+	// A new toast replaces the old one and has its own 5s.
+	acts.stopOut = "run 14 already finished (recorded)\n"
+	m = send(t, send(t, m, keyPress("s")), keyPress("s"))
+	if got := footerText(m); got[0] != "run 14 already finished (recorded)" || !strings.HasPrefix(got[1], keys) {
+		t.Fatalf("a new toast replaces the old one: %q", got)
+	}
+	now = now.Add(2 * time.Second)
+	if m = reload(t, m); footerText(m)[0] != "run 14 already finished (recorded)" {
+		t.Fatalf("the new toast does not go with the old one's time: %q", footerText(m))
+	}
+	now = now.Add(3 * time.Second)
+	m = reload(t, m)
+	if got := footerText(m); len(got) != 1 || !strings.HasPrefix(got[0], keys) {
+		t.Fatalf("the toast is gone after 5s and the keys come back up: %q", got)
+	}
+}

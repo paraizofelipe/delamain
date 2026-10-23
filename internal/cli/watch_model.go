@@ -116,6 +116,7 @@ func (m watchModel) update(msg tea.Msg) (watchModel, tea.Cmd) {
 		m.width, m.height = msg.Width, msg.Height
 		m.layout = layoutFor(m.width, m.height)
 	case watchTickMsg:
+		m = m.expireToast()
 		if m.loading {
 			return m, m.tick()
 		}
