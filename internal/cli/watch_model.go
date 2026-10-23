@@ -23,12 +23,16 @@ var watchKeys = struct {
 // watchData is one reload of everything the screen shows.
 type watchData struct {
 	active, done []RunView
-	status       RunStatus // of the run selected when the reload started
+	status       RunStatus // of statusOf, the run selected when the reload started
+	statusOf     int64
 	today        budget.Status
 	daemon       bool
 }
 
 type watchDataMsg watchData
+
+// watchTickMsg asks for the next reload.
+type watchTickMsg struct{}
 
 // watchModel is the state of `watch`: it only reads, every reload runs in a tea.Cmd.
 type watchModel struct {
@@ -39,27 +43,44 @@ type watchModel struct {
 	data          watchData
 	selectedID    int64 // the selection follows the run, wherever it moves in the list
 	selectedIdx   int
+	loading       bool // a reload is running: ticks are skipped until it ends
 }
 
 func newWatchModel(src watchSource, st styles, opts watchOptions) watchModel {
 	if opts.now == nil {
 		opts.now = time.Now
 	}
-	return watchModel{src: src, st: st, opts: opts}
+	return watchModel{src: src, st: st, opts: opts, loading: true} // Init starts the first reload
 }
 
-func (m watchModel) Init() tea.Cmd { return m.reload() }
+func (m watchModel) Init() tea.Cmd { return tea.Batch(m.reload(), m.tick()) }
+
+func (m watchModel) tick() tea.Cmd {
+	return tea.Tick(m.opts.interval, func(time.Time) tea.Msg { return watchTickMsg{} })
+}
 
 func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
+	case watchTickMsg:
+		if m.loading {
+			return m, m.tick()
+		}
+		m.loading = true
+		return m, tea.Batch(m.reload(), m.tick())
 	case watchDataMsg:
+		m.loading = false
 		m.data = watchData(msg)
 		m.selectedIdx = pick(m.runs(), m.selectedID, m.selectedIdx)
 		m.selectedID = 0
 		if runs := m.runs(); len(runs) > 0 {
 			m.selectedID = runs[m.selectedIdx].ID
+		}
+		if m.selectedID != m.data.statusOf {
+			// The selection moved while this reload ran: its status is still to be read.
+			m.loading = true
+			return m, m.reload()
 		}
 	case tea.KeyMsg:
 		return m.key(msg)
@@ -86,8 +107,12 @@ func (m watchModel) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if len(runs) == 0 || runs[idx].ID == m.selectedID {
 		return m, nil
 	}
-	// The new selection's spend comes from its status: read it now, not on the next tick.
 	m.selectedIdx, m.selectedID = idx, runs[idx].ID
+	if m.loading {
+		return m, nil // the running reload reads the new selection's status when it ends
+	}
+	// The new selection's spend comes from its status: read it now, not on the next tick.
+	m.loading = true
 	return m, m.reload()
 }
 
@@ -123,7 +148,8 @@ func (m watchModel) reload() tea.Cmd {
 		active, done, _ := src.Runs(ctx, limit)
 		d := watchData{active: active, done: done}
 		if runs := append(append([]RunView{}, active...), done...); len(runs) > 0 {
-			d.status, _ = src.Status(ctx, runs[pick(runs, id, idx)].ID)
+			d.statusOf = runs[pick(runs, id, idx)].ID
+			d.status, _ = src.Status(ctx, d.statusOf)
 		}
 		return watchDataMsg(d)
 	}

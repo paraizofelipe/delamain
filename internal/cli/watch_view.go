@@ -134,7 +134,7 @@ func (m watchModel) statusLines() []string {
 		return styled(look, text)
 	}
 	spend, branch, result := "-", "-", plain("-")
-	if m.data.status.Run.ID == v.ID && m.data.status.Budget.Summary != "" {
+	if m.data.statusOf == v.ID && m.data.status.Budget.Summary != "" {
 		spend = m.data.status.Budget.Summary
 	}
 	if v.Branch != "" {

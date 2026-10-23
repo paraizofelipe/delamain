@@ -26,10 +26,12 @@ type fakeWatchSource struct {
 	daemon       bool
 	err          error
 	finished     int // the last --limit asked of Runs
+	reads        int // reloads that reached the source
 }
 
 func (f *fakeWatchSource) Runs(_ context.Context, finished int) ([]RunView, []RunView, error) {
 	f.finished = finished
+	f.reads++
 	return f.active, f.done, f.err
 }
 
@@ -69,6 +71,7 @@ func settle(t *testing.T, m tea.Model, cmd tea.Cmd) tea.Model {
 		for _, c := range msg {
 			m = settle(t, m, c)
 		}
+	case watchTickMsg: // the next reload is up to each test
 	default:
 		m = send(t, m, msg)
 	}
@@ -308,5 +311,114 @@ func TestWatchShouldMoveTheSelectionWithArrowsAndJK(t *testing.T) {
 		if !strings.Contains(view, fmt.Sprintf("╭ status · run %d ", id)) || !has(view, fmt.Sprintf("BUDGET %dK de 2M tokens · US$ 0.0%d", id, id)) {
 			t.Fatalf("after %s the status panel follows run %d:\n%s", step.key, id, view)
 		}
+	}
+}
+
+// messages runs cmd and returns what it produced, batches flattened.
+func messages(cmd tea.Cmd) []tea.Msg {
+	if cmd == nil {
+		return nil
+	}
+	msg := cmd()
+	if batch, ok := msg.(tea.BatchMsg); ok {
+		var out []tea.Msg
+		for _, c := range batch {
+			out = append(out, messages(c)...)
+		}
+		return out
+	}
+	return []tea.Msg{msg}
+}
+
+// split separates the next tick from the other messages.
+func split(t *testing.T, msgs []tea.Msg) (tick tea.Msg, others []tea.Msg) {
+	t.Helper()
+	for _, msg := range msgs {
+		if _, ok := msg.(watchTickMsg); ok {
+			tick = msg
+			continue
+		}
+		others = append(others, msg)
+	}
+	if tick == nil {
+		t.Fatalf("the next tick must always be scheduled: %v", msgs)
+	}
+	return tick, others
+}
+
+func TestWatchShouldReloadTheDataOnEachTickAndSkipWhileOneIsRunning(t *testing.T) {
+	src := &fakeWatchSource{active: []RunView{active(1, "#11", "plan", "", "a")}}
+	m := tea.Model(newWatchModel(src, noColors(), watchOptions{limit: 20, interval: time.Millisecond}))
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 160, Height: 40})
+	tick, first := split(t, messages(m.Init()))
+	if src.reads != 1 || len(first) != 1 {
+		t.Fatalf("Init reads once and schedules a tick: reads %d, %v", src.reads, first)
+	}
+
+	// The first reload has not been delivered yet: this tick must not start another one.
+	m, cmd := m.Update(tick)
+	tick, others := split(t, messages(cmd))
+	if src.reads != 1 || len(others) != 0 {
+		t.Fatalf("a tick during a reload is skipped: reads %d, %v", src.reads, others)
+	}
+	m = send(t, m, first[0])
+
+	src.active = append(src.active, active(2, "#12", "plan", "", "b"))
+	if strings.Contains(screen(m), "#12") {
+		t.Fatal("nothing is read outside a tick")
+	}
+	m, cmd = m.Update(tick)
+	_, others = split(t, messages(cmd))
+	if src.reads != 2 || len(others) != 1 {
+		t.Fatalf("a tick reloads in a command: reads %d, %v", src.reads, others)
+	}
+	m = send(t, m, others[0])
+	if view := screen(m); !strings.Contains(view, "ACTIVE · 2") || !strings.Contains(view, "#12") {
+		t.Fatalf("the reload is shown:\n%s", view)
+	}
+}
+
+// reload sends one tick and delivers the reload it starts.
+func reload(t *testing.T, m tea.Model) tea.Model {
+	t.Helper()
+	m, cmd := m.Update(watchTickMsg{})
+	_, others := split(t, messages(cmd))
+	for _, msg := range others {
+		m = send(t, m, msg)
+	}
+	return m
+}
+
+func TestWatchShouldKeepTheSelectionByIDWhenARunFinishes(t *testing.T) {
+	src := &fakeWatchSource{active: []RunView{active(1, "#11", "plan", "", "a"), active(2, "#12", "implement", "", "b")}}
+	m := send(t, startWatch(t, src, 160, 40), keyPress("j"))
+
+	src.active, src.done = src.active[:1], []RunView{finished(2, "#12", "approved: ok", "b")}
+	view := screen(reload(t, m))
+	if row := line(view, "▸"); !strings.Contains(row, " #12 ") || !strings.Contains(row, "approved") {
+		t.Fatalf("the finished run stays selected, now in FINISHED: %q\n%s", row, view)
+	}
+	if strings.Index(view, "FINISHED · 1") > strings.Index(view, "▸") {
+		t.Fatalf("the selection moved with the run to FINISHED:\n%s", view)
+	}
+}
+
+func TestWatchShouldMoveTheSelectionWhenTheSelectedRunDisappears(t *testing.T) {
+	src := &fakeWatchSource{active: []RunView{active(1, "#11", "plan", "", "a"), active(2, "#12", "plan", "", "b"), active(3, "#13", "plan", "", "c")}}
+	m := send(t, startWatch(t, src, 160, 40), keyPress("j"))
+
+	src.active = []RunView{src.active[0], src.active[2]}
+	m = reload(t, m)
+	if row := line(screen(m), "▸"); !strings.Contains(row, " #13 ") {
+		t.Fatalf("the run at the same position is selected: %q", row)
+	}
+	src.active = src.active[:1]
+	m = reload(t, m)
+	if row := line(screen(m), "▸"); !strings.Contains(row, " #11 ") {
+		t.Fatalf("past the end, the last run is selected: %q", row)
+	}
+	src.active = nil
+	if view := screen(reload(t, m)); !strings.Contains(view, "no runs yet") || strings.Contains(view, "▸") {
+		t.Fatalf("without runs nothing is selected:\n%s", view)
 	}
 }
