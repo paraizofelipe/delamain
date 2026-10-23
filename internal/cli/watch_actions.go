@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -38,12 +39,13 @@ type watchActions interface {
 
 // dialogKeys are the keys of the open dialog: nothing else acts while it is open.
 var dialogKeys = struct {
-	stop, remove, force, cancel key.Binding
+	stop, remove, force, cancel, closeHelp key.Binding
 }{
-	stop:   key.NewBinding(key.WithKeys("s", "enter")),
-	remove: key.NewBinding(key.WithKeys("d", "enter")),
-	force:  key.NewBinding(key.WithKeys("F")),
-	cancel: key.NewBinding(key.WithKeys("esc", "n")),
+	closeHelp: key.NewBinding(key.WithKeys("esc", "?", "q")),
+	stop:      key.NewBinding(key.WithKeys("s", "enter")),
+	remove:    key.NewBinding(key.WithKeys("d", "enter")),
+	force:     key.NewBinding(key.WithKeys("F")),
+	cancel:    key.NewBinding(key.WithKeys("esc", "n")),
 }
 
 // dialogKind is the dialog open over the screen.
@@ -53,13 +55,15 @@ const (
 	dialogNone   dialogKind = iota
 	dialogStop              // stop the run
 	dialogRemove            // remove the run
+	dialogHelp              // the keys
 )
 
 // watchDialog is the open dialog and the run it acts on, as it was when it opened.
 type watchDialog struct {
-	kind  dialogKind
-	run   RunView
-	dirty string // why rm refused the worktree: F removes it anyway
+	kind   dialogKind
+	run    RunView
+	dirty  string // why rm refused the worktree: F removes it anyway
+	scroll int    // lines of a dialog taller than the screen scrolled past
 }
 
 // toastFor is how long a toast stays on the footer.
@@ -141,6 +145,19 @@ func (m watchModel) openDialog(kind dialogKind) watchModel {
 
 // dialogKey handles a key while a dialog is open.
 func (m watchModel) dialogKey(msg tea.KeyMsg) (watchModel, tea.Cmd) {
+	switch {
+	case key.Matches(msg, watchKeys.up):
+		m.dialog.scroll = max(min(m.dialog.scroll, m.maxScroll())-1, 0)
+		return m, nil
+	case key.Matches(msg, watchKeys.down):
+		m.dialog.scroll = min(m.dialog.scroll+1, m.maxScroll())
+		return m, nil
+	case m.dialog.kind == dialogHelp:
+		if key.Matches(msg, dialogKeys.closeHelp) {
+			m.dialog = watchDialog{}
+		}
+		return m, nil
+	}
 	if key.Matches(msg, dialogKeys.cancel) {
 		m.dialog = watchDialog{}
 		return m, nil
@@ -226,15 +243,36 @@ func (m watchModel) toastLines() []string {
 }
 
 // dialogBox draws the open dialog: min(64, width-4) columns wide, its text wrapped, never cut.
+// When it is taller than the screen, the lines it marks scroll.
 func (m watchModel) dialogBox() []string {
-	w := min(64, m.width-4)
-	d := dialogWriter{st: m.st, inner: w - 4, labelW: 11}
+	title, look, d := m.dialogLines()
+	lines := d.lines
+	if over, to := len(lines)+2-m.height, d.scrollEnd(); over > 0 && to > d.from {
+		from, n := d.from+min(m.dialog.scroll, m.maxScroll()), max(to-d.from-over, 0)
+		lines = slices.Concat(lines[:d.from], lines[from:from+n], lines[to:])
+		title += " · ↑↓"
+	}
+	return panel(title, lines, d.inner+4, len(lines)+2, look)
+}
+
+// maxScroll is how far the open dialog scrolls: as many lines as it is taller than the screen.
+func (m watchModel) maxScroll() int {
+	_, _, d := m.dialogLines()
+	return max(min(len(d.lines)+2-m.height, d.scrollEnd()-d.from), 0)
+}
+
+// dialogLines are the title, the border and the lines of the open dialog.
+func (m watchModel) dialogLines() (string, lipgloss.Style, dialogWriter) {
+	d := dialogWriter{st: m.st, inner: min(64, m.width-4) - 4, labelW: 11}
 	if m.layout == layoutCompact || m.layout == layoutMini {
 		d.labelW = 9
 	}
 	st, v := m.st, m.dialog.run
 	title, look := "delamain stop", st.warn
 	switch {
+	case m.dialog.kind == dialogHelp:
+		title, look = "help", st.info
+		m.helpLines(&d)
 	case m.dialog.kind == dialogRemove:
 		title, look = "delamain rm", st.bad
 		m.removeLines(&d)
@@ -259,7 +297,34 @@ func (m watchModel) dialogBox() []string {
 		d.blank()
 		d.buttons([2]string{"stop", "s"}, [2]string{"cancel", "esc"})
 	}
-	return panel(title, d.lines, w, len(d.lines)+2, look)
+	return title, look, d
+}
+
+// helpKeys are the rows of the help: the keys and what they do.
+var helpKeys = [][2]string{
+	{"↑ ↓ · j k", "pick the run; the status and the logs follow it"},
+	{"tab", "switch the focus between the runs and the logs"},
+	{"pgup pgdn · g G", "scroll the logs; G follows the end again"},
+	{"1 … 6", "filter the source"},
+	{"f", "follow the end, or stop following it"},
+	{"z", "the logs in full screen"},
+	{"enter", "the full status (medium and compact)"},
+	{"e", "expand the finished runs (compact)"},
+	{"← →", "switch the tab (mini)"},
+	{"s · d", "stop the run (delamain stop) · remove it (delamain rm)"},
+	{"o · y", "open the PR in the browser · copy the run ID"},
+	{"q · ctrl+c", "quit; the runs go on in the daemon"},
+}
+
+// helpLines are the help: how often `watch` reloads, then the keys, which scroll.
+func (m watchModel) helpLines(d *dialogWriter) {
+	d.text(m.st.none, "the list and the logs reload on their own every "+m.opts.interval.String())
+	d.blank()
+	d.labelW = 17 // the widest key and two spaces
+	d.from = len(d.lines)
+	for _, k := range helpKeys {
+		d.row(paint(m.st.info.Bold(true), k[0]), k[1])
+	}
 }
 
 // removeLines are the rm dialog: rm refuses a run that has not finished.
@@ -294,10 +359,19 @@ func (m watchModel) removeLines(d *dialogWriter) {
 
 // dialogWriter writes the lines of a dialog inner columns wide, wrapping every text.
 type dialogWriter struct {
-	st     styles
-	inner  int
-	labelW int // the column of the labels of row
-	lines  []string
+	st       styles
+	inner    int
+	labelW   int // the column of the labels of row
+	lines    []string
+	from, to int // the lines that scroll, to 0 for up to the end
+}
+
+// scrollEnd is the end of the lines that scroll.
+func (d dialogWriter) scrollEnd() int {
+	if d.to == 0 {
+		return len(d.lines)
+	}
+	return d.to
 }
 
 func (d *dialogWriter) blank() { d.lines = append(d.lines, "") }
@@ -313,7 +387,7 @@ func (d *dialogWriter) row(label, value string) {
 	for i, l := range wrapStyled(value, max(d.inner-d.labelW, 1)) {
 		head := strings.Repeat(" ", d.labelW)
 		if i == 0 {
-			head = paint(d.st.label, fmt.Sprintf("%-*s", d.labelW, label))
+			head = paint(d.st.label, label) + strings.Repeat(" ", max(d.labelW-lipgloss.Width(label), 0))
 		}
 		d.lines = append(d.lines, head+l)
 	}

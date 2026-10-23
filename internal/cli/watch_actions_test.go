@@ -634,3 +634,88 @@ func TestWatchActionsShouldCopyThroughOSC52AndWrapItForTmux(t *testing.T) {
 		}
 	}
 }
+
+// helpRows are the rows the help must show: each key and what it does.
+var helpRows = [][2]string{
+	{"↑ ↓ · j k", "pick the run; the status and the logs follow it"},
+	{"tab", "switch the focus between the runs and the logs"},
+	{"pgup pgdn · g G", "scroll the logs; G follows the end again"},
+	{"1 … 6", "filter the source"},
+	{"f", "follow the end, or stop following it"},
+	{"z", "the logs in full screen"},
+	{"enter", "the full status (medium and compact)"},
+	{"e", "expand the finished runs (compact)"},
+	{"← →", "switch the tab (mini)"},
+	{"s · d", "stop the run (delamain stop) · remove it (delamain rm)"},
+	{"o · y", "open the PR in the browser · copy the run ID"},
+	{"q · ctrl+c", "quit; the runs go on in the daemon"},
+}
+
+func TestWatchHelpShouldListEveryKeyAndCloseWithEscOrQ(t *testing.T) {
+	now := watchNow
+	src := &fakeWatchSource{active: []RunView{owned(14, "#55", "a", 51230, true)}}
+	m := send(t, startActions(t, src, &fakeWatchActions{}, 160, 40, &now), keyPress("?"))
+	text := dialogText(screen(m), "help")
+	if !strings.Contains(text, "the list and the logs reload on their own every 1ms") {
+		t.Fatalf("the help says how often it reloads:\n%s", screen(m))
+	}
+	for _, k := range helpRows {
+		if !strings.Contains(text, k[0]+" "+k[1]) {
+			t.Fatalf("the help lists %q:\n%s", k, screen(m))
+		}
+	}
+
+	for _, close := range []string{"esc", "?", "q"} {
+		m = send(t, m, keyPress("?"))
+		next, cmd := m.Update(keyPress(close))
+		if quits(cmd) {
+			t.Fatalf("%s closes the help, never the TUI", close)
+		}
+		if m = settle(t, next, cmd); strings.Contains(screen(m), "╭ help") {
+			t.Fatalf("%s closes the help:\n%s", close, screen(m))
+		}
+	}
+	m = send(t, m, keyPress("?"))
+	if _, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC}); !quits(cmd) {
+		t.Fatal("ctrl+c still quits with the help open")
+	}
+}
+
+func TestWatchHelpShouldScrollTheKeysWhenItDoesNotFitTheHeight(t *testing.T) {
+	now := watchNow
+	src := &fakeWatchSource{active: []RunView{owned(14, "#55", "a", 51230, true)}}
+	m := send(t, startActions(t, src, &fakeWatchActions{}, 44, 14, &now), keyPress("?"))
+	fits(t, m.View(), 44, 14)
+	first, last := helpRows[0], helpRows[len(helpRows)-1]
+	text := dialogText(screen(m), "help")
+	if !strings.Contains(text, "reload on their own") || !strings.Contains(text, first[0]) || strings.Contains(text, last[0]) {
+		t.Fatalf("the help starts at the top of the keys:\n%s", screen(m))
+	}
+
+	seen := text
+	for range 40 {
+		m = send(t, m, keyPress("down"))
+		fits(t, m.View(), 44, 14)
+		seen += " " + dialogText(screen(m), "help")
+	}
+	text = dialogText(screen(m), "help")
+	if !strings.Contains(text, "reload on their own") || strings.Contains(text, first[0]) || !strings.Contains(text, last[0]+" "+last[1]) {
+		t.Fatalf("↓ scrolls the keys to the last one, under the fixed text:\n%s", screen(m))
+	}
+	for _, k := range helpRows {
+		if !strings.Contains(seen, k[1]) {
+			t.Fatalf("scrolling shows every key, %q is missing", k[1])
+		}
+	}
+	for _, row := range panelRows(screen(m), "help") {
+		if strings.HasSuffix(strings.TrimSpace(row), "…") {
+			t.Fatalf("no text of the help is cut:\n%s", screen(m))
+		}
+	}
+	for range 40 {
+		m = send(t, m, keyPress("k"))
+	}
+	if text = dialogText(screen(m), "help"); !strings.Contains(text, first[0]) {
+		t.Fatalf("↑ and k scroll back to the first key:\n%s", screen(m))
+	}
+}
