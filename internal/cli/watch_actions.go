@@ -90,7 +90,7 @@ func (m watchModel) dialogKey(msg tea.KeyMsg) (watchModel, tea.Cmd) {
 	case key.Matches(msg, dialogKeys.cancel):
 		m.dialog = watchDialog{}
 	case key.Matches(msg, dialogKeys.stop):
-		if m.acting { // the action that runs reads and writes the same store: one at a time
+		if m.acting || m.dialog.run.terminal { // a finished run has nothing to stop // the action that runs reads and writes the same store: one at a time
 			return m, nil
 		}
 		id, acts := m.dialog.run.ID, m.opts.actions
@@ -111,9 +111,9 @@ func (m watchModel) actionDone(msg watchActionMsg) watchModel {
 		m.toast = m.newToast(m.st.bad, clean(msg.err.Error()))
 		return m
 	}
-	var lines []string
+	var lines []string // the columns of the lines of recover are lost on one line: so are their spaces
 	for _, l := range strings.Split(msg.out, "\n") {
-		if l = strings.TrimSpace(clean(l)); l != "" {
+		if l = strings.Join(strings.Fields(clean(l)), " "); l != "" {
 			lines = append(lines, l)
 		}
 	}
@@ -136,60 +136,79 @@ func (m watchModel) toastLines() []string {
 // dialogBox draws the open dialog: min(64, width-4) columns wide, its text wrapped, never cut.
 func (m watchModel) dialogBox() []string {
 	w := min(64, m.width-4)
-	inner := w - 4
-	labelW := 11
+	d := dialogWriter{st: m.st, inner: w - 4, labelW: 11}
 	if m.layout == layoutCompact || m.layout == layoutMini {
-		labelW = 9
+		d.labelW = 9
 	}
 	st, v := m.st, m.dialog.run
-	text := func(look lipgloss.Style, s string) []string { return wrapStyled(paint(look, s), inner) }
-	row := func(label string, look lipgloss.Style, value string) []string {
-		var out []string
-		for i, l := range wrapStyled(paint(look, value), max(inner-labelW, 1)) {
-			head := strings.Repeat(" ", labelW)
-			if i == 0 {
-				head = paint(st.label, fmt.Sprintf("%-*s", labelW, label))
-			}
-			out = append(out, head+l)
+	title, look := "delamain stop", st.warn
+	switch {
+	case v.terminal:
+		d.text(st.none.Bold(true), fmt.Sprintf("run %d already finished", v.ID))
+		d.blank()
+		d.row("state", paint(st.runStateStyle(v.State), v.State))
+		d.row("result", orDash(resultCell(st, v.Result).styled))
+		d.blank()
+		d.buttons([2]string{"ok", "esc"})
+	default:
+		owner, ownerLook := fmt.Sprintf("pid %d (alive): only this run is cancelled", v.Owner.PID), st.ok
+		if !v.Owner.Alive {
+			owner, ownerLook = fmt.Sprintf("pid %d (dead): the run is finalized here, as delamain recover does", v.Owner.PID), st.bad
 		}
-		return out
+		d.text(st.none.Bold(true), fmt.Sprintf("Stop run %d?", v.ID))
+		d.styled(paint(st.info, v.Issue) + " " + v.Title)
+		d.blank()
+		d.row("owner", paint(ownerLook, owner))
+		d.row("result", "halted: stopped by the user (delamain stop)")
+		d.row("delivery", "draft of what was already committed + needs-human label")
+		d.blank()
+		d.buttons([2]string{"stop", "s"}, [2]string{"cancel", "esc"})
 	}
-	var lines []string
-	add := func(ls ...[]string) {
-		for _, l := range ls {
-			lines = append(lines, l...)
-		}
-	}
-	owner, ownerLook := fmt.Sprintf("pid %d (alive): only this run is cancelled", v.Owner.PID), st.ok
-	add(
-		text(st.none.Bold(true), fmt.Sprintf("Stop run %d?", v.ID)),
-		wrapStyled(paint(st.info, v.Issue)+" "+v.Title, inner),
-		[]string{""},
-		row("owner", ownerLook, owner),
-		row("result", st.none, "halted: stopped by the user (delamain stop)"),
-		row("delivery", st.none, "draft of what was already committed + needs-human label"),
-		[]string{""},
-		buttons(st, inner, [2]string{"stop", "s"}, [2]string{"cancel", "esc"}),
-	)
-	return panel("delamain stop", lines, w, len(lines)+2, st.warn)
+	return panel(title, d.lines, w, len(d.lines)+2, look)
 }
 
-// buttons lay the dialog's buttons out on lines of width columns, a button never split.
-func buttons(st styles, width int, bs ...[2]string) []string {
-	var out []string
+// dialogWriter writes the lines of a dialog inner columns wide, wrapping every text.
+type dialogWriter struct {
+	st     styles
+	inner  int
+	labelW int // the column of the labels of row
+	lines  []string
+}
+
+func (d *dialogWriter) blank() { d.lines = append(d.lines, "") }
+
+// text writes s in look.
+func (d *dialogWriter) text(look lipgloss.Style, s string) { d.styled(paint(look, s)) }
+
+// styled writes s, already painted.
+func (d *dialogWriter) styled(s string) { d.lines = append(d.lines, wrapStyled(s, d.inner)...) }
+
+// row writes label in its column and value, already painted, at its right, wrapped under itself.
+func (d *dialogWriter) row(label, value string) {
+	for i, l := range wrapStyled(value, max(d.inner-d.labelW, 1)) {
+		head := strings.Repeat(" ", d.labelW)
+		if i == 0 {
+			head = paint(d.st.label, fmt.Sprintf("%-*s", d.labelW, label))
+		}
+		d.lines = append(d.lines, head+l)
+	}
+}
+
+// buttons writes the buttons, a button never split across lines.
+func (d *dialogWriter) buttons(bs ...[2]string) {
 	line := ""
 	for _, b := range bs {
-		item := "[ " + b[0] + "  " + paint(st.info.Bold(true), b[1]) + " ]"
+		item := "[ " + b[0] + "  " + paint(d.st.info.Bold(true), b[1]) + " ]"
 		switch {
 		case line == "":
 			line = item
-		case lipgloss.Width(line)+2+lipgloss.Width(item) <= width:
+		case lipgloss.Width(line)+2+lipgloss.Width(item) <= d.inner:
 			line += "  " + item
 		default:
-			out, line = append(out, line), item
+			d.lines, line = append(d.lines, line), item
 		}
 	}
-	return append(out, line)
+	d.lines = append(d.lines, line)
 }
 
 // overlay puts box in the middle of screen, whose other cells are dimmed.

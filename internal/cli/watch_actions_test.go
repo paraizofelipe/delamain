@@ -229,3 +229,53 @@ func TestWatchToastShouldDisappearAfter5Seconds(t *testing.T) {
 		t.Fatalf("the toast is gone after 5s and the keys come back up: %q", got)
 	}
 }
+
+func TestWatchStopShouldSayWhenTheRunAlreadyFinished(t *testing.T) {
+	now := watchNow
+	src := &fakeWatchSource{done: []RunView{finished(14, "#55", "approved: merged", "artifacts: accept test_file")}}
+	acts := &fakeWatchActions{}
+	m := send(t, startActions(t, src, acts, 160, 40, &now), keyPress("s"))
+	text := dialogText(screen(m), "delamain stop")
+	for _, want := range []string{"run 14 already finished", "state recorded", "result approved: merged", "[ ok esc ]"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("a finished run's dialog says %q:\n%s", want, screen(m))
+		}
+	}
+	for _, unwanted := range []string{"Stop run", "[ stop s ]", "delivery"} {
+		if strings.Contains(text, unwanted) {
+			t.Fatalf("a finished run has nothing to stop, but the dialog offers %q:\n%s", unwanted, text)
+		}
+	}
+	for _, k := range []string{"s", "enter"} {
+		if m = send(t, m, keyPress(k)); dialogText(screen(m), "delamain stop") == "" {
+			t.Fatalf("%s does not close the dialog of a finished run", k)
+		}
+	}
+	if m = send(t, m, keyPress("esc")); strings.Contains(screen(m), "delamain stop") {
+		t.Fatalf("esc closes it:\n%s", screen(m))
+	}
+	if len(acts.stops) != 0 {
+		t.Fatalf("a finished run is never stopped: %v", acts.stops)
+	}
+}
+
+func TestWatchStopShouldOfferRecoverWhenTheOwnerDied(t *testing.T) {
+	now := watchNow
+	src := &fakeWatchSource{active: []RunView{owned(14, "#55", "a", 999999, false)}}
+	acts := &fakeWatchActions{stopOut: "run 14 recovered:\n❌ halted — halted: run interrompida\n   report:     /r/report.md\n"}
+	m := send(t, startActions(t, src, acts, 160, 40, &now), keyPress("s"))
+	text := dialogText(screen(m), "delamain stop")
+	if want := "owner pid 999999 (dead): the run is finalized here, as delamain recover does"; !strings.Contains(text, want) {
+		t.Fatalf("a dead owner's dialog says %q:\n%s", want, screen(m))
+	}
+	if strings.Contains(text, "only this run is cancelled") {
+		t.Fatalf("nobody is left to cancel the run:\n%s", text)
+	}
+	m = send(t, m, keyPress("enter"))
+	if len(acts.stops) != 1 || acts.stops[0] != 14 {
+		t.Fatalf("the confirmation stops the run, which takes the recover path: %v", acts.stops)
+	}
+	if got := footerText(m)[0]; got != "run 14 recovered: · ❌ halted — halted: run interrompida · report: /r/report.md" {
+		t.Fatalf("the lines recover prints are one toast: %q", got)
+	}
+}
