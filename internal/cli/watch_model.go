@@ -11,9 +11,13 @@ import (
 )
 
 var watchKeys = struct {
-	quit key.Binding
+	quit, up, down, first, last key.Binding
 }{
-	quit: key.NewBinding(key.WithKeys("q", "ctrl+c")),
+	quit:  key.NewBinding(key.WithKeys("q", "ctrl+c")),
+	up:    key.NewBinding(key.WithKeys("up", "k")),
+	down:  key.NewBinding(key.WithKeys("down", "j")),
+	first: key.NewBinding(key.WithKeys("g", "home")),
+	last:  key.NewBinding(key.WithKeys("G", "end")),
 }
 
 // watchData is one reload of everything the screen shows.
@@ -58,11 +62,33 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.selectedID = runs[m.selectedIdx].ID
 		}
 	case tea.KeyMsg:
-		if key.Matches(msg, watchKeys.quit) {
-			return m, tea.Quit
-		}
+		return m.key(msg)
 	}
 	return m, nil
+}
+
+func (m watchModel) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	runs := m.runs()
+	idx := m.selectedIdx
+	switch {
+	case key.Matches(msg, watchKeys.quit):
+		return m, tea.Quit
+	case key.Matches(msg, watchKeys.up):
+		idx--
+	case key.Matches(msg, watchKeys.down):
+		idx++
+	case key.Matches(msg, watchKeys.first):
+		idx = 0
+	case key.Matches(msg, watchKeys.last):
+		idx = len(runs) - 1
+	}
+	idx = max(min(idx, len(runs)-1), 0)
+	if len(runs) == 0 || runs[idx].ID == m.selectedID {
+		return m, nil
+	}
+	// The new selection's spend comes from its status: read it now, not on the next tick.
+	m.selectedIdx, m.selectedID = idx, runs[idx].ID
+	return m, m.reload()
 }
 
 // runs is the list in screen order: the active runs, then the finished ones.

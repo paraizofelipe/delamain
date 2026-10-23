@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -265,6 +266,47 @@ func TestWatchShouldShowTheStatusOfTheSelectedRun(t *testing.T) {
 	for _, want := range []string{"HARNESS -", "INTERACTIONS -", "COMPLEXITY -", "BRANCH -", "OWNER -", "BUDGET -", "no agents yet"} {
 		if !has(view, want) {
 			t.Errorf("a run with nothing yet shows %q:\n%s", want, view)
+		}
+	}
+}
+
+func keyPress(k string) tea.KeyMsg {
+	switch k {
+	case "up":
+		return tea.KeyMsg{Type: tea.KeyUp}
+	case "down":
+		return tea.KeyMsg{Type: tea.KeyDown}
+	case "home":
+		return tea.KeyMsg{Type: tea.KeyHome}
+	case "end":
+		return tea.KeyMsg{Type: tea.KeyEnd}
+	}
+	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(k)}
+}
+
+func TestWatchShouldMoveTheSelectionWithArrowsAndJK(t *testing.T) {
+	src := &fakeWatchSource{
+		active: []RunView{active(1, "#11", "plan", "", "a"), active(2, "#12", "plan", "", "b")},
+		done:   []RunView{finished(4, "#14", "approved: ok", "d"), finished(3, "#13", "halted: x", "c")},
+		status: map[int64]RunStatus{},
+	}
+	for id := range int64(5) {
+		src.status[id] = RunStatus{Run: RunView{ID: id}, Budget: BudgetView{Summary: fmt.Sprintf("%dK de 2M tokens · US$ 0.0%d", id, id)}}
+	}
+	m := startWatch(t, src, 160, 40)
+	for _, step := range []struct{ key, issue string }{
+		{"up", "#11"}, {"k", "#11"}, // stops at the first run
+		{"down", "#12"}, {"j", "#14"}, {"j", "#13"}, {"down", "#13"}, // finished runs follow, then it stops
+		{"k", "#14"}, {"g", "#11"}, {"G", "#13"}, {"home", "#11"}, {"end", "#13"}, {"up", "#14"},
+	} {
+		m = send(t, m, keyPress(step.key))
+		view := screen(m)
+		if row := line(view, "▸"); !strings.Contains(row, " "+step.issue+" ") {
+			t.Fatalf("after %s the selection is %s, got row %q", step.key, step.issue, row)
+		}
+		id := map[string]int64{"#11": 1, "#12": 2, "#13": 3, "#14": 4}[step.issue]
+		if !strings.Contains(view, fmt.Sprintf("╭ status · run %d ", id)) || !has(view, fmt.Sprintf("BUDGET %dK de 2M tokens · US$ 0.0%d", id, id)) {
+			t.Fatalf("after %s the status panel follows run %d:\n%s", step.key, id, view)
 		}
 	}
 }
