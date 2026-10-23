@@ -5,6 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
+	"os/exec"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -44,9 +47,9 @@ var dialogKeys = struct {
 type dialogKind int
 
 const (
-	dialogNone dialogKind = iota
-	dialogStop            // stop the run
-	dialogRemove          // remove the run
+	dialogNone   dialogKind = iota
+	dialogStop              // stop the run
+	dialogRemove            // remove the run
 )
 
 // watchDialog is the open dialog and the run it acts on, as it was when it opened.
@@ -86,6 +89,28 @@ type watchActionMsg struct {
 	out     string
 	err     error
 	removed int64
+}
+
+// watchQuickMsg is how an open or a copy ended: they run beside a stop or a remove.
+type watchQuickMsg watchActionMsg
+
+// openPR opens the selected run's PR/MR in the browser, off Update.
+func (m watchModel) openPR() (watchModel, tea.Cmd) {
+	v, ok := m.selected()
+	switch {
+	case !ok:
+		return m, nil
+	case v.PR == "":
+		m.toast = m.newToast(m.st.muted, fmt.Sprintf("run %d has no PR/MR", v.ID))
+		return m, nil
+	}
+	acts, url := m.opts.actions, v.PR
+	return m, func() tea.Msg {
+		if err := acts.OpenURL(url); err != nil {
+			return watchQuickMsg{err: err}
+		}
+		return nil
+	}
 }
 
 // openDialog opens a dialog of kind on the selected run.
@@ -151,6 +176,11 @@ func (m watchModel) actionDone(msg watchActionMsg) watchModel {
 	if open {
 		m.dialog = watchDialog{}
 	}
+	return m.result(msg)
+}
+
+// result is the toast of how an action ended: what it printed in ok, or why it failed in bad.
+func (m watchModel) result(msg watchActionMsg) watchModel {
 	if msg.err != nil {
 		m.toast = m.newToast(m.st.bad, clean(msg.err.Error()))
 		return m
@@ -311,12 +341,17 @@ func (m watchModel) overlay(screen string, box []string) string {
 
 // storeWatchActions are the actions of `watch` on the state database, as the commands do them.
 type storeWatchActions struct {
-	mu   sync.Mutex // the stopper builds its runner on first use: one action at a time
-	stop *stopper
+	mu     sync.Mutex // the stopper builds its runner on first use: one action at a time
+	stop   *stopper
+	opener string // the command that opens a URL in the browser
 }
 
 func newStoreWatchActions(cfg config.Config, st *store.Store, _ io.Writer) *storeWatchActions {
-	return &storeWatchActions{stop: &stopper{cfg: cfg, st: st, noWait: true}}
+	opener := "xdg-open"
+	if runtime.GOOS == "darwin" {
+		opener = "open"
+	}
+	return &storeWatchActions{stop: &stopper{cfg: cfg, st: st, noWait: true}, opener: opener}
 }
 
 // Stop is `delamain stop --no-wait id`.
@@ -337,7 +372,20 @@ func (a *storeWatchActions) Remove(ctx context.Context, id int64, force bool) (s
 	return out.String(), err
 }
 
-func (a *storeWatchActions) OpenURL(string) error { return errors.New("open is not available") }
+// OpenURL starts the opener on an https URL of a host, without waiting for it: the URL comes
+// from the forge or the state database, and anything else could run a local file or a handler.
+func (a *storeWatchActions) OpenURL(target string) error {
+	u, err := url.Parse(target)
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil {
+		return fmt.Errorf("not an https URL, not opened: %s", target)
+	}
+	cmd := exec.Command(a.opener, target) //nolint:gosec // an https URL as the only argument, no shell
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	go func() { _ = cmd.Wait() }()
+	return nil
+}
 
 func (a *storeWatchActions) Copy(string) error { return errors.New("copy is not available") }
 

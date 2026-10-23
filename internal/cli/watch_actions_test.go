@@ -532,3 +532,69 @@ func TestWatchActionsShouldRefuseADirtyWorktreeWithErrDirtyWorktreeUnlessForced(
 		t.Fatal("force removes the worktree and the run directory")
 	}
 }
+
+func TestWatchOpenShouldOpenThePRURLOrWarnWithoutOne(t *testing.T) {
+	now := watchNow
+	withPR := owned(14, "#55", "a", 51230, true)
+	withPR.PR = "https://github.com/o/r/pull/7"
+	src := &fakeWatchSource{active: []RunView{withPR, owned(15, "#56", "b", 51230, true)}}
+	acts := &fakeWatchActions{}
+	m := send(t, startActions(t, src, acts, 160, 40, &now), keyPress("o"))
+	if len(acts.opened) != 1 || acts.opened[0] != "https://github.com/o/r/pull/7" {
+		t.Fatalf("o opens the selected run's PR: %v", acts.opened)
+	}
+	if got := footerText(m); len(got) != 1 {
+		t.Fatalf("an opened PR needs no toast: %q", got)
+	}
+
+	acts.openErr = errors.New(`exec: "xdg-open": executable file not found in $PATH`)
+	if m = send(t, m, keyPress("o")); footerText(m)[0] != `exec: "xdg-open": executable file not found in $PATH` {
+		t.Fatalf("a failed open is the toast: %q", footerText(m))
+	}
+
+	m = send(t, send(t, m, keyPress("j")), keyPress("o"))
+	if len(acts.opened) != 2 || footerText(m)[0] != "run 15 has no PR/MR" {
+		t.Fatalf("a run without a PR opens nothing and says so: %v %q", acts.opened, footerText(m))
+	}
+}
+
+func TestWatchActionsShouldOpenOnlyHTTPSURLs(t *testing.T) {
+	dir := t.TempDir()
+	got := filepath.Join(dir, "opened")
+	opener := filepath.Join(dir, "opener")
+	if err := os.WriteFile(opener, []byte("#!/bin/sh\nprintf '%s' \"$*\" > "+got+"\n"), 0o700); err != nil { //nolint:gosec // a test script
+		t.Fatal(err)
+	}
+	acts := &storeWatchActions{opener: opener}
+	for _, bad := range []string{
+		"file:///etc/passwd", "http://github.com/o/r/pull/7", "https://user:pw@github.com/o/r/pull/7",
+		"-https://github.com", "https:///o/r", "javascript:alert(1)", "/usr/share/applications/x.desktop", "",
+	} {
+		if err := acts.OpenURL(bad); err == nil {
+			t.Fatalf("%q is refused", bad)
+		}
+	}
+	if exists(got) {
+		t.Fatal("a refused URL starts no process")
+	}
+
+	url := "https://gitlab.example.com/g/r/-/merge_requests/7"
+	if err := acts.OpenURL(url); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if b, _ := os.ReadFile(got); string(b) == url { //nolint:gosec // inside the test's temp dir
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the opener gets the URL as its only argument")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	acts.opener = filepath.Join(dir, "missing")
+	if err := acts.OpenURL(url); err == nil {
+		t.Fatal("an opener that cannot start is an error")
+	}
+}
