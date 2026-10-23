@@ -77,7 +77,7 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loading, m.err = false, msg.err
 	case watchDataMsg:
 		m.loading, m.err = false, nil
-		m.data = watchData(msg)
+		m.data = cleanData(watchData(msg))
 		m.selectedIdx = pick(m.runs(), m.selectedID, m.selectedIdx)
 		m.selectedID = 0
 		if runs := m.runs(); len(runs) > 0 {

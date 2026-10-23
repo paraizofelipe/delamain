@@ -526,3 +526,109 @@ func TestWatchShouldShowReadErrorsInTheFooterAndKeepRunning(t *testing.T) {
 		t.Fatalf("the next good read clears the error and keeps reloading: %q\n%s", got, screen(m))
 	}
 }
+
+// crowded has more runs and longer texts than any window holds.
+func crowded() *fakeWatchSource {
+	long := strings.Repeat("a very long title that never fits ", 8)
+	src := &fakeWatchSource{status: map[int64]RunStatus{}, today: budget.Status{Mode: config.BudgetUSD, Day: 123456.78, Daily: 999999.99}, daemon: true}
+	agents := []AgentView{}
+	for _, role := range []string{"planner", "implementer", "reviewer", "security-reviewer-with-a-long-name"} {
+		agents = append(agents, AgentView{Role: role, State: "running", StartedAt: watchNow.Add(-1000 * time.Hour), Tokens: 123_456_789, CostUSD: 12345.67})
+	}
+	for id := int64(1); id <= 30; id++ {
+		v := active(id, fmt.Sprintf("PR#%d00000", id), "deliver_draft", "medium", long)
+		if id > 8 {
+			v = finished(id, fmt.Sprintf("#%d00000", id), "exhausted: "+long, long)
+		}
+		v.Branch, v.Base, v.PR, v.Agents = "feat/"+strings.ReplaceAll(long, " ", "-"), "main", "https://github.com/o/r/pull/"+strings.Repeat("9", 80), agents
+		v.Owner = Process{PID: 4_194_304}
+		if id <= 8 {
+			src.active = append(src.active, v)
+		} else {
+			src.done = append([]RunView{v}, src.done...)
+		}
+		src.status[id] = RunStatus{Run: v, Budget: BudgetView{Summary: long}}
+	}
+	return src
+}
+
+func TestWatchShouldNeverRenderWiderOrTallerThanTheWindow(t *testing.T) {
+	for _, width := range []int{80, 81, 99, 120, 137, 160, 179, 200} {
+		for _, height := range []int{6, 15, 24, 40, 60} {
+			src := crowded()
+			m := tea.Model(newWatchModel(src, lineStyles(termenv.ANSI), watchOptions{limit: 20, interval: time.Millisecond, now: func() time.Time { return watchNow }}))
+			m = settle(t, send(t, m, tea.WindowSizeMsg{Width: width, Height: height}), m.Init())
+			for _, k := range []string{"", "G", "k"} {
+				if k != "" {
+					m = send(t, m, keyPress(k))
+				}
+				lines := strings.Split(m.View(), "\n")
+				if len(lines) > height {
+					t.Fatalf("%dx%d after %q: %d lines", width, height, k, len(lines))
+				}
+				for i, l := range lines {
+					if w := lipgloss.Width(l); w > width {
+						t.Fatalf("%dx%d after %q: line %d is %d wide:\n%s", width, height, k, i, w, stripANSI(l))
+					}
+				}
+				if height >= 15 && !strings.Contains(m.View(), "▸") {
+					t.Fatalf("%dx%d after %q: the selected run stays visible:\n%s", width, height, k, stripANSI(m.View()))
+				}
+			}
+			src.err = errors.New(strings.Repeat("database is locked ", 20))
+			m = reload(t, m)
+			for i, l := range strings.Split(m.View(), "\n") {
+				if w := lipgloss.Width(l); w > width {
+					t.Fatalf("%dx%d with an error: line %d is %d wide", width, height, i, w)
+				}
+			}
+		}
+	}
+}
+
+func TestWatchShouldSplitTheWideLayoutFortyPercentLeft(t *testing.T) {
+	src := crowded()
+	for width, left := range map[int]int{80: 56, 160: 64, 200: 72} {
+		lines := strings.Split(screen(startWatch(t, src, width, 40)), "\n")
+		runs := lines[1]
+		if !strings.HasPrefix(runs, "╭ runs ") || lipgloss.Width(runs[:strings.Index(runs, "╮")+len("╮")]) != left {
+			t.Errorf("width %d: the runs panel is %d columns wide: %q", width, left, runs)
+		}
+		active := 0
+		for _, l := range lines {
+			if strings.Contains(l, " PR#") && strings.Contains(l, "deliver_draft") {
+				active++
+			}
+		}
+		if active != 8 || !strings.Contains(screen(startWatch(t, src, width, 40)), "FINISHED · 22") {
+			t.Errorf("width %d: every active run is listed, %d of 8:\n%s", width, active, strings.Join(lines, "\n"))
+		}
+	}
+}
+
+func TestWatchShouldStripControlSequencesFromRunText(t *testing.T) {
+	evil := "evil\x1b]52;c;ZXZpbA==\x07\x1b[2J\x1b[31mforged\u009b6n\x00\x7f\ttab"
+	v := active(1, "#1\x1b[1m", "implement\x1b[5m", "low", evil)
+	v.Branch, v.Base, v.PR, v.Harness, v.Kind = "fix/"+evil, "main"+evil, "https://x/"+evil, "omp"+evil, "issue"+evil
+	v.Agents = []AgentView{{Role: "planner" + evil, State: "done" + evil, StartedAt: watchNow}}
+	done := finished(2, "#2"+evil, "approved"+evil+": ok", evil)
+	src := &fakeWatchSource{active: []RunView{v}, done: []RunView{done}, status: map[int64]RunStatus{1: {Run: v, Budget: BudgetView{Summary: evil}}}}
+	m := startWatch(t, src, 160, 40)
+	for _, view := range []string{m.View(), send(t, m, keyPress("j")).View()} {
+		if i := strings.IndexFunc(view, func(r rune) bool { return r != '\n' && (r < 0x20 || (r >= 0x7f && r <= 0x9f)) }); i >= 0 {
+			t.Fatalf("control character %q reached the terminal:\n%q", view[i], view)
+		}
+		if !strings.Contains(view, "evil]52;c;ZXZpbA==[2J[31mforged") {
+			t.Fatalf("only the control characters go, the text stays:\n%s", view)
+		}
+		for i, l := range strings.Split(view, "\n") {
+			if w := lipgloss.Width(l); w > 160 {
+				t.Fatalf("line %d is %d wide", i, w)
+			}
+		}
+	}
+	src.err = errors.New("read " + evil)
+	if view := reload(t, m).View(); strings.ContainsAny(view, "\x1b\x07") {
+		t.Fatalf("an error message is text from outside too:\n%q", view)
+	}
+}

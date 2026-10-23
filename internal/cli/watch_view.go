@@ -5,6 +5,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
@@ -21,27 +23,50 @@ func (m watchModel) View() string {
 		return ""
 	}
 	left := min(max(m.width*40/100, 56), 72, m.width)
-	body := m.height - 2 // header and footer lines
-	list := m.listLines(left - 4)
-	listH := min(len(list)+2, body)
-	status, logs := "status", "logs"
+	body := max(m.height-2, 0) // header and footer lines
+	list, sel := m.listLines(left - 4)
+	status := m.statusLines()
+	listH := m.listHeight(len(list), len(status), body)
+	statusTitle, logsTitle := "status", "logs"
 	if v, ok := m.selected(); ok {
-		status, logs = fmt.Sprintf("status · run %d", v.ID), fmt.Sprintf("logs · run %d", v.ID)
+		statusTitle, logsTitle = fmt.Sprintf("status · run %d", v.ID), fmt.Sprintf("logs · run %d", v.ID)
 	}
-	leftCol := append(m.panel("runs", list, left, listH), m.panel(status, m.statusLines(), left, body-listH)...)
-	rightCol := m.panel(logs, []string{paint(m.st.muted, "logs: coming soon")}, m.width-left, body)
+	leftCol := append(panel("runs", scroll(list, sel, listH-2), left, listH), panel(statusTitle, status, left, body-listH)...)
+	rightCol := panel(logsTitle, []string{paint(m.st.muted, "logs: coming soon")}, m.width-left, body)
 	lines := []string{m.header()}
 	for i := range body {
 		lines = append(lines, leftCol[i]+rightCol[i])
 	}
-	return strings.Join(append(lines, m.footer()), "\n")
+	lines = append(lines, m.footer())
+	return strings.Join(lines[:min(len(lines), m.height)], "\n")
+}
+
+// listHeight gives the runs panel every active run, then as many finished ones as leave the
+// status panel its whole height; the status panel takes the rest of the column.
+func (m watchModel) listHeight(list, status, body int) int {
+	needed := 2 + list // borders
+	if len(m.data.active) > 0 || len(m.data.done) > 0 {
+		needed = 2 + 2 + len(m.data.active) // borders, column header, ACTIVE
+		if len(m.data.done) > 0 {
+			needed++ // FINISHED
+		}
+	}
+	return min(2+list, max(body-2-status, min(needed, 2+list)), body)
+}
+
+// scroll keeps the column header and as many rows as fit in n lines around the selected one.
+func scroll(lines []string, sel, n int) []string {
+	if len(lines) <= n || n < 2 || sel < n {
+		return lines // the panel cuts what does not fit
+	}
+	return append([]string{lines[0]}, lines[sel-n+2:sel+1]...)
 }
 
 // footer shows the keys, or why the last reload failed until one succeeds.
 func (m watchModel) footer() string {
 	st := m.st
 	if m.err != nil {
-		return ansi.Truncate(paint(st.bad, "error: "+m.err.Error()), m.width, "…")
+		return paint(st.bad, ansi.Truncate("error: "+clean(m.err.Error()), m.width, "…"))
 	}
 	keys := paint(st.info.Bold(true), "↑↓") + paint(st.muted, " navigate") + "  " + paint(st.info.Bold(true), "q") + paint(st.muted, " quit")
 	return ansi.Truncate(keys, m.width, "…")
@@ -66,16 +91,32 @@ func (m watchModel) header() string {
 		paint(look, spend),
 	}, "  ")
 	clock := m.opts.now().Format("15:04:05")
-	left = ansi.Truncate(left, max(m.width-len(clock)-1, 0), "…")
-	return left + strings.Repeat(" ", max(m.width-lipgloss.Width(left)-len(clock), 1)) + paint(st.muted, clock)
+	if m.width < len(clock)+1 {
+		return ansi.Truncate(left, m.width, "")
+	}
+	left = ansi.Truncate(left, m.width-len(clock)-1, "…")
+	return left + strings.Repeat(" ", m.width-lipgloss.Width(left)-len(clock)) + paint(st.muted, clock)
 }
 
-// panel draws a rounded box of width × height cells with title in its top border; the lines
-// that do not fit are cut.
-func (m watchModel) panel(title string, lines []string, width, height int) []string {
+// panel draws a rounded box of exactly width × height cells with title in its top border; the
+// lines that do not fit are cut.
+func panel(title string, lines []string, width, height int) []string {
+	if height <= 0 {
+		return nil
+	}
+	if width < 4 {
+		out := make([]string, height)
+		for i := range out {
+			out[i] = strings.Repeat(" ", max(width, 0))
+		}
+		return out
+	}
 	inner := width - 4
-	title = ansi.Truncate(title, width-5, "…")
-	out := []string{"╭ " + title + " " + strings.Repeat("─", max(width-5-lipgloss.Width(title), 0)) + "╮"}
+	title = ansi.Truncate(" "+title+" ", width-2, "…")
+	out := []string{"╭" + title + strings.Repeat("─", width-2-lipgloss.Width(title)) + "╮"}
+	if height == 1 {
+		return out
+	}
 	for i := range height - 2 {
 		l := ""
 		if i < len(lines) {
@@ -92,11 +133,12 @@ func fit(s string, w int) string {
 	return s + strings.Repeat(" ", max(w-lipgloss.Width(s), 0))
 }
 
-// listLines are the rows of the runs panel: column header, the active runs, then the finished.
-func (m watchModel) listLines(inner int) []string {
+// listLines are the rows of the runs panel: column header, the active runs, then the finished;
+// sel is the selected run's line.
+func (m watchModel) listLines(inner int) (lines []string, sel int) {
 	st, runs := m.st, m.runs()
 	if len(runs) == 0 {
-		return []string{paint(st.muted, "no runs yet: label an issue with delamain:ready")}
+		return []string{paint(st.muted, "no runs yet: label an issue with delamain:ready")}, 0
 	}
 	cols := [5]int{len("RUN"), len("ISSUE"), len("STATE"), len("CPLX"), len("ITER")}
 	for _, v := range runs {
@@ -113,7 +155,7 @@ func (m watchModel) listLines(inner int) []string {
 	for i, h := range []string{"RUN", "ISSUE", "STATE", "CPLX", "ITER"} {
 		header += pad(h, cols[i]) + " "
 	}
-	lines := []string{paint(st.header, header+"TITLE")}
+	lines = []string{paint(st.header, header+"TITLE")}
 	section := func(name string, n int, look lipgloss.Style) {
 		lines = append(lines, paint(look.Bold(true), fmt.Sprintf("%s · %d", name, n)))
 	}
@@ -123,6 +165,9 @@ func (m watchModel) listLines(inner int) []string {
 			section("FINISHED", len(m.data.done), st.muted)
 		}
 		selected := v.ID == m.selectedID
+		if selected {
+			sel = len(lines)
+		}
 		look := func(s lipgloss.Style) lipgloss.Style {
 			if selected {
 				return s.Background(selectedBackground)
@@ -149,7 +194,7 @@ func (m watchModel) listLines(inner int) []string {
 		row += paint(look(title), pad(ansi.Truncate(v.Title, max(titleW, 0), "…"), max(titleW, 0)))
 		lines = append(lines, row)
 	}
-	return lines
+	return lines, sel
 }
 
 // statusLines describe the selected run as `status` does, with "-" for what it does not have yet.
@@ -221,4 +266,42 @@ func watchColumns(v RunView) [5]string {
 		state = orDash(state)
 	}
 	return [5]string{strconv.FormatInt(v.ID, 10), v.Issue, state, v.complexity(), v.iter()}
+}
+
+// cleanData drops the control characters of every text read from the store: an issue or PR
+// title is written by anyone, and ESC sequences in it would rewrite the screen or the clipboard.
+func cleanData(d watchData) watchData {
+	d.active, d.done = cleanViews(d.active), cleanViews(d.done)
+	d.status.Run = cleanViews([]RunView{d.status.Run})[0]
+	d.status.Budget.Summary = clean(d.status.Budget.Summary)
+	return d
+}
+
+func cleanViews(vs []RunView) []RunView {
+	out := make([]RunView, len(vs))
+	for i, v := range vs {
+		for _, f := range []*string{&v.Kind, &v.Repo, &v.Issue, &v.Title, &v.State, &v.Harness, &v.Complexity, &v.Branch, &v.Base, &v.Worktree, &v.Workspace, &v.PR, &v.Result} {
+			*f = clean(*f)
+		}
+		v.Agents = append([]AgentView{}, v.Agents...)
+		for j := range v.Agents {
+			v.Agents[j].Role, v.Agents[j].State = clean(v.Agents[j].Role), clean(v.Agents[j].State)
+		}
+		out[i] = v
+	}
+	return out
+}
+
+// clean drops control characters (C0, DEL and C1, ESC included) and invalid UTF-8; tabs and line
+// breaks become spaces.
+func clean(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r == '\t' || r == '\n' || r == '\r':
+			return ' '
+		case r == utf8.RuneError || unicode.IsControl(r):
+			return -1
+		}
+		return r
+	}, s)
 }
