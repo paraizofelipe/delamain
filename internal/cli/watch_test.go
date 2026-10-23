@@ -1065,13 +1065,29 @@ func TestWatchCompactShouldFoldFinishedRunsAndExpandWithE(t *testing.T) {
 	}
 }
 
-func TestWatchShouldSplitTheWideLayoutFortyPercentLeft(t *testing.T) {
+func TestWatchShouldPutTheRunsOnTopOfTheStatusAndTheLogs(t *testing.T) {
 	src := crowded()
 	for width, left := range map[int]int{140: 56, 160: 64, 200: 72} {
-		lines := strings.Split(screen(startWatch(t, src, width)), "\n")
-		runs := lines[1]
-		if !strings.HasPrefix(runs, "╭ runs ") || lipgloss.Width(runs[:strings.Index(runs, "╮")+len("╮")]) != left {
-			t.Errorf("width %d: the runs panel is %d columns wide: %q", width, left, runs)
+		view := screen(startWatch(t, src, width))
+		lines := strings.Split(view, "\n")
+		if runs := lines[1]; !strings.HasPrefix(runs, "╭ runs ") || !strings.HasSuffix(runs, "╮") || lipgloss.Width(runs) != width {
+			t.Errorf("width %d: the runs panel takes the whole top: %q", width, runs)
+		}
+		at := 0
+		for i, l := range lines {
+			if strings.HasPrefix(l, "╭ status · run 1 ") {
+				at = i
+			}
+		}
+		head := lines[at]
+		if lipgloss.Width(head[:strings.Index(head, "╮")+len("╮")]) != left || !strings.Contains(head, "╮╭ logs · run 1 ") {
+			t.Errorf("width %d: the status panel is %d columns wide and the logs follow it: %q", width, left, head)
+		}
+		if above := lines[at-1]; !strings.HasPrefix(above, "╰") || !strings.HasSuffix(above, "╯") || lipgloss.Width(above) != width {
+			t.Errorf("width %d: the list ends above the status panel: %q", width, above)
+		}
+		if bottom := lines[len(lines)-2]; !strings.Contains(bottom, "╯╰") || lipgloss.Width(bottom) != width {
+			t.Errorf("width %d: the status panel and the logs end on the same line: %q", width, bottom)
 		}
 		active := 0
 		for _, l := range lines {
@@ -1652,7 +1668,8 @@ func TestWatchLogsShouldPauseWhenScrollingUpAndResumeWithG(t *testing.T) {
 	v := logRun(t, 14, "#55")
 	numbered(t, v, 1, 100)
 	m := startLogs(t, &fakeWatchSource{active: []RunView{v}}, 160, true)
-	// 40 lines: header, footer, borders, chips, two separators and the panel footer leave 32.
+	// 40 lines: header, footer, the runs panel, borders, chips, two separators and the panel
+	// footer leave 27.
 	step := func(name string, from, to int, state, footer string) {
 		t.Helper()
 		view := screen(m)
@@ -1666,45 +1683,45 @@ func TestWatchLogsShouldPauseWhenScrollingUpAndResumeWithG(t *testing.T) {
 			t.Fatalf("%s: panel footer %q, want %q", name, line(view, " lines · "), footer)
 		}
 	}
-	step("start", 69, 100, "● following", "following the end · G 100 of 100 lines · 100%")
+	step("start", 74, 100, "● following", "following the end · G 100 of 100 lines · 100%")
 	if sgr := sgrBefore(m.View(), "● following"); sgr != "32" {
 		t.Fatalf("following is in ok, got SGR %q", sgr)
 	}
 
 	m = send(t, m, keyPress("pgup"))
-	step("pgup goes up half a page", 53, 84, "paused", "paused · G back to the end 100 of 100 lines · 76%")
+	step("pgup goes up half a page", 61, 87, "paused", "paused · G back to the end 100 of 100 lines · 82%")
 	if sgr := sgrBefore(m.View(), "paused"); sgr != "33" {
 		t.Fatalf("paused is in warn, got SGR %q", sgr)
 	}
 	numbered(t, v, 101, 101)
 	m = reload(t, m)
-	step("new lines keep a paused view", 53, 84, "paused", "paused · G back to the end 101 of 101 lines · 75%")
+	step("new lines keep a paused view", 61, 87, "paused", "paused · G back to the end 101 of 101 lines · 81%")
 	m = send(t, m, keyPress("ctrl+u"))
-	step("ctrl+u goes up half a page", 37, 68, "paused", "paused · G back to the end 101 of 101 lines · 52%")
+	step("ctrl+u goes up half a page", 48, 74, "paused", "paused · G back to the end 101 of 101 lines · 64%")
 	m = send(t, m, keyPress("pgdown"))
-	step("pgdown goes down half a page", 53, 84, "paused", "paused · G back to the end 101 of 101 lines · 75%")
+	step("pgdown goes down half a page", 61, 87, "paused", "paused · G back to the end 101 of 101 lines · 81%")
 	for range 3 {
 		m = send(t, m, keyPress("ctrl+d"))
 	}
-	step("the end reached by scrolling stays paused", 70, 101, "paused", "paused · G back to the end 101 of 101 lines · 100%")
+	step("the end reached by scrolling stays paused", 75, 101, "paused", "paused · G back to the end 101 of 101 lines · 100%")
 
 	m = send(t, m, keyPress("f"))
 	numbered(t, v, 102, 102)
 	m = reload(t, m)
-	step("f follows again", 71, 102, "● following", "following the end · G 102 of 102 lines · 100%")
+	step("f follows again", 76, 102, "● following", "following the end · G 102 of 102 lines · 100%")
 	m = send(t, m, keyPress("f"))
 	numbered(t, v, 103, 103)
 	m = reload(t, m)
-	step("f pauses where the view is", 71, 102, "paused", "paused · G back to the end 103 of 103 lines · 99%")
+	step("f pauses where the view is", 76, 102, "paused", "paused · G back to the end 103 of 103 lines · 99%")
 	m = send(t, m, keyPress("f"))
-	step("f goes back to the end", 72, 103, "● following", "following the end · G 103 of 103 lines · 100%")
+	step("f goes back to the end", 77, 103, "● following", "following the end · G 103 of 103 lines · 100%")
 
 	m = send(t, send(t, m, keyPress("tab")), keyPress("pgup"))
-	step("pgup with the logs focused", 56, 87, "paused", "paused · G back to the end 103 of 103 lines · 77%")
+	step("pgup with the logs focused", 64, 90, "paused", "paused · G back to the end 103 of 103 lines · 83%")
 	m = send(t, m, keyPress("G"))
-	step("G goes back to the end", 72, 103, "● following", "following the end · G 103 of 103 lines · 100%")
+	step("G goes back to the end", 77, 103, "● following", "following the end · G 103 of 103 lines · 100%")
 	m = send(t, send(t, m, keyPress("ctrl+u")), keyPress("end"))
-	step("end goes back to the end", 72, 103, "● following", "following the end · G 103 of 103 lines · 100%")
+	step("end goes back to the end", 77, 103, "● following", "following the end · G 103 of 103 lines · 100%")
 }
 
 // border is the SGR parameters of the top left corner of the panel titled title.
@@ -1774,7 +1791,7 @@ func TestWatchLogsShouldScrollByLineOnlyWhenTheLogsHaveFocus(t *testing.T) {
 	selected("j on the list", "#12")
 	m = send(t, m, keyPress("k"))
 	selected("k on the list", "#11")
-	if view := screen(m); !shows(view, 69, 100) {
+	if view := screen(m); !shows(view, 75, 100) {
 		t.Fatalf("the list keys move the selection, the logs follow the end:\n%s", view)
 	}
 
@@ -1784,15 +1801,15 @@ func TestWatchLogsShouldScrollByLineOnlyWhenTheLogsHaveFocus(t *testing.T) {
 		from, to int
 		footer   string
 	}{
-		{"k", 68, 99, "paused · G back to the end 100 of 100 lines · 99%"},
-		{"up", 67, 98, "paused · G back to the end 100 of 100 lines · 97%"},
-		{"j", 68, 99, "paused · G back to the end 100 of 100 lines · 99%"},
-		{"down", 69, 100, "paused · G back to the end 100 of 100 lines · 100%"},
-		{"down", 69, 100, "paused · G back to the end 100 of 100 lines · 100%"},
-		{"g", 1, 32, "paused · G back to the end 100 of 100 lines · 0%"},
-		{"G", 69, 100, "following the end · G 100 of 100 lines · 100%"},
-		{"home", 1, 32, "paused · G back to the end 100 of 100 lines · 0%"},
-		{"end", 69, 100, "following the end · G 100 of 100 lines · 100%"},
+		{"k", 74, 99, "paused · G back to the end 100 of 100 lines · 99%"},
+		{"up", 73, 98, "paused · G back to the end 100 of 100 lines · 97%"},
+		{"j", 74, 99, "paused · G back to the end 100 of 100 lines · 99%"},
+		{"down", 75, 100, "paused · G back to the end 100 of 100 lines · 100%"},
+		{"down", 75, 100, "paused · G back to the end 100 of 100 lines · 100%"},
+		{"g", 1, 26, "paused · G back to the end 100 of 100 lines · 0%"},
+		{"G", 75, 100, "following the end · G 100 of 100 lines · 100%"},
+		{"home", 1, 26, "paused · G back to the end 100 of 100 lines · 0%"},
+		{"end", 75, 100, "following the end · G 100 of 100 lines · 100%"},
 	} {
 		m = send(t, m, keyPress(s.key))
 		view := screen(m)

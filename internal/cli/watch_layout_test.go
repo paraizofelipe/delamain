@@ -28,3 +28,36 @@ func TestLayoutForShouldPickTheLayoutByWidthAndHeight(t *testing.T) {
 		}
 	}
 }
+
+func TestPanelsForWideShouldPutTheListOnTopAndCapItAtHalfTheBody(t *testing.T) {
+	// 140×40 with a footer line: the body is 38 lines and the left column 56 columns.
+	for _, c := range []struct {
+		name       string
+		list       int
+		wantList   int // height of the runs panel
+		wantBottom int // height of the status panel and of the logs
+	}{
+		{"a list that fits keeps its rows", 6, 8, 30},
+		{"a list longer than half the body stops there", 40, 19, 19},
+		{"an empty list still shows its panel", 0, 2, 36},
+	} {
+		p := panelsFor(layoutWide, 140, 40, panelNeeds{footer: 1, list: c.list, status: 16})
+		want := watchPanels{
+			list:   rect{0, 1, 140, c.wantList},
+			status: rect{0, 1 + c.wantList, 56, c.wantBottom},
+			logs:   rect{56, 1 + c.wantList, 84, c.wantBottom},
+		}
+		if p != want {
+			t.Errorf("%s: panelsFor gave %+v, want %+v", c.name, p, want)
+		}
+	}
+}
+
+func TestPanelsForWideShouldHideEveryPanelOnABodyWithNoRoom(t *testing.T) {
+	p := panelsFor(layoutWide, 140, 1, panelNeeds{footer: 1, list: 30, status: 16})
+	for _, r := range []rect{p.list, p.status, p.logs} {
+		if r.h != 0 { // a zero height hides the panel
+			t.Errorf("panelsFor gave %+v, want every panel hidden: %+v", r, p)
+		}
+	}
+}
