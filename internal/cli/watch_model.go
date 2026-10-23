@@ -12,7 +12,7 @@ import (
 )
 
 var watchKeys = struct {
-	quit, up, down, first, last, source, pageUp, pageDown, follow, focus key.Binding
+	quit, up, down, first, last, source, pageUp, pageDown, follow, focus, zoom key.Binding
 }{
 	quit:     key.NewBinding(key.WithKeys("q", "ctrl+c")),
 	source:   key.NewBinding(key.WithKeys("1", "2", "3", "4", "5", "6")),
@@ -20,6 +20,7 @@ var watchKeys = struct {
 	pageDown: key.NewBinding(key.WithKeys("pgdown", "ctrl+d")),
 	follow:   key.NewBinding(key.WithKeys("f")),
 	focus:    key.NewBinding(key.WithKeys("tab")),
+	zoom:     key.NewBinding(key.WithKeys("z")),
 	up:       key.NewBinding(key.WithKeys("up", "k")),
 	down:     key.NewBinding(key.WithKeys("down", "j")),
 	first:    key.NewBinding(key.WithKeys("g", "home")),
@@ -59,6 +60,8 @@ type watchModel struct {
 	err           error
 	logs          logPane
 	focusLogs     bool // the keys that move the selection scroll the logs instead
+	zoom          bool // the logs take the whole width
+	zoomedFrom    bool // focusLogs before the zoom
 }
 
 func newWatchModel(src watchSource, st styles, opts watchOptions) watchModel {
@@ -129,11 +132,19 @@ func (m watchModel) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.logs.toggleFollow()
 		return m, nil
 	case key.Matches(msg, watchKeys.focus):
-		m.focusLogs = !m.focusLogs
+		if !m.zoom { // the list is hidden in full screen
+			m.focusLogs = !m.focusLogs
+		}
 		return m, nil
-	case m.focusLogs && key.Matches(msg, watchKeys.last):
-		m.logs.follow()
+	case key.Matches(msg, watchKeys.zoom):
+		if m.zoom = !m.zoom; m.zoom {
+			m.zoomedFrom, m.focusLogs = m.focusLogs, true
+		} else {
+			m.focusLogs = m.zoomedFrom
+		}
 		return m, nil
+	case m.focusLogs:
+		return m.scrollLogs(msg), nil
 	case key.Matches(msg, watchKeys.up):
 		idx--
 	case key.Matches(msg, watchKeys.down):
@@ -155,6 +166,21 @@ func (m watchModel) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// The new selection's spend comes from its status: read it now, not on the next tick.
 	m.loading = true
 	return m, m.reload()
+}
+
+// scrollLogs moves the logs with the keys that move the selection when the list has the focus.
+func (m watchModel) scrollLogs(msg tea.KeyMsg) watchModel {
+	switch {
+	case key.Matches(msg, watchKeys.up):
+		m.logs.lineUp()
+	case key.Matches(msg, watchKeys.down):
+		m.logs.lineDown()
+	case key.Matches(msg, watchKeys.first):
+		m.logs.top()
+	case key.Matches(msg, watchKeys.last):
+		m.logs.follow()
+	}
+	return m
 }
 
 // followSelection points the logs panel at the selected run when it is another one.

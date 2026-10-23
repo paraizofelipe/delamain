@@ -23,18 +23,28 @@ func (m watchModel) View() string {
 		return ""
 	}
 	left := min(max(m.width*40/100, 56), 72, m.width)
+	if m.zoom {
+		left = 0
+	}
 	body := max(m.height-2, 0) // header and footer lines
-	list, sel := m.listLines(left - 4)
-	status := m.statusLines()
-	listH := m.listHeight(len(list), len(status), body)
 	statusTitle, logsTitle := "status", "logs"
 	v, ok := m.selected()
 	if ok {
 		statusTitle, logsTitle = fmt.Sprintf("status · run %d", v.ID), fmt.Sprintf("logs · run %d", v.ID)
 		logsTitle += " · " + m.logs.state(m.st, v)
 	}
-	leftCol := append(panel("runs", scroll(list, sel, listH-2), left, listH), panel(statusTitle, status, left, body-listH)...)
-	rightCol := panel(logsTitle, m.logs.view(m.st, v, m.width-left-4, body-2), m.width-left, body)
+	listLook, logsLook := m.st.info, m.st.muted
+	if m.focusLogs {
+		listLook, logsLook = logsLook, listLook
+	}
+	leftCol := make([]string, body)
+	if !m.zoom {
+		list, sel := m.listLines(left - 4)
+		status := m.statusLines()
+		listH := m.listHeight(len(list), len(status), body)
+		leftCol = append(panel("runs", scroll(list, sel, listH-2), left, listH, listLook), panel(statusTitle, status, left, body-listH, m.st.muted)...)
+	}
+	rightCol := panel(logsTitle, m.logs.view(m.st, v, m.width-left-4, body-2), m.width-left, body, logsLook)
 	lines := []string{m.header()}
 	for i := range body {
 		lines = append(lines, leftCol[i]+rightCol[i])
@@ -70,8 +80,15 @@ func (m watchModel) footer() string {
 	if m.err != nil {
 		return paint(st.bad, ansi.Truncate("error: "+clean(m.err.Error()), m.width, "…"))
 	}
-	keys := paint(st.info.Bold(true), "↑↓") + paint(st.muted, " navigate") + "  " + paint(st.info.Bold(true), "q") + paint(st.muted, " quit")
-	return ansi.Truncate(keys, m.width, "…")
+	zoom := "full screen"
+	if m.zoom {
+		zoom = "exit full screen"
+	}
+	var keys []string
+	for _, k := range [][2]string{{"↑↓", "navigate"}, {"tab", "focus"}, {"1-6", "source"}, {"f", "follow"}, {"z", zoom}, {"q", "quit"}} {
+		keys = append(keys, paint(st.info.Bold(true), k[0])+paint(st.muted, " "+k[1]))
+	}
+	return ansi.Truncate(strings.Join(keys, "  "), m.width, "…")
 }
 
 // header is the one line above the panels: version, daemon, run counts, the day's spend and the
@@ -100,9 +117,9 @@ func (m watchModel) header() string {
 	return left + strings.Repeat(" ", m.width-lipgloss.Width(left)-len(clock)) + paint(st.muted, clock)
 }
 
-// panel draws a rounded box of exactly width × height cells with title in its top border; the
-// lines that do not fit are cut.
-func panel(title string, lines []string, width, height int) []string {
+// panel draws a rounded box of exactly width × height cells with title in its top border and
+// the border in look; the lines that do not fit are cut.
+func panel(title string, lines []string, width, height int, look lipgloss.Style) []string {
 	if height <= 0 {
 		return nil
 	}
@@ -115,7 +132,7 @@ func panel(title string, lines []string, width, height int) []string {
 	}
 	inner := width - 4
 	title = ansi.Truncate(" "+title+" ", width-2, "…")
-	out := []string{"╭" + title + strings.Repeat("─", width-2-lipgloss.Width(title)) + "╮"}
+	out := []string{paint(look, "╭") + title + paint(look, strings.Repeat("─", width-2-lipgloss.Width(title))+"╮")}
 	if height == 1 {
 		return out
 	}
@@ -124,9 +141,9 @@ func panel(title string, lines []string, width, height int) []string {
 		if i < len(lines) {
 			l = lines[i]
 		}
-		out = append(out, "│ "+fit(l, inner)+" │")
+		out = append(out, paint(look, "│")+" "+fit(l, inner)+" "+paint(look, "│"))
 	}
-	return append(out, "╰"+strings.Repeat("─", max(width-2, 0))+"╯")
+	return append(out, paint(look, "╰"+strings.Repeat("─", max(width-2, 0))+"╯"))
 }
 
 // fit cuts s to w cells with "…" and pads it to exactly w.

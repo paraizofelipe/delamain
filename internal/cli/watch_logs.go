@@ -53,6 +53,19 @@ func (p *logPane) pageUp() {
 
 func (p *logPane) pageDown() { p.vp.HalfPageDown() }
 
+// lineUp and top pause; lineDown stays paused, even at the end.
+func (p *logPane) lineUp() {
+	p.vp.ScrollUp(1)
+	p.paused = true
+}
+
+func (p *logPane) lineDown() { p.vp.ScrollDown(1) }
+
+func (p *logPane) top() {
+	p.vp.GotoTop()
+	p.paused = true
+}
+
 // follow goes back to the end and follows the new lines.
 func (p *logPane) follow() {
 	p.paused = false

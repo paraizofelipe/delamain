@@ -519,7 +519,7 @@ func footer(m tea.Model) string {
 func TestWatchShouldShowReadErrorsInTheFooterAndKeepRunning(t *testing.T) {
 	src := &fakeWatchSource{active: []RunView{active(1, "#11", "plan", "", "a")}}
 	m := startWatch(t, src, 160)
-	if got := strings.TrimSpace(footer(m)); got != "↑↓ navigate  q quit" {
+	if got := strings.TrimSpace(footer(m)); got != "↑↓ navigate  tab focus  1-6 source  f follow  z full screen  q quit" {
 		t.Fatalf("footer = %q", got)
 	}
 
@@ -535,7 +535,7 @@ func TestWatchShouldShowReadErrorsInTheFooterAndKeepRunning(t *testing.T) {
 	src.err = nil
 	src.active = append(src.active, active(2, "#12", "plan", "", "b"))
 	m = reload(t, m)
-	if got := strings.TrimSpace(footer(m)); got != "↑↓ navigate  q quit" || !strings.Contains(screen(m), "#12") {
+	if got := strings.TrimSpace(footer(m)); got != "↑↓ navigate  tab focus  1-6 source  f follow  z full screen  q quit" || !strings.Contains(screen(m), "#12") {
 		t.Fatalf("the next good read clears the error and keeps reloading: %q\n%s", got, screen(m))
 	}
 }
@@ -598,6 +598,18 @@ func TestWatchShouldNeverRenderWiderOrTallerThanTheWindow(t *testing.T) {
 				}
 				if height >= 15 && !strings.Contains(m.View(), "▸") {
 					t.Fatalf("%dx%d after %q: the selected run stays visible:\n%s", width, height, k, stripANSI(m.View()))
+				}
+			}
+			for _, k := range []string{"tab", "pgup", "z"} {
+				m = send(t, m, keyPress(k))
+				lines := strings.Split(m.View(), "\n")
+				if len(lines) > height {
+					t.Fatalf("%dx%d after %q: %d lines", width, height, k, len(lines))
+				}
+				for i, l := range lines {
+					if w := lipgloss.Width(l); w > width {
+						t.Fatalf("%dx%d after %q: line %d is %d wide:\n%s", width, height, k, i, w, stripANSI(l))
+					}
 				}
 			}
 			src.err = errors.New(strings.Repeat("database is locked ", 20))
@@ -991,4 +1003,100 @@ func TestWatchLogsShouldPauseWhenScrollingUpAndResumeWithG(t *testing.T) {
 	step("G goes back to the end", 72, 103, "● following", "following the end · G 103 of 103 lines · 100%")
 	m = send(t, send(t, m, keyPress("ctrl+u")), keyPress("end"))
 	step("end goes back to the end", 72, 103, "● following", "following the end · G 103 of 103 lines · 100%")
+}
+
+// border is the SGR parameters of the top left corner of the panel titled title.
+func border(view, title string) string {
+	return sgrBefore(view, "╭\x1b[0m "+title)
+}
+
+func TestWatchShouldToggleFocusWithTabAndZoomWithZ(t *testing.T) {
+	v := logRun(t, 14, "#55")
+	writeLog(t, v, "delamain", "12:00:01 state run=14 state=plan\n")
+	m := startLogs(t, &fakeWatchSource{active: []RunView{v}}, 160, true)
+	look := func(name, runs, logs string) {
+		t.Helper()
+		view := m.View()
+		if got := border(view, "runs"); got != runs {
+			t.Fatalf("%s: runs border SGR %q, want %q", name, got, runs)
+		}
+		if got := border(view, "logs · run 14"); got != logs {
+			t.Fatalf("%s: logs border SGR %q, want %q", name, got, logs)
+		}
+		if got := border(view, "status · run 14"); got != "2" {
+			t.Fatalf("%s: the status panel never has the focus, SGR %q", name, got)
+		}
+	}
+	look("start", "36", "2")
+	m = send(t, m, keyPress("tab"))
+	look("tab", "2", "36")
+	m = send(t, m, keyPress("tab"))
+	look("tab again", "36", "2")
+
+	m = send(t, m, keyPress("z"))
+	view := screen(m)
+	if strings.Contains(view, "╭ runs") || strings.Contains(view, "╭ status") || strings.Contains(view, "#55") {
+		t.Fatalf("z hides the list and the status:\n%s", view)
+	}
+	if top := strings.Split(view, "\n")[1]; !strings.HasPrefix(top, "╭ logs · run 14") || lipgloss.Width(top) != 160 {
+		t.Fatalf("z gives the logs the whole width: %q", top)
+	}
+	if border(m.View(), "logs · run 14") != "36" {
+		t.Fatalf("z moves the focus to the logs:\n%q", m.View())
+	}
+	if got := strings.TrimSpace(footer(m)); got != "↑↓ navigate  tab focus  1-6 source  f follow  z exit full screen  q quit" {
+		t.Fatalf("full screen footer = %q", got)
+	}
+	m = send(t, m, keyPress("z"))
+	if view := screen(m); !strings.Contains(view, "╭ runs") || !strings.Contains(view, "╭ status · run 14") {
+		t.Fatalf("another z brings the list back:\n%s", view)
+	}
+	look("z twice", "36", "2")
+
+	m = send(t, send(t, send(t, m, keyPress("tab")), keyPress("z")), keyPress("z"))
+	look("z twice from the logs", "2", "36")
+}
+
+func TestWatchLogsShouldScrollByLineOnlyWhenTheLogsHaveFocus(t *testing.T) {
+	a := logRun(t, 1, "#11")
+	numbered(t, a, 1, 100)
+	src := &fakeWatchSource{active: []RunView{a, logRun(t, 2, "#12")}}
+	m := startLogs(t, src, 160, false)
+	selected := func(name, issue string) {
+		t.Helper()
+		if row := line(screen(m), "▸"); !strings.Contains(row, " "+issue+" ") {
+			t.Fatalf("%s: the selection is %s, got %q", name, issue, row)
+		}
+	}
+	m = send(t, m, keyPress("j"))
+	selected("j on the list", "#12")
+	m = send(t, m, keyPress("k"))
+	selected("k on the list", "#11")
+	if view := screen(m); !shows(view, 69, 100) {
+		t.Fatalf("the list keys move the selection, the logs follow the end:\n%s", view)
+	}
+
+	m = send(t, m, keyPress("tab"))
+	for _, s := range []struct {
+		key      string
+		from, to int
+		footer   string
+	}{
+		{"k", 68, 99, "paused · G back to the end 100 of 100 lines · 99%"},
+		{"up", 67, 98, "paused · G back to the end 100 of 100 lines · 97%"},
+		{"j", 68, 99, "paused · G back to the end 100 of 100 lines · 99%"},
+		{"down", 69, 100, "paused · G back to the end 100 of 100 lines · 100%"},
+		{"down", 69, 100, "paused · G back to the end 100 of 100 lines · 100%"},
+		{"g", 1, 32, "paused · G back to the end 100 of 100 lines · 0%"},
+		{"G", 69, 100, "following the end · G 100 of 100 lines · 100%"},
+		{"home", 1, 32, "paused · G back to the end 100 of 100 lines · 0%"},
+		{"end", 69, 100, "following the end · G 100 of 100 lines · 100%"},
+	} {
+		m = send(t, m, keyPress(s.key))
+		view := screen(m)
+		if !shows(view, s.from, s.to) || !has(view, s.footer) {
+			t.Fatalf("%s with the logs focused: want lines %d to %d and %q:\n%s", s.key, s.from, s.to, s.footer, view)
+		}
+		selected(s.key+" with the logs focused", "#11")
+	}
 }
