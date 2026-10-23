@@ -48,11 +48,11 @@ func (f *fakeWatchSource) DaemonRunning() bool { return f.daemon }
 
 func noColors() styles { return newStyles(lipgloss.NewRenderer(&bytes.Buffer{})) }
 
-// startWatch is the TUI after its first window size and first reload.
-func startWatch(t *testing.T, src *fakeWatchSource, width, height int) tea.Model {
+// startWatch is the TUI, 40 lines high, after its first window size and first reload.
+func startWatch(t *testing.T, src *fakeWatchSource, width int) tea.Model {
 	t.Helper()
 	m := tea.Model(newWatchModel(src, noColors(), watchOptions{limit: 20, interval: time.Millisecond, now: func() time.Time { return watchNow }}))
-	m = send(t, m, tea.WindowSizeMsg{Width: width, Height: height})
+	m = send(t, m, tea.WindowSizeMsg{Width: width, Height: 40})
 	return settle(t, m, m.Init())
 }
 
@@ -116,7 +116,7 @@ func TestWatchShouldListActiveAndFinishedRuns(t *testing.T) {
 		active: []RunView{active(14, "#55", "implement", "low", "artifacts: accept tests"), active(15, "#54", "plan", "", "tui: delamain watch")},
 		done:   []RunView{finished(12, "#49", "approved: merged", "logs: colors"), finished(9, "#43", "halted: budget", "daemon: lock")},
 	}
-	view := screen(startWatch(t, src, 160, 40))
+	view := screen(startWatch(t, src, 160))
 
 	if !strings.Contains(view, "╭ runs ") {
 		t.Errorf("the list is a rounded panel titled runs:\n%s", view)
@@ -173,7 +173,7 @@ func TestWatchShouldQuitOnQAndRestoreTheTerminal(t *testing.T) {
 }
 
 func TestWatchShouldShowAnEmptyStateWithoutRuns(t *testing.T) {
-	view := screen(startWatch(t, &fakeWatchSource{}, 160, 40))
+	view := screen(startWatch(t, &fakeWatchSource{}, 160))
 	if !strings.Contains(view, "no runs yet: label an issue with delamain:ready") {
 		t.Errorf("without runs the list says how to start one:\n%s", view)
 	}
@@ -250,7 +250,7 @@ func TestWatchShouldShowTheStatusOfTheSelectedRun(t *testing.T) {
 		active: []RunView{run, bare},
 		status: map[int64]RunStatus{14: {Run: run, Budget: BudgetView{Summary: "182K de 4M tokens · US$ 1.94"}}},
 	}
-	view := screen(startWatch(t, src, 160, 40))
+	view := screen(startWatch(t, src, 160))
 
 	for _, want := range []string{
 		"RUN 14 · #55 artifacts: accept tests", "KIND issue", "HARNESS claude", "STATE implement", "INTERACTIONS 1/3",
@@ -268,7 +268,7 @@ func TestWatchShouldShowTheStatusOfTheSelectedRun(t *testing.T) {
 	}
 
 	src.active = []RunView{bare}
-	view = screen(startWatch(t, src, 160, 40))
+	view = screen(startWatch(t, src, 160))
 	for _, want := range []string{"HARNESS -", "INTERACTIONS -", "COMPLEXITY -", "BRANCH -", "OWNER -", "BUDGET -", "no agents yet"} {
 		if !has(view, want) {
 			t.Errorf("a run with nothing yet shows %q:\n%s", want, view)
@@ -299,7 +299,7 @@ func TestWatchShouldMoveTheSelectionWithArrowsAndJK(t *testing.T) {
 	for id := range int64(5) {
 		src.status[id] = RunStatus{Run: RunView{ID: id}, Budget: BudgetView{Summary: fmt.Sprintf("%dK de 2M tokens · US$ 0.0%d", id, id)}}
 	}
-	m := startWatch(t, src, 160, 40)
+	m := startWatch(t, src, 160)
 	for _, step := range []struct{ key, issue string }{
 		{"up", "#11"}, {"k", "#11"}, // stops at the first run
 		{"down", "#12"}, {"j", "#14"}, {"j", "#13"}, {"down", "#13"}, // finished runs follow, then it stops
@@ -394,7 +394,7 @@ func reload(t *testing.T, m tea.Model) tea.Model {
 
 func TestWatchShouldKeepTheSelectionByIDWhenARunFinishes(t *testing.T) {
 	src := &fakeWatchSource{active: []RunView{active(1, "#11", "plan", "", "a"), active(2, "#12", "implement", "", "b")}}
-	m := send(t, startWatch(t, src, 160, 40), keyPress("j"))
+	m := send(t, startWatch(t, src, 160), keyPress("j"))
 
 	src.active, src.done = src.active[:1], []RunView{finished(2, "#12", "approved: ok", "b")}
 	view := screen(reload(t, m))
@@ -408,7 +408,7 @@ func TestWatchShouldKeepTheSelectionByIDWhenARunFinishes(t *testing.T) {
 
 func TestWatchShouldMoveTheSelectionWhenTheSelectedRunDisappears(t *testing.T) {
 	src := &fakeWatchSource{active: []RunView{active(1, "#11", "plan", "", "a"), active(2, "#12", "plan", "", "b"), active(3, "#13", "plan", "", "c")}}
-	m := send(t, startWatch(t, src, 160, 40), keyPress("j"))
+	m := send(t, startWatch(t, src, 160), keyPress("j"))
 
 	src.active = []RunView{src.active[0], src.active[2]}
 	m = reload(t, m)
@@ -446,12 +446,14 @@ func TestWatchShouldShowTheDaemonState(t *testing.T) {
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil { //nolint:gosec // fd fits in int
 		t.Fatal(err)
 	}
-	if !daemonRunning(dir) || !daemonRunning(dir) {
-		t.Fatal("a held lock means the daemon runs, and probing must leave it held")
+	for range 2 { // the first probe must leave the lock held
+		if !daemonRunning(dir) {
+			t.Fatal("a held lock means the daemon runs")
+		}
 	}
 
 	for running, want := range map[bool]string{true: "daemon ●", false: "daemon ○"} {
-		view := screen(startWatch(t, &fakeWatchSource{daemon: running}, 160, 40))
+		view := screen(startWatch(t, &fakeWatchSource{daemon: running}, 160))
 		if head := strings.Split(view, "\n")[0]; !strings.Contains(head, want) {
 			t.Errorf("daemon running=%v: header %q, want %q", running, head, want)
 		}
@@ -464,7 +466,7 @@ func TestWatchShouldShowTheDaySpendInTheHeader(t *testing.T) {
 		done:   []RunView{finished(3, "#13", "approved: ok", "c")},
 		today:  budget.Status{Mode: config.BudgetTokens, Day: 1_400_000, Daily: 4_000_000},
 	}
-	head := strings.Split(screen(startWatch(t, src, 160, 40)), "\n")[0]
+	head := strings.Split(screen(startWatch(t, src, 160)), "\n")[0]
 	for _, want := range []string{"delamain", "watch · " + Version, "2 active · 1 finished", "today 1.4M of 4M"} {
 		if !strings.Contains(head, want) {
 			t.Errorf("header %q misses %q", head, want)
@@ -482,7 +484,7 @@ func TestWatchShouldShowTheDaySpendInTheHeader(t *testing.T) {
 		{budget.Status{Mode: config.BudgetUSD, Day: 1.2, Daily: 5}, "today US$ 1.20 of US$ 5.00"},
 	} {
 		src.today = c.today
-		head := strings.Split(screen(startWatch(t, src, 160, 40)), "\n")[0]
+		head := strings.Split(screen(startWatch(t, src, 160)), "\n")[0]
 		if !strings.Contains(head, c.want+" ") || strings.Contains(head, c.want+" of") {
 			t.Errorf("header %q, want %q", head, c.want)
 		}
@@ -505,7 +507,7 @@ func footer(m tea.Model) string {
 
 func TestWatchShouldShowReadErrorsInTheFooterAndKeepRunning(t *testing.T) {
 	src := &fakeWatchSource{active: []RunView{active(1, "#11", "plan", "", "a")}}
-	m := startWatch(t, src, 160, 40)
+	m := startWatch(t, src, 160)
 	if got := strings.TrimSpace(footer(m)); got != "↑↓ navigate  q quit" {
 		t.Fatalf("footer = %q", got)
 	}
@@ -589,7 +591,7 @@ func TestWatchShouldNeverRenderWiderOrTallerThanTheWindow(t *testing.T) {
 func TestWatchShouldSplitTheWideLayoutFortyPercentLeft(t *testing.T) {
 	src := crowded()
 	for width, left := range map[int]int{80: 56, 160: 64, 200: 72} {
-		lines := strings.Split(screen(startWatch(t, src, width, 40)), "\n")
+		lines := strings.Split(screen(startWatch(t, src, width)), "\n")
 		runs := lines[1]
 		if !strings.HasPrefix(runs, "╭ runs ") || lipgloss.Width(runs[:strings.Index(runs, "╮")+len("╮")]) != left {
 			t.Errorf("width %d: the runs panel is %d columns wide: %q", width, left, runs)
@@ -600,7 +602,7 @@ func TestWatchShouldSplitTheWideLayoutFortyPercentLeft(t *testing.T) {
 				active++
 			}
 		}
-		if active != 8 || !strings.Contains(screen(startWatch(t, src, width, 40)), "FINISHED · 22") {
+		if active != 8 || !strings.Contains(screen(startWatch(t, src, width)), "FINISHED · 22") {
 			t.Errorf("width %d: every active run is listed, %d of 8:\n%s", width, active, strings.Join(lines, "\n"))
 		}
 	}
@@ -613,7 +615,7 @@ func TestWatchShouldStripControlSequencesFromRunText(t *testing.T) {
 	v.Agents = []AgentView{{Role: "planner" + evil, State: "done" + evil, StartedAt: watchNow}}
 	done := finished(2, "#2"+evil, "approved"+evil+": ok", evil)
 	src := &fakeWatchSource{active: []RunView{v}, done: []RunView{done}, status: map[int64]RunStatus{1: {Run: v, Budget: BudgetView{Summary: evil}}}}
-	m := startWatch(t, src, 160, 40)
+	m := startWatch(t, src, 160)
 	for _, view := range []string{m.View(), send(t, m, keyPress("j")).View()} {
 		if i := strings.IndexFunc(view, func(r rune) bool { return r != '\n' && (r < 0x20 || (r >= 0x7f && r <= 0x9f)) }); i >= 0 {
 			t.Fatalf("control character %q reached the terminal:\n%q", view[i], view)

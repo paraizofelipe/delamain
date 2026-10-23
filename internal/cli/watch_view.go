@@ -204,7 +204,9 @@ func (m watchModel) statusLines() []string {
 		return nil
 	}
 	st := m.st
-	field := func(label string, value cell) string { return paint(st.label, fmt.Sprintf("%-14s", label)) + value.styled }
+	field := func(label string, value cell) string {
+		return paint(st.label, fmt.Sprintf("%-14s", label)) + value.styled
+	}
 	dash := func(text string, look lipgloss.Style) cell {
 		if text == "" {
 			return plain("-")
