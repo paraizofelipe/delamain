@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"time"
@@ -70,16 +71,53 @@ type inspectorWatchSource struct {
 	in *inspector
 }
 
-func (s inspectorWatchSource) Runs(context.Context, int) ([]RunView, []RunView, error) {
-	return nil, nil, nil
+func (s inspectorWatchSource) Runs(ctx context.Context, finished int) (active, done []RunView, err error) {
+	unfinished, err := s.in.st.UnfinishedRuns(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	// The newest runs include the active ones: ask for enough to still get `finished` ended ones.
+	recent, err := s.in.st.RecentRuns(ctx, max(finished, 0)+len(unfinished))
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, rec := range unfinished {
+		v, err := s.in.view(ctx, rec)
+		if err != nil {
+			return nil, nil, err
+		}
+		active = append(active, v)
+	}
+	for _, rec := range recent {
+		if !rec.State.Terminal() || len(done) >= finished {
+			continue
+		}
+		v, err := s.in.view(ctx, rec)
+		if err != nil {
+			return nil, nil, err
+		}
+		done = append(done, v)
+	}
+	return active, done, nil
 }
 
-func (s inspectorWatchSource) Status(context.Context, int64) (RunStatus, error) {
-	return RunStatus{}, nil
+// Status is `status` without the worktrees, which the panel does not show: it skips running git
+// on every reload.
+func (s inspectorWatchSource) Status(ctx context.Context, id int64) (RunStatus, error) {
+	rec, err := s.in.st.GetRun(ctx, id)
+	if err != nil {
+		return RunStatus{}, fmt.Errorf("run %d: %w", id, err)
+	}
+	v, err := s.in.view(ctx, rec)
+	if err != nil {
+		return RunStatus{}, err
+	}
+	b, err := s.in.budgetView(ctx, rec)
+	return RunStatus{Run: v, Budget: b}, err
 }
 
-func (s inspectorWatchSource) Today(context.Context) (budget.Status, error) {
-	return budget.Status{}, nil
+func (s inspectorWatchSource) Today(ctx context.Context) (budget.Status, error) {
+	return budget.Meter{Store: s.in.st, Cfg: s.in.cfg.Budget}.Today(ctx)
 }
 
 func (s inspectorWatchSource) DaemonRunning() bool { return false }

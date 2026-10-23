@@ -194,17 +194,22 @@ func (in *inspector) status(ctx context.Context, id int64) (RunStatus, error) {
 			s.Worktrees = append(s.Worktrees, WorktreeView{Worktree: w, ThisRun: samePath(w.Path, rec.Worktree)})
 		}
 	}
+	s.Budget, err = in.budgetView(ctx, rec)
+	return s, err
+}
+
+// budgetView is the run's spend against its per-issue limit.
+func (in *inspector) budgetView(ctx context.Context, rec store.Run) (BudgetView, error) {
 	total, err := in.st.RunUsage(ctx, rec.ID)
 	if err != nil {
-		return s, err
+		return BudgetView{}, err
 	}
 	_, perIssue := rec.Limits(in.cfg.Pipeline.MaxIterations, in.cfg.Budget.PerIssue)
 	b := budget.Status{Mode: in.cfg.Budget.Mode, Usage: total, PerIssue: perIssue, Run: float64(total.BudgetTokens())}
 	if b.Mode == config.BudgetUSD {
 		b.Run = total.CostUSD
 	}
-	s.Budget = BudgetView{Tokens: total.BudgetTokens(), CostUSD: total.CostUSD, Summary: b.Summary(), PerIssue: b.PerIssue, Mode: string(b.Mode)}
-	return s, nil
+	return BudgetView{Tokens: total.BudgetTokens(), CostUSD: total.CostUSD, Summary: b.Summary(), PerIssue: b.PerIssue, Mode: string(b.Mode)}, nil
 }
 
 // within reports whether path is inside dir, following symlinks such as /tmp on macOS.
