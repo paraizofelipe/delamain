@@ -774,3 +774,35 @@ func TestWatchLogsShouldStripControlSequencesFromLogText(t *testing.T) {
 		t.Fatalf("the dir of an empty run is cleaned too:\n%s", view)
 	}
 }
+
+func TestWatchLogsShouldResetWhenTheSelectionChanges(t *testing.T) {
+	a, b := logRun(t, 1, "#11"), logRun(t, 2, "#12")
+	writeLog(t, a, "delamain", "12:00:01 line of run one\n")
+	writeLog(t, b, "delamain", "12:00:02 line of run two\n")
+	src := &fakeWatchSource{active: []RunView{a, b}}
+	m := startLogs(t, src, 160, false)
+	if view := screen(m); !strings.Contains(view, "line of run one") || strings.Contains(view, "line of run two") {
+		t.Fatalf("the first run's logs are shown:\n%s", view)
+	}
+
+	view := screen(send(t, m, keyPress("j")))
+	if !strings.Contains(view, "line of run two") || strings.Contains(view, "line of run one") {
+		t.Fatalf("another run clears the panel and shows its own logs:\n%s", view)
+	}
+
+	// A reload that read run one's new lines arrives after the selection moved to run two.
+	writeLog(t, a, "delamain", "12:00:03 late line of run one\n")
+	m, cmd := m.Update(watchTickMsg{})
+	_, inFlight := split(t, messages(cmd))
+	m = send(t, m, keyPress("j"))
+	for _, msg := range inFlight {
+		m = send(t, m, msg)
+	}
+	view = screen(m)
+	if strings.Contains(view, "run one") || !strings.Contains(view, "line of run two") {
+		t.Fatalf("lines read for a run no longer selected are dropped:\n%s", view)
+	}
+	if view := screen(send(t, m, keyPress("k"))); strings.Contains(view, "line of run two") || strings.Count(view, "run one") != 2 {
+		t.Fatalf("back on run one, its logs are read again from the start:\n%s", view)
+	}
+}
