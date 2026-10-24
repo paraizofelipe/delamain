@@ -28,9 +28,10 @@ func newQueueCmd(load func() (config.Config, error)) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "queue",
 		Short: "Order the issues the daemon runs next",
-		Long: `The queue holds issues in the order the daemon runs them, ahead of the issues labeled
-forge.labels.ready. Position 1 is the next one. An issue leaves the queue when it becomes a run, as
-long as pipeline.max_parallel has a free slot; delamain run takes a slot ahead of the queue.`,
+		Long: `The queue holds issues in the order the daemon runs them, one at a time: position 1 is the
+next one, and it starts when the previous one ends. An issue leaves the queue when it becomes a
+run. While the queue has issues, one of the pipeline.max_parallel slots is reserved for it, and
+delamain run and the issues labeled forge.labels.ready share the others.`,
 	}
 	withStore := func(run func(*cobra.Command, config.Config, *store.Store, []string) error) func(*cobra.Command, []string) error {
 		return func(c *cobra.Command, args []string) error {
@@ -228,7 +229,7 @@ func queueJobs(cfg config.Config, st *store.Store, run func(ctx context.Context,
 				forges[it.Repo] = fg
 			}
 			jobs = append(jobs, daemon.Job{
-				Key: fmt.Sprintf("%s#%d", it.Repo, it.Issue),
+				Key: fmt.Sprintf("%s#%d", it.Repo, it.Issue), Queue: true,
 				Run: func(ctx context.Context) (pipeline.Result, error) {
 					if ok, err := st.Dequeue(ctx, it.ID); err != nil || !ok {
 						return pipeline.Result{Outcome: pipeline.OutcomeSkipped, Reason: "no longer in the queue"}, err

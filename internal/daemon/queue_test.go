@@ -9,36 +9,91 @@ import (
 	"github.com/paraizo/delamain/internal/pipeline"
 )
 
-// queueJobs is a queue of issues of /q run by r, in order.
-func queueJobs(r *runner, ns ...string) func(context.Context) ([]Job, error) {
-	return func(context.Context) ([]Job, error) {
-		var out []Job
-		for _, n := range ns {
-			out = append(out, Job{Key: "/q#" + n, Run: func(ctx context.Context) (pipeline.Result, error) {
-				return r.run(ctx, pipeline.Task{Repo: "/q", Ref: "#" + n}, nil)
-			}})
-		}
-		return out, nil
-	}
+// queueStub is a queue of issues of /q run by run, in order. Like the real queue, an issue leaves
+// it when its job starts.
+type queueStub struct {
+	mu  sync.Mutex
+	ns  []string
+	run *runner
 }
 
-func TestPollShouldStartTheQueueBeforeTheReadyIssues(t *testing.T) {
+func newQueue(r *runner, ns ...string) *queueStub { return &queueStub{ns: ns, run: r} }
+
+func (q *queueStub) jobs(context.Context) ([]Job, error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	var out []Job
+	for _, n := range q.ns {
+		out = append(out, Job{Key: "/q#" + n, Queue: true, Run: func(ctx context.Context) (pipeline.Result, error) {
+			q.mu.Lock()
+			q.ns = slices.DeleteFunc(q.ns, func(s string) bool { return s == n })
+			q.mu.Unlock()
+			return q.run.run(ctx, pipeline.Task{Repo: "/q", Ref: "#" + n}, nil)
+		}})
+	}
+	return out, nil
+}
+
+func TestPollShouldRunTheQueueOneIssueAtATime(t *testing.T) {
+	r := newRunner()
+	q := newQueue(r, "1", "2", "3", "4", "5")
+	d := New(Options{MaxParallel: 3, Log: discard, Queue: q.jobs})
+	if n := d.Poll(context.Background()); n != 1 {
+		t.Fatalf("started %d, want 1: the queue takes one slot, whatever max_parallel is", n)
+	}
+	if got := <-r.began; got != "/q#1" {
+		t.Fatalf("started %s, want the head of the queue", got)
+	}
+	if n := d.PollQueue(context.Background()); n != 0 {
+		t.Fatalf("started %d while an issue of the queue runs", n)
+	}
+	r.release <- struct{}{}
+	d.waitIdle(1)
+	if n := d.PollQueue(context.Background()); n != 1 {
+		t.Fatalf("started %d, want the next issue once the first ended", n)
+	}
+	if got := <-r.began; got != "/q#2" {
+		t.Fatalf("started %s, want the second issue", got)
+	}
+	close(r.release)
+	d.Wait()
+}
+
+func TestPollShouldRunReadyIssuesBesideTheQueue(t *testing.T) {
 	r := newRunner()
 	d := New(Options{
-		Sources: []Source{{Repo: "/a", Forge: &stubForge{ready: issues(1)}}}, MaxParallel: 2, Log: discard,
-		Queue:     queueJobs(r, "12", "21"),
+		Sources: []Source{{Repo: "/a", Forge: &stubForge{ready: issues(7, 8, 9)}}}, MaxParallel: 3, Log: discard,
+		Queue:     newQueue(r, "1", "2").jobs,
 		Producers: Producers(discard, IssueJobs{Label: "delamain:ready", Run: r.run}, ReviewJobs{}),
 	})
-	if n := d.Poll(context.Background()); n != 2 {
-		t.Fatalf("started %d, want 2 (max_parallel)", n)
+	if n := d.Poll(context.Background()); n != 3 {
+		t.Fatalf("started %d, want the head of the queue and two ready issues", n)
 	}
 	close(r.release)
 	d.Wait()
 	got := r.snapshot()
 	slices.Sort(got)
-	if want := []string{"/q#12", "/q#21"}; !slices.Equal(got, want) {
-		t.Fatalf("the queue goes first: started %v, want %v", got, want)
+	if want := []string{"/a#7", "/a#8", "/q#1"}; !slices.Equal(got, want) {
+		t.Fatalf("started %v, want %v", got, want)
 	}
+}
+
+func TestPollShouldHoldTheQueueWhileItsHeadRunsSomeOtherWay(t *testing.T) {
+	r := newRunner()
+	d := New(Options{
+		Sources: []Source{{Repo: "/q", Forge: &stubForge{ready: issues(1)}}}, MaxParallel: 3, Log: discard,
+		Producers: Producers(discard, IssueJobs{Label: "delamain:ready", Run: r.run}, ReviewJobs{}),
+	})
+	if n := d.Poll(context.Background()); n != 1 {
+		t.Fatalf("the ready issue starts: %d", n)
+	}
+	<-r.began
+	d.opts.Queue = newQueue(r, "1", "2").jobs
+	if n := d.PollQueue(context.Background()); n != 0 {
+		t.Fatalf("started %d: the second issue does not jump the head", n)
+	}
+	close(r.release)
+	d.Wait()
 }
 
 func TestPollQueueShouldNotAskTheProducers(t *testing.T) {
@@ -46,7 +101,7 @@ func TestPollQueueShouldNotAskTheProducers(t *testing.T) {
 	asked := false
 	d := New(Options{
 		MaxParallel: 2, Log: discard, Sources: []Source{{Repo: "/a"}},
-		Queue: queueJobs(r, "12"),
+		Queue: newQueue(r, "12").jobs,
 		Producers: []Producer{func(context.Context, Source) ([]Job, error) {
 			asked = true
 			return nil, nil
@@ -62,48 +117,68 @@ func TestPollQueueShouldNotAskTheProducers(t *testing.T) {
 	}
 }
 
-// slotsStub hands out free slots and counts the releases.
+// slotsStub hands out slots by kind and counts the releases.
 type slotsStub struct {
 	mu       sync.Mutex
-	free     int
+	free     int  // slots for the jobs outside the queue
+	queue    bool // whether the queue's slot is free
+	asked    []bool
 	released int
 }
 
-func (s *slotsStub) acquire(context.Context) (func(), bool, error) {
+func (s *slotsStub) acquire(_ context.Context, queue bool) (func(), bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.free == 0 {
+	s.asked = append(s.asked, queue)
+	if queue && !s.queue || !queue && s.free == 0 {
 		return nil, false, nil
 	}
-	s.free--
+	if queue {
+		s.queue = false
+	} else {
+		s.free--
+	}
 	return func() {
 		s.mu.Lock()
+		defer s.mu.Unlock()
 		s.released++
-		s.free++
-		s.mu.Unlock()
+		if queue {
+			s.queue = true
+		} else {
+			s.free++
+		}
 	}, true, nil
 }
 
-func TestPollShouldStopWhenNoSharedSlotIsFree(t *testing.T) {
+func TestPollShouldTakeTheQueueSlotForTheQueueAndStopWhenNoneIsFree(t *testing.T) {
 	r := newRunner()
-	slots := &slotsStub{free: 1}
-	d := New(Options{MaxParallel: 3, Log: discard, Queue: queueJobs(r, "12", "21", "30"), Acquire: slots.acquire})
-	if n := d.Poll(context.Background()); n != 1 {
-		t.Fatalf("started %d, want 1: the other slots are held by other processes", n)
+	slots := &slotsStub{free: 1, queue: true}
+	d := New(Options{
+		Sources: []Source{{Repo: "/a", Forge: &stubForge{ready: issues(7, 8)}}}, MaxParallel: 5, Log: discard,
+		Queue:     newQueue(r, "1", "2").jobs,
+		Producers: Producers(discard, IssueJobs{Label: "delamain:ready", Run: r.run}, ReviewJobs{}),
+		Acquire:   slots.acquire,
+	})
+	if n := d.Poll(context.Background()); n != 2 {
+		t.Fatalf("started %d, want the queue's head in its slot and one ready issue", n)
 	}
-	if n := d.Poll(context.Background()); n != 0 {
-		t.Fatalf("started %d with no free slot", n)
+	slots.mu.Lock()
+	asked := slices.Clone(slots.asked)
+	slots.mu.Unlock()
+	if want := []bool{true, false, false}; !slices.Equal(asked, want) {
+		t.Fatalf("slots asked %v, want %v", asked, want)
+	}
+	if !d.atMax {
+		t.Fatal("a job that found no slot is logged as the maximum reached")
 	}
 	r.release <- struct{}{}
-	d.waitIdle(1)
+	r.release <- struct{}{}
+	d.waitIdle(2)
 	slots.mu.Lock()
 	released := slots.released
 	slots.mu.Unlock()
-	if released != 1 {
-		t.Fatalf("a finished run releases its slot: %d", released)
-	}
-	if got := r.snapshot(); !slices.Equal(got, []string{"/q#12"}) {
-		t.Fatalf("started %v, want the head of the queue", got)
+	if released != 2 {
+		t.Fatalf("finished runs release their slots: %d", released)
 	}
 	select {
 	case <-d.wake:

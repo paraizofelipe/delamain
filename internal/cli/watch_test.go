@@ -32,6 +32,7 @@ type fakeWatchSource struct {
 	today        budget.Status
 	daemon       bool
 	queue        []store.QueueItem
+	slots        SlotsView
 	err          error
 	finished     int // the last --limit asked of Runs
 	reads        int // reloads that reached the source
@@ -50,6 +51,8 @@ func (f *fakeWatchSource) Status(_ context.Context, id int64) (RunStatus, error)
 func (f *fakeWatchSource) Today(context.Context) (budget.Status, error) { return f.today, f.err }
 
 func (f *fakeWatchSource) Queue(context.Context) ([]store.QueueItem, error) { return f.queue, f.err }
+
+func (f *fakeWatchSource) Slots(context.Context) (SlotsView, error) { return f.slots, f.err }
 
 func (f *fakeWatchSource) DaemonRunning() bool { return f.daemon }
 

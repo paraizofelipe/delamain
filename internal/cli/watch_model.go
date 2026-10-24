@@ -46,6 +46,7 @@ type watchData struct {
 	today        budget.Status
 	daemon       bool
 	queue        []store.QueueItem
+	slots        SlotsView
 	logs         []logLine    // new lines of logsOf, read by follower
 	skipped      int          // lines of logsOf left unread before logs
 	logsOf       int64        // the run selected when the reload started
@@ -392,6 +393,9 @@ func (m watchModel) reload() tea.Cmd {
 			return watchErrMsg{err}
 		}
 		if d.queue, err = src.Queue(ctx); err != nil {
+			return watchErrMsg{err}
+		}
+		if d.slots, err = src.Slots(ctx); err != nil {
 			return watchErrMsg{err}
 		}
 		if runs := append(append([]RunView{}, active...), done...); len(runs) > 0 {

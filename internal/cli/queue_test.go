@@ -2,10 +2,12 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/paraizo/delamain/internal/config"
 	"github.com/paraizo/delamain/internal/forge"
@@ -137,7 +139,7 @@ func TestQueueJobShouldLeaveTheQueueBeforeItRuns(t *testing.T) {
 		return pipeline.Result{Outcome: pipeline.OutcomeApproved}, nil
 	})
 	js, err := jobs(ctx)
-	if err != nil || len(js) != 2 || js[0].Key != f.repo+"#12" {
+	if err != nil || len(js) != 2 || js[0].Key != f.repo+"#12" || !js[0].Queue {
 		t.Fatalf("one job per item, in order: %+v %v", js, err)
 	}
 	if _, err := js[0].Run(ctx); err != nil {
@@ -176,45 +178,49 @@ func TestQueueJobsShouldNotLetAnItemWithoutForgeBlockTheOthers(t *testing.T) {
 	}
 }
 
-func TestAcquireRunSlotShouldWaitForAFreeSlot(t *testing.T) {
+func TestAcquireRunSlotShouldRefuseARunWithNoSlotFreeForIt(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
-	prev := slotPoll
-	slotPoll = 10 * time.Millisecond
-	t.Cleanup(func() { slotPoll = prev })
-	held, ok, err := f.st.AcquireDaemonSlot(ctx, 1)
-	if !ok || err != nil {
-		t.Fatal(ok, err)
-	}
-	var out strings.Builder
-	got := make(chan error, 1)
-	go func() {
-		release, err := acquireRunSlot(ctx, f.st, 1, &out)
-		if err == nil {
-			release()
-		}
-		got <- err
-	}()
-	select {
-	case err := <-got:
-		t.Fatalf("the run must wait while the slot is held: %v", err)
-	case <-time.After(50 * time.Millisecond):
-	}
-	if _, ok, _ := f.st.AcquireDaemonSlot(ctx, 2); ok {
-		t.Fatal("the daemon takes no slot while a run waits, even under the limit")
-	}
-	if err := f.st.ReleaseSlot(ctx, held); err != nil {
+	release, err := acquireRunSlot(ctx, f.st, 2)
+	if err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case err := <-got:
-		if err != nil {
-			t.Fatal(err)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("the run takes the freed slot")
+	if _, err := f.st.Enqueue(ctx, f.repo, 12, ""); err != nil {
+		t.Fatal(err)
 	}
-	if n, _ := f.st.SlotsInUse(ctx); n != 0 {
-		t.Fatalf("release frees the slot: %d in use", n)
+	_, err = acquireRunSlot(ctx, f.st, 2)
+	if !errors.Is(err, errNoSlot) || err.Error() != "maximum parallelism reached: 1/2 slots in use (1 reserved for the queue)" {
+		t.Fatalf("the last slot is the queue's: %v", err)
+	}
+	release()
+	if u, _ := f.st.SlotUsage(ctx, nil); u.InUse != 0 {
+		t.Fatalf("release frees the slot: %+v", u)
+	}
+	release, err = acquireRunSlot(ctx, f.st, 2)
+	if err != nil {
+		t.Fatalf("with one slot free besides the queue's the run starts: %v", err)
+	}
+	release()
+}
+
+func TestRunShouldExitWithCode5WhenTheMaximumParallelismIsReached(t *testing.T) {
+	f := newFixture(t)
+	if _, err := f.st.Enqueue(context.Background(), f.repo, 12, ""); err != nil {
+		t.Fatal(err)
+	}
+	task := filepath.Join(t.TempDir(), "task.md")
+	if err := os.WriteFile(task, []byte("# Fix login\n\n- [ ] the login works\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// max_parallel is 1 by default: the queue keeps the only slot.
+	out, err := execute(t, "--config", f.cfgFile, "run", "--task", task, "--repo", f.repo)
+	if code, ok := IsExit(err); !ok || code != exitNoSlot {
+		t.Fatalf("exit %v, want %d:\n%s", err, exitNoSlot, out)
+	}
+	if !strings.Contains(out, "maximum parallelism reached: 0/1 slots in use (1 reserved for the queue)") {
+		t.Fatalf("the run says why it did not start:\n%s", out)
+	}
+	if runs, _ := f.st.RecentRuns(context.Background(), 10); len(runs) != 0 {
+		t.Fatalf("a refused run records nothing: %+v", runs)
 	}
 }

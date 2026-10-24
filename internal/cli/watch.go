@@ -17,6 +17,7 @@ import (
 
 	"github.com/paraizo/delamain/internal/budget"
 	"github.com/paraizo/delamain/internal/config"
+	"github.com/paraizo/delamain/internal/pipeline"
 	"github.com/paraizo/delamain/internal/store"
 )
 
@@ -28,6 +29,8 @@ type watchSource interface {
 	Today(ctx context.Context) (budget.Status, error)
 	// Queue lists the queue in execution order.
 	Queue(ctx context.Context) ([]store.QueueItem, error)
+	// Slots says how the slots of pipeline.max_parallel stand.
+	Slots(ctx context.Context) (SlotsView, error)
 	DaemonRunning() bool
 }
 
@@ -145,6 +148,17 @@ func (s inspectorWatchSource) Today(ctx context.Context) (budget.Status, error) 
 
 func (s inspectorWatchSource) Queue(ctx context.Context) ([]store.QueueItem, error) {
 	return s.in.st.Queue(ctx)
+}
+
+// SlotsView is how the slots stand: in use of Max, and whether an issue of the queue runs in one.
+type SlotsView struct {
+	InUse, Max int
+	Queue      bool
+}
+
+func (s inspectorWatchSource) Slots(ctx context.Context) (SlotsView, error) {
+	u, err := s.in.st.SlotUsage(ctx, pipeline.ProcessAlive)
+	return SlotsView{InUse: u.InUse, Max: s.in.cfg.Pipeline.MaxParallel, Queue: u.QueueRunning}, err
 }
 
 func (s inspectorWatchSource) DaemonRunning() bool { return daemonRunning(s.in.cfg.Paths.StateDir) }

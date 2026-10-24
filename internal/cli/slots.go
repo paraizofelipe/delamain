@@ -2,55 +2,46 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"io"
-	"time"
 
 	"github.com/paraizo/delamain/internal/pipeline"
 	"github.com/paraizo/delamain/internal/store"
 )
 
-// slotPoll paces a run waiting for a slot; tests shorten it.
-var slotPoll = 2 * time.Second
+// errNoSlot is a run refused because every slot is held, or the only free one is the queue's.
+var errNoSlot = errors.New("maximum parallelism reached")
 
-// acquireRunSlot waits for one of the maxSlots every delamain process shares and returns its
-// release. A waiting run goes ahead of the daemon's queue: the daemon takes no slot while one
-// waits. Cancelling ctx gives the place up.
-func acquireRunSlot(ctx context.Context, st *store.Store, maxSlots int, w io.Writer) (func(), error) {
+// exitNoSlot is the exit code of a run refused for want of a slot.
+const exitNoSlot = 5
+
+// acquireRunSlot takes one of the maxSlots every delamain process shares for a run and returns its
+// release. A run never waits nor goes ahead of the queue: with no slot free for it, it is refused
+// with errNoSlot, wrapped with how the slots stand.
+func acquireRunSlot(ctx context.Context, st *store.Store, maxSlots int) (func(), error) {
 	if err := st.PruneSlots(ctx, pipeline.ProcessAlive); err != nil {
 		return nil, err
 	}
-	id, err := st.WaitSlot(ctx)
+	id, ok, err := st.AcquireSlot(ctx, store.HolderRun, maxSlots)
 	if err != nil {
 		return nil, err
 	}
-	// The slot is freed even when ctx is what ended the run.
-	release := func() { _ = st.ReleaseSlot(context.WithoutCancel(ctx), id) }
-	told := false
-	for {
-		ok, err := st.TakeSlot(ctx, id, maxSlots)
+	if !ok {
+		u, err := st.SlotUsage(ctx, nil)
 		if err != nil {
-			release()
 			return nil, err
 		}
-		if ok {
-			return release, nil
-		}
-		if !told {
-			told = true
-			n, _ := st.SlotsInUse(ctx)
-			fmt.Fprintf(w, "waiting for a free slot (%d/%d in use)…\n", n, maxSlots)
-		}
-		select {
-		case <-ctx.Done():
-			release()
-			return nil, ctx.Err()
-		case <-time.After(slotPoll):
-		}
-		// A holder that died keeps its slot until someone prunes it.
-		if err := st.PruneSlots(ctx, pipeline.ProcessAlive); err != nil {
-			release()
-			return nil, err
-		}
+		return nil, fmt.Errorf("%w: %s", errNoSlot, slotsText(u, maxSlots))
 	}
+	// The slot is freed even when ctx is what ended the run.
+	return func() { _ = st.ReleaseSlot(context.WithoutCancel(ctx), id) }, nil
+}
+
+// slotsText says how the slots stand, e.g. "3/3 slots in use (1 reserved for the queue)".
+func slotsText(u store.SlotUsage, maxSlots int) string {
+	s := fmt.Sprintf("%d/%d slots in use", u.InUse, maxSlots)
+	if u.Reserved {
+		s += " (1 reserved for the queue)"
+	}
+	return s
 }

@@ -168,3 +168,23 @@ func TestWatchCompactShouldKeepTheRunsAheadOfTheQueue(t *testing.T) {
 		t.Fatal("tab skips a queue with nothing to scroll")
 	}
 }
+
+func TestWatchHeaderShouldShowTheSlotsAndWarnAtTheMaximum(t *testing.T) {
+	for _, c := range []struct {
+		width int
+		want  string
+	}{{160, "slots 2/3 · 1 queue"}, {120, "slots 2/3 · 1 queue"}, {80, "2/3"}} {
+		src := &fakeWatchSource{status: map[int64]RunStatus{}, slots: SlotsView{InUse: 2, Max: 3, Queue: true}}
+		if head := strings.Split(stripANSI(startWatch(t, src, c.width).View()), "\n")[0]; !strings.Contains(head, c.want) {
+			t.Fatalf("%d columns: the header misses %q: %q", c.width, c.want, head)
+		}
+	}
+	m := watchModel{st: lineStyles(termenv.ANSI), data: watchData{slots: SlotsView{InUse: 3, Max: 3}}}
+	if got := m.slots(true); got != m.st.warn.Render("slots 3/3") {
+		t.Fatalf("every slot in use is a warning: %q", got)
+	}
+	m.data.slots.InUse = 1
+	if got := m.slots(true); got != m.st.info.Render("slots 1/3") {
+		t.Fatalf("a free slot is not: %q", got)
+	}
+}
