@@ -26,6 +26,7 @@ type styles struct {
 	info    lipgloss.Style
 	magenta lipgloss.Style
 	blue    lipgloss.Style
+	slot    lipgloss.Style // a place taken in the queue grid of `watch`
 }
 
 func newStyles(r *lipgloss.Renderer) styles {
@@ -39,6 +40,7 @@ func newStyles(r *lipgloss.Renderer) styles {
 		info:    r.NewStyle().Foreground(lipgloss.Color("6")),
 		magenta: r.NewStyle().Foreground(lipgloss.Color("5")),
 		blue:    r.NewStyle().Foreground(lipgloss.Color("4")),
+		slot:    r.NewStyle().Background(lipgloss.Color("62")).Foreground(lipgloss.Color("231")).Bold(true),
 	}
 }
 

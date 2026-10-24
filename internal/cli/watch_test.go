@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -30,6 +31,8 @@ type fakeWatchSource struct {
 	status       map[int64]RunStatus
 	today        budget.Status
 	daemon       bool
+	queue        []store.QueueItem
+	slots        SlotsView
 	err          error
 	finished     int // the last --limit asked of Runs
 	reads        int // reloads that reached the source
@@ -46,6 +49,10 @@ func (f *fakeWatchSource) Status(_ context.Context, id int64) (RunStatus, error)
 }
 
 func (f *fakeWatchSource) Today(context.Context) (budget.Status, error) { return f.today, f.err }
+
+func (f *fakeWatchSource) Queue(context.Context) ([]store.QueueItem, error) { return f.queue, f.err }
+
+func (f *fakeWatchSource) Slots(context.Context) (SlotsView, error) { return f.slots, f.err }
 
 func (f *fakeWatchSource) DaemonRunning() bool { return f.daemon }
 
@@ -1065,7 +1072,7 @@ func TestWatchCompactShouldFoldFinishedRunsAndExpandWithE(t *testing.T) {
 	}
 }
 
-func TestWatchShouldPutTheRunsOnTopOfTheStatusAndTheLogs(t *testing.T) {
+func TestWatchShouldPutTheRunsOnTopOfTheQueueTheStatusAndTheLogs(t *testing.T) {
 	src := crowded()
 	for width, left := range map[int]int{140: 56, 160: 64, 200: 72} {
 		view := screen(startWatch(t, src, width))
@@ -1073,18 +1080,24 @@ func TestWatchShouldPutTheRunsOnTopOfTheStatusAndTheLogs(t *testing.T) {
 		if runs := lines[1]; !strings.HasPrefix(runs, "╭ runs ") || !strings.HasSuffix(runs, "╮") || lipgloss.Width(runs) != width {
 			t.Errorf("width %d: the runs panel takes the whole top: %q", width, runs)
 		}
-		at := 0
+		queue, status := 0, 0
 		for i, l := range lines {
+			if strings.HasPrefix(l, "╭ queue · ") {
+				queue = i
+			}
 			if strings.HasPrefix(l, "╭ status · run 1 ") {
-				at = i
+				status = i
 			}
 		}
-		head := lines[at]
+		head := lines[queue]
 		if lipgloss.Width(head[:strings.Index(head, "╮")+len("╮")]) != left || !strings.Contains(head, "╮╭ logs · run 1 ") {
-			t.Errorf("width %d: the status panel is %d columns wide and the logs follow it: %q", width, left, head)
+			t.Errorf("width %d: the queue opens a %d columns wide left column and the logs follow it: %q", width, left, head)
 		}
-		if above := lines[at-1]; !strings.HasPrefix(above, "╰") || !strings.HasSuffix(above, "╯") || lipgloss.Width(above) != width {
-			t.Errorf("width %d: the list ends above the status panel: %q", width, above)
+		if above := lines[queue-1]; !strings.HasPrefix(above, "╰") || !strings.HasSuffix(above, "╯") || lipgloss.Width(above) != width {
+			t.Errorf("width %d: the list ends above the queue: %q", width, above)
+		}
+		if above := lines[status-1]; status == 0 || !strings.HasPrefix(above, "╰") || lipgloss.Width(above[:strings.Index(above, "╯")+len("╯")]) != left {
+			t.Errorf("width %d: the status panel follows the queue in the left column: %q", width, above)
 		}
 		if bottom := lines[len(lines)-2]; !strings.Contains(bottom, "╯╰") || lipgloss.Width(bottom) != width {
 			t.Errorf("width %d: the status panel and the logs end on the same line: %q", width, bottom)
@@ -1123,8 +1136,11 @@ func TestWatchShouldSplitTheMediumLayoutThirtyEightPercentLeft(t *testing.T) {
 		if !strings.HasPrefix(runs, "╭ runs ") || lipgloss.Width(runs[:strings.Index(runs, "╮")+len("╮")]) != left {
 			t.Errorf("width %d: the runs panel is %d columns wide: %q", width, left, runs)
 		}
-		if right := runs[strings.Index(runs, "╮")+len("╮"):]; !strings.HasPrefix(right, "╭ status · enter details ") {
-			t.Errorf("width %d: the status strip is on top at the right: %q", width, runs)
+		if right := runs[strings.Index(runs, "╮")+len("╮"):]; !strings.HasPrefix(right, "╭ queue · ") {
+			t.Errorf("width %d: the queue is on top at the right: %q", width, runs)
+		}
+		if !strings.Contains(lines[1+2+queueRows], "│╭ status · enter details ") {
+			t.Errorf("width %d: the status strip follows the queue at the right: %q", width, lines[1+2+queueRows])
 		}
 		if !strings.HasPrefix(lines[len(lines)-2], "╰") || !strings.Contains(lines[len(lines)-2], "╯╰") {
 			t.Errorf("width %d: the list takes the whole left column, the logs the rest of the right:\n%s", width, view)
@@ -1145,7 +1161,7 @@ func TestWatchShouldSplitTheMediumLayoutThirtyEightPercentLeft(t *testing.T) {
 
 		m = send(t, m, keyPress("enter"))
 		view = screen(m)
-		if strings.Contains(view, "╭ logs") || !strings.Contains(lines[1], "╭ runs ") || !strings.Contains(strings.Split(view, "\n")[1], "╮╭ status · run 14 ") {
+		if strings.Contains(view, "╭ logs") || !strings.Contains(lines[1], "╭ runs ") || !regexp.MustCompile(`[╮│]╭ status · run 14 `).MatchString(view) {
 			t.Errorf("width %d: enter puts the full status on the right:\n%s", width, view)
 		}
 		if full := panelText(view, "status · run 14 "); !strings.Contains(nospace(full), nospace("BRANCH fix/55-artifacts-accept-test-file-and-format-check (base main)")) || strings.Contains(full, "…") {

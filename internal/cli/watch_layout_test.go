@@ -39,7 +39,7 @@ func TestPanelsForWideShouldPutTheListOnTopAndCapItAtHalfTheBody(t *testing.T) {
 	}{
 		{"a list that fits keeps its rows", 6, 8, 30},
 		{"a list longer than half the body stops there", 40, 19, 19},
-		{"an empty list still shows its panel", 0, 2, 36},
+		{"an empty list keeps room for a few rows", 0, 5, 33},
 	} {
 		p := panelsFor(layoutWide, 140, 40, panelNeeds{footer: 1, list: c.list, status: 16})
 		want := watchPanels{
@@ -59,5 +59,37 @@ func TestPanelsForWideShouldHideEveryPanelOnABodyWithNoRoom(t *testing.T) {
 		if r.h != 0 { // a zero height hides the panel
 			t.Errorf("panelsFor gave %+v, want every panel hidden: %+v", r, p)
 		}
+	}
+}
+
+func TestPanelsForShouldPutTheQueueBetweenTheRunsAndTheStatus(t *testing.T) {
+	// 140×40 with a footer line: the body is 38 lines, the list 8 and the rest 30.
+	p := panelsFor(layoutWide, 140, 40, panelNeeds{footer: 1, list: 6, status: 16, queue: queueRows})
+	if want := (rect{0, 9, 56, 5}); p.queue != want || p.status != (rect{0, 14, 56, 25}) || p.logs != (rect{56, 9, 84, 30}) {
+		t.Errorf("wide: the queue opens the left column, below the runs and left of the logs: %+v, want queue %+v", p, want)
+	}
+	p = panelsFor(layoutMedium, 120, 30, panelNeeds{footer: 1, list: 6, strip: 3, queue: queueRows})
+	if p.queue != (rect{45, 1, 75, 5}) || p.strip.y != 6 || p.logs.y != 11 || p.logs.h != 18 {
+		t.Errorf("medium: the queue opens the right column, above the strip: %+v", p)
+	}
+	p = panelsFor(layoutMedium, 120, 30, panelNeeds{footer: 1, list: 6, status: 20, queue: queueRows, full: true})
+	if p.queue != (rect{45, 1, 75, 5}) || p.status != (rect{45, 6, 75, 23}) {
+		t.Errorf("medium full: the queue stays above the status: %+v", p)
+	}
+	p = panelsFor(layoutMedium, 120, 30, panelNeeds{footer: 1, list: 6, status: 24, queue: queueRows, full: true})
+	if p.queue != (rect{}) || p.status != (rect{45, 1, 75, 28}) {
+		t.Errorf("medium full: the full status goes before the queue: %+v", p)
+	}
+	p = panelsFor(layoutCompact, 80, 30, panelNeeds{footer: 1, list: 6, strip: 3, queue: queueRows})
+	if p.list.h != 8 || p.queue.y != p.list.y+p.list.h || p.queue.h != 5 || p.strip.y != p.queue.y+p.queue.h ||
+		p.logs.y != p.strip.y+p.strip.h || p.logs.h < minLogs {
+		t.Errorf("compact: list, queue, strip, logs: %+v", p)
+	}
+	p = panelsFor(layoutCompact, 80, 18, panelNeeds{footer: 1, list: 6, strip: 3, queue: queueRows})
+	if p.list.h != 6 || p.queue != (rect{}) {
+		t.Errorf("compact: the runs go ahead of the queue, which is left out when it does not fit whole: %+v", p)
+	}
+	if p := panelsFor(layoutMini, 60, 20, panelNeeds{footer: 1, queue: queueRows, tab: tabStatus}); p.queue != (rect{}) {
+		t.Errorf("mini: no queue panel: %+v", p.queue)
 	}
 }

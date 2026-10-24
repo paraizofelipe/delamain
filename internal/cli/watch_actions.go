@@ -342,7 +342,8 @@ func (m watchModel) dialogLines() (string, lipgloss.Style, dialogWriter) {
 // helpKeys are the rows of the help: the keys and what they do.
 var helpKeys = [][2]string{
 	{"↑ ↓ · j k", "pick the run; the status and the logs follow it"},
-	{"tab", "switch the focus between the runs and the logs"},
+	{"tab", "move the focus: the runs, the queue (when it scrolls), the logs"},
+	{"↑ ↓ · g G", "scroll the queue when it has the focus"},
 	{"pgup pgdn · g G", "scroll the logs; G follows the end again"},
 	{"1 … 6", "filter the source"},
 	{"f", "follow the end, or stop following it"},

@@ -17,6 +17,8 @@ import (
 
 	"github.com/paraizo/delamain/internal/budget"
 	"github.com/paraizo/delamain/internal/config"
+	"github.com/paraizo/delamain/internal/pipeline"
+	"github.com/paraizo/delamain/internal/store"
 )
 
 // watchSource is everything `watch` reads; it has no method that changes a run.
@@ -25,6 +27,10 @@ type watchSource interface {
 	Runs(ctx context.Context, finished int) (active, done []RunView, err error)
 	Status(ctx context.Context, id int64) (RunStatus, error)
 	Today(ctx context.Context) (budget.Status, error)
+	// Queue lists the queue in execution order.
+	Queue(ctx context.Context) ([]store.QueueItem, error)
+	// Slots says how the slots of pipeline.max_parallel stand.
+	Slots(ctx context.Context) (SlotsView, error)
 	DaemonRunning() bool
 }
 
@@ -42,8 +48,8 @@ func newWatchCmd(load func() (config.Config, error)) *cobra.Command {
 		Use:   "watch",
 		Short: "Follow runs, the daemon and the day's spend in a terminal UI",
 		Long: `Open a terminal UI that lists the active runs and the latest finished ones, shows the status
-of the selected run, whether the daemon is running and the day's spend, and reloads everything
-every --interval. s stops the selected run as delamain stop --no-wait does and d removes it as
+of the selected run, the queue (delamain queue) below it, whether the daemon is running and the
+day's spend, and reloads everything every --interval. s stops the selected run as delamain stop --no-wait does and d removes it as
 delamain rm does, each after a confirmation; o opens its PR/MR, y copies its ID and ? lists every
 key. Quitting (q or ctrl+c) leaves every run as it is.
 
@@ -138,6 +144,21 @@ func (s inspectorWatchSource) Status(ctx context.Context, id int64) (RunStatus, 
 
 func (s inspectorWatchSource) Today(ctx context.Context) (budget.Status, error) {
 	return budget.Meter{Store: s.in.st, Cfg: s.in.cfg.Budget}.Today(ctx)
+}
+
+func (s inspectorWatchSource) Queue(ctx context.Context) ([]store.QueueItem, error) {
+	return s.in.st.Queue(ctx)
+}
+
+// SlotsView is how the slots stand: in use of Max, and whether an issue of the queue runs in one.
+type SlotsView struct {
+	InUse, Max int
+	Queue      bool
+}
+
+func (s inspectorWatchSource) Slots(ctx context.Context) (SlotsView, error) {
+	u, err := s.in.st.SlotUsage(ctx, pipeline.ProcessAlive)
+	return SlotsView{InUse: u.InUse, Max: s.in.cfg.Pipeline.MaxParallel, Queue: u.QueueRunning}, err
 }
 
 func (s inspectorWatchSource) DaemonRunning() bool { return daemonRunning(s.in.cfg.Paths.StateDir) }
