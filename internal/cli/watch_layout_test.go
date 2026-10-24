@@ -61,3 +61,26 @@ func TestPanelsForWideShouldHideEveryPanelOnABodyWithNoRoom(t *testing.T) {
 		}
 	}
 }
+
+func TestPanelsForShouldPutTheQueueRightBelowTheStatus(t *testing.T) {
+	// 140×40 with a footer line: the body is 38 lines, the list 8 and the rest 30.
+	p := panelsFor(layoutWide, 140, 40, panelNeeds{footer: 1, list: 6, status: 16, queue: 2})
+	if want := (rect{0, 35, 56, 4}); p.queue != want || p.status != (rect{0, 9, 56, 26}) || p.logs != (rect{56, 9, 84, 30}) {
+		t.Errorf("wide: the queue takes the foot of the status column: %+v, want queue %+v", p, want)
+	}
+	p = panelsFor(layoutWide, 140, 40, panelNeeds{footer: 1, list: 6, status: 16, queue: 40})
+	if p.queue.h != 10 {
+		t.Errorf("wide: a long queue stops at a third of the column: %+v", p.queue)
+	}
+	p = panelsFor(layoutMedium, 120, 30, panelNeeds{footer: 1, list: 6, strip: 3, queue: 1})
+	if p.queue != (rect{45, 6, 75, 3}) || p.logs.y != 9 || p.logs.h != 20 {
+		t.Errorf("medium: the queue sits between the strip and the logs: %+v", p)
+	}
+	p = panelsFor(layoutCompact, 80, 24, panelNeeds{footer: 1, list: 6, strip: 3, queue: 1})
+	if p.queue.y != p.strip.y+p.strip.h || p.logs.y != p.queue.y+p.queue.h || p.logs.h < minLogs {
+		t.Errorf("compact: strip, queue, logs: %+v", p)
+	}
+	if p := panelsFor(layoutMini, 60, 20, panelNeeds{footer: 1, queue: 2, tab: tabStatus}); p.queue != (rect{}) {
+		t.Errorf("mini: no queue panel: %+v", p.queue)
+	}
+}

@@ -9,6 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/paraizo/delamain/internal/budget"
+	"github.com/paraizo/delamain/internal/store"
 )
 
 var watchKeys = struct {
@@ -44,6 +45,7 @@ type watchData struct {
 	statusOf     int64
 	today        budget.Status
 	daemon       bool
+	queue        []store.QueueItem
 	logs         []logLine    // new lines of logsOf, read by follower
 	skipped      int          // lines of logsOf left unread before logs
 	logsOf       int64        // the run selected when the reload started
@@ -338,6 +340,9 @@ func (m watchModel) reload() tea.Cmd {
 		}
 		d := watchData{active: active, done: done, daemon: src.DaemonRunning()}
 		if d.today, err = src.Today(ctx); err != nil {
+			return watchErrMsg{err}
+		}
+		if d.queue, err = src.Queue(ctx); err != nil {
 			return watchErrMsg{err}
 		}
 		if runs := append(append([]RunView{}, active...), done...); len(runs) > 0 {

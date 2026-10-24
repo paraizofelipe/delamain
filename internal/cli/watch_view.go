@@ -20,6 +20,9 @@ import (
 // selectedBackground highlights the selected run's row.
 var selectedBackground = lipgloss.Color("236")
 
+// maxQueueRows caps the lines of the queue grid; the items past them are counted as +N.
+const maxQueueRows = 4
+
 func (m watchModel) View() string {
 	if m.width <= 0 || m.height <= 0 {
 		return ""
@@ -44,6 +47,7 @@ func (m watchModel) View() string {
 		{p.list, panel("runs", scroll(f.list, f.sel, p.list.h-2), p.list.w, p.list.h, listLook)},
 		{p.strip, panel("status · enter details", f.strip, p.strip.w, p.strip.h, m.st.muted)},
 		{p.status, panel(statusTitle, f.status, p.status.w, p.status.h, m.st.muted)},
+		{p.queue, panel(fmt.Sprintf("queue · %d", len(m.data.queue)), f.queue, p.queue.w, p.queue.h, m.st.muted)},
 		{p.logs, panel(logsTitle, m.logs.view(m.st, v, p.logs.w-4, p.logs.h-2, m.logLook()), p.logs.w, p.logs.h, logsLook)},
 	}
 	lines := append([]string{m.header()}, compose(max(m.height-1-len(f.footer), 0), parts...)...)
@@ -63,6 +67,7 @@ type watchFrame struct {
 	sel    int // the selected run's line of list
 	strip  []string
 	status []string
+	queue  []string
 }
 
 // frame lays the screen of the current layout out.
@@ -78,6 +83,7 @@ func (m watchModel) frame() watchFrame {
 			f.status = m.wrappedStatus(m.width - 4)
 		}
 	case layoutCompact:
+		f.queue = m.queueLines(m.width - 4)
 		f.list, f.sel = m.listLines(m.width-4, listCols{issue: true, fold: !m.expanded})
 		if m.fullStatus {
 			f.status = m.wrappedStatus(m.width - 4)
@@ -86,6 +92,7 @@ func (m watchModel) frame() watchFrame {
 		}
 	case layoutMedium:
 		left := mediumLeft(m.width)
+		f.queue = m.queueLines(m.width - left - 4)
 		f.list, f.sel = m.listLines(left-4, listCols{header: true, issue: true})
 		if m.fullStatus {
 			f.status = m.wrappedStatus(m.width - left - 4)
@@ -95,8 +102,9 @@ func (m watchModel) frame() watchFrame {
 	default:
 		f.list, f.sel = m.listLines(m.width-4, listCols{header: true, issue: true, more: true})
 		f.status = m.statusLines()
+		f.queue = m.queueLines(leftWidth(m.width) - 4)
 	}
-	n.footer, n.list, n.strip, n.status = len(f.footer), len(f.list), len(f.strip), len(f.status)
+	n.footer, n.list, n.strip, n.status, n.queue = len(f.footer), len(f.list), len(f.strip), len(f.status), len(f.queue)
 	f.panels = panelsFor(m.layout, m.width, m.height, n)
 	return f
 }
@@ -559,4 +567,48 @@ func clean(s string) string {
 		}
 		return r
 	}, s)
+}
+
+// queueLines are the queue as a grid, like the contributions graph of GitHub: one cell per item,
+// "P:<position> #<issue>" on the slot background, in execution order, wrapped at inner columns
+// and capped at maxQueueRows lines, the last one ending in +N for the items that did not fit.
+func (m watchModel) queueLines(inner int) []string {
+	items := m.data.queue
+	if len(items) == 0 {
+		return []string{paint(m.st.muted, "empty")}
+	}
+	var rows [][]string // the cells' plain text, row by row
+	width := 0          // of the last row
+	for _, it := range items {
+		c := fmt.Sprintf(" P:%d #%d ", it.Position, it.Issue)
+		w := lipgloss.Width(c)
+		if len(rows) == 0 || width+1+w > inner {
+			rows, width = append(rows, nil), -1
+		}
+		rows[len(rows)-1] = append(rows[len(rows)-1], c)
+		width += 1 + w
+	}
+	more := 0
+	if len(rows) > maxQueueRows {
+		for _, r := range rows[maxQueueRows:] {
+			more += len(r)
+		}
+		rows = rows[:maxQueueRows]
+	}
+	lines := make([]string, len(rows))
+	for i, r := range rows {
+		last := i == len(rows)-1 && more > 0
+		for last && len(r) > 0 && lipgloss.Width(strings.Join(r, " "))+len(fmt.Sprintf(" +%d", more+1)) > inner {
+			r, more = r[:len(r)-1], more+1 // room for the count
+		}
+		cells := make([]string, len(r))
+		for j, c := range r {
+			cells[j] = paint(m.st.slot, c)
+		}
+		lines[i] = strings.Join(cells, " ")
+		if last {
+			lines[i] += paint(m.st.muted, fmt.Sprintf(" +%d", more))
+		}
+	}
+	return lines
 }

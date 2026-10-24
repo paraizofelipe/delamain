@@ -36,9 +36,9 @@ func layoutFor(width, height int) watchLayout {
 type rect struct{ x, y, w, h int }
 
 // watchPanels are the rectangles of the panels of a layout: strip is the 3 line summary of the
-// status, status the whole of it.
+// status, status the whole of it, and queue the queue right below either one.
 type watchPanels struct {
-	tabs, list, strip, status, logs rect
+	tabs, list, strip, status, queue, logs rect
 }
 
 // panelNeeds is what the panels hold, in lines, and the state that shapes them.
@@ -47,6 +47,7 @@ type panelNeeds struct {
 	list   int  // lines of the list
 	strip  int  // lines of the status strip
 	status int  // lines of the status panel
+	queue  int  // lines of the queue grid; 0 leaves the panel out
 	zoom   bool // the logs take the whole body
 	full   bool // the full status takes the place of the strip and the logs
 	tab    miniTab
@@ -88,46 +89,83 @@ func panelsFor(l watchLayout, width, height int, n panelNeeds) watchPanels {
 	}
 	left := leftWidth(width)
 	// The list takes the top of the screen, its rows up to half the body; the status panel and
-	// the logs share the rest of it, side by side.
+	// the logs share the rest of it, side by side, and the queue takes the foot of the status
+	// column, up to a third of it.
 	listH := min(2+n.list, body/2)
+	rest := body - listH
+	queue := queueHeight(n, rest/3)
 	return watchPanels{
 		list:   rect{0, 1, width, listH},
-		status: rect{0, 1 + listH, left, body - listH},
-		logs:   rect{left, 1 + listH, width - left, body - listH},
+		status: rect{0, 1 + listH, left, rest - queue},
+		queue:  queueRect(0, 1+listH+rest-queue, left, queue),
+		logs:   rect{left, 1 + listH, width - left, rest},
 	}
 }
+
+// queueHeight is the height of the queue panel: its grid and borders, up to room lines; a panel
+// with no room for one line of grid is left out.
+func queueHeight(n panelNeeds, room int) int {
+	if n.queue == 0 || room < 3 {
+		return 0
+	}
+	return min(2+n.queue, room)
+}
+
+// queueRect is the queue panel's rectangle; a zero height is the zero rect, as for every panel
+// a layout leaves out.
+func queueRect(x, y, w, h int) rect {
+	if h == 0 {
+		return rect{}
+	}
+	return rect{x, y, w, h}
+}
+
+// minFullLogs is the height of the smallest logs panel that shows its chips and separators too.
+const minFullLogs = minLogs + 2
 
 // minLogs is the height of the smallest logs panel: borders, chips, a log line and its footer.
 const minLogs = 5
 
-// compactPanels stacks the list, the status strip and the logs on the whole width: the logs keep
-// minLogs lines and the list its selected row, the strip takes what it needs of the rest, then
-// the list, and the logs get what is left. The full status replaces the strip and the logs.
+// compactPanels stacks the list, the status strip, the queue and the logs on the whole width: the
+// logs keep minLogs lines and the list its selected row, the strip takes what it needs of the
+// rest, then the queue, then the list, and the logs get what is left. The full status replaces
+// the strip and the logs.
 func compactPanels(width, body int, n panelNeeds) watchPanels {
 	if n.full { // the list shrinks to its selected row before the status does
 		list := min(2+n.list, max(body-2-n.status, 3), body)
-		return watchPanels{list: rect{0, 1, width, list}, status: rect{0, 1 + list, width, body - list}}
+		queue := queueHeight(n, (body-list)/3)
+		return watchPanels{
+			list:   rect{0, 1, width, list},
+			status: rect{0, 1 + list, width, body - list - queue},
+			queue:  queueRect(0, 1+body-queue, width, queue),
+		}
 	}
 	strip := min(2+n.strip, max(body-minLogs-3, 0))
-	list := min(2+n.list, max(body-strip-minLogs, 0))
+	queue := queueHeight(n, body-strip-minLogs-3)
+	list := min(2+n.list, max(body-strip-queue-minLogs, 0))
 	return watchPanels{
 		list:  rect{0, 1, width, list},
 		strip: rect{0, 1 + list, width, strip},
-		logs:  rect{0, 1 + list + strip, width, body - list - strip},
+		queue: queueRect(0, 1+list+strip, width, queue),
+		logs:  rect{0, 1 + list + strip + queue, width, body - list - strip - queue},
 	}
 }
 
-// mediumPanels gives the list the whole left column, and the right one to the status strip on
-// top of the logs, which keep minLogs lines; the full status replaces the strip and the logs.
+// mediumPanels gives the list the whole left column, and the right one to the status strip and
+// the queue on top of the logs, which keep minLogs lines; the full status replaces the strip and
+// the logs.
 func mediumPanels(width, body int, n panelNeeds) watchPanels {
 	left := mediumLeft(width)
 	p := watchPanels{list: rect{0, 1, left, body}}
 	if n.full {
-		p.status = rect{left, 1, width - left, body}
+		queue := queueHeight(n, body/3)
+		p.status, p.queue = rect{left, 1, width - left, body - queue}, queueRect(left, 1+body-queue, width-left, queue)
 		return p
 	}
 	strip := min(2+n.strip, max(body-minLogs, 0))
-	p.strip, p.logs = rect{left, 1, width - left, strip}, rect{left, 1 + strip, width - left, body - strip}
+	queue := queueHeight(n, body-strip-minFullLogs)
+	p.strip, p.queue = rect{left, 1, width - left, strip}, queueRect(left, 1+strip, width-left, queue)
+	p.logs = rect{left, 1 + strip + queue, width - left, body - strip - queue}
 	return p
 }
 
