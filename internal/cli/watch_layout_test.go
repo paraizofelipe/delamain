@@ -29,27 +29,40 @@ func TestLayoutForShouldPickTheLayoutByWidthAndHeight(t *testing.T) {
 	}
 }
 
-func TestPanelsForWideShouldPutTheListOnTopAndCapItAtHalfTheBody(t *testing.T) {
-	// 140×40 with a footer line: the body is 38 lines and the left column 56 columns.
+func TestPanelsForWideShouldPutTheListOnTopWithAFixedHeight(t *testing.T) {
+	// 140×40 with a footer line: the body is 38 lines and the left column 56 columns. The list
+	// holds 12 runs whatever it has to show, so removing one never moves the panels under it.
 	for _, c := range []struct {
-		name       string
-		list       int
-		wantList   int // height of the runs panel
-		wantBottom int // height of the status panel and of the logs
+		name string
+		list int
 	}{
-		{"a list that fits keeps its rows", 6, 8, 30},
-		{"a list longer than half the body stops there", 40, 19, 19},
-		{"an empty list still shows its panel", 0, 2, 36},
+		{"a list of a few runs", 6},
+		{"a list of more runs than it shows", 40},
+		{"an empty list", 0},
 	} {
 		p := panelsFor(layoutWide, 140, 40, panelNeeds{footer: 1, list: c.list, status: 16})
 		want := watchPanels{
-			list:   rect{0, 1, 140, c.wantList},
-			status: rect{0, 1 + c.wantList, 56, c.wantBottom},
-			logs:   rect{56, 1 + c.wantList, 84, c.wantBottom},
+			list:   rect{0, 1, 140, 17},
+			status: rect{0, 18, 56, 21},
+			logs:   rect{56, 18, 84, 21},
 		}
 		if p != want {
 			t.Errorf("%s: panelsFor gave %+v, want %+v", c.name, p, want)
 		}
+	}
+}
+
+func TestPanelsForWideShouldShrinkTheListOnABodyTooShortForIt(t *testing.T) {
+	// 140×20 with a footer line: 18 lines of body. No wide terminal is that short, but the cap
+	// is what keeps minLogs lines for the status panel and the logs if one ever is.
+	p := panelsFor(layoutWide, 140, 20, panelNeeds{footer: 1, list: 30, status: 16})
+	want := watchPanels{
+		list:   rect{0, 1, 140, 13},
+		status: rect{0, 14, 56, 5},
+		logs:   rect{56, 14, 84, 5},
+	}
+	if p != want {
+		t.Errorf("panelsFor gave %+v, want %+v", p, want)
 	}
 }
 
