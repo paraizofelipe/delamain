@@ -20,8 +20,8 @@ import (
 // selectedBackground highlights the selected run's row.
 var selectedBackground = lipgloss.Color("236")
 
-// maxQueueRows caps the lines of the queue grid; the items past them are counted as +N.
-const maxQueueRows = 4
+// queueRows is the height of the queue grid; the rows past it scroll.
+const queueRows = 3
 
 func (m watchModel) View() string {
 	if m.width <= 0 || m.height <= 0 {
@@ -38,16 +38,20 @@ func (m watchModel) View() string {
 		statusTitle, logsTitle = fmt.Sprintf("status · run %d", v.ID), fmt.Sprintf("logs · run %d", v.ID)
 		logsTitle += " · " + m.logs.state(m.st, v)
 	}
-	listLook, logsLook := m.st.info, m.st.muted
-	if m.focusLogs {
-		listLook, logsLook = logsLook, listLook
+	listLook, queueLook, logsLook := m.st.info, m.st.muted, m.st.muted
+	switch {
+	case m.focusLogs:
+		listLook, logsLook = m.st.muted, m.st.info
+	case m.focusQueue:
+		listLook, queueLook = m.st.muted, m.st.info
 	}
+	queueTitle, queue := m.queuePanel(f.queue)
 	parts := []placed{
 		{p.tabs, []string{m.tabs()}},
 		{p.list, panel("runs", scroll(f.list, f.sel, p.list.h-2), p.list.w, p.list.h, listLook)},
 		{p.strip, panel("status · enter details", f.strip, p.strip.w, p.strip.h, m.st.muted)},
 		{p.status, panel(statusTitle, f.status, p.status.w, p.status.h, m.st.muted)},
-		{p.queue, panel(fmt.Sprintf("queue · %d", len(m.data.queue)), f.queue, p.queue.w, p.queue.h, m.st.muted)},
+		{p.queue, panel(queueTitle, queue, p.queue.w, p.queue.h, queueLook)},
 		{p.logs, panel(logsTitle, m.logs.view(m.st, v, p.logs.w-4, p.logs.h-2, m.logLook()), p.logs.w, p.logs.h, logsLook)},
 	}
 	lines := append([]string{m.header()}, compose(max(m.height-1-len(f.footer), 0), parts...)...)
@@ -104,7 +108,10 @@ func (m watchModel) frame() watchFrame {
 		f.status = m.statusLines()
 		f.queue = m.queueLines(leftWidth(m.width) - 4)
 	}
-	n.footer, n.list, n.strip, n.status, n.queue = len(f.footer), len(f.list), len(f.strip), len(f.status), len(f.queue)
+	n.footer, n.list, n.strip, n.status = len(f.footer), len(f.list), len(f.strip), len(f.status)
+	if f.queue != nil {
+		n.queue = queueRows // a fixed height, empty or not: the grid scrolls inside it
+	}
 	f.panels = panelsFor(m.layout, m.width, m.height, n)
 	return f
 }
@@ -570,45 +577,41 @@ func clean(s string) string {
 }
 
 // queueLines are the queue as a grid, like the contributions graph of GitHub: one cell per item,
-// "P:<position> #<issue>" on the slot background, in execution order, wrapped at inner columns
-// and capped at maxQueueRows lines, the last one ending in +N for the items that did not fit.
+// "P:<position> #<issue>" on the slot background, in execution order, wrapped at inner columns.
+// Every row is returned: the panel shows queueRows of them and scrolls through the rest.
 func (m watchModel) queueLines(inner int) []string {
 	items := m.data.queue
 	if len(items) == 0 {
 		return []string{paint(m.st.muted, "empty")}
 	}
-	var rows [][]string // the cells' plain text, row by row
-	width := 0          // of the last row
+	var rows [][]string
+	width := 0 // of the last row
 	for _, it := range items {
 		c := fmt.Sprintf(" P:%d #%d ", it.Position, it.Issue)
 		w := lipgloss.Width(c)
 		if len(rows) == 0 || width+1+w > inner {
 			rows, width = append(rows, nil), -1
 		}
-		rows[len(rows)-1] = append(rows[len(rows)-1], c)
+		rows[len(rows)-1] = append(rows[len(rows)-1], paint(m.st.slot, c))
 		width += 1 + w
-	}
-	more := 0
-	if len(rows) > maxQueueRows {
-		for _, r := range rows[maxQueueRows:] {
-			more += len(r)
-		}
-		rows = rows[:maxQueueRows]
 	}
 	lines := make([]string, len(rows))
 	for i, r := range rows {
-		last := i == len(rows)-1 && more > 0
-		for last && len(r) > 0 && lipgloss.Width(strings.Join(r, " "))+len(fmt.Sprintf(" +%d", more+1)) > inner {
-			r, more = r[:len(r)-1], more+1 // room for the count
-		}
-		cells := make([]string, len(r))
-		for j, c := range r {
-			cells[j] = paint(m.st.slot, c)
-		}
-		lines[i] = strings.Join(cells, " ")
-		if last {
-			lines[i] += paint(m.st.muted, fmt.Sprintf(" +%d", more))
-		}
+		lines[i] = strings.Join(r, " ")
 	}
 	return lines
+}
+
+// queueTop is the first row of the grid the panel shows: the scroll, kept within the rows.
+func (m watchModel) queueTop(rows int) int { return max(min(m.queueScroll, rows-queueRows), 0) }
+
+// queuePanel is the title and the visible rows of the queue panel; the title says which rows
+// show once the grid is taller than the panel.
+func (m watchModel) queuePanel(rows []string) (string, []string) {
+	title := fmt.Sprintf("queue · %d", len(m.data.queue))
+	top := m.queueTop(len(rows))
+	if len(rows) > queueRows {
+		title += fmt.Sprintf(" · rows %d-%d of %d", top+1, top+queueRows, len(rows))
+	}
+	return title, rows[top:min(top+queueRows, len(rows))]
 }

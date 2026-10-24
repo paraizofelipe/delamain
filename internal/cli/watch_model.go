@@ -74,6 +74,9 @@ type watchModel struct {
 	err           error
 	logs          logPane
 	focusLogs     bool // the keys that move the selection scroll the logs instead
+	focusQueue    bool // the keys that move the selection scroll the queue instead
+	queueScroll   int  // the first row of the queue grid shown
+	zoomedQueue   bool // focusQueue before the zoom
 	zoom          bool // the logs take the whole width
 	zoomedFrom    bool // focusLogs before the zoom
 	fullStatus    bool // the full status takes the place of the strip and the logs
@@ -118,6 +121,9 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	// The panels follow the window, the data and the keys: the logs scroll by what they show.
 	m.logs.resize(m.logRows())
+	if m.focusQueue && !m.queueScrolls() {
+		m.focusQueue = false // nothing left to scroll, or no panel: the focus goes back to the runs
+	}
 	return m, cmd
 }
 
@@ -200,7 +206,7 @@ func (m watchModel) key(msg tea.KeyMsg) (watchModel, tea.Cmd) {
 		return m, nil
 	case key.Matches(msg, watchKeys.focus):
 		if !m.zoom { // the list is hidden in full screen
-			m.focusLogs = !m.focusLogs
+			m = m.nextFocus()
 		}
 		return m, nil
 	case key.Matches(msg, watchKeys.details):
@@ -226,13 +232,16 @@ func (m watchModel) key(msg tea.KeyMsg) (watchModel, tea.Cmd) {
 		return m, nil
 	case key.Matches(msg, watchKeys.zoom):
 		if m.zoom = !m.zoom; m.zoom {
-			m.zoomedFrom, m.focusLogs = m.focusLogs, true
+			m.zoomedFrom, m.zoomedQueue = m.focusLogs, m.focusQueue
+			m.focusLogs, m.focusQueue = true, false
 		} else {
-			m.focusLogs = m.zoomedFrom
+			m.focusLogs, m.focusQueue = m.zoomedFrom, m.zoomedQueue
 		}
 		return m, nil
 	case m.focusLogs && (m.layout != layoutMini || m.tab == tabLogs): // the other tabs move the selection
 		return m.scrollLogs(msg), nil
+	case m.focusQueue:
+		return m.scrollQueue(msg), nil
 	case key.Matches(msg, watchKeys.up):
 		idx--
 	case key.Matches(msg, watchKeys.down):
@@ -254,6 +263,46 @@ func (m watchModel) key(msg tea.KeyMsg) (watchModel, tea.Cmd) {
 	// The new selection's spend comes from its status: read it now, not on the next tick.
 	m.loading = true
 	return m, m.reload()
+}
+
+// nextFocus moves the focus from the runs to the queue, when it has rows to scroll, to the logs
+// and back to the runs.
+func (m watchModel) nextFocus() watchModel {
+	switch {
+	case m.focusLogs:
+		m.focusLogs = false
+	case m.focusQueue:
+		m.focusQueue, m.focusLogs = false, true
+	case m.queueScrolls():
+		m.focusQueue = true
+	default:
+		m.focusLogs = true
+	}
+	return m
+}
+
+// queueScrolls reports whether the layout shows the queue panel and its grid is taller than it.
+func (m watchModel) queueScrolls() bool {
+	f := m.frame()
+	return f.panels.queue.h > 0 && len(f.queue) > queueRows
+}
+
+// scrollQueue moves the queue grid a row at a time with the keys that move the selection.
+func (m watchModel) scrollQueue(msg tea.KeyMsg) watchModel {
+	rows := len(m.frame().queue)
+	top := m.queueTop(rows)
+	switch {
+	case key.Matches(msg, watchKeys.up):
+		top--
+	case key.Matches(msg, watchKeys.down):
+		top++
+	case key.Matches(msg, watchKeys.first):
+		top = 0
+	case key.Matches(msg, watchKeys.last):
+		top = rows
+	}
+	m.queueScroll = max(min(top, rows-queueRows), 0)
+	return m
 }
 
 // scrollLogs moves the logs with the keys that move the selection when the list has the focus.
