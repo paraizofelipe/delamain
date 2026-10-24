@@ -29,8 +29,10 @@ func newDaemonCmd(load func() (config.Config, error)) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "daemon [--repo <path>]...",
 		Short: "Continuously process the issues, and the PRs/MRs up for review, of the configured repositories",
-		Long: `Polls open issues with forge.labels.ready every daemon.poll_interval and runs up to
-pipeline.max_parallel at once. With review.enabled, it also reviews the open, non-draft PRs/MRs
+		Long: `Runs the issues of the queue (delamain queue) in its order, then polls open issues with
+forge.labels.ready every daemon.poll_interval, and runs up to pipeline.max_parallel at once. The
+slots are shared with every delamain run, which takes a free one ahead of the queue; the queue is
+checked every few seconds, so a freed slot starts its next issue right away. With review.enabled, it also reviews the open, non-draft PRs/MRs
 labeled forge.labels.review, once per head, in the same slots and daily budget; a head whose
 review halts is retried a few times and then left to the next push. On startup, finalizes runs
 left behind by a process that died. Only one instance runs per state_dir. Ctrl+C stops it:
@@ -96,6 +98,7 @@ in-flight runs end as interrupted.`,
 			issues := daemon.IssueJobs{Label: cfg.Forge.Labels.Ready, Run: func(ctx context.Context, t pipeline.Task, fg forge.Forge) (pipeline.Result, error) {
 				r := *base // per-run copy: each repository has its own forge
 				r.Forge = fg
+				leaveQueue(ctx, st, t, base.Log.Warn)
 				return r.Run(ctx, t)
 			}}
 			reviews := daemon.ReviewJobs{
@@ -124,6 +127,18 @@ in-flight runs end as interrupted.`,
 			}
 			d := daemon.New(daemon.Options{
 				Sources: sources, Producers: daemon.Producers(base.Log, issues, reviews),
+				Queue: queueJobs(cfg, st, issues.Run),
+				Acquire: func(ctx context.Context) (func(), bool, error) {
+					if err := st.PruneSlots(ctx, pipeline.ProcessAlive); err != nil {
+						return nil, false, err
+					}
+					id, ok, err := st.AcquireDaemonSlot(ctx, cfg.Pipeline.MaxParallel)
+					if err != nil || !ok {
+						return nil, false, err
+					}
+					// Freed after the run, even when the daemon's ctx is what ended it.
+					return func() { _ = st.ReleaseSlot(context.WithoutCancel(ctx), id) }, true, nil
+				},
 				MaxParallel: cfg.Pipeline.MaxParallel, Interval: cfg.Daemon.PollInterval, Log: base.Log,
 				DayExhausted: dayExhausted(meter.Today, &budgetAlert{notify: base.Notify, softRatio: cfg.Budget.SoftRatio, now: time.Now}),
 			})

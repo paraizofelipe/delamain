@@ -51,6 +51,10 @@ run inside delamain. Follow it with "delamain logs <run> -f" and "delamain statu
 --herdr (or herdr.enabled), the run also gets a herdr workspace with a "checks" tab and one tab
 per agent. At the end it pushes the branch and opens the PR/MR (draft when not approved). It never merges.
 
+pipeline.max_parallel bounds the runs of every delamain process together. With a free slot the run
+starts at once; with none, it waits for the next one and takes it ahead of the queue (delamain
+queue). delamain review does not take a slot.
+
 Exit codes: 0 approved · 1 interrupted · 3 iterations exhausted · 4 task lacks enough information.`,
 		RunE: func(c *cobra.Command, _ []string) error {
 			cfg, err := load()
@@ -82,7 +86,7 @@ Exit codes: 0 approved · 1 interrupted · 3 iterations exhausted · 4 task lack
 				task.Kind = kind
 			}
 
-			res, err := runTask(c.Context(), cfg, task, fg)
+			res, err := runTask(c.Context(), cfg, task, fg, c.ErrOrStderr())
 			if err != nil {
 				return err
 			}
@@ -135,12 +139,19 @@ func issueTask(ctx context.Context, fg forge.Forge, n int, repo string) (pipelin
 	return pipeline.TaskFromIssue(is, repo), nil
 }
 
-func runTask(ctx context.Context, cfg config.Config, task pipeline.Task, fg forge.Forge) (pipeline.Result, error) {
+// runTask waits for a free slot, ahead of the queue, and runs task in it.
+func runTask(ctx context.Context, cfg config.Config, task pipeline.Task, fg forge.Forge, w io.Writer) (pipeline.Result, error) {
 	st, err := openStore(ctx, cfg)
 	if err != nil {
 		return pipeline.Result{}, err
 	}
 	defer func() { _ = st.Close() }()
+	release, err := acquireRunSlot(ctx, st, cfg.Pipeline.MaxParallel, w)
+	if err != nil {
+		return pipeline.Result{}, err
+	}
+	defer release()
+	leaveQueue(ctx, st, task, slog.Warn)
 	r, err := newRunner(cfg, st, notify.Options{})
 	if err != nil {
 		return pipeline.Result{}, err
