@@ -1101,6 +1101,35 @@ func TestWatchShouldPutTheRunsOnTopOfTheStatusAndTheLogs(t *testing.T) {
 	}
 }
 
+func TestWatchShouldHoldTheRunsPanelHeightAndScrollToTheRestOfTheList(t *testing.T) {
+	src := crowded() // 8 active runs and 22 finished ones: more than the list shows at once
+	m := startWatch(t, src, 160)
+	rows := func(m tea.Model) int { return len(panelRows(screen(m), "runs")) }
+	if got := rows(m); got != 15 { // 12 runs, the ACTIVE and FINISHED headings and the columns
+		t.Fatalf("the runs panel holds 15 rows, got %d:\n%s", got, screen(m))
+	}
+	if list := panelText(screen(m), "runs"); !strings.Contains(list, "#2700000") || strings.Contains(list, "#2600000") {
+		t.Errorf("the list shows the 8 active runs and the 4 newest finished ones:\n%s", list)
+	}
+
+	src.done = src.done[1:] // the newest finished run is removed
+	m = reload(t, m)
+	if got := rows(m); got != 15 {
+		t.Errorf("removing a run leaves the panel 15 rows high, got %d:\n%s", got, screen(m))
+	}
+	if list := panelText(screen(m), "runs"); !strings.Contains(list, "FINISHED · 21") || !strings.Contains(list, "#2600000") {
+		t.Errorf("the row the removed run leaves shows the next one:\n%s", list)
+	}
+
+	m = send(t, m, keyPress("G"))
+	if list := panelText(screen(m), "runs"); !strings.Contains(list, "#900000") || strings.Contains(list, "PR#100000") {
+		t.Errorf("G scrolls the list down to the oldest run:\n%s", list)
+	}
+	if got := rows(m); got != 15 {
+		t.Errorf("the scrolled list is 15 rows high too, got %d:\n%s", got, screen(m))
+	}
+}
+
 func TestWatchShouldSplitTheMediumLayoutThirtyEightPercentLeft(t *testing.T) {
 	v := statusRun()
 	v.RunDir = logRun(t, 14, "#55").RunDir
@@ -1292,7 +1321,9 @@ func TestWatchShouldKeepSelectionFilterAndScrollAcrossResizes(t *testing.T) {
 	m := startLogs(t, src, 160, true)
 	m = send(t, m, keyPress("j"))
 	m = reload(t, m) // the logs of run 2
-	for _, k := range []string{"2", "tab", "pgup"} {
+	// Three half pages up from the end leave the view in the middle of the 100 log lines, far
+	// enough from both ends to tell a resize that keeps it from one that does not.
+	for _, k := range []string{"2", "tab", "pgup", "pgup", "pgup"} {
 		m = send(t, m, keyPress(k))
 	}
 	// first is the number of the first log line of the logs panel.
@@ -1668,8 +1699,8 @@ func TestWatchLogsShouldPauseWhenScrollingUpAndResumeWithG(t *testing.T) {
 	v := logRun(t, 14, "#55")
 	numbered(t, v, 1, 100)
 	m := startLogs(t, &fakeWatchSource{active: []RunView{v}}, 160, true)
-	// 40 lines: header, footer, the runs panel, borders, chips, two separators and the panel
-	// footer leave 27.
+	// 40 lines: the header, the footer and the 17 line runs panel leave 21 for the logs; their
+	// borders, chips, two separators and panel footer leave 15.
 	step := func(name string, from, to int, state, footer string) {
 		t.Helper()
 		view := screen(m)
@@ -1683,45 +1714,45 @@ func TestWatchLogsShouldPauseWhenScrollingUpAndResumeWithG(t *testing.T) {
 			t.Fatalf("%s: panel footer %q, want %q", name, line(view, " lines · "), footer)
 		}
 	}
-	step("start", 74, 100, "● following", "following the end · G 100 of 100 lines · 100%")
+	step("start", 86, 100, "● following", "following the end · G 100 of 100 lines · 100%")
 	if sgr := sgrBefore(m.View(), "● following"); sgr != "32" {
 		t.Fatalf("following is in ok, got SGR %q", sgr)
 	}
 
 	m = send(t, m, keyPress("pgup"))
-	step("pgup goes up half a page", 61, 87, "paused", "paused · G back to the end 100 of 100 lines · 82%")
+	step("pgup goes up half a page", 79, 93, "paused", "paused · G back to the end 100 of 100 lines · 92%")
 	if sgr := sgrBefore(m.View(), "paused"); sgr != "33" {
 		t.Fatalf("paused is in warn, got SGR %q", sgr)
 	}
 	numbered(t, v, 101, 101)
 	m = reload(t, m)
-	step("new lines keep a paused view", 61, 87, "paused", "paused · G back to the end 101 of 101 lines · 81%")
+	step("new lines keep a paused view", 79, 93, "paused", "paused · G back to the end 101 of 101 lines · 91%")
 	m = send(t, m, keyPress("ctrl+u"))
-	step("ctrl+u goes up half a page", 48, 74, "paused", "paused · G back to the end 101 of 101 lines · 64%")
+	step("ctrl+u goes up half a page", 72, 86, "paused", "paused · G back to the end 101 of 101 lines · 83%")
 	m = send(t, m, keyPress("pgdown"))
-	step("pgdown goes down half a page", 61, 87, "paused", "paused · G back to the end 101 of 101 lines · 81%")
+	step("pgdown goes down half a page", 79, 93, "paused", "paused · G back to the end 101 of 101 lines · 91%")
 	for range 3 {
 		m = send(t, m, keyPress("ctrl+d"))
 	}
-	step("the end reached by scrolling stays paused", 75, 101, "paused", "paused · G back to the end 101 of 101 lines · 100%")
+	step("the end reached by scrolling stays paused", 87, 101, "paused", "paused · G back to the end 101 of 101 lines · 100%")
 
 	m = send(t, m, keyPress("f"))
 	numbered(t, v, 102, 102)
 	m = reload(t, m)
-	step("f follows again", 76, 102, "● following", "following the end · G 102 of 102 lines · 100%")
+	step("f follows again", 88, 102, "● following", "following the end · G 102 of 102 lines · 100%")
 	m = send(t, m, keyPress("f"))
 	numbered(t, v, 103, 103)
 	m = reload(t, m)
-	step("f pauses where the view is", 76, 102, "paused", "paused · G back to the end 103 of 103 lines · 99%")
+	step("f pauses where the view is", 88, 102, "paused", "paused · G back to the end 103 of 103 lines · 99%")
 	m = send(t, m, keyPress("f"))
-	step("f goes back to the end", 77, 103, "● following", "following the end · G 103 of 103 lines · 100%")
+	step("f goes back to the end", 89, 103, "● following", "following the end · G 103 of 103 lines · 100%")
 
 	m = send(t, send(t, m, keyPress("tab")), keyPress("pgup"))
-	step("pgup with the logs focused", 64, 90, "paused", "paused · G back to the end 103 of 103 lines · 83%")
+	step("pgup with the logs focused", 82, 96, "paused", "paused · G back to the end 103 of 103 lines · 92%")
 	m = send(t, m, keyPress("G"))
-	step("G goes back to the end", 77, 103, "● following", "following the end · G 103 of 103 lines · 100%")
+	step("G goes back to the end", 89, 103, "● following", "following the end · G 103 of 103 lines · 100%")
 	m = send(t, send(t, m, keyPress("ctrl+u")), keyPress("end"))
-	step("end goes back to the end", 77, 103, "● following", "following the end · G 103 of 103 lines · 100%")
+	step("end goes back to the end", 89, 103, "● following", "following the end · G 103 of 103 lines · 100%")
 }
 
 // border is the SGR parameters of the top left corner of the panel titled title.
@@ -1791,7 +1822,7 @@ func TestWatchLogsShouldScrollByLineOnlyWhenTheLogsHaveFocus(t *testing.T) {
 	selected("j on the list", "#12")
 	m = send(t, m, keyPress("k"))
 	selected("k on the list", "#11")
-	if view := screen(m); !shows(view, 75, 100) {
+	if view := screen(m); !shows(view, 86, 100) {
 		t.Fatalf("the list keys move the selection, the logs follow the end:\n%s", view)
 	}
 
@@ -1801,15 +1832,15 @@ func TestWatchLogsShouldScrollByLineOnlyWhenTheLogsHaveFocus(t *testing.T) {
 		from, to int
 		footer   string
 	}{
-		{"k", 74, 99, "paused · G back to the end 100 of 100 lines · 99%"},
-		{"up", 73, 98, "paused · G back to the end 100 of 100 lines · 97%"},
-		{"j", 74, 99, "paused · G back to the end 100 of 100 lines · 99%"},
-		{"down", 75, 100, "paused · G back to the end 100 of 100 lines · 100%"},
-		{"down", 75, 100, "paused · G back to the end 100 of 100 lines · 100%"},
-		{"g", 1, 26, "paused · G back to the end 100 of 100 lines · 0%"},
-		{"G", 75, 100, "following the end · G 100 of 100 lines · 100%"},
-		{"home", 1, 26, "paused · G back to the end 100 of 100 lines · 0%"},
-		{"end", 75, 100, "following the end · G 100 of 100 lines · 100%"},
+		{"k", 85, 99, "paused · G back to the end 100 of 100 lines · 99%"},
+		{"up", 84, 98, "paused · G back to the end 100 of 100 lines · 98%"},
+		{"j", 85, 99, "paused · G back to the end 100 of 100 lines · 99%"},
+		{"down", 86, 100, "paused · G back to the end 100 of 100 lines · 100%"},
+		{"down", 86, 100, "paused · G back to the end 100 of 100 lines · 100%"},
+		{"g", 1, 15, "paused · G back to the end 100 of 100 lines · 0%"},
+		{"G", 86, 100, "following the end · G 100 of 100 lines · 100%"},
+		{"home", 1, 15, "paused · G back to the end 100 of 100 lines · 0%"},
+		{"end", 86, 100, "following the end · G 100 of 100 lines · 100%"},
 	} {
 		m = send(t, m, keyPress(s.key))
 		view := screen(m)

@@ -58,6 +58,14 @@ func leftWidth(width int) int { return min(max(width*40/100, 56), 72, width) }
 // mediumLeft is the width of the left column of the medium layout.
 func mediumLeft(width int) int { return min(max(width*38/100, 36), 48, width) }
 
+// listRuns is how many runs the list of the wide layout always has room for, active and
+// finished; the ones that do not fit are a scroll away.
+const listRuns = 12
+
+// listRows are the lines that list holds: the column header, the ACTIVE and FINISHED headings
+// and a row per run.
+const listRows = 3 + listRuns
+
 // panelsFor places the panels of layout l on a width × height screen: the header takes the
 // first line and the footer the last n.footer ones.
 func panelsFor(l watchLayout, width, height int, n panelNeeds) watchPanels {
@@ -87,9 +95,10 @@ func panelsFor(l watchLayout, width, height int, n panelNeeds) watchPanels {
 		return mediumPanels(width, body, n)
 	}
 	left := leftWidth(width)
-	// The list takes the top of the screen, its rows up to half the body; the status panel and
-	// the logs share the rest of it, side by side.
-	listH := min(2+n.list, body/2)
+	// The list takes the top of the screen, with room for listRuns rows however many runs there
+	// are, so removing one never moves what is under it; the status panel and the logs share the
+	// rest of the body, side by side. A body too short to hold both keeps minLogs lines for them.
+	listH := min(2+listRows, max(body-minLogs, 0))
 	return watchPanels{
 		list:   rect{0, 1, width, listH},
 		status: rect{0, 1 + listH, left, body - listH},
