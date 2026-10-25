@@ -15,13 +15,17 @@ import (
 	"github.com/paraizo/delamain/internal/store"
 )
 
-// issuesForge knows the open issues of open; any other number is closed.
+// issuesForge knows the open issues of open; any other number is closed, unless errs fails it.
 type issuesForge struct {
 	forge.Forge
 	open map[int]string
+	errs map[int]error
 }
 
 func (f issuesForge) Issue(_ context.Context, n int) (forge.Issue, error) {
+	if err := f.errs[n]; err != nil {
+		return forge.Issue{}, err
+	}
 	title, ok := f.open[n]
 	return forge.Issue{Number: n, Title: title, Open: ok}, nil
 }
@@ -222,5 +226,57 @@ func TestRunShouldExitWithCode5WhenTheMaximumParallelismIsReached(t *testing.T) 
 	}
 	if runs, _ := f.st.RecentRuns(context.Background(), 10); len(runs) != 0 {
 		t.Fatalf("a refused run records nothing: %+v", runs)
+	}
+}
+
+func TestRunQueuedShouldKeepTheIssueQueuedWhenTheForgeFails(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	it, err := f.st.Enqueue(ctx, f.repo, 12, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ran := false
+	run := func(context.Context, pipeline.Task, forge.Forge) (pipeline.Result, error) {
+		ran = true
+		return pipeline.Result{}, nil
+	}
+	down := issuesForge{errs: map[int]error{12: &forge.APIError{Status: 502, Message: "bad gateway"}}}
+	if _, err := runQueued(ctx, f.st, down, it, run); err == nil || ran {
+		t.Fatalf("a forge that fails starts nothing: %v ran=%v", err, ran)
+	}
+	if got := f.queued(t); got != "1:#12" {
+		t.Fatalf("the issue waits in the queue for the next poll: %q", got)
+	}
+}
+
+func TestRunQueuedShouldDropAClosedOrMissingIssueWithoutRunningIt(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		fg   issuesForge
+		want string
+	}{
+		{"closed", issuesForge{}, "issue #12 is closed; removed from the queue"},
+		{"missing", issuesForge{errs: map[int]error{12: &forge.APIError{Status: 404}}}, "issue #12 not found; removed from the queue"},
+	} {
+		f := newFixture(t)
+		ctx := context.Background()
+		it, err := f.st.Enqueue(ctx, f.repo, 12, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.st.Enqueue(ctx, f.repo, 21, ""); err != nil {
+			t.Fatal(err)
+		}
+		res, err := runQueued(ctx, f.st, c.fg, it, func(context.Context, pipeline.Task, forge.Forge) (pipeline.Result, error) {
+			t.Fatalf("%s: a closed or missing issue is not run", c.name)
+			return pipeline.Result{}, nil
+		})
+		if err != nil || res.Outcome != pipeline.OutcomeSkipped || res.Reason != c.want {
+			t.Fatalf("%s: %+v %v", c.name, res, err)
+		}
+		if got := f.queued(t); got != "1:#21" {
+			t.Fatalf("%s: it leaves the queue so the next one can run: %q", c.name, got)
+		}
 	}
 }

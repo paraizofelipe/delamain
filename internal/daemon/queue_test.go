@@ -2,7 +2,9 @@ package daemon
 
 import (
 	"context"
+	"log/slog"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 
@@ -184,6 +186,35 @@ func TestPollShouldTakeTheQueueSlotForTheQueueAndStopWhenNoneIsFree(t *testing.T
 	case <-d.wake:
 	default:
 		t.Fatal("a finished run wakes the queue up")
+	}
+	close(r.release)
+	d.Wait()
+}
+
+func TestPollQueueShouldCheckTheBudgetOnlyWithIssuesQueued(t *testing.T) {
+	r := newRunner()
+	checks := 0
+	var logs strings.Builder
+	q := newQueue(r)
+	d := New(Options{
+		MaxParallel: 1, Log: slog.New(slog.NewTextHandler(&logs, nil)), Queue: q.jobs,
+		DayExhausted: func(context.Context) (string, error) {
+			checks++
+			return "daily budget spent", nil
+		},
+	})
+	d.PollQueue(context.Background())
+	if checks != 0 {
+		t.Fatalf("an empty queue reads no budget: %d checks", checks)
+	}
+	q.ns = []string{"1"}
+	for range 3 {
+		if n := d.PollQueue(context.Background()); n != 0 {
+			t.Fatalf("a spent budget starts nothing: %d", n)
+		}
+	}
+	if checks != 3 || strings.Count(logs.String(), "daily budget spent, waiting") != 1 {
+		t.Fatalf("the spent budget is logged once, not on every poll: %d checks\n%s", checks, logs.String())
 	}
 	close(r.release)
 	d.Wait()

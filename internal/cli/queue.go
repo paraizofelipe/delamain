@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
@@ -231,19 +232,35 @@ func queueJobs(cfg config.Config, st *store.Store, run func(ctx context.Context,
 			jobs = append(jobs, daemon.Job{
 				Key: fmt.Sprintf("%s#%d", it.Repo, it.Issue), Queue: true,
 				Run: func(ctx context.Context) (pipeline.Result, error) {
-					if ok, err := st.Dequeue(ctx, it.ID); err != nil || !ok {
-						return pipeline.Result{Outcome: pipeline.OutcomeSkipped, Reason: "no longer in the queue"}, err
-					}
-					t, err := issueTask(ctx, fg, it.Issue, it.Repo)
-					if err != nil {
-						return pipeline.Result{}, err
-					}
-					return run(ctx, t, fg)
+					return runQueued(ctx, st, fg, it, run)
 				},
 			})
 		}
 		return jobs, errors.Join(errs...)
 	}
+}
+
+// runQueued runs the queued issue it once the forge confirms it is open: the item leaves the queue
+// as it becomes a run. A failure to read the issue keeps it queued for the next poll, so a forge
+// that is down for a while loses nothing; an issue closed or gone leaves the queue unrun, or it
+// would hold the queue behind it forever.
+func runQueued(ctx context.Context, st *store.Store, fg forge.Forge, it store.QueueItem, run func(ctx context.Context, t pipeline.Task, fg forge.Forge) (pipeline.Result, error)) (pipeline.Result, error) {
+	is, err := fg.Issue(ctx, it.Issue)
+	var apiErr *forge.APIError
+	gone := errors.As(err, &apiErr) && apiErr.Status == http.StatusNotFound
+	if err != nil && !gone {
+		return pipeline.Result{}, fmt.Errorf("issue #%d stays queued: %w", it.Issue, err)
+	}
+	ok, derr := st.Dequeue(ctx, it.ID)
+	switch {
+	case derr != nil || !ok:
+		return pipeline.Result{Outcome: pipeline.OutcomeSkipped, Reason: "no longer in the queue"}, derr
+	case gone:
+		return pipeline.Result{Outcome: pipeline.OutcomeSkipped, Reason: fmt.Sprintf("issue #%d not found; removed from the queue", it.Issue)}, nil
+	case !is.Open:
+		return pipeline.Result{Outcome: pipeline.OutcomeSkipped, Reason: fmt.Sprintf("issue #%d is closed; removed from the queue", it.Issue)}, nil
+	}
+	return run(ctx, pipeline.TaskFromIssue(is, it.Repo), fg)
 }
 
 // leaveQueue takes an issue task out of the queue as it becomes a run; a task with no issue, or a

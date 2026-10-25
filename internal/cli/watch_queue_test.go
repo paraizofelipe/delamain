@@ -188,3 +188,18 @@ func TestWatchHeaderShouldShowTheSlotsAndWarnAtTheMaximum(t *testing.T) {
 		t.Fatalf("a free slot is not: %q", got)
 	}
 }
+
+func TestQueueLinesShouldNameTheRepositoryWhenTheQueueHasSeveral(t *testing.T) {
+	items := []store.QueueItem{
+		{ID: 1, Position: 1, Repo: "/src/app", Issue: 12},
+		{ID: 2, Position: 2, Repo: "/src/api", Issue: 12},
+	}
+	m := watchModel{st: noColors(), data: watchData{queue: items}}
+	if got := m.queueLines(60); len(got) != 1 || got[0] != " P:1 app#12   P:2 api#12 " {
+		t.Fatalf("the same number of two repositories is told apart: %q", got)
+	}
+	m.data.queue = queueOf(12, 21)
+	if got := m.queueLines(60); got[0] != " P:1 #12   P:2 #21 " {
+		t.Fatalf("a queue of one repository keeps its cells short: %q", got)
+	}
+}

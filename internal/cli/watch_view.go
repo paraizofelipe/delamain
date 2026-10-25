@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -596,16 +597,25 @@ func clean(s string) string {
 
 // queueLines are the queue as a grid, like the contributions graph of GitHub: one cell per item,
 // "P:<position> #<issue>" on the slot background, in execution order, wrapped at inner columns.
+// A queue of several repositories names each issue's, "P:1 app#12", as the numbers may repeat.
 // Every row is returned: the panel shows queueRows of them and scrolls through the rest.
 func (m watchModel) queueLines(inner int) []string {
 	items := m.data.queue
 	if len(items) == 0 {
 		return []string{paint(m.st.muted, "empty")}
 	}
+	repos := map[string]bool{}
+	for _, it := range items {
+		repos[it.Repo] = true
+	}
 	var rows [][]string
 	width := 0 // of the last row
 	for _, it := range items {
-		c := fmt.Sprintf(" P:%d #%d ", it.Position, it.Issue)
+		repo := ""
+		if len(repos) > 1 {
+			repo = clean(filepath.Base(it.Repo))
+		}
+		c := fmt.Sprintf(" P:%d %s#%d ", it.Position, repo, it.Issue)
 		w := lipgloss.Width(c)
 		if len(rows) == 0 || width+1+w > inner {
 			rows, width = append(rows, nil), -1

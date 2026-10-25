@@ -48,6 +48,8 @@ type Daemon struct {
 	queueBusy bool
 	// atMax is true once a job found no free slot, so the log says it once, not on every poll.
 	atMax bool
+	// daySpent is true once the day's budget stopped the runs, for the same reason.
+	daySpent bool
 }
 
 // queueInterval paces the queue between polls: it reads the state database only, never a forge,
@@ -97,11 +99,16 @@ func (d *Daemon) Poll(ctx context.Context) int {
 }
 
 // PollQueue starts only the jobs of the queue; it never asks a producer, so no forge is listed.
+// The budget is only checked when the queue has a job: an empty queue costs one local read.
 func (d *Daemon) PollQueue(ctx context.Context) int {
-	if d.opts.Queue == nil || !d.mayStart(ctx) {
+	if d.opts.Queue == nil || ctx.Err() != nil {
 		return 0
 	}
-	return d.start(ctx, d.queue(ctx))
+	jobs := d.queue(ctx)
+	if len(jobs) == 0 || !d.mayStart(ctx) {
+		return 0
+	}
+	return d.start(ctx, jobs)
 }
 
 // mayStart says whether new runs may start: not after ctx ends nor once the day's budget is spent.
@@ -116,9 +123,13 @@ func (d *Daemon) mayStart(ctx context.Context) bool {
 			return false
 		}
 		if reason != "" {
-			d.opts.Log.Info("daily budget spent, waiting", "reason", reason)
+			if !d.daySpent { // said once, not on every poll of the queue
+				d.opts.Log.Info("daily budget spent, waiting", "reason", reason)
+			}
+			d.daySpent = true
 			return false
 		}
+		d.daySpent = false
 	}
 	return true
 }
