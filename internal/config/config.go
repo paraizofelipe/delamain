@@ -4,6 +4,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -39,6 +40,34 @@ type Config struct {
 	Notify   Notify   `yaml:"notify"`
 	// Complexity holds optional per-level limits applied once the plan is classified.
 	Complexity Complexity `yaml:"complexity"`
+	// Agents overrides the harness' model and reasoning per role or subagent, keyed by AgentNames.
+	Agents map[string]AgentSettings `yaml:"agents"`
+}
+
+// AgentNames are the roles and subagents an agents entry may name (subagents without delamain-).
+var AgentNames = []string{
+	"planner", "implementer", "reviewer", "pr-reviewer", "responder",
+	"analyzer", "spec-reviewer", "standards-reviewer", "security-reviewer", "review-verifier",
+}
+
+// AgentSettings overrides one agent's model and reasoning; an empty field inherits the harness
+// section. The model is passed as is: it must already be available in the harness.
+type AgentSettings struct {
+	Model string `yaml:"model"`
+	// Effort is Claude Code's --effort, used by the claude harness.
+	Effort string `yaml:"effort"`
+	// Thinking is omp's --thinking, used by the omp harness.
+	Thinking string `yaml:"thinking"`
+}
+
+// AgentOverride returns the model and reasoning level set for name on the active harness;
+// empty values mean the harness defaults apply.
+func (c Config) AgentOverride(name string) (model, reasoning string) {
+	a := c.Agents[name]
+	if c.Agent.Harness == HarnessClaude {
+		return a.Model, a.Effort
+	}
+	return a.Model, a.Thinking
 }
 
 // Profile overrides the run's limits once the plan is classified. Zero inherits the global value.
@@ -426,6 +455,18 @@ func (c Config) Validate() error {
 			errs = append(errs, fmt.Errorf("complexity.%s: max_iterations and per_issue must be >= 0", lp.level))
 		}
 	}
+	for _, name := range slices.Sorted(maps.Keys(c.Agents)) {
+		a := c.Agents[name]
+		if !slices.Contains(AgentNames, name) {
+			errs = append(errs, fmt.Errorf("agents: %q is not one of %s", name, strings.Join(AgentNames, "|")))
+		}
+		if a.Model != "" && strings.TrimSpace(a.Model) == "" {
+			errs = append(errs, fmt.Errorf("agents.%s.model must not be blank", name))
+		}
+		if a.Effort != "" && !validEffort(a.Effort) {
+			errs = append(errs, fmt.Errorf("agents.%s.effort %q is not one of %s", name, a.Effort, efforts))
+		}
+	}
 	switch c.Agent.Harness {
 	case HarnessOmp:
 		errs = append(errs, c.Omp.validate()...)
@@ -490,10 +531,8 @@ func (o Omp) validate() []error {
 
 func (c Claude) validate() []error {
 	var errs []error
-	switch c.Effort {
-	case "low", "medium", "high", "xhigh", "max":
-	default:
-		errs = append(errs, fmt.Errorf("claude.effort %q is not one of low|medium|high|xhigh|max", c.Effort))
+	if !validEffort(c.Effort) {
+		errs = append(errs, fmt.Errorf("claude.effort %q is not one of %s", c.Effort, efforts))
 	}
 	switch c.PermissionMode {
 	case "bypassPermissions", "acceptEdits":
@@ -505,6 +544,10 @@ func (c Claude) validate() []error {
 	}
 	return errs
 }
+
+const efforts = "low|medium|high|xhigh|max"
+
+func validEffort(e string) bool { return slices.Contains(strings.Split(efforts, "|"), e) }
 
 func homeDir() string {
 	h, err := os.UserHomeDir()

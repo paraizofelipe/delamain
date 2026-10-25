@@ -30,6 +30,14 @@ type Target struct {
 	RolesDir string
 	// ClaudeDir receives agents.json (claude --agents) and plugin/ (claude --plugin-dir, the skills).
 	ClaudeDir string
+	// Agents sets the model and reasoning of subagents, keyed by their manifest name.
+	Agents map[string]AgentModel
+}
+
+// AgentModel overrides a subagent's model and reasoning (omp's thinking-level, claude's
+// effort); an empty field keeps the subagent's own setting or the harness default.
+type AgentModel struct {
+	Model, Reasoning string
 }
 
 func (t Target) RolePath(role string) string { return filepath.Join(t.RolesDir, role+".md") }
@@ -55,7 +63,7 @@ func (s *Set) files(t Target) (map[string][]byte, []string, error) {
 	}
 	skillsDir := filepath.Join(t.OmpAgentDir, "skills")
 	if t.Harness == HarnessClaude {
-		agents, err := s.claudeAgents()
+		agents, err := s.claudeAgents(t.Agents)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -64,7 +72,7 @@ func (s *Set) files(t Target) (map[string][]byte, []string, error) {
 		skillsDir = filepath.Join(t.PluginDir(), "skills")
 	} else {
 		for _, a := range s.Manifest.Agents {
-			data, err := s.Agent(a)
+			data, err := s.agentFile(a, t.Agents[a])
 			if err != nil {
 				return nil, nil, err
 			}
@@ -76,11 +84,13 @@ func (s *Set) files(t Target) (map[string][]byte, []string, error) {
 }
 
 // claudeAgents renders every agent as a claude --agents definition, keyed by its name.
-func (s *Set) claudeAgents() ([]byte, error) {
+func (s *Set) claudeAgents(models map[string]AgentModel) ([]byte, error) {
 	type def struct {
 		Description string   `json:"description"`
 		Prompt      string   `json:"prompt"`
 		Tools       []string `json:"tools,omitempty"`
+		Model       string   `json:"model,omitempty"`
+		Effort      string   `json:"effort,omitempty"`
 	}
 	defs := map[string]def{}
 	for _, a := range s.Manifest.Agents {
@@ -88,7 +98,8 @@ func (s *Set) claudeAgents() ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		d := def{Description: fm.Description, Prompt: string(body)}
+		m := models[a]
+		d := def{Description: fm.Description, Prompt: string(body), Model: m.Model, Effort: m.Reasoning}
 		for _, tool := range fm.Tools {
 			d.Tools = append(d.Tools, claudeTools[tool])
 		}

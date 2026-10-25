@@ -182,6 +182,21 @@ func TestRunShouldRecordTheHarnessAndMaxIterationsOnTheRun(t *testing.T) {
 	}
 }
 
+func TestRunShouldStartEachRoleWithTheModelConfiguredForIt(t *testing.T) {
+	hs := newHarness(t, happy)
+	hs.r.Cfg.Agents = map[string]config.AgentSettings{"implementer": {Model: "cheap-fast", Thinking: "low", Effort: "max"}}
+	hs.run(t)
+
+	if o := hs.h.starts["implementer-r1"]; o.Model != "cheap-fast" || o.Reasoning != "low" {
+		t.Fatalf("implementer must get its own model and the omp thinking: %+v", o)
+	}
+	for _, name := range []string{"planner-r1", "reviewer-r1"} {
+		if o := hs.h.starts[name]; o.Model != "" || o.Reasoning != "" {
+			t.Errorf("%s has no entry and must inherit the harness defaults: %+v", name, o)
+		}
+	}
+}
+
 func TestRunShouldFeedFailingCheckOutputIntoNextIteration(t *testing.T) {
 	hs := newHarness(t, happy)
 	hs.h.checks = func(name string, n int) int {

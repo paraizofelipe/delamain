@@ -565,19 +565,20 @@ func (r *Runner) startAgent(ctx context.Context, ru *run, role string) error {
 	if ru.agentDir != "" {
 		dir = ru.agentDir
 	}
+	model, reasoning := r.Cfg.AgentOverride(role)
 	agent, err := r.Agents.Start(ctx, AgentOptions{
 		Name: fmt.Sprintf("%s-r%d", role, ru.rec.ID), Dir: dir,
 		SessionDir: sessDir, SystemPrompt: r.PromptsTarget.RolePath(role),
 		// Only the orchestrator publishes work: the agent gets an env where push fails.
 		Env:     gitx.AgentEnv(),
 		LogPath: logPath, ErrPath: filepath.Join(logDir, role+".stderr"),
-		Confine: ru.confine,
+		Confine: ru.confine, Model: model, Reasoning: reasoning,
 	})
 	if err != nil {
 		return haltf("o agente %s não subiu: %v", role, err)
 	}
 	ru.agents[role] = agent
-	ru.log.Info("agent started", "run", ru.rec.ID, "role", role, "pid", agent.PID())
+	ru.log.Info("agent started", "run", ru.rec.ID, "role", role, "pid", agent.PID(), "model", model)
 	if err := r.Store.StartAgent(ctx, store.Agent{RunID: ru.rec.ID, Role: role, PID: agent.PID(), LogPath: logPath, SessionDir: sessDir}); err != nil {
 		ru.log.Warn("could not record agent", "role", role, "err", err)
 	}
