@@ -27,16 +27,32 @@ func newGitLab(repo Repo, token string, o options) (*gitlabClient, error) {
 	if o.baseURL != "" {
 		base = o.baseURL
 	}
-	api, err := gogitlab.NewClient(token,
+	copts := []gogitlab.ClientOptionFunc{
 		gogitlab.WithBaseURL(base),
 		gogitlab.WithHTTPClient(o.httpClient),
 		gogitlab.WithUserAgent(o.userAgent),
 		gogitlab.WithoutRetries(),
-	)
+	}
+	var api *gogitlab.Client
+	var err error
+	if o.oauth {
+		api, err = gogitlab.NewAuthSourceClient(bearer(token), copts...)
+	} else {
+		api, err = gogitlab.NewClient(token, copts...)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("gitlab client: %w", err)
 	}
 	return &gitlabClient{caller: caller{GitLab, token, o.backoff}, repo: repo, api: api}, nil
+}
+
+// bearer sends an OAuth token, which GitLab only takes in the Authorization header.
+type bearer string
+
+func (bearer) Init(context.Context, *gogitlab.Client) error { return nil }
+
+func (b bearer) Header(context.Context) (string, string, error) {
+	return "Authorization", "Bearer " + string(b), nil
 }
 
 // do runs one API call with retries on gateway and network errors, hiding bodies from its

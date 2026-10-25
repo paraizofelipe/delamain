@@ -78,6 +78,25 @@ func Token(ctx context.Context, kind Kind, host string, lookup TokenLookup) (tok
 	return "", "", fmt.Errorf("no %s token for %s: %w", kind, host, ErrTokenNotFound)
 }
 
+// OAuth reports whether the GitLab token Token found under source is an OAuth token, which goes
+// as a bearer token (WithOAuth): OAUTH_TOKEN always is, and so is a glab login made through the
+// browser, which glab marks with is_oauth2.
+func OAuth(ctx context.Context, kind Kind, host, source string, lookup TokenLookup) bool {
+	if kind != GitLab {
+		return false
+	}
+	switch source {
+	case "env OAUTH_TOKEN":
+		return true
+	case "glab config get token":
+		ctx, cancel := context.WithTimeout(ctx, cliTimeout)
+		defer cancel()
+		out, err := lookup.Exec(ctx, "glab", "config", "get", "is_oauth2", "--host", host)
+		return err == nil && strings.TrimSpace(out) == "true"
+	}
+	return false
+}
+
 // TokenHint tells how to provide a token for host: the variables Token reads and the CLI login.
 func TokenHint(kind Kind, host string) string {
 	cli := "gh auth login --hostname " + host

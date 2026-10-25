@@ -225,3 +225,32 @@ func TestOnlyTokenGoShouldNameTheForgeCLIs(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestOAuthShouldFollowWhereTheGitLabTokenCameFrom(t *testing.T) {
+	ctx := context.Background()
+	glab := &fakeLookup{out: map[string]string{"glab config get is_oauth2 --host gitlab.com": "true\n"}}
+	cases := []struct {
+		name   string
+		kind   Kind
+		source string
+		lookup *fakeLookup
+		want   bool
+	}{
+		{"glab logged in with OAuth", GitLab, "glab config get token", glab, true},
+		{"glab logged in with a PAT", GitLab, "glab config get token", &fakeLookup{out: map[string]string{"glab config get is_oauth2 --host gitlab.com": "\n"}}, false},
+		{"glab without the key", GitLab, "glab config get token", &fakeLookup{}, false},
+		{"OAUTH_TOKEN", GitLab, "env OAUTH_TOKEN", &fakeLookup{}, true},
+		{"GITLAB_TOKEN is a PAT", GitLab, "env GITLAB_TOKEN", glab, false},
+		{"GitHub", GitHub, "gh auth token", glab, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := OAuth(ctx, c.kind, "gitlab.com", c.source, c.lookup); got != c.want {
+				t.Fatalf("OAuth = %v, want %v", got, c.want)
+			}
+		})
+	}
+	if len(glab.calls) != 1 {
+		t.Fatalf("only a glab login asks glab: %v", glab.calls)
+	}
+}

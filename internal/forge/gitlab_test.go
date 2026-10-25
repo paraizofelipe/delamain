@@ -402,3 +402,19 @@ func TestGitLabShouldMarkConfidentialIssuesAndInternalNotes(t *testing.T) {
 		t.Fatalf("internal notes (and the deprecated confidential flag) must be marked: %+v", c)
 	}
 }
+
+func TestGitLabWithOAuthShouldSendABearerToken(t *testing.T) {
+	f, api := gitlabAt(t, map[string]func(http.ResponseWriter, *http.Request){
+		"GET " + glProject + "/issues/7": reply(200, `{"iid":7,"title":"add x","state":"opened"}`),
+	}, WithOAuth())
+	if _, err := f.Issue(context.Background(), 7); err != nil {
+		t.Fatal(err)
+	}
+	h := api.find(t, "GET", glProject+"/issues/7").header
+	if got := h.Get("Authorization"); got != "Bearer glpat-tok" {
+		t.Fatalf("Authorization = %q", got)
+	}
+	if got := h.Get("Private-Token"); got != "" {
+		t.Fatalf("an OAuth token must not go as Private-Token: %q", got)
+	}
+}

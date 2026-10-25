@@ -20,6 +20,7 @@ type options struct {
 	baseURL    string
 	backoff    time.Duration
 	userAgent  string
+	oauth      bool
 }
 
 // WithHTTPClient replaces the default HTTP client.
@@ -33,6 +34,10 @@ func WithBackoff(d time.Duration) Option { return func(o *options) { o.backoff =
 
 // WithUserAgent sets the User-Agent sent on every request.
 func WithUserAgent(ua string) Option { return func(o *options) { o.userAgent = ua } }
+
+// WithOAuth sends the token as an OAuth bearer token, as a glab OAuth login needs; GitLab
+// refuses one sent as a personal access token.
+func WithOAuth() Option { return func(o *options) { o.oauth = true } }
 
 func newOptions(opts []Option) options {
 	o := options{backoff: 2 * time.Second, userAgent: "delamain"}
