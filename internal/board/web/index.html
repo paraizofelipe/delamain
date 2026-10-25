@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>delamain board</title>
+  <link rel="stylesheet" href="board.css">
+  <script src="board.js" defer></script>
+</head>
+<body>
+  <header class="top">
+    <h1>delamain <span>board</span></h1>
+    <div class="status" id="status" aria-live="polite"></div>
+    <div class="filters">
+      <label>tipo
+        <select id="filter-kind">
+          <option value="">todos</option>
+          <option value="issue">issue</option>
+          <option value="review">PR review</option>
+          <option value="address">address</option>
+        </select>
+      </label>
+      <label>repo
+        <select id="filter-repo"><option value="">todos</option></select>
+      </label>
+    </div>
+    <div class="conn" id="conn"><span class="dot"></span><span id="conn-text">conectando…</span></div>
+  </header>
+  <div class="banner" id="banner" hidden></div>
+  <main class="board" id="board"></main>
+  <div class="scrim" id="scrim" hidden></div>
+  <aside class="drawer" id="drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title" hidden>
+    <div class="drawer-head">
+      <h2 id="drawer-title"></h2>
+      <button class="close" id="drawer-close" aria-label="fechar">×</button>
+    </div>
+    <div class="drawer-body" id="drawer-body"></div>
+  </aside>
+  <footer class="foot">
+    somente leitura · <code>delamain run &lt;issue&gt;</code> · <code>delamain queue add</code> · <code>delamain stop &lt;id&gt;</code> · <code>delamain recover</code>
+  </footer>
+</body>
+</html>
