@@ -241,6 +241,7 @@ func (d *Daemon) jobs(ctx context.Context) []Job {
 }
 
 func (d *Daemon) run(ctx context.Context, j Job, release func()) {
+	failed := false
 	defer func() {
 		release()
 		<-d.slots
@@ -252,15 +253,18 @@ func (d *Daemon) run(ctx context.Context, j Job, release func()) {
 		d.finished++
 		d.cond.Broadcast()
 		d.mu.Unlock()
-		select {
-		case d.wake <- struct{}{}:
-		default: // a wake-up is already pending
+		if !failed { // a failed job waits for the queue's tick: its issue may be the next one again
+			select {
+			case d.wake <- struct{}{}:
+			default: // a wake-up is already pending
+			}
 		}
 		d.wg.Done()
 	}()
 	d.opts.Log.Info("run started", "job", j.Key)
 	res, err := j.Run(ctx)
 	if err != nil {
+		failed = true
 		d.opts.Log.Error("run failed before recording an outcome", "job", j.Key, "err", err)
 		return
 	}

@@ -157,13 +157,13 @@ func runTask(ctx context.Context, cfg config.Config, task pipeline.Task, fg forg
 		return pipeline.Result{}, err
 	}
 	defer release()
-	leaveQueue(ctx, st, task, slog.Warn)
 	r, err := newRunner(cfg, st, notify.Options{})
 	if err != nil {
 		return pipeline.Result{}, err
 	}
 	defer func() { _ = r.Notify.Close() }()
 	r.Forge = fg
+	leaveQueueOnCreate(r, st, task, slog.Warn)
 	return r.Run(ctx, task)
 }
 

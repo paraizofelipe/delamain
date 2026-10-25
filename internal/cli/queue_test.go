@@ -125,7 +125,7 @@ func TestQueueRmShouldRemoveByPosition(t *testing.T) {
 	}
 }
 
-func TestQueueJobShouldLeaveTheQueueBeforeItRuns(t *testing.T) {
+func TestQueueJobShouldLeaveTheQueueOnlyOnceItsRunIsRecorded(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
 	f.withForge(t, map[int]string{12: "a", 21: "b"})
@@ -140,7 +140,7 @@ func TestQueueJobShouldLeaveTheQueueBeforeItRuns(t *testing.T) {
 		if tk.Issue != 12 || tk.Repo != f.repo {
 			t.Errorf("task: %+v", tk)
 		}
-		return pipeline.Result{Outcome: pipeline.OutcomeApproved}, nil
+		return pipeline.Result{RunID: 7, Outcome: pipeline.OutcomeApproved}, nil
 	})
 	js, err := jobs(ctx)
 	if err != nil || len(js) != 2 || js[0].Key != f.repo+"#12" || !js[0].Queue {
@@ -149,11 +149,53 @@ func TestQueueJobShouldLeaveTheQueueBeforeItRuns(t *testing.T) {
 	if _, err := js[0].Run(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if queuedAtRun != "1:#21" {
-		t.Fatalf("the issue leaves the queue as it becomes a run: %q", queuedAtRun)
+	if queuedAtRun != "1:#12 2:#21" {
+		t.Fatalf("the issue is still queued until its run is recorded: %q", queuedAtRun)
+	}
+	if got := f.queued(t); got != "1:#21" {
+		t.Fatalf("a recorded run takes it out, even if the runner did not: %q", got)
 	}
 	if res, err := js[0].Run(ctx); err != nil || res.Outcome != pipeline.OutcomeSkipped {
 		t.Fatalf("an item no longer queued is not run again: %+v %v", res, err)
+	}
+}
+
+func TestRunQueuedShouldKeepTheIssueWhenItsRunIsNeverRecorded(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	it, err := f.st.Enqueue(ctx, f.repo, 12, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	open := issuesForge{open: map[int]string{12: "a"}}
+	_, err = runQueued(ctx, f.st, open, it, func(context.Context, pipeline.Task, forge.Forge) (pipeline.Result, error) {
+		return pipeline.Result{}, errors.New("repository: not a git repository")
+	})
+	if err == nil || f.queued(t) != "1:#12" {
+		t.Fatalf("a failure before the run is recorded keeps the issue queued: %v %q", err, f.queued(t))
+	}
+	res, err := runQueued(ctx, f.st, open, it, func(context.Context, pipeline.Task, forge.Forge) (pipeline.Result, error) {
+		return pipeline.Result{Outcome: pipeline.OutcomeNeedsInfo, Reason: "faltam critérios de aceite"}, nil
+	})
+	if err != nil || res.Outcome != pipeline.OutcomeNeedsInfo || f.queued(t) != "" {
+		t.Fatalf("an issue the preflight rejects leaves the queue, or it would hold it: %+v %v %q", res, err, f.queued(t))
+	}
+}
+
+func TestLeaveQueueOnCreateShouldTakeTheIssueOutWhenTheRunIsRecorded(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	if _, err := f.st.Enqueue(ctx, f.repo, 12, ""); err != nil {
+		t.Fatal(err)
+	}
+	var r pipeline.Runner
+	leaveQueueOnCreate(&r, f.st, pipeline.Task{Issue: 12, Ref: "#12", Repo: f.repo}, t.Logf)
+	if got := f.queued(t); got != "1:#12" {
+		t.Fatalf("nothing changes before the run is recorded: %q", got)
+	}
+	r.Created(ctx, store.Run{ID: 1})
+	if got := f.queued(t); got != "" {
+		t.Fatalf("the recorded run takes the issue out of the queue: %q", got)
 	}
 }
 

@@ -135,6 +135,13 @@ func (s *Store) Dequeue(ctx context.Context, id int64) (bool, error) {
 	return n == 1, err
 }
 
+// InQueue reports whether the item id is still in the queue.
+func (s *Store) InQueue(ctx context.Context, id int64) (bool, error) {
+	var in bool
+	err := s.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM queue WHERE id = ?)`, id).Scan(&in)
+	return in, err
+}
+
 // DequeueIssue removes issue of repo from the queue, if it is there: it became a run some other
 // way (delamain run, the ready label).
 func (s *Store) DequeueIssue(ctx context.Context, repo string, issue int) error {

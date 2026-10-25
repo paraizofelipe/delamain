@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"slices"
 	"strings"
@@ -218,4 +219,21 @@ func TestPollQueueShouldCheckTheBudgetOnlyWithIssuesQueued(t *testing.T) {
 	}
 	close(r.release)
 	d.Wait()
+}
+
+func TestAFailedJobShouldNotWakeTheQueueUp(t *testing.T) {
+	d := New(Options{MaxParallel: 1, Log: discard, Queue: func(context.Context) ([]Job, error) {
+		return []Job{{Key: "/q#1", Queue: true, Run: func(context.Context) (pipeline.Result, error) {
+			return pipeline.Result{}, errors.New("forge unreachable")
+		}}}, nil
+	}})
+	if n := d.PollQueue(context.Background()); n != 1 {
+		t.Fatalf("started %d", n)
+	}
+	d.Wait()
+	select {
+	case <-d.wake:
+		t.Fatal("a failed job waits for the queue's tick instead of retrying at once")
+	default:
+	}
 }

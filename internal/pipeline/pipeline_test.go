@@ -946,3 +946,25 @@ func TestStopShouldOnlyCancelTheRequestedRun(t *testing.T) {
 		t.Fatalf("the other run is recorded as approved: %+v", rec)
 	}
 }
+
+func TestRunShouldCallCreatedOnceTheRunIsRecorded(t *testing.T) {
+	hs := newHarness(t, happy)
+	var got []store.Run
+	hs.r.Created = func(ctx context.Context, rec store.Run) {
+		if _, err := hs.st.GetRun(ctx, rec.ID); err != nil {
+			t.Errorf("Created comes after the run is in the store: %v", err)
+		}
+		got = append(got, rec)
+	}
+	res := hs.run(t)
+	if len(got) != 1 || got[0].ID != res.RunID || got[0].IssueRef != "#7" {
+		t.Fatalf("Created is called once with the recorded run: %+v (run %d)", got, res.RunID)
+	}
+
+	hs = newHarness(t, happy)
+	hs.task.Body = "Só uma frase vaga."
+	hs.r.Created = func(context.Context, store.Run) { t.Error("a task the preflight rejects records no run") }
+	if res := hs.run(t); res.Outcome != OutcomeNeedsInfo {
+		t.Fatalf("got %s", res.Outcome)
+	}
+}

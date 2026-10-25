@@ -99,7 +99,7 @@ in-flight runs end as interrupted.`,
 			issues := daemon.IssueJobs{Label: cfg.Forge.Labels.Ready, Run: func(ctx context.Context, t pipeline.Task, fg forge.Forge) (pipeline.Result, error) {
 				r := *base // per-run copy: each repository has its own forge
 				r.Forge = fg
-				leaveQueue(ctx, st, t, base.Log.Warn)
+				leaveQueueOnCreate(&r, st, t, base.Log.Warn)
 				return r.Run(ctx, t)
 			}}
 			reviews := daemon.ReviewJobs{

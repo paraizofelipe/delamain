@@ -240,10 +240,11 @@ func queueJobs(cfg config.Config, st *store.Store, run func(ctx context.Context,
 	}
 }
 
-// runQueued runs the queued issue it once the forge confirms it is open: the item leaves the queue
-// as it becomes a run. A failure to read the issue keeps it queued for the next poll, so a forge
-// that is down for a while loses nothing; an issue closed or gone leaves the queue unrun, or it
-// would hold the queue behind it forever.
+// runQueued runs the queued issue it once the forge confirms it is open. The item leaves the queue
+// as the run is recorded (run's runner takes it out through leaveQueueOnCreate), so a failure
+// before that keeps it queued for the next poll, as does a forge that cannot be read: nothing is
+// lost. An issue closed or gone, or one the preflight finds lacking, leaves the queue unrun: that
+// answer would hold every next one behind it forever.
 func runQueued(ctx context.Context, st *store.Store, fg forge.Forge, it store.QueueItem, run func(ctx context.Context, t pipeline.Task, fg forge.Forge) (pipeline.Result, error)) (pipeline.Result, error) {
 	is, err := fg.Issue(ctx, it.Issue)
 	var apiErr *forge.APIError
@@ -251,16 +252,28 @@ func runQueued(ctx context.Context, st *store.Store, fg forge.Forge, it store.Qu
 	if err != nil && !gone {
 		return pipeline.Result{}, fmt.Errorf("issue #%d stays queued: %w", it.Issue, err)
 	}
-	ok, derr := st.Dequeue(ctx, it.ID)
-	switch {
-	case derr != nil || !ok:
-		return pipeline.Result{Outcome: pipeline.OutcomeSkipped, Reason: "no longer in the queue"}, derr
-	case gone:
-		return pipeline.Result{Outcome: pipeline.OutcomeSkipped, Reason: fmt.Sprintf("issue #%d not found; removed from the queue", it.Issue)}, nil
-	case !is.Open:
-		return pipeline.Result{Outcome: pipeline.OutcomeSkipped, Reason: fmt.Sprintf("issue #%d is closed; removed from the queue", it.Issue)}, nil
+	if in, err := st.InQueue(ctx, it.ID); err != nil || !in {
+		return pipeline.Result{Outcome: pipeline.OutcomeSkipped, Reason: "no longer in the queue"}, err
 	}
-	return run(ctx, pipeline.TaskFromIssue(is, it.Repo), fg)
+	if gone || !is.Open {
+		_, err := st.Dequeue(ctx, it.ID)
+		reason := map[bool]string{true: "not found", false: "is closed"}[gone]
+		return pipeline.Result{Outcome: pipeline.OutcomeSkipped, Reason: fmt.Sprintf("issue #%d %s; removed from the queue", it.Issue, reason)}, err
+	}
+	res, err := run(ctx, pipeline.TaskFromIssue(is, it.Repo), fg)
+	if res.RunID != 0 || res.Outcome == pipeline.OutcomeNeedsInfo {
+		// Again, should the runner's removal have failed: the queue must not run it twice.
+		if _, derr := st.Dequeue(context.WithoutCancel(ctx), it.ID); derr != nil {
+			err = errors.Join(err, fmt.Errorf("issue #%d is still queued: %w", it.Issue, derr))
+		}
+	}
+	return res, err
+}
+
+// leaveQueueOnCreate makes r take t out of the queue once its run is recorded: delamain run, the
+// ready label and the queue itself all let a queued issue go only when it has a run.
+func leaveQueueOnCreate(r *pipeline.Runner, st *store.Store, t pipeline.Task, log func(msg string, args ...any)) {
+	r.Created = func(ctx context.Context, _ store.Run) { leaveQueue(ctx, st, t, log) }
 }
 
 // leaveQueue takes an issue task out of the queue as it becomes a run; a task with no issue, or a
