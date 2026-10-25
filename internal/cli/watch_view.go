@@ -24,6 +24,10 @@ var selectedBackground = lipgloss.Color("236")
 // queueRows is the height of the queue grid; the rows past it scroll.
 const queueRows = 3
 
+// listRows is the height of the runs panel inside its borders where it sits above other panels:
+// fixed, so runs that come or go never move the panels below it; the rows past it scroll.
+const listRows = 12
+
 func (m watchModel) View() string {
 	if m.width <= 0 || m.height <= 0 {
 		return ""
@@ -110,6 +114,9 @@ func (m watchModel) frame() watchFrame {
 		f.queue = m.queueLines(leftWidth(m.width) - 4)
 	}
 	n.footer, n.list, n.strip, n.status = len(f.footer), len(f.list), len(f.strip), len(f.status)
+	if m.layout == layoutWide || m.layout == layoutCompact {
+		n.list = listRows // a fixed height, few runs or many: the list scrolls inside it
+	}
 	if f.queue != nil {
 		n.queue = queueRows // a fixed height, empty or not: the grid scrolls inside it
 	}

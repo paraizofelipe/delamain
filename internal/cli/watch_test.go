@@ -881,7 +881,7 @@ func TestWatchShouldWrapLogLinesInCompactAndMini(t *testing.T) {
 	long := numberedWords(40) // 200 columns
 	writeLog(t, v, "implementer", "12:46:58 💬 "+long+"\n12:46:59 ✗ failed "+long+"\n")
 	writeLog(t, v, "checks", "--- FAIL: TestGates "+long+"\n")
-	m := startLogs(t, &fakeWatchSource{active: []RunView{v}}, 80, true)
+	m := startLogsSized(t, &fakeWatchSource{active: []RunView{v}}, 80, logsHeight, true)
 	rows := panelRows(screen(m), "logs · run 14")
 
 	text, n := wrapped(t, rows, "implementer │ 12:46:58 ", 23)
@@ -1305,7 +1305,7 @@ func TestWatchShouldKeepSelectionFilterAndScrollAcrossResizes(t *testing.T) {
 	numbered(t, b, 1, 100)
 	writeLog(t, b, "checks", "12:00:00 ▶ test: go test ./...\n")
 	src := &fakeWatchSource{active: []RunView{a, b}}
-	m := startLogs(t, src, 160, true)
+	m := startLogsSized(t, src, 160, logsHeight, true)
 	m = send(t, m, keyPress("j"))
 	m = reload(t, m) // the logs of run 2
 	for _, k := range []string{"2", "tab", "pgup"} {
@@ -1427,12 +1427,22 @@ func writeLog(t *testing.T, v RunView, source, text string) {
 // the run selected by the first reload are read from then on.
 func startLogs(t *testing.T, src *fakeWatchSource, width int, colored bool) tea.Model {
 	t.Helper()
+	return startLogsSized(t, src, width, 40, colored)
+}
+
+// logsHeight is a window as high as the logs of a 40 lines one when the runs panel shrank to its
+// few rows: the fixed listRows take the difference.
+const logsHeight = 40 + listRows - minListRows
+
+// startLogsSized is startLogs on a window height lines high.
+func startLogsSized(t *testing.T, src *fakeWatchSource, width, height int, colored bool) tea.Model {
+	t.Helper()
 	st := noColors()
 	if colored {
 		st = lineStyles(termenv.ANSI)
 	}
 	m := tea.Model(newWatchModel(src, st, watchOptions{limit: 20, interval: time.Millisecond, now: func() time.Time { return watchNow }}))
-	m = send(t, m, tea.WindowSizeMsg{Width: width, Height: 40})
+	m = send(t, m, tea.WindowSizeMsg{Width: width, Height: height})
 	return reload(t, settle(t, m, m.Init()))
 }
 
@@ -1683,9 +1693,9 @@ func shows(view string, from, to int) bool {
 func TestWatchLogsShouldPauseWhenScrollingUpAndResumeWithG(t *testing.T) {
 	v := logRun(t, 14, "#55")
 	numbered(t, v, 1, 100)
-	m := startLogs(t, &fakeWatchSource{active: []RunView{v}}, 160, true)
-	// 40 lines: header, footer, the runs panel, borders, chips, two separators and the panel
-	// footer leave 27.
+	m := startLogsSized(t, &fakeWatchSource{active: []RunView{v}}, 160, logsHeight, true)
+	// logsHeight lines: header, footer, the runs panel, borders, chips, two separators and the
+	// panel footer leave 27.
 	step := func(name string, from, to int, state, footer string) {
 		t.Helper()
 		view := screen(m)
@@ -1796,7 +1806,7 @@ func TestWatchLogsShouldScrollByLineOnlyWhenTheLogsHaveFocus(t *testing.T) {
 	a := logRun(t, 1, "#11")
 	numbered(t, a, 1, 100)
 	src := &fakeWatchSource{active: []RunView{a, logRun(t, 2, "#12")}}
-	m := startLogs(t, src, 160, false)
+	m := startLogsSized(t, src, 160, logsHeight-1, false) // two runs: the list once took a line more
 	selected := func(name, issue string) {
 		t.Helper()
 		if row := line(screen(m), "▸"); !strings.Contains(row, " "+issue+" ") {
@@ -1944,5 +1954,62 @@ func TestWatchLogsShouldReadALargeBacklogInBoundedSteps(t *testing.T) {
 	view = screen(send(t, send(t, m, keyPress("tab")), keyPress("g")))
 	if !has(view, "… 195000 earlier lines omitted") || !strings.Contains(view, "backlog line 195001 ") || strings.Contains(view, "backlog line 195000 ") {
 		t.Fatalf("the lines skipped are counted:\n%s", view)
+	}
+}
+
+func TestWatchRunsPanelShouldKeepItsHeightWhateverItHolds(t *testing.T) {
+	many := func(n int) *fakeWatchSource {
+		src := &fakeWatchSource{status: map[int64]RunStatus{}}
+		for id := int64(1); id <= int64(n); id++ {
+			v := finished(id, fmt.Sprintf("#%d", id), "approved: merged", fmt.Sprintf("run %d", id))
+			if id <= 2 {
+				v = active(id, fmt.Sprintf("#%d", id), "implement", "low", fmt.Sprintf("run %d", id))
+				src.active = append(src.active, v)
+			} else {
+				src.done = append(src.done, v)
+			}
+			src.status[id] = RunStatus{Run: v}
+		}
+		return src
+	}
+	for _, width := range []int{160, 80} { // wide, compact
+		for _, n := range []int{0, 1, 5, 30} {
+			view := screen(startWatch(t, many(n), width))
+			if rows := panelRows(view, "runs"); len(rows) != listRows {
+				t.Fatalf("%d columns, %d runs: the runs panel has %d rows, want %d:\n%s", width, n, len(rows), listRows, view)
+			}
+		}
+
+		// Removing runs leaves the panel as high as it was.
+		src := many(30)
+		m := startWatch(t, src, width)
+		src.done = src.done[:1]
+		m = reload(t, m)
+		if rows := panelRows(screen(m), "runs"); len(rows) != listRows {
+			t.Fatalf("%d columns: after the runs left, the panel has %d rows, want %d", width, len(rows), listRows)
+		}
+	}
+}
+
+func TestWatchRunsPanelShouldScrollToTheSelectedRun(t *testing.T) {
+	src := &fakeWatchSource{status: map[int64]RunStatus{}}
+	for id := int64(1); id <= 30; id++ {
+		v := finished(id, fmt.Sprintf("#%d", id), "approved: merged", fmt.Sprintf("run-%02d", id))
+		src.done = append(src.done, v)
+		src.status[id] = RunStatus{Run: v}
+	}
+	m := startWatch(t, src, 160)
+	if text := panelText(screen(m), "runs"); strings.Contains(text, "run-30") {
+		t.Fatalf("the last run must start out of the panel:\n%s", text)
+	}
+	for range 29 {
+		m = send(t, m, keyPress("j"))
+	}
+	text := panelText(screen(m), "runs")
+	if !strings.Contains(text, "run-30") || strings.Contains(text, "run-05") {
+		t.Fatalf("↓ to the last run scrolls the panel to it:\n%s", text)
+	}
+	if rows := panelRows(screen(m), "runs"); len(rows) != listRows {
+		t.Fatalf("scrolling changed the height: %d rows", len(rows))
 	}
 }
