@@ -1,0 +1,196 @@
+package board
+
+import (
+	"bufio"
+	"context"
+	"encoding/json"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+)
+
+func newTestServer(t *testing.T, src Source, localOnly bool) *httptest.Server {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	srv := New(src, Options{Interval: 20 * time.Millisecond, Limit: 20, LocalOnly: localOnly})
+	go srv.Run(ctx)
+	ts := httptest.NewUnstartedServer(srv.Handler())
+	ts.Config.BaseContext = func(net.Listener) context.Context { return ctx }
+	ts.Start()
+	t.Cleanup(func() {
+		cancel()
+		ts.Close()
+	})
+	return ts
+}
+
+// response is what a GET answered, with its body already read and closed.
+type response struct {
+	StatusCode int
+	Header     http.Header
+}
+
+func get(t *testing.T, url string) (response, string) {
+	t.Helper()
+	res, err := http.Get(url) //nolint:noctx // test
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	body, _ := io.ReadAll(res.Body)
+	return response{StatusCode: res.StatusCode, Header: res.Header}, string(body)
+}
+
+func TestServesThePageAndTheAPI(t *testing.T) {
+	src := &fakeSource{runs: []Run{{ID: 1, State: "plan", Repo: "/r/app", Dir: t.TempDir()}}}
+	ts := newTestServer(t, src, true)
+
+	res, body := get(t, ts.URL+"/")
+	if res.StatusCode != http.StatusOK || !strings.Contains(body, "board.js") {
+		t.Fatalf("page: %d %q", res.StatusCode, body)
+	}
+	if csp := res.Header.Get("Content-Security-Policy"); !strings.Contains(csp, "default-src 'self'") {
+		t.Fatalf("CSP = %q", csp)
+	}
+	if res.Header.Get("X-Content-Type-Options") != "nosniff" {
+		t.Fatal("no nosniff")
+	}
+	for _, asset := range []string{"/board.js", "/board.css"} {
+		if res, _ := get(t, ts.URL+asset); res.StatusCode != http.StatusOK {
+			t.Fatalf("%s: %d", asset, res.StatusCode)
+		}
+	}
+
+	res, body = get(t, ts.URL+"/api/snapshot")
+	var snap Snapshot
+	if err := json.Unmarshal([]byte(body), &snap); err != nil || res.StatusCode != http.StatusOK {
+		t.Fatalf("snapshot: %d %v %q", res.StatusCode, err, body)
+	}
+	if res.Header.Get("Cache-Control") != "no-store" {
+		t.Fatal("the API is cacheable")
+	}
+	if len(snap.Columns[2].Cards) != 1 || snap.Columns[2].Cards[0].ID != 1 {
+		t.Fatalf("plan column = %+v", snap.Columns[2])
+	}
+
+	if res, _ := get(t, ts.URL+"/api/runs/1"); res.StatusCode != http.StatusOK {
+		t.Fatalf("run 1: %d", res.StatusCode)
+	}
+	if res, _ := get(t, ts.URL+"/api/runs/abc"); res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("run abc: %d", res.StatusCode)
+	}
+	if res, _ := get(t, ts.URL+"/api/runs/42"); res.StatusCode != http.StatusNotFound {
+		t.Fatalf("run 42: %d", res.StatusCode)
+	}
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/snapshot", nil) //nolint:noctx // test
+	post, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	post.Body.Close()
+	if post.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("POST: %d", post.StatusCode)
+	}
+}
+
+func TestRefusesAForeignHost(t *testing.T) {
+	ts := newTestServer(t, &fakeSource{}, true)
+	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/api/snapshot", nil) //nolint:noctx // test
+	req.Host = "evil.example:7777"
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusForbidden {
+		t.Fatalf("foreign host: %d", res.StatusCode)
+	}
+}
+
+func TestLoopbackHost(t *testing.T) {
+	for host, want := range map[string]bool{
+		"127.0.0.1:7777": true, "localhost:7777": true, "LOCALHOST": true, "[::1]:7777": true,
+		"evil.example:7777": false, "192.168.0.2:7777": false, "127.0.0.1.evil.example": false,
+	} {
+		if got := loopbackHost(host); got != want {
+			t.Errorf("loopbackHost(%q) = %v", host, got)
+		}
+	}
+}
+
+type sseEvent struct{ name, data string }
+
+// readEvents parses an event stream into events, skipping keep-alive comments.
+func readEvents(r io.Reader) <-chan sseEvent {
+	out := make(chan sseEvent, 16)
+	go func() {
+		defer close(out)
+		var e sseEvent
+		sc := bufio.NewScanner(r)
+		sc.Buffer(make([]byte, 64*1024), 1024*1024)
+		for sc.Scan() {
+			line := sc.Text()
+			switch {
+			case strings.HasPrefix(line, "event: "):
+				e.name = strings.TrimPrefix(line, "event: ")
+			case strings.HasPrefix(line, "data: "):
+				e.data = strings.TrimPrefix(line, "data: ")
+			case line == "" && e.name != "":
+				out <- e
+				e = sseEvent{}
+			}
+		}
+	}()
+	return out
+}
+
+func next(events <-chan sseEvent, timeout time.Duration) (string, string) {
+	select {
+	case e := <-events:
+		return e.name, e.data
+	case <-time.After(timeout):
+		return "", ""
+	}
+}
+
+func TestEventsPushOnlyWhatChanged(t *testing.T) {
+	src := &fakeSource{runs: []Run{{ID: 1, State: "plan", Dir: t.TempDir()}}}
+	ts := newTestServer(t, src, false)
+	res, err := http.Get(ts.URL + "/events") //nolint:noctx // closed with the server
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if ct := res.Header.Get("Content-Type"); ct != "text/event-stream" {
+		t.Fatalf("content type %q", ct)
+	}
+	events := readEvents(res.Body)
+
+	name, data := next(events, 2*time.Second)
+	if name != "snapshot" || !strings.Contains(data, `"key":"run-1"`) {
+		t.Fatalf("first event %q %q", name, data)
+	}
+	// Nothing changed: several ticks go by without an event.
+	if name, _ := next(events, 150*time.Millisecond); name != "" {
+		t.Fatalf("event without a change: %q", name)
+	}
+
+	src.set(func(f *fakeSource) { f.runs[0].State = "implement" })
+	name, data = next(events, 2*time.Second)
+	var snap Snapshot
+	if err := json.Unmarshal([]byte(data), &snap); name != "snapshot" || err != nil {
+		t.Fatalf("event after the change %q %v", name, err)
+	}
+	if len(snap.Columns[3].Cards) != 1 {
+		t.Fatalf("implement column = %+v", snap.Columns[3])
+	}
+
+	src.set(func(f *fakeSource) { f.err = context.DeadlineExceeded })
+	if name, data := next(events, 2*time.Second); name != "problem" || !strings.Contains(data, "deadline") {
+		t.Fatalf("event of a failed reload %q %q", name, data)
+	}
+}

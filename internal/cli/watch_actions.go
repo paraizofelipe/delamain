@@ -9,7 +9,6 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
-	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -492,10 +491,6 @@ type storeWatchActions struct {
 }
 
 func newStoreWatchActions(ctx context.Context, cfg config.Config, st *store.Store, out io.Writer) *storeWatchActions {
-	opener := "xdg-open"
-	if runtime.GOOS == "darwin" {
-		opener = "open"
-	}
 	ctx, cancel := context.WithCancel(ctx)
 	// The TUI owns the terminal: the logs of a recover would be drawn over the screen it holds.
 	quiet := slog.New(slog.DiscardHandler)
@@ -503,7 +498,7 @@ func newStoreWatchActions(ctx context.Context, cfg config.Config, st *store.Stor
 		ctx:    ctx,
 		cancel: cancel,
 		stop:   &stopper{cfg: cfg, st: st, noWait: true, log: quiet},
-		opener: opener,
+		opener: browserOpener(),
 		out:    out,
 		tmux:   os.Getenv("TMUX") != "",
 	}

@@ -23,11 +23,11 @@ func forgeFor(ctx context.Context, cfg config.Config, dir string) (forge.Forge, 
 	if err != nil || !ok {
 		return nil, err
 	}
-	token, _, err := forgeToken(ctx, repo)
+	token, source, err := forgeToken(ctx, repo)
 	if err != nil {
 		return nil, err
 	}
-	return forge.New(repo, token, userAgent())
+	return forge.New(repo, token, forgeOptions(ctx, repo, source)...)
 }
 
 // forgeAuth is doctor's ForgeAuth: who the token of dir's forge belongs to, via GET /user.
@@ -42,7 +42,7 @@ func forgeAuth(ctx context.Context, cfg config.Config, dir string) (doctor.Forge
 		return id, err
 	}
 	id.Source = source
-	id.Login, err = forge.Whoami(ctx, repo, token, userAgent())
+	id.Login, err = forge.Whoami(ctx, repo, token, forgeOptions(ctx, repo, source)...)
 	return id, err
 }
 
@@ -82,4 +82,13 @@ func forgeToken(ctx context.Context, repo forge.Repo) (token, source string, err
 		return "", "", fmt.Errorf("%w; %s", err, forge.TokenHint(repo.Kind, repo.Host))
 	}
 	return token, source, nil
+}
+
+// forgeOptions are the client options for repo's token, read from source.
+func forgeOptions(ctx context.Context, repo forge.Repo, source string) []forge.Option {
+	opts := []forge.Option{userAgent()}
+	if renew, ok := forge.OAuth(ctx, repo.Kind, repo.Host, source, forgeLookup); ok {
+		opts = append(opts, forge.WithOAuth(renew))
+	}
+	return opts
 }

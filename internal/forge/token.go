@@ -78,6 +78,93 @@ func Token(ctx context.Context, kind Kind, host string, lookup TokenLookup) (tok
 	return "", "", fmt.Errorf("no %s token for %s: %w", kind, host, ErrTokenNotFound)
 }
 
+// OAuth reports whether the GitLab token Token found under source is an OAuth token, which goes
+// as a bearer token (WithOAuth): OAUTH_TOKEN always is, and so is a glab login made through the
+// browser, which glab marks with is_oauth2. renew keeps a glab login's token fresh; it is nil for
+// OAUTH_TOKEN, which nothing here can renew.
+func OAuth(ctx context.Context, kind Kind, host, source string, lookup TokenLookup) (renew TokenSource, ok bool) {
+	if kind != GitLab {
+		return nil, false
+	}
+	switch source {
+	case "env OAUTH_TOKEN":
+		return nil, true
+	case "glab config get token":
+		ctx, cancel := context.WithTimeout(ctx, cliTimeout)
+		defer cancel()
+		out, err := lookup.Exec(ctx, "glab", "config", "get", "is_oauth2", "--host", host)
+		if err != nil || strings.TrimSpace(out) != "true" {
+			return nil, false
+		}
+		return &glabOAuth{host: host, lookup: lookup, now: time.Now}, true
+	}
+	return nil, false
+}
+
+const (
+	// renewAhead renews a glab OAuth token this long before it expires, so no request goes out
+	// with a token about to lapse.
+	renewAhead = time.Minute
+	// renewRetry spaces the attempts while glab still holds a token past renewAhead: glab may
+	// renew only once the token has actually expired.
+	renewRetry = 30 * time.Second
+)
+
+// glabOAuth is the token of a glab OAuth login, which expires (two hours on gitlab.com). glab
+// renews it on its own API calls and stores the new one, so once it is about to expire one cheap
+// call through glab renews it and the token is read back. Token's cache never sees it.
+type glabOAuth struct {
+	host   string
+	lookup TokenLookup
+	now    func() time.Time
+
+	mu     sync.Mutex
+	token  string
+	expiry time.Time // zero when glab stores none: the token is then kept as read
+	retry  time.Time // no renewal attempt before this
+}
+
+func (g *glabOAuth) Token(ctx context.Context) (string, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	now := g.now()
+	expiring := func(expiry time.Time) bool { return !expiry.IsZero() && !now.Before(expiry.Add(-renewAhead)) }
+	if g.token != "" && (!expiring(g.expiry) || now.Before(g.retry)) {
+		return g.token, nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, cliTimeout)
+	defer cancel()
+	token, expiry, err := g.read(ctx)
+	if err == nil && expiring(expiry) {
+		// The output and the error are of no use: what matters is the token glab stores.
+		_, _ = g.lookup.Exec(ctx, "glab", "api", "--hostname", g.host, "user")
+		token, expiry, err = g.read(ctx)
+	}
+	g.retry = now.Add(renewRetry)
+	if err != nil {
+		if g.token != "" {
+			return g.token, nil
+		}
+		return "", err
+	}
+	g.token, g.expiry = token, expiry
+	return token, nil
+}
+
+// read reads the token glab stores for the host and when it expires.
+func (g *glabOAuth) read(ctx context.Context) (string, time.Time, error) {
+	out, err := g.lookup.Exec(ctx, "glab", "config", "get", "token", "--host", g.host)
+	token := strings.TrimSpace(out)
+	if err != nil || token == "" {
+		return "", time.Time{}, fmt.Errorf("no %s token for %s: %w", GitLab, g.host, ErrTokenNotFound)
+	}
+	var expiry time.Time
+	if out, err := g.lookup.Exec(ctx, "glab", "config", "get", "oauth2_expiry_date", "--host", g.host); err == nil {
+		expiry, _ = time.Parse(time.RFC3339, strings.TrimSpace(out))
+	}
+	return token, expiry, nil
+}
+
 // TokenHint tells how to provide a token for host: the variables Token reads and the CLI login.
 func TokenHint(kind Kind, host string) string {
 	cli := "gh auth login --hostname " + host

@@ -402,3 +402,48 @@ func TestGitLabShouldMarkConfidentialIssuesAndInternalNotes(t *testing.T) {
 		t.Fatalf("internal notes (and the deprecated confidential flag) must be marked: %+v", c)
 	}
 }
+
+func TestGitLabWithOAuthShouldSendABearerToken(t *testing.T) {
+	f, api := gitlabAt(t, map[string]func(http.ResponseWriter, *http.Request){
+		"GET " + glProject + "/issues/7": reply(200, `{"iid":7,"title":"add x","state":"opened"}`),
+	}, WithOAuth(nil))
+	if _, err := f.Issue(context.Background(), 7); err != nil {
+		t.Fatal(err)
+	}
+	h := api.find(t, "GET", glProject+"/issues/7").header
+	if got := h.Get("Authorization"); got != "Bearer glpat-tok" {
+		t.Fatalf("Authorization = %q", got)
+	}
+	if got := h.Get("Private-Token"); got != "" {
+		t.Fatalf("an OAuth token must not go as Private-Token: %q", got)
+	}
+}
+
+type renewedToken []string
+
+func (r *renewedToken) Token(context.Context) (string, error) {
+	t := (*r)[0]
+	if len(*r) > 1 {
+		*r = (*r)[1:]
+	}
+	return t, nil
+}
+
+func TestGitLabWithOAuthShouldSendTheRenewedToken(t *testing.T) {
+	renew := &renewedToken{"oauth-1", "oauth-2"}
+	f, api := gitlabAt(t, map[string]func(http.ResponseWriter, *http.Request){
+		"GET " + glProject + "/issues/7": reply(200, `{"iid":7,"title":"add x","state":"opened"}`),
+	}, WithOAuth(renew))
+	for range 2 {
+		if _, err := f.Issue(context.Background(), 7); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var got []string
+	for _, c := range api.reqs {
+		got = append(got, c.header.Get("Authorization"))
+	}
+	if strings.Join(got, ",") != "Bearer oauth-1,Bearer oauth-2" {
+		t.Fatalf("Authorization of each request = %v", got)
+	}
+}
