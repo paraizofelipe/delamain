@@ -51,7 +51,13 @@ run inside delamain. Follow it with "delamain logs <run> -f" and "delamain statu
 --herdr (or herdr.enabled), the run also gets a herdr workspace with a "checks" tab and one tab
 per agent. At the end it pushes the branch and opens the PR/MR (draft when not approved). It never merges.
 
-Exit codes: 0 approved · 1 interrupted · 3 iterations exhausted · 4 task lacks enough information.`,
+pipeline.max_parallel bounds the runs of every delamain process together. While the queue
+(delamain queue) has issues, one slot is reserved for it, and runs share the others. With no slot
+free for it, the run does not start: it says the maximum parallelism was reached and exits with
+code 5. delamain review does not take a slot.
+
+Exit codes: 0 approved · 1 interrupted · 3 iterations exhausted · 4 task lacks enough information ·
+5 maximum parallelism reached.`,
 		RunE: func(c *cobra.Command, _ []string) error {
 			cfg, err := load()
 			if err != nil {
@@ -83,6 +89,10 @@ Exit codes: 0 approved · 1 interrupted · 3 iterations exhausted · 4 task lack
 			}
 
 			res, err := runTask(c.Context(), cfg, task, fg)
+			if errors.Is(err, errNoSlot) {
+				fmt.Fprintln(c.ErrOrStderr(), err)
+				return ExitError{Code: exitNoSlot}
+			}
 			if err != nil {
 				return err
 			}
@@ -135,18 +145,25 @@ func issueTask(ctx context.Context, fg forge.Forge, n int, repo string) (pipelin
 	return pipeline.TaskFromIssue(is, repo), nil
 }
 
+// runTask takes a free slot and runs task in it; with none free it returns errNoSlot.
 func runTask(ctx context.Context, cfg config.Config, task pipeline.Task, fg forge.Forge) (pipeline.Result, error) {
 	st, err := openStore(ctx, cfg)
 	if err != nil {
 		return pipeline.Result{}, err
 	}
 	defer func() { _ = st.Close() }()
+	release, err := acquireRunSlot(ctx, st, cfg.Pipeline.MaxParallel)
+	if err != nil {
+		return pipeline.Result{}, err
+	}
+	defer release()
 	r, err := newRunner(cfg, st, notify.Options{})
 	if err != nil {
 		return pipeline.Result{}, err
 	}
 	defer func() { _ = r.Notify.Close() }()
 	r.Forge = fg
+	leaveQueueOnCreate(r, st, task, slog.Warn)
 	return r.Run(ctx, task)
 }
 

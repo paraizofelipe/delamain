@@ -218,6 +218,23 @@ var migrations = []string{
 	ALTER TABLE token_ledger_new RENAME TO token_ledger;
 	CREATE INDEX token_ledger_at ON token_ledger(at);
 	CREATE INDEX token_ledger_run ON token_ledger(run_id);`,
+	// The queue orders the issues the daemon starts; slots bound the runs of every process.
+	`CREATE TABLE queue (
+		id       INTEGER PRIMARY KEY AUTOINCREMENT,
+		repo     TEXT NOT NULL,
+		issue    INTEGER NOT NULL,
+		title    TEXT NOT NULL DEFAULT '',
+		pos      INTEGER NOT NULL,
+		added_at TIMESTAMP NOT NULL,
+		UNIQUE (repo, issue)
+	);
+	CREATE TABLE slots (
+		id         INTEGER PRIMARY KEY AUTOINCREMENT,
+		pid        INTEGER NOT NULL,
+		holder     TEXT NOT NULL,
+		held       INTEGER NOT NULL,
+		created_at TIMESTAMP NOT NULL
+	);`,
 }
 
 func (s *Store) migrate(ctx context.Context) error {

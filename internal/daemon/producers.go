@@ -14,6 +14,8 @@ import (
 type Job struct {
 	Key string
 	Run func(ctx context.Context) (pipeline.Result, error)
+	// Queue marks a job of the queue: it runs in the queue's slot, one at a time.
+	Queue bool
 }
 
 // Producer lists the jobs a source has ready now.

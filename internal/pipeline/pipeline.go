@@ -142,6 +142,9 @@ type Runner struct {
 	SubagentWait time.Duration
 	// StopPoll paces how often a run checks whether `delamain stop` asked it to stop (default 2s).
 	StopPoll time.Duration
+	// Created is called once an issue run is recorded, before any of its work: the queue lets the
+	// issue go only then, so a run that never got recorded leaves it queued. nil does nothing.
+	Created func(ctx context.Context, rec store.Run)
 }
 
 // halt is a guardrail stop: the run is recorded with this reason instead of failing the process.
@@ -220,6 +223,9 @@ func (r *Runner) Run(ctx context.Context, t Task) (Result, error) {
 		return res, err
 	}
 	res.RunID = rec.ID
+	if r.Created != nil {
+		r.Created(ctx, rec)
+	}
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
 	defer r.watchStop(ctx, rec.ID, cancel)()
