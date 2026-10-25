@@ -87,8 +87,8 @@ func forgeToken(ctx context.Context, repo forge.Repo) (token, source string, err
 // forgeOptions are the client options for repo's token, read from source.
 func forgeOptions(ctx context.Context, repo forge.Repo, source string) []forge.Option {
 	opts := []forge.Option{userAgent()}
-	if forge.OAuth(ctx, repo.Kind, repo.Host, source, forgeLookup) {
-		opts = append(opts, forge.WithOAuth())
+	if renew, ok := forge.OAuth(ctx, repo.Kind, repo.Host, source, forgeLookup); ok {
+		opts = append(opts, forge.WithOAuth(renew))
 	}
 	return opts
 }

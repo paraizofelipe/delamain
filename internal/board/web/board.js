@@ -68,6 +68,8 @@ function render(snap) {
   renderRepoFilter(snap)
   const board = $('board')
   const seen = new Set()
+  // Moving the cards drops the focus of the one a keyboard is on: it goes back once they are in place.
+  const focusKey = document.activeElement?.dataset?.key
   for (const col of snap.columns) {
     let colNode = board.querySelector(`[data-col="${col.key}"]`)
     if (!colNode) {
@@ -93,6 +95,7 @@ function render(snap) {
     body.replaceChildren(...(nodes.length ? nodes : [el('div', { class: 'empty', text: '—' })]))
   }
   for (const key of state.cards.keys()) if (!seen.has(key)) state.cards.delete(key)
+  if (focusKey) focusCard(focusKey)
 
   if (state.open !== null) {
     const card = findCard(state.open)
@@ -102,6 +105,11 @@ function render(snap) {
       loadDetail(state.open)
     }
   }
+}
+
+function focusCard(key) {
+  const node = $('board').querySelector(`[data-key="${CSS.escape(key)}"]`)
+  if (node && node !== document.activeElement) node.focus()
 }
 
 function visible(c) {
@@ -150,7 +158,7 @@ function cardNode(c, col) {
   if (c.spend) meta.push(el('span', { text: c.spend }))
   if (human) meta.push(el('span', { class: 'tag flag', text: 'sua vez' }))
 
-  const node = el(queued ? 'div' : 'button', { class: classes.join(' '), type: queued ? null : 'button' },
+  const node = el(queued ? 'div' : 'button', { class: classes.join(' '), type: queued ? null : 'button', 'data-key': c.key },
     el('div', { class: 'card-top' },
       c.live ? el('span', { class: 'pulse', 'aria-label': 'rodando' }) : null,
       el('span', { class: 'id', text: queued ? c.issue : `#${c.id}` }),
@@ -173,16 +181,25 @@ function roundNode(r) {
 
 // --- drawer ----------------------------------------------------------------
 
+// What stays behind the open drawer: inert, so Tab cannot leave the dialog for a card or a filter.
+const BEHIND = ['.top', '#banner', '#board', '.foot']
 let lastFocus = null
+let lastFocusKey = null
+
+function setBehindInert(inert) {
+  for (const sel of BEHIND) document.querySelector(sel).inert = inert
+}
 
 function openDrawer(id) {
   lastFocus = document.activeElement
+  lastFocusKey = lastFocus?.dataset?.key ?? null
   state.open = id
   state.openSig = JSON.stringify(findCard(id) || '')
   $('drawer-title').textContent = `#${id}`
   $('drawer-body').replaceChildren(el('p', { class: 'empty', text: 'carregando…' }))
   $('drawer').hidden = false
   $('scrim').hidden = false
+  setBehindInert(true)
   $('drawer-close').focus()
   loadDetail(id)
 }
@@ -191,7 +208,10 @@ function closeDrawer() {
   state.open = null
   $('drawer').hidden = true
   $('scrim').hidden = true
-  lastFocus?.focus()
+  setBehindInert(false)
+  // A card that changed while the drawer was open is a new node: find it by its key.
+  if (lastFocus?.isConnected) lastFocus.focus()
+  else if (lastFocusKey) focusCard(lastFocusKey)
 }
 
 let detailSeq = 0

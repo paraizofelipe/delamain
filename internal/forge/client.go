@@ -21,6 +21,7 @@ type options struct {
 	backoff    time.Duration
 	userAgent  string
 	oauth      bool
+	renew      TokenSource
 }
 
 // WithHTTPClient replaces the default HTTP client.
@@ -36,8 +37,16 @@ func WithBackoff(d time.Duration) Option { return func(o *options) { o.backoff =
 func WithUserAgent(ua string) Option { return func(o *options) { o.userAgent = ua } }
 
 // WithOAuth sends the token as an OAuth bearer token, as a glab OAuth login needs; GitLab
-// refuses one sent as a personal access token.
-func WithOAuth() Option { return func(o *options) { o.oauth = true } }
+// refuses one sent as a personal access token. An OAuth token expires, so renew, when set,
+// supplies the token of every request in place of the one New got.
+func WithOAuth(renew TokenSource) Option {
+	return func(o *options) { o.oauth, o.renew = true, renew }
+}
+
+// TokenSource yields the token to send now: a fresh one once the last has expired.
+type TokenSource interface {
+	Token(ctx context.Context) (string, error)
+}
 
 func newOptions(opts []Option) options {
 	o := options{backoff: 2 * time.Second, userAgent: "delamain"}

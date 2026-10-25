@@ -3,6 +3,7 @@ package forge
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -245,12 +246,103 @@ func TestOAuthShouldFollowWhereTheGitLabTokenCameFrom(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := OAuth(ctx, c.kind, "gitlab.com", c.source, c.lookup); got != c.want {
+			if _, got := OAuth(ctx, c.kind, "gitlab.com", c.source, c.lookup); got != c.want {
 				t.Fatalf("OAuth = %v, want %v", got, c.want)
 			}
 		})
 	}
 	if len(glab.calls) != 1 {
 		t.Fatalf("only a glab login asks glab: %v", glab.calls)
+	}
+}
+
+func TestOAuthShouldRenewOnlyAGlabLogin(t *testing.T) {
+	glab := &fakeLookup{out: map[string]string{"glab config get is_oauth2 --host gitlab.com": "true\n"}}
+	if renew, _ := OAuth(context.Background(), GitLab, "gitlab.com", "glab config get token", glab); renew == nil {
+		t.Fatal("a glab OAuth login must come with a renewing source")
+	}
+	if renew, ok := OAuth(context.Background(), GitLab, "gitlab.com", "env OAUTH_TOKEN", glab); !ok || renew != nil {
+		t.Fatalf("OAUTH_TOKEN goes as it is: %v %v", renew, ok)
+	}
+}
+
+// glabStore plays glab: `glab api` renews the token it stores once that one has expired.
+type glabStore struct {
+	fakeLookup
+	now      *time.Time
+	token    string
+	expiry   time.Time
+	renewals int
+}
+
+func (g *glabStore) Exec(ctx context.Context, name string, args ...string) (string, error) {
+	_, _ = g.fakeLookup.Exec(ctx, name, args...)
+	switch strings.Join(args, " ") {
+	case "config get token --host gitlab.com":
+		return g.token + "\n", nil
+	case "config get oauth2_expiry_date --host gitlab.com":
+		return g.expiry.Format(time.RFC3339) + "\n", nil
+	case "api --hostname gitlab.com user":
+		if !g.now.Before(g.expiry) {
+			g.renewals++
+			g.token, g.expiry = fmt.Sprintf("oauth-%d", g.renewals+1), g.now.Add(2*time.Hour)
+		}
+		return "{}", nil
+	}
+	return "", &exec.Error{Name: name, Err: exec.ErrNotFound}
+}
+
+func TestGlabOAuthShouldRenewTheTokenAsItExpires(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 10, 25, 18, 0, 0, 0, time.UTC)
+	store := &glabStore{now: &now, token: "oauth-1", expiry: now.Add(2 * time.Hour)}
+	src := &glabOAuth{host: "gitlab.com", lookup: store, now: func() time.Time { return now }}
+	token := func() string {
+		t.Helper()
+		tok, err := src.Token(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return tok
+	}
+
+	if got := token(); got != "oauth-1" {
+		t.Fatalf("first token = %q", got)
+	}
+	now = now.Add(time.Hour)
+	before := len(store.calls)
+	if got := token(); got != "oauth-1" || len(store.calls) != before {
+		t.Fatalf("a token far from expiring must be kept without asking glab: %q %v", got, store.calls[before:])
+	}
+
+	// Within renewAhead glab may not renew yet: the token is kept and glab is not asked again at once.
+	now = store.expiry.Add(-renewAhead / 2)
+	if got := token(); got != "oauth-1" {
+		t.Fatalf("token just before the expiry = %q", got)
+	}
+	before = len(store.calls)
+	if got := token(); got != "oauth-1" || len(store.calls) != before {
+		t.Fatalf("glab is asked again before renewRetry: %v", store.calls[before:])
+	}
+
+	now = store.expiry.Add(time.Second)
+	if got := token(); got != "oauth-2" || store.renewals != 1 {
+		t.Fatalf("token after the expiry = %q (renewals %d)", got, store.renewals)
+	}
+}
+
+func TestGlabOAuthShouldRenewAnExpiredTokenOnTheFirstRead(t *testing.T) {
+	now := time.Date(2026, 10, 25, 18, 0, 0, 0, time.UTC)
+	store := &glabStore{now: &now, token: "oauth-1", expiry: now.Add(-time.Hour)}
+	src := &glabOAuth{host: "gitlab.com", lookup: store, now: func() time.Time { return now }}
+	if got, err := src.Token(context.Background()); err != nil || got != "oauth-2" {
+		t.Fatalf("token = %q, err = %v", got, err)
+	}
+}
+
+func TestGlabOAuthShouldFailWithoutALogin(t *testing.T) {
+	src := &glabOAuth{host: "gitlab.com", lookup: &fakeLookup{}, now: time.Now}
+	if _, err := src.Token(context.Background()); !errors.Is(err, ErrTokenNotFound) {
+		t.Fatalf("err = %v", err)
 	}
 }
