@@ -464,9 +464,10 @@ func TestAgentOverrideShouldPickTheActiveHarnessReasoningAndInheritWhenUnset(t *
 
 func TestValidateShouldRejectUnknownAgentsAndMeaninglessSettings(t *testing.T) {
 	for name, agents := range map[string]map[string]AgentSettings{
-		"unknown agent":  {"plannr": {Model: "opus"}},
-		"blank model":    {"planner": {Model: "  "}},
-		"invalid effort": {"planner": {Effort: "huge"}},
+		"unknown agent":    {"plannr": {Model: "opus"}},
+		"blank model":      {"planner": {Model: "  "}},
+		"invalid effort":   {"planner": {Effort: "huge"}},
+		"invalid thinking": {"planner": {Thinking: "hihg"}},
 	} {
 		cfg := Default()
 		cfg.Agents = agents
@@ -478,5 +479,18 @@ func TestValidateShouldRejectUnknownAgentsAndMeaninglessSettings(t *testing.T) {
 	cfg.Agents = map[string]AgentSettings{"review-verifier": {Model: "opus", Effort: "max"}, "planner": {}}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("subagents and empty entries are valid: %v", err)
+	}
+}
+
+func TestValidateShouldRejectAnOmpThinkingLevelOmpDoesNotTake(t *testing.T) {
+	cfg := Default()
+	cfg.Omp.Thinking = "hihg"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("omp.thinking must be one of omp's levels")
+	}
+	cfg.Omp.Thinking = "auto"
+	cfg.Agents = map[string]AgentSettings{"implementer": {Thinking: "off"}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("auto and off are omp levels: %v", err)
 	}
 }

@@ -466,6 +466,9 @@ func (c Config) Validate() error {
 		if a.Effort != "" && !validEffort(a.Effort) {
 			errs = append(errs, fmt.Errorf("agents.%s.effort %q is not one of %s", name, a.Effort, efforts))
 		}
+		if a.Thinking != "" && !validThinking(a.Thinking) {
+			errs = append(errs, fmt.Errorf("agents.%s.thinking %q is not one of %s", name, a.Thinking, thinkingLevels))
+		}
 	}
 	switch c.Agent.Harness {
 	case HarnessOmp:
@@ -523,6 +526,9 @@ func (o Omp) validate() []error {
 	default:
 		errs = append(errs, fmt.Errorf("omp.approval_mode %q is not one of always-ask|write|yolo", o.ApprovalMode))
 	}
+	if !validThinking(o.Thinking) {
+		errs = append(errs, fmt.Errorf("omp.thinking %q is not one of %s", o.Thinking, thinkingLevels))
+	}
 	if strings.TrimSpace(o.Model) == "" {
 		errs = append(errs, errors.New("omp.model is required"))
 	}
@@ -548,6 +554,11 @@ func (c Claude) validate() []error {
 const efforts = "low|medium|high|xhigh|max"
 
 func validEffort(e string) bool { return slices.Contains(strings.Split(efforts, "|"), e) }
+
+// thinkingLevels are the values omp's --thinking takes.
+const thinkingLevels = "off|minimal|low|medium|high|xhigh|max|auto"
+
+func validThinking(t string) bool { return slices.Contains(strings.Split(thinkingLevels, "|"), t) }
 
 func homeDir() string {
 	h, err := os.UserHomeDir()
