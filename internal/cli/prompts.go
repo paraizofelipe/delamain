@@ -25,9 +25,15 @@ func loadPrompts(cfg config.Config) (*prompts.Set, error) {
 }
 
 func promptsTarget(cfg config.Config) prompts.Target {
+	agents := map[string]prompts.AgentModel{}
+	for name := range cfg.Agents {
+		if model, reasoning := cfg.AgentOverride(name); model != "" || reasoning != "" {
+			agents[name] = prompts.AgentModel{Model: model, Reasoning: reasoning}
+		}
+	}
 	return prompts.Target{
 		Harness: string(cfg.Agent.Harness), OmpAgentDir: cfg.Omp.AgentDir,
-		RolesDir: cfg.Paths.RolesDir(), ClaudeDir: cfg.Paths.ClaudeDir(),
+		RolesDir: cfg.Paths.RolesDir(), ClaudeDir: cfg.Paths.ClaudeDir(), Agents: agents,
 	}
 }
 

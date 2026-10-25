@@ -21,9 +21,27 @@ func TestRPCAgentsShouldPassTheOmpConfigSessionDirAndRoleToOmp(t *testing.T) {
 	}
 }
 
+func TestRPCAgentsShouldLetTheRoleOverrideTheModelAndThinking(t *testing.T) {
+	a := RPCAgents{Binary: "omp", Model: "openai-codex/gpt-5.6-terra", Thinking: "medium", ApprovalMode: "yolo"}
+	got := strings.Join(a.args(AgentOptions{Model: "openai-codex/gpt-5.6-mini", Reasoning: "low"}), " ")
+	if !strings.HasPrefix(got, "--model openai-codex/gpt-5.6-mini --thinking low ") {
+		t.Fatalf("omp args must carry the role's model and thinking: %s", got)
+	}
+}
+
+func TestClaudeAgentsShouldLetTheRoleOverrideTheModelAndEffort(t *testing.T) {
+	a := ClaudeAgents{Model: "opus", Effort: "high", PermissionMode: "bypassPermissions"}
+	if got := strings.Join(a.args("sid", "implement", AgentOptions{Model: "sonnet", Reasoning: "medium"}), " "); !strings.HasPrefix(got, "--model sonnet --effort medium ") {
+		t.Fatalf("claude args must carry the role's model and effort: %s", got)
+	}
+	if got := strings.Join(a.args("sid", "implement", AgentOptions{Model: "sonnet"}), " "); !strings.HasPrefix(got, "--model sonnet --effort high ") {
+		t.Fatalf("an unset effort inherits claude.effort: %s", got)
+	}
+}
+
 func TestClaudeAgentsShouldRunUnattendedApartFromTheUsersClaudeSetup(t *testing.T) {
 	a := ClaudeAgents{Model: "opus", Effort: "high", PermissionMode: "bypassPermissions", AgentsFile: "/p/agents.json", PluginDir: "/p/plugin"}
-	got := strings.Join(a.args("sid", "be the planner", nil), " ")
+	got := strings.Join(a.args("sid", "be the planner", AgentOptions{}), " ")
 	for _, want := range []string{
 		"--model opus --effort high --permission-mode bypassPermissions",
 		"--session-id sid --no-session-persistence",
@@ -75,7 +93,7 @@ func TestNewSessionIDShouldBeARandomUUID(t *testing.T) {
 
 func TestClaudeAgentsShouldConfineASessionToReadingItsCheckout(t *testing.T) {
 	a := ClaudeAgents{Model: "opus", Effort: "high", PermissionMode: "bypassPermissions", AgentsFile: "/p/agents.json", PluginDir: "/p/plugin"}
-	args := a.args("sid", "review the PR", &Confinement{Checkout: "/wt/review-pr-5-1", Base: "b4se", Artifact: "/run/5/review.json"})
+	args := a.args("sid", "review the PR", AgentOptions{Confine: &Confinement{Checkout: "/wt/review-pr-5-1", Base: "b4se", Artifact: "/run/5/review.json"}})
 	got := strings.Join(args, " ")
 	if strings.Contains(got, "bypassPermissions") || !strings.Contains(got, "--permission-mode dontAsk") {
 		t.Fatalf("a confined session denies everything not allowed below: %s", got)
@@ -120,7 +138,7 @@ func TestClaudeAgentsShouldConfineASessionToReadingItsCheckout(t *testing.T) {
 			t.Errorf("a confined session keeps %q: %s", kept, got)
 		}
 	}
-	if plain := strings.Join(a.args("sid", "plan", nil), " "); !strings.Contains(plain, "--permission-mode bypassPermissions") || strings.Contains(plain, "--allowedTools") {
+	if plain := strings.Join(a.args("sid", "plan", AgentOptions{}), " "); !strings.Contains(plain, "--permission-mode bypassPermissions") || strings.Contains(plain, "--allowedTools") {
 		t.Fatalf("issue runs keep the configured mode: %s", plain)
 	}
 }
@@ -143,7 +161,7 @@ func flagValues(args []string, flag string) map[string]bool {
 
 func TestClaudeAgentsShouldLetAFixingSessionEditAndCommitOnlyInItsCheckout(t *testing.T) {
 	a := ClaudeAgents{Model: "opus", Effort: "high", PermissionMode: "bypassPermissions", AgentsFile: "/p/agents.json", PluginDir: "/p/plugin"}
-	args := a.args("sid", "fix the PR", &Confinement{Checkout: "/wt/feat/x", Base: "b4se", Artifact: "/run/5/responses.json", Fix: true, CommitMessage: "/run/5/commit-msg.txt"})
+	args := a.args("sid", "fix the PR", AgentOptions{Confine: &Confinement{Checkout: "/wt/feat/x", Base: "b4se", Artifact: "/run/5/responses.json", Fix: true, CommitMessage: "/run/5/commit-msg.txt"}})
 	got := strings.Join(args, " ")
 	if !strings.Contains(got, "--permission-mode dontAsk") || !strings.Contains(got, "--tools Read,Grep,Glob,Bash,Edit,Write,Agent ") {
 		t.Fatalf("a fixing session edits files and still denies everything not allowed: %s", got)

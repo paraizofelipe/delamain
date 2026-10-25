@@ -432,3 +432,65 @@ func TestReviewLabelShouldRejectAComma(t *testing.T) {
 		t.Fatalf("glab splits labels on commas: want a forge.labels error, got %v", err)
 	}
 }
+
+func TestLoadShouldReadPerAgentModelsAndReasoning(t *testing.T) {
+	p := writeFile(t, "agents:\n  implementer:\n    model: sonnet\n    effort: medium\n  analyzer:\n    model: opus\n    thinking: high\n")
+	cfg, err := Load(p, noEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Agents["implementer"]; got != (AgentSettings{Model: "sonnet", Effort: "medium"}) {
+		t.Fatalf("implementer: %+v", got)
+	}
+	if got := cfg.Agents["analyzer"]; got != (AgentSettings{Model: "opus", Thinking: "high"}) {
+		t.Fatalf("analyzer: %+v", got)
+	}
+}
+
+func TestAgentOverrideShouldPickTheActiveHarnessReasoningAndInheritWhenUnset(t *testing.T) {
+	cfg := Default()
+	cfg.Agents = map[string]AgentSettings{"implementer": {Model: "sonnet", Effort: "low", Thinking: "minimal"}}
+	if m, r := cfg.AgentOverride("implementer"); m != "sonnet" || r != "minimal" {
+		t.Fatalf("omp takes thinking: %q %q", m, r)
+	}
+	cfg.Agent.Harness = HarnessClaude
+	if m, r := cfg.AgentOverride("implementer"); m != "sonnet" || r != "low" {
+		t.Fatalf("claude takes effort: %q %q", m, r)
+	}
+	if m, r := cfg.AgentOverride("planner"); m != "" || r != "" {
+		t.Fatalf("an agent without an entry inherits the harness defaults: %q %q", m, r)
+	}
+}
+
+func TestValidateShouldRejectUnknownAgentsAndMeaninglessSettings(t *testing.T) {
+	for name, agents := range map[string]map[string]AgentSettings{
+		"unknown agent":    {"plannr": {Model: "opus"}},
+		"blank model":      {"planner": {Model: "  "}},
+		"invalid effort":   {"planner": {Effort: "huge"}},
+		"invalid thinking": {"planner": {Thinking: "hihg"}},
+	} {
+		cfg := Default()
+		cfg.Agents = agents
+		if err := cfg.Validate(); err == nil {
+			t.Errorf("%s: %+v must be rejected", name, agents)
+		}
+	}
+	cfg := Default()
+	cfg.Agents = map[string]AgentSettings{"review-verifier": {Model: "opus", Effort: "max"}, "planner": {}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("subagents and empty entries are valid: %v", err)
+	}
+}
+
+func TestValidateShouldRejectAnOmpThinkingLevelOmpDoesNotTake(t *testing.T) {
+	cfg := Default()
+	cfg.Omp.Thinking = "hihg"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("omp.thinking must be one of omp's levels")
+	}
+	cfg.Omp.Thinking = "auto"
+	cfg.Agents = map[string]AgentSettings{"implementer": {Thinking: "off"}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("auto and off are omp levels: %v", err)
+	}
+}

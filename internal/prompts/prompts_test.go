@@ -459,3 +459,43 @@ func TestAddressStageShouldAskForFixesOnlyWhenCanFix(t *testing.T) {
 		}
 	}
 }
+
+func TestInstallForOmpShouldSetTheSubagentsConfiguredModelAndThinking(t *testing.T) {
+	tree := validTree()
+	tree["agents/analyzer/omp.yml"] = &fstest.MapFile{Data: []byte("name: delamain-analyzer\ndescription: maps the repo\ntools: [read]\nthinking-level: medium\n")}
+	root := t.TempDir()
+	target := Target{OmpAgentDir: filepath.Join(root, "omp"), RolesDir: filepath.Join(root, "roles"),
+		Agents: map[string]AgentModel{"analyzer": {Model: "openai/gpt-x", Reasoning: "high"}}}
+	if _, err := mustLoad(t, tree).Install(target); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(filepath.Join(target.OmpAgentDir, "agents", "delamain-analyzer.md"))
+	want := "---\nname: delamain-analyzer\ndescription: maps the repo\ntools: [read]\nthinking-level: high\nmodel: openai/gpt-x\n---\n\n<role>analyzer</role>\n"
+	if string(b) != want {
+		t.Fatalf("the override must replace thinking-level and add model:\n%s\nwant:\n%s", b, want)
+	}
+	if missing, outdated, err := mustLoad(t, tree).Drift(target); err != nil || len(missing)+len(outdated) != 0 {
+		t.Fatalf("no drift right after the install: %v %v %v", missing, outdated, err)
+	}
+	target.Agents = nil
+	if _, outdated, _ := mustLoad(t, tree).Drift(target); len(outdated) != 1 {
+		t.Fatalf("dropping the override must leave the agent outdated: %v", outdated)
+	}
+}
+
+func TestInstallForClaudeShouldSetTheSubagentsConfiguredModelAndEffort(t *testing.T) {
+	root := t.TempDir()
+	target := Target{Harness: HarnessClaude, RolesDir: filepath.Join(root, "roles"), ClaudeDir: filepath.Join(root, "claude"),
+		Agents: map[string]AgentModel{"analyzer": {Model: "haiku", Reasoning: "low"}}}
+	if _, err := mustLoad(t, validTree()).Install(target); err != nil {
+		t.Fatal(err)
+	}
+	var agents map[string]struct{ Model, Effort string }
+	b, _ := os.ReadFile(target.AgentsFile())
+	if err := json.Unmarshal(b, &agents); err != nil {
+		t.Fatal(err)
+	}
+	if a := agents["delamain-analyzer"]; a.Model != "haiku" || a.Effort != "low" {
+		t.Fatalf("agents.json must carry the subagent's model and effort: %s", b)
+	}
+}

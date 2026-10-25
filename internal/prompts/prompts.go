@@ -72,7 +72,11 @@ func (s *Set) agentParts(name string) (frontmatter, []byte, error) {
 
 // Agent assembles an omp agent file: "---\n<omp.yml>\n---\n\n<body.md>".
 // The frontmatter is passed through as opaque bytes, like catlog-agents' installer.
-func (s *Set) Agent(name string) ([]byte, error) {
+func (s *Set) Agent(name string) ([]byte, error) { return s.agentFile(name, AgentModel{}) }
+
+// agentFile is Agent with m's model and thinking-level set in the frontmatter; a zero m keeps
+// its bytes as they are.
+func (s *Set) agentFile(name string, m AgentModel) ([]byte, error) {
 	dir := path.Join("agents", name)
 	front, err := fs.ReadFile(s.FS, path.Join(dir, "omp.yml"))
 	if err != nil {
@@ -81,6 +85,11 @@ func (s *Set) Agent(name string) ([]byte, error) {
 	body, err := fs.ReadFile(s.FS, path.Join(dir, "body.md"))
 	if err != nil {
 		return nil, fmt.Errorf("agent %s body: %w", name, err)
+	}
+	if m != (AgentModel{}) {
+		if front, err = withModel(front, m); err != nil {
+			return nil, fmt.Errorf("agent %s frontmatter: %w", name, err)
+		}
 	}
 	var out bytes.Buffer
 	out.WriteString("---\n")
@@ -91,6 +100,43 @@ func (s *Set) Agent(name string) ([]byte, error) {
 	out.WriteString("---\n\n")
 	out.Write(body)
 	return out.Bytes(), nil
+}
+
+// withModel sets omp's model and thinking-level keys in an agent frontmatter, in place when
+// present, keeping the other keys and their order.
+func withModel(front []byte, m AgentModel) ([]byte, error) {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(front, &doc); err != nil {
+		return nil, err
+	}
+	if len(doc.Content) != 1 || doc.Content[0].Kind != yaml.MappingNode {
+		return nil, fmt.Errorf("not a mapping")
+	}
+	root := doc.Content[0]
+	set := func(key, value string) {
+		if value == "" {
+			return
+		}
+		for i := 0; i+1 < len(root.Content); i += 2 {
+			if root.Content[i].Value == key {
+				root.Content[i+1].SetString(value)
+				return
+			}
+		}
+		var k, v yaml.Node
+		k.SetString(key)
+		v.SetString(value)
+		root.Content = append(root.Content, &k, &v)
+	}
+	set("thinking-level", m.Reasoning)
+	set("model", m.Model)
+	var out bytes.Buffer
+	enc := yaml.NewEncoder(&out)
+	enc.SetIndent(2)
+	if err := enc.Encode(&doc); err != nil {
+		return nil, err
+	}
+	return out.Bytes(), enc.Close()
 }
 
 type Issue struct {

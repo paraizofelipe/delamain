@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"errors"
@@ -47,6 +48,9 @@ type AgentOptions struct {
 	ErrPath      string   // the harness' stderr
 	// Confine, when set, restricts a session that reads third-party code (a PR review).
 	Confine *Confinement
+	// Model and Reasoning (omp's --thinking, claude's --effort) override the harness defaults
+	// for this role; empty keeps them.
+	Model, Reasoning string
 }
 
 // Confinement lets an agent read Checkout, run read-only git there (diff, log, show) and write
@@ -68,7 +72,7 @@ type RPCAgents struct {
 
 func (a RPCAgents) args(o AgentOptions) []string {
 	return []string{
-		"--model", a.Model, "--thinking", a.Thinking, "--approval-mode", a.ApprovalMode,
+		"--model", cmp.Or(o.Model, a.Model), "--thinking", cmp.Or(o.Reasoning, a.Thinking), "--approval-mode", a.ApprovalMode,
 		"--session-dir", o.SessionDir, "--append-system-prompt", o.SystemPrompt,
 	}
 }
@@ -121,13 +125,14 @@ type ClaudeAgents struct {
 	AgentsFile, PluginDir         string // delamain's subagents and skills (`delamain prompts install`)
 }
 
-func (a ClaudeAgents) args(sessionID, rolePrompt string, c *Confinement) []string {
+func (a ClaudeAgents) args(sessionID, rolePrompt string, o AgentOptions) []string {
+	c := o.Confine
 	mode := a.PermissionMode
 	if c != nil {
 		mode = "dontAsk" // anything not allowed by confined() is denied, never prompted
 	}
 	args := []string{
-		"--model", a.Model, "--effort", a.Effort, "--permission-mode", mode,
+		"--model", cmp.Or(o.Model, a.Model), "--effort", cmp.Or(o.Reasoning, a.Effort), "--permission-mode", mode,
 		"--session-id", sessionID, "--no-session-persistence",
 		"--append-system-prompt", rolePrompt,
 		"--agents", a.AgentsFile, "--plugin-dir", a.PluginDir,
@@ -211,7 +216,7 @@ func (a ClaudeAgents) Start(ctx context.Context, o AgentOptions) (Agent, error) 
 		files = append(files, f)
 	}
 	c, err := claude.Start(ctx, claude.Options{
-		Binary: a.Binary, Dir: o.Dir, Args: a.args(id, string(role), o.Confine), Env: o.Env,
+		Binary: a.Binary, Dir: o.Dir, Args: a.args(id, string(role), o), Env: o.Env,
 		Log: files[0], Stderr: files[1], Transcript: files[2],
 		UsagePath: filepath.Join(o.SessionDir, id+claude.UsageSuffix),
 	})
