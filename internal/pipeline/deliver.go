@@ -131,13 +131,7 @@ func (r *Runner) announce(ctx context.Context, ru *run, t Task) {
 
 func (r *Runner) needsInfo(ctx context.Context, t Task, problems []string, res *Result) {
 	l := r.Cfg.Forge.Labels
-	var b strings.Builder
-	b.WriteString("🤖 **delamain** não iniciou esta issue: faltam informações.\n\n")
-	for _, p := range problems {
-		fmt.Fprintf(&b, "- %s\n", p)
-	}
-	fmt.Fprintf(&b, "\nAjuste a issue e recoloque a label `%s`.", l.Ready)
-	relabeled := r.issueUpdate(ctx, t, res, []string{l.NeedsInfo}, []string{l.Ready, l.InProgress}, b.String())
+	relabeled := r.issueUpdate(ctx, t, res, []string{l.NeedsInfo}, []string{l.Ready, l.InProgress}, needsInfoComment(problems, l.Ready))
 	n := notify.Run{Repo: t.Repo, Ref: t.Ref, Title: t.Title}
 	if r.Forge != nil && t.Issue != 0 {
 		n.IssueURL = t.URL
@@ -146,6 +140,16 @@ func (r *Runner) needsInfo(ctx context.Context, t Task, problems []string, res *
 		n.NeedsInfoLabel = l.NeedsInfo
 	}
 	r.notify(ctx, r.Log, notify.FormatNeedsInfo(n))
+}
+
+func needsInfoComment(problems []string, readyLabel string) string {
+	var b strings.Builder
+	b.WriteString("🤖 **Execução automática não iniciada**: faltam informações nesta issue.\n\n")
+	for _, p := range problems {
+		fmt.Fprintf(&b, "- %s\n", p)
+	}
+	fmt.Fprintf(&b, "\nAjuste a issue e recoloque a label `%s`.", readyLabel)
+	return b.String()
 }
 
 // issueUpdate relabels and comments on the task's issue. Forge hiccups here never fail the run:
