@@ -14,6 +14,7 @@ import (
 
 	"github.com/paraizo/delamain/internal/config"
 	"github.com/paraizo/delamain/internal/forge"
+	"github.com/paraizo/delamain/internal/gates"
 	"github.com/paraizo/delamain/internal/gitx"
 	"github.com/paraizo/delamain/internal/herdr"
 	"github.com/paraizo/delamain/internal/notify"
@@ -147,6 +148,10 @@ func issueTask(ctx context.Context, fg forge.Forge, n int, repo string) (pipelin
 
 // runTask takes a free slot and runs task in it; with none free it returns errNoSlot.
 func runTask(ctx context.Context, cfg config.Config, task pipeline.Task, fg forge.Forge) (pipeline.Result, error) {
+	cfg, _, err := projectConfig(cfg, task.Repo)
+	if err != nil {
+		return pipeline.Result{}, err
+	}
 	st, err := openStore(ctx, cfg)
 	if err != nil {
 		return pipeline.Result{}, err
@@ -205,13 +210,37 @@ func newRunner(cfg config.Config, st *store.Store, no notify.Options) (*pipeline
 	}, nil
 }
 
+// projectConfig merges the repository's .delamain.yaml agent overrides (agent, claude, omp,
+// agents) into cfg, so each project picks how and which code agent runs it; errors name the
+// file and surface before any agent starts.
+func projectConfig(cfg config.Config, repo string) (config.Config, bool, error) {
+	rc, err := gates.LoadRepoConfig(repo)
+	if err != nil {
+		return cfg, false, err
+	}
+	merged, changed, err := cfg.WithProjectOverrides(rc.Agent, rc.Claude, rc.Omp, rc.Agents)
+	if err != nil {
+		return cfg, changed, fmt.Errorf("%s: %w", gates.RepoConfigFile, err)
+	}
+	return merged, changed, nil
+}
+
+// retarget points a runner copy at the merged config's harness.
+func retarget(r *pipeline.Runner, merged config.Config) {
+	r.Cfg = merged
+	r.PromptsTarget = promptsTarget(merged)
+	r.Agents = agentsFor(merged, r.PromptsTarget)
+}
+
 // agentsFor starts the agents on the configured harness.
 func agentsFor(cfg config.Config, target prompts.Target) pipeline.Agents {
 	if cfg.Agent.Harness == config.HarnessClaude {
 		c := cfg.Claude
 		return pipeline.ClaudeAgents{
-			Binary: c.Binary, Model: c.Model, Effort: c.Effort, PermissionMode: c.PermissionMode,
+			Binary: c.Binary, BinaryArgs: c.Args,
+			Model: c.Model, Effort: c.Effort, PermissionMode: c.PermissionMode,
 			AgentsFile: target.AgentsFile(), PluginDir: target.PluginDir(),
+			Env: c.Environ(), Settings: c.Settings,
 		}
 	}
 	o := cfg.Omp

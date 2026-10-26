@@ -1,9 +1,13 @@
 package cli
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"os"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 
@@ -31,10 +35,21 @@ func promptsTarget(cfg config.Config) prompts.Target {
 			agents[name] = prompts.AgentModel{Model: model, Reasoning: reasoning}
 		}
 	}
-	return prompts.Target{
+	target := prompts.Target{
 		Harness: string(cfg.Agent.Harness), OmpAgentDir: cfg.Omp.AgentDir,
 		RolesDir: cfg.Paths.RolesDir(), ClaudeDir: cfg.Paths.ClaudeDir(), Agents: agents,
 	}
+	// agents.json embeds these overrides, and every repository shares the install dir: with
+	// per-project overrides, concurrent runs would rewrite the file with each other's models
+	// between sessions. A directory per override set keeps them apart — equal overrides share
+	// one install (map keys marshal sorted, so the digest is stable). Only claude moves: omp
+	// discovers its agent dir on its own, so relocating it would hide the agents from it.
+	if cfg.Agent.Harness == config.HarnessClaude && len(agents) > 0 {
+		b, _ := json.Marshal(agents)
+		sum := sha256.Sum256(b)
+		target.ClaudeDir = filepath.Join(target.ClaudeDir, hex.EncodeToString(sum[:6]))
+	}
+	return target
 }
 
 func newPromptsCmd(load func() (config.Config, error)) *cobra.Command {

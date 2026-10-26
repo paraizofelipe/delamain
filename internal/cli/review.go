@@ -97,6 +97,10 @@ Exit codes: 0 reviewed, answered or skipped · 1 interrupted.`,
 }
 
 func reviewPR(ctx context.Context, cfg config.Config, repo string, pr int, fg forge.Forge, user string) (pipeline.Result, error) {
+	cfg, _, err := projectConfig(cfg, repo)
+	if err != nil {
+		return pipeline.Result{}, err
+	}
 	st, err := openStore(ctx, cfg)
 	if err != nil {
 		return pipeline.Result{}, err

@@ -20,6 +20,7 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	"github.com/paraizo/delamain/internal/artifacts"
+	"github.com/paraizo/delamain/internal/config"
 )
 
 // Red-proof policies: when new tests must be shown failing on the base branch.
@@ -124,6 +125,13 @@ func Effective(repo, detected, plan artifacts.Commands) (artifacts.Commands, map
 type RepoConfig struct {
 	Commands artifacts.Commands `yaml:"commands"`
 	Gates    RepoGates          `yaml:"gates"`
+	// Agent, Claude, Omp and Agents override the user config for this repository only: a
+	// non-zero field wins, an explicitly empty list or map clears the global one (see
+	// config.WithProjectOverrides). Read from the user's own clone, never from a PR's head.
+	Agent  config.Agent                    `yaml:"agent"`
+	Claude config.Claude                   `yaml:"claude"`
+	Omp    config.Omp                      `yaml:"omp"`
+	Agents map[string]config.AgentSettings `yaml:"agents"`
 }
 
 type RepoGates struct {

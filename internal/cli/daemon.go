@@ -97,8 +97,13 @@ in-flight runs end as interrupted.`,
 			}
 			meter := budget.Meter{Store: st, Cfg: cfg.Budget}
 			issues := daemon.IssueJobs{Label: cfg.Forge.Labels.Ready, Run: func(ctx context.Context, t pipeline.Task, fg forge.Forge) (pipeline.Result, error) {
-				r := *base // per-run copy: each repository has its own forge
+				r := *base // per-run copy: each repository has its own forge and agent overrides
 				r.Forge = fg
+				if merged, changed, err := projectConfig(cfg, t.Repo); err != nil {
+					return pipeline.Result{}, err
+				} else if changed {
+					retarget(&r, merged)
+				}
 				leaveQueueOnCreate(&r, st, t, base.Log.Warn)
 				return r.Run(ctx, t)
 			}}
@@ -123,6 +128,11 @@ in-flight runs end as interrupted.`,
 				Run: func(ctx context.Context, repo string, pr int, fg forge.Forge) (pipeline.Result, error) {
 					r := *base
 					r.Forge, r.ForgeUser = fg, users[repo]
+					if merged, changed, err := projectConfig(cfg, repo); err != nil {
+						return pipeline.Result{}, err
+					} else if changed {
+						retarget(&r, merged)
+					}
 					return r.RunReview(ctx, repo, pr)
 				},
 			}

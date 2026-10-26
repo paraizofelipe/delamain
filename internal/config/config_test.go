@@ -494,3 +494,109 @@ func TestValidateShouldRejectAnOmpThinkingLevelOmpDoesNotTake(t *testing.T) {
 		t.Fatalf("auto and off are omp levels: %v", err)
 	}
 }
+
+func TestLoadShouldParseClaudeArgsEnvAndSettings(t *testing.T) {
+	p := writeFile(t, "claude:\n  binary: mia\n  args: [launch, claude]\n  env:\n    MIA_NO_ONBOARDING: \"1\"\n  settings:\n    apiKeyHelper: mia hook api-key\n")
+	cfg, err := Load(p, noEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := cfg.Claude
+	if c.Binary != "mia" || len(c.Args) != 2 || c.Args[0] != "launch" || c.Args[1] != "claude" {
+		t.Fatalf("binary and args: %+v", c)
+	}
+	if c.Env["MIA_NO_ONBOARDING"] != "1" || c.Settings["apiKeyHelper"] != "mia hook api-key" {
+		t.Fatalf("env and settings: %+v", c)
+	}
+}
+
+func TestValidateShouldRejectBlankClaudeArgsAndMalformedEnvKeys(t *testing.T) {
+	for name, mutate := range map[string]func(*Claude){
+		"blank arg":          func(c *Claude) { c.Args = []string{"launch", " "} },
+		"empty env key":      func(c *Claude) { c.Env = map[string]string{"": "1"} },
+		"env key with '='":   func(c *Claude) { c.Env = map[string]string{"A=B": "1"} },
+		"env key with space": func(c *Claude) { c.Env = map[string]string{"A B": "1"} },
+	} {
+		cfg := Default()
+		cfg.Agent.Harness = HarnessClaude
+		mutate(&cfg.Claude)
+		if err := cfg.Validate(); err == nil {
+			t.Errorf("%s must be rejected: %+v", name, cfg.Claude)
+		}
+	}
+	cfg := Default()
+	cfg.Agent.Harness = HarnessClaude
+	cfg.Claude.Args = []string{"launch", "claude"}
+	cfg.Claude.Env = map[string]string{"MIA_NO_UPDATE_CHECK": "1"}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("a launcher with args and env is valid: %v", err)
+	}
+}
+
+func TestValidateShouldRefuseAttributionInClaudeSettings(t *testing.T) {
+	cfg := Default()
+	cfg.Agent.Harness = HarnessClaude
+	cfg.Claude.Settings = map[string]any{"attribution": map[string]any{"commit": "me"}}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("attribution is delamain policy and must be refused")
+	}
+	cfg.Claude.Settings = map[string]any{"apiKeyHelper": "mia hook api-key"}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("other settings keys are valid: %v", err)
+	}
+}
+
+func TestWithProjectOverridesShouldPreferProjectFieldsAndInheritTheRest(t *testing.T) {
+	cfg := Default()
+	cfg.Claude.Args = []string{"launch", "claude"}
+	cfg.Claude.Env = map[string]string{"MIA_NO_ONBOARDING": "1"}
+
+	merged, changed, err := cfg.WithProjectOverrides(Agent{Harness: HarnessClaude}, Claude{Binary: "mia"}, Omp{}, nil)
+	if err != nil || !changed {
+		t.Fatalf("changed=%v err=%v", changed, err)
+	}
+	if merged.Agent.Harness != HarnessClaude || merged.Claude.Binary != "mia" {
+		t.Fatalf("project fields must win: %+v", merged.Claude)
+	}
+	if merged.Claude.Model != "opus" || len(merged.Claude.Args) != 2 {
+		t.Fatalf("absent fields inherit the global ones: %+v", merged.Claude)
+	}
+
+	merged, changed, err = cfg.WithProjectOverrides(Agent{}, Claude{Binary: "claude", Args: []string{}, Env: map[string]string{}}, Omp{}, nil)
+	if err != nil || !changed {
+		t.Fatalf("changed=%v err=%v", changed, err)
+	}
+	if len(merged.Claude.Args) != 0 || len(merged.Claude.Env) != 0 || merged.Claude.Binary != "claude" {
+		t.Fatalf("an explicitly empty list or map clears the global one: %+v", merged.Claude)
+	}
+
+	if _, changed, err := cfg.WithProjectOverrides(Agent{}, Claude{}, Omp{}, nil); changed || err != nil {
+		t.Fatalf("a project without overrides keeps the global config: changed=%v err=%v", changed, err)
+	}
+}
+
+func TestWithProjectOverridesShouldMergeAgentsByName(t *testing.T) {
+	cfg := Default()
+	cfg.Agents = map[string]AgentSettings{"planner": {Model: "opus"}, "implementer": {Model: "sonnet", Effort: "high"}}
+	merged, changed, err := cfg.WithProjectOverrides(Agent{}, Claude{}, Omp{}, map[string]AgentSettings{"implementer": {Model: "haiku"}})
+	if err != nil || !changed {
+		t.Fatalf("changed=%v err=%v", changed, err)
+	}
+	if merged.Agents["implementer"] != (AgentSettings{Model: "haiku"}) {
+		t.Fatalf("the project entry replaces the global one whole: %+v", merged.Agents["implementer"])
+	}
+	if merged.Agents["planner"].Model != "opus" || len(cfg.Agents["implementer"].Effort) == 0 {
+		t.Fatalf("other names and the global config stay untouched: %+v / %+v", merged.Agents, cfg.Agents)
+	}
+}
+
+func TestWithProjectOverridesShouldRejectAnInvalidMerge(t *testing.T) {
+	cfg := Default()
+	cfg.Agent.Harness = HarnessClaude
+	if _, _, err := cfg.WithProjectOverrides(Agent{}, Claude{Effort: "huge"}, Omp{}, nil); err == nil {
+		t.Fatal("an invalid project effort must fail before any agent starts")
+	}
+	if _, _, err := cfg.WithProjectOverrides(Agent{Harness: "cursor"}, Claude{}, Omp{}, nil); err == nil {
+		t.Fatal("an unknown harness must be rejected")
+	}
+}

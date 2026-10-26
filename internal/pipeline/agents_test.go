@@ -57,6 +57,25 @@ func TestClaudeAgentsShouldRunUnattendedApartFromTheUsersClaudeSetup(t *testing.
 	}
 }
 
+func TestClaudeAgentsShouldMergeConfiguredSettingsUnderTheAttributionPolicy(t *testing.T) {
+	a := ClaudeAgents{Model: "opus", Effort: "high", PermissionMode: "bypassPermissions",
+		Settings: map[string]any{"apiKeyHelper": "/usr/local/bin/mia hook api-key", "attribution": "mine"}}
+	got := strings.Join(a.args("sid", "plan", AgentOptions{}), " ")
+	want := `--settings {"apiKeyHelper":"/usr/local/bin/mia hook api-key","attribution":{"commit":"","pr":"","sessionUrl":false}}`
+	if !strings.Contains(got, want) {
+		t.Fatalf("the configured settings merge in and attribution stays delamain's: %s", got)
+	}
+}
+
+func TestClaudeAgentsShouldKeepTheAttributionPolicyWhenSettingsDoNotEncode(t *testing.T) {
+	a := ClaudeAgents{Settings: map[string]any{"broken": func() {}}} // Validate() never lets this in
+	got := strings.Join(a.args("sid", "plan", AgentOptions{}), " ")
+	want := `--settings {"attribution":{"commit":"","pr":"","sessionUrl":false}}`
+	if !strings.Contains(got, want) {
+		t.Fatalf("no Co-Authored-By may come back through a settings map that fails to encode: %s", got)
+	}
+}
+
 func TestClaudeAgentsSessionsShouldReadEachRolesUsageFile(t *testing.T) {
 	dir := t.TempDir()
 	write := func(rel, body string) {
