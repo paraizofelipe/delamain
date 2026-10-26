@@ -154,7 +154,12 @@ func (a ClaudeAgents) args(sessionID, rolePrompt string, o AgentOptions) []strin
 	settings := map[string]any{}
 	maps.Copy(settings, a.Settings)
 	settings["attribution"] = map[string]any{"commit": "", "pr": "", "sessionUrl": false}
-	b, _ := json.Marshal(settings)
+	b, err := json.Marshal(settings)
+	if err != nil {
+		// Validate() vouched claude.settings encodes; should a map ever get here without it,
+		// the attribution policy still stands.
+		b = []byte(`{"attribution":{"commit":"","pr":"","sessionUrl":false}}`)
+	}
 	return append(args, "--settings", string(b))
 }
 

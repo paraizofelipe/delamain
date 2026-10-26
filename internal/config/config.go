@@ -193,6 +193,15 @@ type Claude struct {
 	Settings map[string]any `yaml:"settings"`
 }
 
+// Environ renders Env as sorted K=V entries, the way a subprocess environment takes them.
+func (c Claude) Environ() []string {
+	env := make([]string, 0, len(c.Env))
+	for _, k := range slices.Sorted(maps.Keys(c.Env)) {
+		env = append(env, k+"="+c.Env[k])
+	}
+	return env
+}
+
 type Omp struct {
 	Binary string `yaml:"binary"`
 	// AgentDir is omp's agent directory, where delamain installs its agents and skills.

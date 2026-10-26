@@ -67,6 +67,15 @@ func TestClaudeAgentsShouldMergeConfiguredSettingsUnderTheAttributionPolicy(t *t
 	}
 }
 
+func TestClaudeAgentsShouldKeepTheAttributionPolicyWhenSettingsDoNotEncode(t *testing.T) {
+	a := ClaudeAgents{Settings: map[string]any{"broken": func() {}}} // Validate() never lets this in
+	got := strings.Join(a.args("sid", "plan", AgentOptions{}), " ")
+	want := `--settings {"attribution":{"commit":"","pr":"","sessionUrl":false}}`
+	if !strings.Contains(got, want) {
+		t.Fatalf("no Co-Authored-By may come back through a settings map that fails to encode: %s", got)
+	}
+}
+
 func TestClaudeAgentsSessionsShouldReadEachRolesUsageFile(t *testing.T) {
 	dir := t.TempDir()
 	write := func(rel, body string) {

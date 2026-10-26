@@ -48,13 +48,13 @@ type ForgeIdentity struct {
 
 type Deps struct {
 	LookPath func(string) (string, error)
-	// Version runs "<bin> [args...] --version" and returns trimmed output.
-	Version func(ctx context.Context, bin string, args ...string) (string, error)
+	// Version runs "<bin> [args...] --version" with env appended and returns trimmed output.
+	Version func(ctx context.Context, bin string, env []string, args ...string) (string, error)
 	// OmpRPC starts "<bin> --mode rpc" and returns once it is ready, or why it is not.
 	OmpRPC func(ctx context.Context, bin string) error
 	// ClaudeAuth runs "<bin> [args...] auth status" and says why claude is not logged in, if
-	// it is not. args carry a launcher's subcommand (claude.args).
-	ClaudeAuth func(ctx context.Context, bin string, args ...string) error
+	// it is not. args and env carry a launcher's subcommand and variables (claude.args/env).
+	ClaudeAuth func(ctx context.Context, bin string, env []string, args ...string) error
 	Herdr      Herdr
 	// ForgeAuth resolves the forge token of the repository at dir and asks the forge who it
 	// belongs to. A repository without forge returns a zero identity and no error.
@@ -76,18 +76,19 @@ func Run(ctx context.Context, cfg config.Config, d Deps) []Check {
 	found := map[string]string{}
 	harness := struct {
 		name, path string
-		args       []string
-	}{"omp", cfg.Omp.Binary, nil}
+		args, env  []string
+	}{"omp", cfg.Omp.Binary, nil, nil}
 	if cfg.Agent.Harness == config.HarnessClaude {
-		harness.name, harness.path, harness.args = "claude", cfg.Claude.Binary, cfg.Claude.Args
+		harness.name, harness.path = "claude", cfg.Claude.Binary
+		harness.args, harness.env = cfg.Claude.Args, cfg.Claude.Environ()
 	}
 	type bin = struct {
 		name, path string
-		args       []string
+		args, env  []string
 	}
-	bins := []bin{harness, {"git", "git", nil}}
+	bins := []bin{harness, {"git", "git", nil, nil}}
 	if cfg.Herdr.Enabled {
-		bins = append([]bin{{"herdr", cfg.Herdr.Binary, nil}}, bins...)
+		bins = append([]bin{{"herdr", cfg.Herdr.Binary, nil, nil}}, bins...)
 	} else {
 		add("herdr", OK, "off: runs are followed with `delamain logs` (enable with herdr.enabled or --herdr)")
 	}
@@ -97,7 +98,7 @@ func Run(ctx context.Context, cfg config.Config, d Deps) []Check {
 			add(bin.name, Fail, "%s not found in PATH", bin.path)
 			continue
 		}
-		v, err := d.Version(ctx, p, bin.args...)
+		v, err := d.Version(ctx, p, bin.env, bin.args...)
 		if err != nil {
 			add(bin.name, Fail, "%s --version failed: %v", p, err)
 			continue
@@ -114,7 +115,7 @@ func Run(ctx context.Context, cfg config.Config, d Deps) []Check {
 		// Without credentials every agent fails its first turn.
 		if p, ok := found["claude"]; !ok {
 			add("claude auth", Fail, "claude unavailable")
-		} else if err := d.ClaudeAuth(ctx, p, cfg.Claude.Args...); err != nil {
+		} else if err := d.ClaudeAuth(ctx, p, cfg.Claude.Environ(), cfg.Claude.Args...); err != nil {
 			add("claude auth", Fail, "%v (run: claude auth login)", err)
 		} else {
 			add("claude auth", OK, "logged in")

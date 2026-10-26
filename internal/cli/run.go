@@ -6,10 +6,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"maps"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -238,15 +236,11 @@ func retarget(r *pipeline.Runner, merged config.Config) {
 func agentsFor(cfg config.Config, target prompts.Target) pipeline.Agents {
 	if cfg.Agent.Harness == config.HarnessClaude {
 		c := cfg.Claude
-		env := make([]string, 0, len(c.Env))
-		for _, k := range slices.Sorted(maps.Keys(c.Env)) {
-			env = append(env, k+"="+c.Env[k])
-		}
 		return pipeline.ClaudeAgents{
 			Binary: c.Binary, BinaryArgs: c.Args,
 			Model: c.Model, Effort: c.Effort, PermissionMode: c.PermissionMode,
 			AgentsFile: target.AgentsFile(), PluginDir: target.PluginDir(),
-			Env: env, Settings: c.Settings,
+			Env: c.Environ(), Settings: c.Settings,
 		}
 	}
 	o := cfg.Omp

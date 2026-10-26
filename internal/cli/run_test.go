@@ -64,3 +64,27 @@ func TestProjectConfigShouldRetargetTheHarnessPerRepo(t *testing.T) {
 		t.Fatalf("an invalid project override must name the file: %v", err)
 	}
 }
+
+func TestPromptsTargetShouldIsolateTheClaudeDirPerAgentOverrides(t *testing.T) {
+	cfg := config.Default()
+	cfg.Agent.Harness = config.HarnessClaude
+	base := promptsTarget(cfg).ClaudeDir
+
+	cfg.Agents = map[string]config.AgentSettings{"implementer": {Model: "haiku"}}
+	over := promptsTarget(cfg).ClaudeDir
+	if filepath.Dir(over) != base {
+		t.Fatalf("overrides must install under the shared dir, in their own: %s vs %s", over, base)
+	}
+	if again := promptsTarget(cfg).ClaudeDir; again != over {
+		t.Fatalf("equal overrides must share one install: %s vs %s", again, over)
+	}
+	cfg.Agents = map[string]config.AgentSettings{"implementer": {Model: "sonnet"}}
+	if other := promptsTarget(cfg).ClaudeDir; other == over || filepath.Dir(other) != base {
+		t.Fatalf("a different override set writes its own agents.json: %s vs %s", other, over)
+	}
+
+	cfg.Agent.Harness = config.HarnessOmp
+	if omp := promptsTarget(cfg).ClaudeDir; omp != base {
+		t.Fatalf("omp discovers its own agent dir, nothing may move: %s", omp)
+	}
+}

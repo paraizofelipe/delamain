@@ -33,7 +33,7 @@ func healthy(t *testing.T) (config.Config, Deps) {
 	cfg.Herdr.Enabled = true
 	return cfg, Deps{
 		LookPath: func(b string) (string, error) { return "/usr/bin/" + b, nil },
-		Version: func(_ context.Context, b string, _ ...string) (string, error) {
+		Version: func(_ context.Context, b string, _ []string, _ ...string) (string, error) {
 			return filepath.Base(b) + " 1.0\nextra", nil
 		},
 		OmpRPC: func(context.Context, string) error { return nil },
@@ -100,13 +100,13 @@ func TestRunShouldNotStartOmpRPCWhenOmpIsMissing(t *testing.T) {
 func claudeHarness(t *testing.T) (config.Config, Deps) {
 	cfg, d := healthy(t)
 	cfg.Agent.Harness = config.HarnessClaude
-	d.Version = func(_ context.Context, b string, _ ...string) (string, error) {
+	d.Version = func(_ context.Context, b string, _ []string, _ ...string) (string, error) {
 		if filepath.Base(b) == "claude" {
 			return "2.1.303 (Claude Code)", nil
 		}
 		return filepath.Base(b) + " 1.0", nil
 	}
-	d.ClaudeAuth = func(context.Context, string, ...string) error { return nil }
+	d.ClaudeAuth = func(context.Context, string, []string, ...string) error { return nil }
 	d.OmpRPC = func(context.Context, string) error {
 		t.Fatal("the claude harness never needs omp")
 		return nil
@@ -140,12 +140,14 @@ func TestRunShouldCheckClaudeInsteadOfOmpWhenItIsTheHarness(t *testing.T) {
 
 func TestRunShouldFailWhenClaudeIsNotLoggedInAndWarnOnAnOldClaude(t *testing.T) {
 	cfg, d := claudeHarness(t)
-	d.ClaudeAuth = func(context.Context, string, ...string) error { return errors.New("not logged in") }
+	d.ClaudeAuth = func(context.Context, string, []string, ...string) error { return errors.New("not logged in") }
 	if c := byName(Run(context.Background(), cfg, d))["claude auth"]; c.Status != Fail || c.Detail != "not logged in (run: claude auth login)" {
 		t.Fatalf("an agent without credentials fails its first turn: %+v", c)
 	}
 	cfg, d = claudeHarness(t)
-	d.Version = func(_ context.Context, b string, _ ...string) (string, error) { return "2.1.100 (Claude Code)", nil }
+	d.Version = func(_ context.Context, b string, _ []string, _ ...string) (string, error) {
+		return "2.1.100 (Claude Code)", nil
+	}
 	if c := byName(Run(context.Background(), cfg, d))["claude"]; c.Status != Warn {
 		t.Fatalf("a claude older than %s must be flagged: %+v", MinClaude, c)
 	}
@@ -449,22 +451,23 @@ func TestRunShouldRemindToAllowNotificationsOnMacOS(t *testing.T) {
 	}
 }
 
-func TestRunShouldPassTheClaudeArgsToVersionAndAuth(t *testing.T) {
+func TestRunShouldPassTheClaudeArgsAndEnvToVersionAndAuth(t *testing.T) {
 	cfg, d := claudeHarness(t)
 	cfg.Claude.Args = []string{"launch", "claude"}
-	var gotVersion, gotAuth []string
-	d.Version = func(_ context.Context, b string, args ...string) (string, error) {
+	cfg.Claude.Env = map[string]string{"MIA_NO_RELOGIN": "1", "MIA_NO_ONBOARDING": "1"}
+	var gotVersion, gotAuth, envVersion, envAuth []string
+	d.Version = func(_ context.Context, b string, env []string, args ...string) (string, error) {
 		if filepath.Base(b) == "claude" {
-			gotVersion = args
+			gotVersion, envVersion = args, env
 			return "2.1.303 (Claude Code)", nil
 		}
-		if len(args) != 0 {
-			t.Errorf("%s takes no launcher args: %v", b, args)
+		if len(args) != 0 || len(env) != 0 {
+			t.Errorf("%s takes no launcher args nor env: %v %v", b, args, env)
 		}
 		return filepath.Base(b) + " 1.0", nil
 	}
-	d.ClaudeAuth = func(_ context.Context, _ string, args ...string) error {
-		gotAuth = args
+	d.ClaudeAuth = func(_ context.Context, _ string, env []string, args ...string) error {
+		gotAuth, envAuth = args, env
 		return nil
 	}
 	if results := Run(context.Background(), cfg, d); Failed(results) {
@@ -473,5 +476,9 @@ func TestRunShouldPassTheClaudeArgsToVersionAndAuth(t *testing.T) {
 	want := []string{"launch", "claude"}
 	if !slices.Equal(gotVersion, want) || !slices.Equal(gotAuth, want) {
 		t.Fatalf("claude.args must reach --version (%v) and auth status (%v)", gotVersion, gotAuth)
+	}
+	wantEnv := []string{"MIA_NO_ONBOARDING=1", "MIA_NO_RELOGIN=1"}
+	if !slices.Equal(envVersion, wantEnv) || !slices.Equal(envAuth, wantEnv) {
+		t.Fatalf("claude.env must reach --version (%v) and auth status (%v)", envVersion, envAuth)
 	}
 }

@@ -109,9 +109,11 @@ func NewRoot() *cobra.Command {
 }
 
 // claudeAuth asks claude whether it has credentials; the account itself is never printed.
-func claudeAuth(ctx context.Context, bin string, args ...string) error {
+func claudeAuth(ctx context.Context, bin string, env []string, args ...string) error {
 	args = append(slices.Clone(args), "auth", "status", "--json")
-	out, err := exec.CommandContext(ctx, bin, args...).Output() //nolint:gosec // configured binary
+	cmd := exec.CommandContext(ctx, bin, args...) //nolint:gosec // configured binary
+	cmd.Env = launcherEnv(env)
+	out, err := cmd.Output()
 	var st struct {
 		LoggedIn bool `json:"loggedIn"`
 	}
@@ -140,10 +142,21 @@ func ompRPCReady(ctx context.Context, bin string) error {
 	return c.Close()
 }
 
+// launcherEnv appends a launcher's variables (claude.env) to the inherited environment, so the
+// doctor probes the binary under the same environment the agents get; nil keeps inheritance as is.
+func launcherEnv(env []string) []string {
+	if len(env) == 0 {
+		return nil
+	}
+	return append(os.Environ(), env...)
+}
+
 // binVersion keeps stdout apart from stderr: a launcher like mia reports its preparation on
 // stderr, and mixing it in would hide the version from the doctor's MinClaude check.
-func binVersion(ctx context.Context, bin string, args ...string) (string, error) {
-	out, err := exec.CommandContext(ctx, bin, append(slices.Clone(args), "--version")...).Output() //nolint:gosec // configured binary
+func binVersion(ctx context.Context, bin string, env []string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, bin, append(slices.Clone(args), "--version")...) //nolint:gosec // configured binary
+	cmd.Env = launcherEnv(env)
+	out, err := cmd.Output()
 	if ee, ok := errors.AsType[*exec.ExitError](err); ok {
 		if lines := strings.Split(strings.TrimSpace(string(ee.Stderr)), "\n"); lines[len(lines)-1] != "" {
 			err = fmt.Errorf("%w: %s", err, strings.TrimSpace(lines[len(lines)-1]))
