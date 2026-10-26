@@ -275,3 +275,19 @@ func TestLoadRepoConfigShouldReadTheSubjectLimit(t *testing.T) {
 		t.Fatalf("SubjectLimit = %d, want 69", rc.Gates.SubjectLimit)
 	}
 }
+
+func TestParseRepoConfigShouldReadTheAgentOverrides(t *testing.T) {
+	rc, err := ParseRepoConfig([]byte("agent:\n  harness: claude\nclaude:\n  binary: mia\n  args: [launch, claude]\nomp:\n  model: openai/gpt-x\nagents:\n  implementer:\n    model: haiku\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(rc.Agent.Harness) != "claude" || rc.Claude.Binary != "mia" || len(rc.Claude.Args) != 2 {
+		t.Fatalf("agent and claude overrides: %+v", rc)
+	}
+	if rc.Omp.Model != "openai/gpt-x" || rc.Agents["implementer"].Model != "haiku" {
+		t.Fatalf("omp and agents overrides: %+v", rc)
+	}
+	if _, err := ParseRepoConfig([]byte("claud:\n  binary: mia\n")); err == nil {
+		t.Fatal("unknown keys must still be rejected")
+	}
+}

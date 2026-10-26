@@ -132,7 +132,7 @@ func (s *syncBuffer) String() string {
 	return s.b.String()
 }
 
-func start(t *testing.T, scenario string) *session {
+func start(t *testing.T, scenario string, binaryArgs ...string) *session {
 	t.Helper()
 	self, err := os.Executable()
 	if err != nil {
@@ -142,7 +142,7 @@ func start(t *testing.T, scenario string) *session {
 	s := &session{log: &syncBuffer{}, trace: filepath.Join(dir, "trace"), usage: filepath.Join(dir, "s1"+UsageSuffix)}
 	var transcript bytes.Buffer
 	s.c, err = Start(context.Background(), Options{
-		Binary: self, Dir: dir, Args: []string{"--model", "opus"},
+		Binary: self, BinaryArgs: binaryArgs, Dir: dir, Args: []string{"--model", "opus"},
 		Env:        []string{"CLAUDE_FAKE=" + scenario, "CLAUDE_FAKE_TRACE=" + s.trace, "GH_TOKEN=delamain-push-blocked://", "GORACE=atexit_sleep_ms=0"},
 		Log:        s.log,
 		Transcript: &transcript, UsagePath: s.usage, CloseTimeout: 2 * time.Second,
@@ -327,6 +327,16 @@ func TestAbortShouldKillASessionThatIgnoresTheInterrupt(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("a session that ignores the interrupt must be killed")
+	}
+}
+
+func TestStartShouldPutTheLauncherArgsBeforeStreamArgs(t *testing.T) {
+	s := start(t, "ok", "launch", "claude")
+	if _, err := s.c.Prompt(context.Background(), "go", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if tr := s.traced(t); !strings.Contains(tr, "args launch claude -p --input-format stream-json") {
+		t.Fatalf("a launcher's subcommand must come before StreamArgs:\n%s", tr)
 	}
 }
 

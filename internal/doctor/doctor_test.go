@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -32,9 +33,11 @@ func healthy(t *testing.T) (config.Config, Deps) {
 	cfg.Herdr.Enabled = true
 	return cfg, Deps{
 		LookPath: func(b string) (string, error) { return "/usr/bin/" + b, nil },
-		Version:  func(_ context.Context, b string) (string, error) { return filepath.Base(b) + " 1.0\nextra", nil },
-		OmpRPC:   func(context.Context, string) error { return nil },
-		Herdr:    fakeHerdr{sessions: []herdr.Session{{Name: "default", Default: true, Running: true}}},
+		Version: func(_ context.Context, b string, _ ...string) (string, error) {
+			return filepath.Base(b) + " 1.0\nextra", nil
+		},
+		OmpRPC: func(context.Context, string) error { return nil },
+		Herdr:  fakeHerdr{sessions: []herdr.Session{{Name: "default", Default: true, Running: true}}},
 		ForgeAuth: func(context.Context, string) (ForgeIdentity, error) {
 			return ForgeIdentity{Kind: forge.GitHub, Host: "github.com", Login: "delamain-bot", Source: "env GH_TOKEN"}, nil
 		},
@@ -97,13 +100,13 @@ func TestRunShouldNotStartOmpRPCWhenOmpIsMissing(t *testing.T) {
 func claudeHarness(t *testing.T) (config.Config, Deps) {
 	cfg, d := healthy(t)
 	cfg.Agent.Harness = config.HarnessClaude
-	d.Version = func(_ context.Context, b string) (string, error) {
+	d.Version = func(_ context.Context, b string, _ ...string) (string, error) {
 		if filepath.Base(b) == "claude" {
 			return "2.1.303 (Claude Code)", nil
 		}
 		return filepath.Base(b) + " 1.0", nil
 	}
-	d.ClaudeAuth = func(context.Context, string) error { return nil }
+	d.ClaudeAuth = func(context.Context, string, ...string) error { return nil }
 	d.OmpRPC = func(context.Context, string) error {
 		t.Fatal("the claude harness never needs omp")
 		return nil
@@ -137,12 +140,12 @@ func TestRunShouldCheckClaudeInsteadOfOmpWhenItIsTheHarness(t *testing.T) {
 
 func TestRunShouldFailWhenClaudeIsNotLoggedInAndWarnOnAnOldClaude(t *testing.T) {
 	cfg, d := claudeHarness(t)
-	d.ClaudeAuth = func(context.Context, string) error { return errors.New("not logged in") }
+	d.ClaudeAuth = func(context.Context, string, ...string) error { return errors.New("not logged in") }
 	if c := byName(Run(context.Background(), cfg, d))["claude auth"]; c.Status != Fail || c.Detail != "not logged in (run: claude auth login)" {
 		t.Fatalf("an agent without credentials fails its first turn: %+v", c)
 	}
 	cfg, d = claudeHarness(t)
-	d.Version = func(_ context.Context, b string) (string, error) { return "2.1.100 (Claude Code)", nil }
+	d.Version = func(_ context.Context, b string, _ ...string) (string, error) { return "2.1.100 (Claude Code)", nil }
 	if c := byName(Run(context.Background(), cfg, d))["claude"]; c.Status != Warn {
 		t.Fatalf("a claude older than %s must be flagged: %+v", MinClaude, c)
 	}
@@ -443,5 +446,32 @@ func TestRunShouldRemindToAllowNotificationsOnMacOS(t *testing.T) {
 	c = byName(Run(context.Background(), cfg, d))["notify"]
 	if c.Status != OK || !strings.Contains(c.Detail, "terminal-notifier not found") || !strings.Contains(c.Detail, "allow notifications for Script Editor in System Settings") {
 		t.Fatalf("notify check = %+v", c)
+	}
+}
+
+func TestRunShouldPassTheClaudeArgsToVersionAndAuth(t *testing.T) {
+	cfg, d := claudeHarness(t)
+	cfg.Claude.Args = []string{"launch", "claude"}
+	var gotVersion, gotAuth []string
+	d.Version = func(_ context.Context, b string, args ...string) (string, error) {
+		if filepath.Base(b) == "claude" {
+			gotVersion = args
+			return "2.1.303 (Claude Code)", nil
+		}
+		if len(args) != 0 {
+			t.Errorf("%s takes no launcher args: %v", b, args)
+		}
+		return filepath.Base(b) + " 1.0", nil
+	}
+	d.ClaudeAuth = func(_ context.Context, _ string, args ...string) error {
+		gotAuth = args
+		return nil
+	}
+	if results := Run(context.Background(), cfg, d); Failed(results) {
+		t.Fatalf("healthy launcher setup must pass: %+v", results)
+	}
+	want := []string{"launch", "claude"}
+	if !slices.Equal(gotVersion, want) || !slices.Equal(gotAuth, want) {
+		t.Fatalf("claude.args must reach --version (%v) and auth status (%v)", gotVersion, gotAuth)
 	}
 }

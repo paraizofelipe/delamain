@@ -2,6 +2,7 @@
 package config
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -58,6 +59,51 @@ type AgentSettings struct {
 	Effort string `yaml:"effort"`
 	// Thinking is omp's --thinking, used by the omp harness.
 	Thinking string `yaml:"thinking"`
+}
+
+// WithProjectOverrides applies a repository's .delamain.yaml agent sections on top of c: a
+// non-zero field wins over the global one, and an explicitly empty list or map (args: [],
+// env: {}) clears it. Agents entries replace the global entry of the same name. It reports
+// whether anything was overridden and validates the merged config.
+func (c Config) WithProjectOverrides(agent Agent, claude Claude, omp Omp, agents map[string]AgentSettings) (Config, bool, error) {
+	changed := false
+	set := func(dst *string, v string) {
+		if v != "" {
+			*dst, changed = v, true
+		}
+	}
+	set((*string)(&c.Agent.Harness), string(agent.Harness))
+	set(&c.Claude.Binary, claude.Binary)
+	set(&c.Claude.Model, claude.Model)
+	set(&c.Claude.Effort, claude.Effort)
+	set(&c.Claude.PermissionMode, claude.PermissionMode)
+	if claude.Args != nil {
+		c.Claude.Args, changed = claude.Args, true
+	}
+	if claude.Env != nil {
+		c.Claude.Env, changed = claude.Env, true
+	}
+	if claude.Settings != nil {
+		c.Claude.Settings, changed = claude.Settings, true
+	}
+	set(&c.Omp.Binary, omp.Binary)
+	set(&c.Omp.AgentDir, expandHome(omp.AgentDir)) // Load expands the global one; mirror it here
+	set(&c.Omp.Model, omp.Model)
+	set(&c.Omp.Thinking, omp.Thinking)
+	set(&c.Omp.ApprovalMode, omp.ApprovalMode)
+	if len(agents) > 0 {
+		merged := map[string]AgentSettings{}
+		maps.Copy(merged, c.Agents)
+		maps.Copy(merged, agents)
+		c.Agents, changed = merged, true
+	}
+	if !changed {
+		return c, false, nil
+	}
+	if err := c.Validate(); err != nil {
+		return c, true, err
+	}
+	return c, true, nil
 }
 
 // AgentOverride returns the model and reasoning level set for name on the active harness;
@@ -130,11 +176,21 @@ type Agent struct {
 // Claude runs the agents as Claude Code in headless stream-json mode (`claude -p`).
 type Claude struct {
 	Binary string `yaml:"binary"`
-	Model  string `yaml:"model"`
+	// Args come between Binary and delamain's own arguments, for launchers that exec the
+	// real claude, e.g. binary: mia + args: [launch, claude].
+	Args  []string `yaml:"args"`
+	Model string   `yaml:"model"`
 	// Effort is Claude Code's --effort: low|medium|high|xhigh|max.
 	Effort string `yaml:"effort"`
 	// PermissionMode is bypassPermissions (omp's yolo) or acceptEdits.
 	PermissionMode string `yaml:"permission_mode"`
+	// Env is appended to each agent's environment; its keys win over inherited ones.
+	Env map[string]string `yaml:"env"`
+	// Settings is merged into the --settings JSON every session gets. attribution stays
+	// delamain policy and cannot be set here. apiKeyHelper is the typical use: a launcher's
+	// isolated config dir is skipped by --setting-sources project, so the helper comes back
+	// through this map.
+	Settings map[string]any `yaml:"settings"`
 }
 
 type Omp struct {
@@ -539,6 +595,25 @@ func (c Claude) validate() []error {
 	var errs []error
 	if !validEffort(c.Effort) {
 		errs = append(errs, fmt.Errorf("claude.effort %q is not one of %s", c.Effort, efforts))
+	}
+	for i, arg := range c.Args {
+		if strings.TrimSpace(arg) == "" {
+			errs = append(errs, fmt.Errorf("claude.args[%d] must not be blank", i))
+		}
+	}
+	for _, key := range slices.Sorted(maps.Keys(c.Env)) {
+		if key == "" || strings.ContainsAny(key, "= ") {
+			errs = append(errs, fmt.Errorf("claude.env key %q must be non-empty, without '=' or spaces", key))
+		}
+	}
+	if _, ok := c.Settings["attribution"]; ok {
+		// args() overwrites it anyway; failing is clearer than a silent override.
+		errs = append(errs, errors.New("claude.settings.attribution is delamain policy and cannot be set"))
+	}
+	if len(c.Settings) > 0 {
+		if _, err := json.Marshal(c.Settings); err != nil {
+			errs = append(errs, fmt.Errorf("claude.settings must encode as JSON: %w", err))
+		}
 	}
 	switch c.PermissionMode {
 	case "bypassPermissions", "acceptEdits":

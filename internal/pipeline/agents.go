@@ -4,8 +4,10 @@ import (
 	"cmp"
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"time"
@@ -121,8 +123,11 @@ func (a *rpcAgent) Close() error {
 // ClaudeAgents runs each session as Claude Code in headless stream-json mode.
 type ClaudeAgents struct {
 	Binary                        string
+	BinaryArgs                    []string // a launcher's subcommand between Binary and the arguments
 	Model, Effort, PermissionMode string
-	AgentsFile, PluginDir         string // delamain's subagents and skills (`delamain prompts install`)
+	AgentsFile, PluginDir         string   // delamain's subagents and skills (`delamain prompts install`)
+	Env                           []string // "K=V" entries appended to every session's environment
+	Settings                      map[string]any
 }
 
 func (a ClaudeAgents) args(sessionID, rolePrompt string, o AgentOptions) []string {
@@ -144,8 +149,13 @@ func (a ClaudeAgents) args(sessionID, rolePrompt string, o AgentOptions) []strin
 	if c != nil {
 		args = append(args, confined(c)...)
 	}
-	// Commits carry no Co-Authored-By trailer, as with omp.
-	return append(args, "--settings", `{"attribution":{"commit":"","pr":"","sessionUrl":false}}`)
+	// The configured settings (claude.settings) merged under delamain's policy: commits carry
+	// no Co-Authored-By trailer, as with omp. Validate() vouched the map encodes as JSON.
+	settings := map[string]any{}
+	maps.Copy(settings, a.Settings)
+	settings["attribution"] = map[string]any{"commit": "", "pr": "", "sessionUrl": false}
+	b, _ := json.Marshal(settings)
+	return append(args, "--settings", string(b))
 }
 
 // confined narrows Claude Code to reading the checkout, two exact git commands in it and writing
@@ -216,7 +226,9 @@ func (a ClaudeAgents) Start(ctx context.Context, o AgentOptions) (Agent, error) 
 		files = append(files, f)
 	}
 	c, err := claude.Start(ctx, claude.Options{
-		Binary: a.Binary, Dir: o.Dir, Args: a.args(id, string(role), o), Env: o.Env,
+		Binary: a.Binary, BinaryArgs: a.BinaryArgs, Dir: o.Dir, Args: a.args(id, string(role), o),
+		// The configured env first: the role's own env (the push block) wins on a clash.
+		Env: append(append([]string{}, a.Env...), o.Env...),
 		Log: files[0], Stderr: files[1], Transcript: files[2],
 		UsagePath: filepath.Join(o.SessionDir, id+claude.UsageSuffix),
 	})

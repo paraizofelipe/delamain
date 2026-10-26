@@ -36,8 +36,10 @@ var StreamArgs = []string{"-p", "--input-format", "stream-json", "--output-forma
 
 type Options struct {
 	Binary string
-	Dir    string
-	Args   []string // claude arguments; StreamArgs are added
+	// BinaryArgs come before StreamArgs: a launcher's own subcommand, e.g. [launch claude].
+	BinaryArgs []string
+	Dir        string
+	Args       []string // claude arguments; StreamArgs are added
 	// Env is appended to the inherited environment, already stripped of credentials by
 	// gitx.AgentEnviron; its keys win over inherited ones.
 	Env        []string
@@ -144,7 +146,7 @@ type usage = agent.Usage
 // Start launches Claude Code. It sends nothing until the first prompt: a start-up failure
 // (bad flag, no credentials) surfaces there, with claude's last stderr line.
 func Start(_ context.Context, o Options) (*Client, error) {
-	args := append(append([]string{}, StreamArgs...), o.Args...)
+	args := append(append(append([]string{}, o.BinaryArgs...), StreamArgs...), o.Args...)
 	cmd := exec.Command(o.Binary, args...) //nolint:gosec // configured binary
 	cmd.Dir = o.Dir
 	cmd.Env = append(gitx.AgentEnviron(os.Environ()), o.Env...) // exec keeps the last value of a duplicated key
