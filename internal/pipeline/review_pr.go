@@ -382,7 +382,7 @@ func reviewOptions(runID int64, pr forge.PRDetail, rv artifacts.PRReview, lines 
 		o.Summary = summaryBody(rv, others, outside) + "\n\n" + m.String()
 	case len(o.Comments) > 0:
 		// The summary is already on the PR; the forge still wants a review body.
-		o.Summary = "🤖 **delamain review**: comentários que faltavam desta review.\n\n" + m.String()
+		o.Summary = "🤖 **Review automática**: comentários que faltavam desta review.\n\n" + m.String()
 	}
 	return o, sum
 }
@@ -474,7 +474,7 @@ func postedKeys(ts []forge.Thread, user string) map[string]bool {
 // itself, and the evidence the reviewer read goes with it, so the comment says which part of
 // the change it is about.
 func inlineBody(axis string, f artifacts.Finding) string {
-	body := fmt.Sprintf("**%s** · %s · %s\n\n%s", f.Severity, axis, f.Category, f.Message)
+	body := fmt.Sprintf("🤖 **%s** · %s · %s\n\n%s", f.Severity, axis, f.Category, f.Message)
 	if f.Evidence != "" {
 		body += "\n\n" + codeBlock(f.Evidence)
 	}
@@ -530,7 +530,7 @@ func indent(s, with string) string {
 
 func summaryBody(rv artifacts.PRReview, others, outside []string) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "🤖 **delamain review** · aderência: `%s`\n\n%s\n", rv.Adherence, rv.Summary)
+	fmt.Fprintf(&b, "🤖 **Review automática** · aderência: `%s`\n\n%s\n", rv.Adherence, rv.Summary)
 	if len(outside) > 0 {
 		b.WriteString("\n### Fora das linhas alteradas\n\n" + strings.Join(outside, "\n") + "\n")
 	}
@@ -543,7 +543,7 @@ func summaryBody(rv artifacts.PRReview, others, outside []string) string {
 			fmt.Fprintf(&b, "- `%s:%d` — %s (motivo: %s)\n", d.File, d.Line, flat(d.Message), flat(d.Reason))
 		}
 	}
-	b.WriteString("\n---\nReview automática, só comentários: o delamain nunca aprova nem faz merge.")
+	b.WriteString("\n---\nFeita por agentes de IA, só comentários.")
 	return b.String()
 }
 

@@ -44,7 +44,7 @@ func TestDeliverShouldPushAndOpenReadyPRWhenApproved(t *testing.T) {
 	if pr.Head != "fix/7-fix-add" || pr.Base != "main" || pr.Draft || pr.Title != "fix: fix add" {
 		t.Fatalf("pr options = %+v", pr)
 	}
-	for _, want := range []string{"Closes #7", "fix add", "Add(2,3)=5", "calc_test.go::TestAdd", "merge"} {
+	for _, want := range []string{"Closes #7", "fix add", "Add(2,3)=5", "calc_test.go::TestAdd", "após 1 iteração."} {
 		if !strings.Contains(pr.Body, want) {
 			t.Errorf("PR body must mention %q:\n%s", want, pr.Body)
 		}

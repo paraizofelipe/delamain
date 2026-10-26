@@ -235,13 +235,17 @@ func prBody(ru *run, draft bool) string {
 	if res.Budget != "" {
 		fmt.Fprintf(&b, "Consumo: %s\n\n", res.Budget)
 	}
-	fmt.Fprintf(&b, "---\n🤖 Aberto pelo delamain (run %d, %d iteração(ões)). O delamain nunca faz merge: a decisão é de quem revisa.\n", res.RunID, res.Iterations)
+	iterations := "iterações"
+	if res.Iterations == 1 {
+		iterations = "iteração"
+	}
+	fmt.Fprintf(&b, "---\n🤖 PR/MR aberto por agentes de IA após %d %s.\n", res.Iterations, iterations)
 	return b.String()
 }
 
 func issueComment(res Result) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "🤖 **delamain** terminou esta issue: **%s**\n\n", res.Outcome)
+	fmt.Fprintf(&b, "🤖 **Execução automática concluída** · resultado: `%s`\n\n", res.Outcome)
 	if res.PRURL != "" {
 		fmt.Fprintf(&b, "- PR/MR: %s%s\n", res.PRURL, map[bool]string{true: " (draft, precisa de revisão humana)"}[res.Draft])
 	}

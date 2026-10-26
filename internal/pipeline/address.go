@@ -587,7 +587,7 @@ func (fix *fixRun) summary(resolved int) string {
 }
 
 func replyBody(a artifacts.Response) string {
-	return fmt.Sprintf("🤖 **delamain** · parecer: `%s`\n\n%s", a.Verdict, a.Reply)
+	return fmt.Sprintf("🤖 **Resposta automática** · parecer: `%s`\n\n%s", a.Verdict, a.Reply)
 }
 
 // excerpt is the head's code around line of path, read from the PR ref in the object store: ""
