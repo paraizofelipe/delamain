@@ -3,6 +3,7 @@ package forge
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -445,5 +446,37 @@ func TestGitLabWithOAuthShouldSendTheRenewedToken(t *testing.T) {
 	}
 	if strings.Join(got, ",") != "Bearer oauth-1,Bearer oauth-2" {
 		t.Fatalf("Authorization of each request = %v", got)
+	}
+}
+
+func TestGitLabThreadsShouldFollowPaginationPastOneHundredDiscussions(t *testing.T) {
+	// A truncated list breaks the posted-comment dedupe and hides pending threads, so every
+	// page has to be read.
+	f, api := gitlabAt(t, map[string]func(http.ResponseWriter, *http.Request){
+		"GET " + glProject + "/merge_requests/12/discussions": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			if r.URL.Query().Get("page") == "2" {
+				io.WriteString(w, `[{"id":"d2","notes":[{"id":2,"author":{"username":"bob"},"body":"segunda página","created_at":"2026-01-01T09:00:00Z"}]}]`)
+				return
+			}
+			w.Header().Set("X-Next-Page", "2")
+			io.WriteString(w, `[{"id":"d1","notes":[{"id":1,"author":{"username":"ana"},"body":"primeira página","created_at":"2026-01-01T08:00:00Z"}]}]`)
+		},
+	})
+	ts, err := f.Threads(context.Background(), 12)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ts) != 2 || ts[0].ID != "d1" || ts[1].ID != "d2" {
+		t.Fatalf("both pages' discussions must come back: %+v", ts)
+	}
+	var calls int
+	for _, rq := range api.requests() {
+		if rq.method == http.MethodGet && strings.HasSuffix(rq.path, "/discussions") {
+			calls++
+		}
+	}
+	if calls != 2 {
+		t.Fatalf("the second page must be fetched exactly once, got %d calls", calls)
 	}
 }

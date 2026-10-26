@@ -33,7 +33,13 @@ detached worktree in paths.worktrees_dir; the pr-reviewer agent reads it (spec, 
 security, then a verifier) without running any of the PR's code. delamain then posts one
 comment-only review, never an approval nor a merge: every finding on a line the head touched
 becomes an inline comment, and a finding the forge cannot anchor goes to the summary with the
-excerpt of the code it is about.
+excerpt of the code it is about. A finding an unresolved discussion someone opened already covers
+is not repeated: it goes to the summary's dropped list, citing that discussion.
+
+Once a head's review has been posted, running the command again answers the replies people left
+on the review's own comments: one reply per pending thread, with a verdict on whether the
+objection holds. Threads other people opened are never answered, and nothing is ever committed,
+pushed or resolved there — the branch is someone else's work.
 
 A PR/MR delamain opened has its pending review threads answered instead — the ones whose last
 comment is not delamain's own. Each gets one reply with a verdict: valid (the comment holds),
@@ -121,7 +127,19 @@ func reviewPR(ctx context.Context, cfg config.Config, repo string, pr int, fg fo
 		// left to do there is to answer whoever reviewed it.
 		return r.RunAddress(ctx, repo, pr)
 	}
-	return r.RunReview(ctx, repo, pr)
+	return routeReview(ctx, repo, pr, r.RunReview, r.RunAddressReviewed)
+}
+
+// routeReview is the flow of a PR/MR delamain did not open: review the head and, once that
+// head's review has already posted, answer the replies people left on the review's own
+// comments instead. Threads other people opened are never answered here, and every other
+// skip (a closed PR, a fork) stays a skip.
+func routeReview(ctx context.Context, repo string, pr int, review, answer func(context.Context, string, int) (pipeline.Result, error)) (pipeline.Result, error) {
+	res, err := review(ctx, repo, pr)
+	if err != nil || res.Skip != pipeline.SkipHeadReviewed {
+		return res, err
+	}
+	return answer(ctx, repo, pr)
 }
 
 // openedByDelamain reports whether PR/MR pr is one an issue run of delamain opened, which is
@@ -132,6 +150,9 @@ func reviewPR(ctx context.Context, cfg config.Config, repo string, pr int, fg fo
 // same author. And not the repository path either: the same repository is checked out at
 // several paths — every worktree is one — while a run records the path it ran from, so matching
 // on it answered "not delamain's" for a PR of its own and posted a review on it.
+//
+// The runs live in the local store, so another delamain instance sees this one's PR as someone
+// else's. That degrades safely: the PR gets a review and replies to it, never a fix or a push.
 func openedByDelamain(ctx context.Context, st *store.Store, fg forge.Forge, pr int) (bool, error) {
 	// One extra read of the PR, before the stage reads it again: cheap next to a review that
 	// should not have been posted.

@@ -36,14 +36,50 @@ const (
 // thread on its own. Like RunReview, a non-nil error means the run could not even be recorded;
 // guardrail stops are OutcomeHalted.
 func (r *Runner) RunAddress(ctx context.Context, repo string, n int) (Result, error) {
+	return r.runAddress(ctx, repo, n, addressOwn)
+}
+
+// RunAddressReviewed answers, on a PR/MR someone else opened and delamain reviewed, the pending
+// threads rooted in delamain's own review comments — and only those: a thread anyone else opened
+// is never answered, since replying there would speak for a review that never made that point.
+// It never fixes, pushes, resolves, approves or merges — the branch is someone else's work. Like
+// RunAddress, `delamain review --pr n` is the only caller, once the head's review already posted.
+func (r *Runner) RunAddressReviewed(ctx context.Context, repo string, n int) (Result, error) {
+	return r.runAddress(ctx, repo, n, addressReviewed)
+}
+
+// addressMode says whose PR/MR the pending threads belong to, which decides what may be
+// answered and whether anything may be fixed.
+type addressMode int
+
+const (
+	// addressOwn is a PR/MR delamain opened: every pending thread is answered and review.fix
+	// may commit on it.
+	addressOwn addressMode = iota
+	// addressReviewed is a PR/MR someone else opened and delamain reviewed: only threads rooted
+	// in its own review comments are answered, and nothing is ever fixed, pushed or resolved.
+	addressReviewed
+)
+
+func (m addressMode) String() string {
+	if m == addressReviewed {
+		return "reviewed"
+	}
+	return "own"
+}
+
+func (r *Runner) runAddress(ctx context.Context, repo string, n int, mode addressMode) (Result, error) {
 	res := Result{}
 	if r.Forge == nil {
 		return res, errors.New("address requires a GitHub or GitLab origin")
 	}
 	// Anyone who can comment on the PR writes the responder's input, so the responder runs
-	// confined to reading the checkout, which only Claude Code can do (see confined).
-	if r.Cfg.Agent.Harness != config.HarnessClaude {
-		return res, fmt.Errorf("responder discussões de PR/MR pede agent.harness: claude, o único que confina o responder à leitura do PR (got %q)", r.Cfg.Agent.Harness)
+	// confined to reading the checkout, which only Claude Code can do (see confined). On a
+	// reviewed PR the check waits for the pending threads: with nothing to answer, any harness
+	// may skip.
+	confined := r.Cfg.Agent.Harness == config.HarnessClaude
+	if mode == addressOwn && !confined {
+		return res, errUnconfinedResponder(r.Cfg.Agent.Harness)
 	}
 	repo, err := r.Git.MainWorktree(ctx, repo)
 	if err != nil {
@@ -69,9 +105,19 @@ func (r *Runner) RunAddress(ctx context.Context, repo string, n int) (Result, er
 		return res, fmt.Errorf("discussões do PR/MR #%d: %w", n, err)
 	}
 	pending := PendingThreads(threads, r.ForgeUser)
+	if mode == addressReviewed {
+		pending = PendingReviewedThreads(threads, r.ForgeUser)
+	}
 	if len(pending) == 0 {
-		res.Outcome, res.Reason = OutcomeSkipped, fmt.Sprintf("nenhuma discussão pendente no PR/MR #%d", n)
+		reason := fmt.Sprintf("nenhuma discussão pendente no PR/MR #%d", n)
+		if mode == addressReviewed {
+			reason = fmt.Sprintf("nenhuma discussão pendente enraizada em comentário da review no PR/MR #%d", n)
+		}
+		res.Outcome, res.Reason = OutcomeSkipped, reason
 		return res, nil
+	}
+	if !confined {
+		return res, errUnconfinedResponder(r.Cfg.Agent.Harness)
 	}
 	if err := r.ensurePrompts(); err != nil {
 		return res, err
@@ -110,7 +156,7 @@ func (r *Runner) RunAddress(ctx context.Context, repo string, n int) (Result, er
 	p := &prRun{pr: pr, threads: threads}
 	ru.pr = p
 	defer r.cleanup(context.WithoutCancel(ctx), ru) // safety net; finishReview stops agents first
-	err = r.address(ctx, ru, p, pending)
+	err = r.address(ctx, ru, p, pending, mode)
 
 	var h halt
 	switch {
@@ -126,7 +172,12 @@ func (r *Runner) RunAddress(ctx context.Context, repo string, n int) (Result, er
 	return res, r.finishReview(ctx, ru, p)
 }
 
-func (r *Runner) address(ctx context.Context, ru *run, p *prRun, pending []forge.Thread) error {
+// errUnconfinedResponder is the refusal every responder start without Claude Code gets.
+func errUnconfinedResponder(h config.Harness) error {
+	return fmt.Errorf("responder discussões de PR/MR pede agent.harness: claude, o único que confina o responder à leitura do PR (got %q)", h)
+}
+
+func (r *Runner) address(ctx context.Context, ru *run, p *prRun, pending []forge.Thread, mode addressMode) error {
 	pr, repo := p.pr, ru.rec.Repo
 	if err := r.setState(ctx, ru, store.StateSetup); err != nil {
 		return err
@@ -149,9 +200,13 @@ func (r *Runner) address(ctx context.Context, ru *run, p *prRun, pending []forge
 		return haltf("o head buscado (%s) difere do head do PR/MR #%d (%s); nada foi postado", short(fetched), pr.Number, short(pr.HeadSHA))
 	}
 	base := "origin/" + pr.BaseRef
-	fix, err := r.fixTarget(ctx, ru, pr)
-	if err != nil {
-		return err
+	var fix *fixRun
+	if mode == addressOwn {
+		// A reviewed PR never even looks for a fix target: the branch is someone else's work,
+		// whatever review.fix or the store say.
+		if fix, err = r.fixTarget(ctx, ru, pr); err != nil {
+			return err
+		}
 	}
 	var wt string
 	if fix != nil {
@@ -169,7 +224,7 @@ func (r *Runner) address(ctx context.Context, ru *run, p *prRun, pending []forge
 	if fix != nil {
 		ru.repo.Branch, ru.rec.Branch, ru.res.Branch = fix.branch, fix.branch, fix.branch
 	}
-	ru.log.Info("address worktree", "run", ru.rec.ID, "path", wt, "pr", pr.Number, "head", pr.HeadSHA)
+	ru.log.Info("address worktree", "run", ru.rec.ID, "path", wt, "pr", pr.Number, "head", pr.HeadSHA, "mode", mode)
 	if err := r.Store.UpdateRun(ctx, ru.rec); err != nil {
 		return err
 	}
@@ -198,6 +253,7 @@ func (r *Runner) address(ctx context.Context, ru *run, p *prRun, pending []forge
 	artifact := filepath.Join(ru.dir, "responses.json")
 	ru.confine = &Confinement{Checkout: wt, Base: pr.BaseSHA, Artifact: artifact, Fix: fix != nil}
 	data := r.stageData(ru, 0, artifact, "")
+	data.ReviewedPR = mode == addressReviewed
 	if fix != nil {
 		// Outside the checkout, so add -A never commits it.
 		ru.confine.CommitMessage = filepath.Join(ru.dir, "commit-msg.txt")
@@ -330,6 +386,43 @@ func PendingThreads(ts []forge.Thread, user string) []forge.Thread {
 		out = append(out, t)
 	}
 	return out
+}
+
+// PendingReviewedThreads are the pending threads of PendingThreads that began as a review
+// comment delamain (user) posted: one of its inline comments or its summary note. On a PR/MR
+// delamain did not open, these are the only threads it may answer — replying to a thread someone
+// else opened would speak for a review that never made that point.
+func PendingReviewedThreads(ts []forge.Thread, user string) []forge.Thread {
+	var out []forge.Thread
+	for _, t := range PendingThreads(ts, user) {
+		if rootedAtOwnReview(t, user) {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// rootedAtOwnReview reports whether t began as a comment of delamain's (user) review: its first
+// public comment is delamain's own and carries a marker of kind review or summary. The marker
+// alone is not enough — markers are public and anyone can paste one — so the author has to match
+// too, as in ownComment. A reply marker as root does not qualify.
+func rootedAtOwnReview(t forge.Thread, user string) bool {
+	root, ok := firstPublic(t)
+	if !ok || !ownComment(root, user) {
+		return false
+	}
+	m, _ := forge.ParseMarker(root.Body)
+	return m.Kind == "review" || m.Kind == "summary"
+}
+
+// firstPublic is the oldest comment of t that is not an internal note.
+func firstPublic(t forge.Thread) (forge.Comment, bool) {
+	for _, c := range t.Comments {
+		if !c.Internal {
+			return c, true
+		}
+	}
+	return forge.Comment{}, false
 }
 
 // lastPublic is the newest comment of t that is not an internal note.

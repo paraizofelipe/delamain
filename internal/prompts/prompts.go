@@ -187,6 +187,10 @@ type StageData struct {
 	Memory       string // the repository's stored learnings
 	MaxComments  int    // cap of critical/major findings a review may post
 	CanFix       bool   // address only: the responder may commit fixes that the orchestrator pushes
+	// ReviewedPR marks an address run on a PR/MR delamain reviewed but did not open: the
+	// responder judges the replies humans left on delamain's own review comments and may not
+	// change anything. Never set together with CanFix.
+	ReviewedPR bool
 	// CommitMessagePath is the file a fixing responder writes each commit message to.
 	CommitMessagePath string
 }

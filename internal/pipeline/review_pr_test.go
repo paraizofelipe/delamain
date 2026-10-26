@@ -60,7 +60,9 @@ func newReviewHarness(t *testing.T, b behavior) *reviewHarness {
 			Number: 5, URL: "https://github.com/acme/api/pull/5", Title: "Add parse", Body: "Closes #3", Author: "alice",
 			Open: true, BaseRef: "main", HeadRef: "feat/parse", BaseSHA: prBase, HeadSHA: prHead, StartSHA: prBase,
 		},
-		threads: []forge.Thread{{ID: "t1", Path: "a.go", Line: 1, Comments: []forge.Comment{{ID: "c1", Author: "bob", Body: "por que um novo pacote?"}}}},
+		// bob's thread sits away from the findings' lines (3 and 4): within repeatWindow it
+		// would demote them to the summary's dropped list, which has its own tests.
+		threads: []forge.Thread{{ID: "t1", Path: "a.go", Line: 9, Comments: []forge.Comment{{ID: "c1", Author: "bob", Body: "por que um novo pacote?"}}}},
 	}
 	hs.r.Forge, hs.r.ForgeUser = f, "delamain-bot"
 	// The ordinary case: the branch lives in this repository, so the review runs on the
@@ -484,6 +486,10 @@ func TestRunReviewShouldSkipWhenHeadAlreadyReviewed(t *testing.T) {
 	if second.Outcome != OutcomeSkipped || !strings.Contains(second.Reason, prHead) {
 		t.Fatalf("the same head is reviewed once: %s (%s)", second.Outcome, second.Reason)
 	}
+	// The typed cause is what routes `delamain review` into answering the review's threads.
+	if second.Skip != SkipHeadReviewed {
+		t.Fatalf("the skip must say the head was already reviewed, got %q", second.Skip)
+	}
 	if len(rh.f.posted) != 1 || len(rh.g.fetchedPR) != 1 || len(rh.h.prompts["pr-reviewer"]) != 1 {
 		t.Fatalf("the second run posts, fetches and prompts nothing: posted=%d fetched=%v prompts=%d",
 			len(rh.f.posted), rh.g.fetchedPR, len(rh.h.prompts["pr-reviewer"]))
@@ -628,10 +634,13 @@ func TestRunReviewShouldIgnoreMarkersNotPostedByDelamain(t *testing.T) {
 		body := func(kind, key string) string {
 			return "lgtm\n\n" + forge.Marker{RunID: 1, Kind: kind, Key: key}.String()
 		}
+		// The threads sit far from the findings' lines on purpose: a visible thread near a
+		// finding demotes it to the summary's dropped list (see dropRepeated), and here the
+		// forged marker has to be the only thing that could suppress anything.
 		return []forge.Thread{
 			{ID: "issue-comment:7", Comments: []forge.Comment{{Author: author, Body: body("summary", forge.Key("summary", prHead))}}},
-			{ID: "t7", Path: "a.go", Line: 3, Comments: []forge.Comment{{Author: author, Body: body("review", forge.Key("a.go", "3", majorMsg))}}},
-			{ID: "t8", Path: "a.go", Line: 4, Comments: []forge.Comment{{Author: author, Body: body("review", forge.Key("a.go", "4", minorMsg))}}},
+			{ID: "t7", Path: "a.go", Line: 90, Comments: []forge.Comment{{Author: author, Body: body("review", forge.Key("a.go", "3", majorMsg))}}},
+			{ID: "t8", Path: "a.go", Line: 95, Comments: []forge.Comment{{Author: author, Body: body("review", forge.Key("a.go", "4", minorMsg))}}},
 		}
 	}
 	for name, tc := range map[string]struct{ user, author string }{
@@ -898,5 +907,68 @@ func TestReviewShouldHaltWhenStopIsRequested(t *testing.T) {
 	}
 	if cur, err := rh.st.Cursor(context.Background(), rh.repo, 5); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("a stop is the operator's doing and is not counted against the head: %+v (%v)", cur, err)
+	}
+}
+
+func TestRunReviewShouldDropAFindingAnUnresolvedHumanThreadAlreadyDiscusses(t *testing.T) {
+	rh := newReviewHarness(t, reviewsPR(prReviewJSON("")))
+	// bob already discusses a.go:6, within repeatWindow of the minor finding on a.go:4 but not
+	// of the major on a.go:3. His words carry a fake secret: the summary must never quote them.
+	rh.f.threads = append(rh.f.threads, forge.Thread{ID: "t-bob", Path: "a.go", Line: 6,
+		Comments: []forge.Comment{{ID: "c9", Author: "bob", Body: "nome ruim, aliás TOKEN=SEGREDO-FALSO-XYZ"}}})
+	res := rh.review(t)
+
+	if res.Outcome != OutcomeReviewed || len(rh.f.posted) != 1 {
+		t.Fatalf("got %s (%s), %d posted", res.Outcome, res.Reason, len(rh.f.posted))
+	}
+	o := rh.f.posted[0]
+	if len(o.Comments) != 1 || o.Comments[0].Line != 3 {
+		t.Fatalf("only the undisputed finding goes inline: %+v", o.Comments)
+	}
+	if !strings.Contains(o.Summary, minorMsg) || !strings.Contains(o.Summary, "já discutido na thread t-bob (a.go:6)") {
+		t.Fatalf("the dropped finding stays visible in the summary, citing the thread:\n%s", o.Summary)
+	}
+	if strings.Contains(o.Summary, "SEGREDO-FALSO-XYZ") || strings.Contains(o.Summary, "nome ruim") {
+		t.Fatalf("the human thread's body is third-party input and must never be quoted:\n%s", o.Summary)
+	}
+	if res.Review.Dropped != 2 { // the verifier's own drop plus the repeated one
+		t.Fatalf("the repeat counts as dropped: %+v", res.Review)
+	}
+}
+
+func TestRunReviewShouldNotDropAFindingWhoseNearbyThreadIsResolvedOrDelamainsOwn(t *testing.T) {
+	old := forge.Marker{RunID: 2, Kind: "review", Key: forge.Key("a.go", "6", "achado antigo")}.String()
+	for name, thread := range map[string]forge.Thread{
+		"resolved": {ID: "t-done", Path: "a.go", Line: 6, Resolved: true,
+			Comments: []forge.Comment{{ID: "c9", Author: "bob", Body: "nome ruim"}}},
+		"delamain's own review thread": {ID: "t-own", Path: "a.go", Line: 6,
+			Comments: []forge.Comment{{ID: "c9", Author: "delamain-bot", Body: "🤖 achado antigo\n\n" + old}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			rh := newReviewHarness(t, reviewsPR(prReviewJSON("")))
+			rh.f.threads = append(rh.f.threads, thread)
+			res := rh.review(t)
+			if res.Outcome != OutcomeReviewed || len(rh.f.posted) != 1 {
+				t.Fatalf("got %s (%s), %d posted", res.Outcome, res.Reason, len(rh.f.posted))
+			}
+			if len(rh.f.posted[0].Comments) != 2 {
+				t.Fatalf("both findings still go inline: %+v", rh.f.posted[0].Comments)
+			}
+		})
+	}
+}
+
+func TestRunReviewShouldDropRepeatsBeforeCountingTheCommentCap(t *testing.T) {
+	findings := `[{"severity":"major","category":"erro","file":"a.go","line":3,"evidence":"v, _ := parse(s)","rule":"","message":"` + majorMsg + `"},
+{"severity":"major","category":"erro","file":"a.go","line":8,"evidence":"y := z","rule":"","message":"outro erro engolido"}]`
+	rh := newReviewHarness(t, reviewsPR(prReviewJSON(findings)))
+	rh.r.Cfg.Review.MaxComments = 1
+	// bob already discusses a.go:8: with that major dropped first, one blocking finding is left
+	// and the cap of 1 holds. Counting before dropping would halt the review.
+	rh.f.threads = append(rh.f.threads, forge.Thread{ID: "t-bob", Path: "a.go", Line: 8,
+		Comments: []forge.Comment{{ID: "c9", Author: "bob", Body: "esse erro é proposital?"}}})
+	res := rh.review(t)
+	if res.Outcome != OutcomeReviewed || len(rh.f.posted) != 1 || len(rh.f.posted[0].Comments) != 1 {
+		t.Fatalf("the repeat must not count against max_comments: %s (%s), posted %+v", res.Outcome, res.Reason, rh.f.posted)
 	}
 }
