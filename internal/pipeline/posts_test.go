@@ -49,12 +49,21 @@ func TestIssueCommentsShouldSignAsBotWithoutNamingTheTool(t *testing.T) {
 
 func TestNeedsInfoCommentShouldSignAsBotAndKeepTheReadyLabel(t *testing.T) {
 	for name, problems := range map[string][]string{
-		"um problema": {"a task não tem descrição"},
-		"vários":      {"a task não tem título", "depende da issue #4, que ainda está aberta"},
-		"lista vazia": nil,
+		"um problema":         {"a task não tem descrição"},
+		"vários":              {"a task não tem título", "depende da issue #4, que ainda está aberta"},
+		"só dependência":      {"depende da issue #4, que ainda está aberta"},
+		"dependência sem ver": {"não foi possível verificar a dependência #4: 502"},
+		"lista vazia":         nil,
 	} {
 		body := needsInfoComment(problems, "paraizo:ready")
 		assertBotPost(t, "needsInfoComment/"+name, body, true)
+		// A complete issue waiting on another one is not missing anything: the text must not
+		// send the author to edit it.
+		for _, wrong := range []string{"faltam informações", "Ajuste a issue"} {
+			if strings.Contains(body, wrong) {
+				t.Errorf("%s: o texto presume que a issue está incompleta (%q):\n%s", name, wrong, body)
+			}
+		}
 		if !strings.Contains(body, "`paraizo:ready`") {
 			t.Errorf("%s: deveria dizer qual label recolocar, veio:\n%s", name, body)
 		}

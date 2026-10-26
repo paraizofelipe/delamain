@@ -142,13 +142,15 @@ func (r *Runner) needsInfo(ctx context.Context, t Task, problems []string, res *
 	r.notify(ctx, r.Log, notify.FormatNeedsInfo(n))
 }
 
+// needsInfoComment lists what kept the run from starting. problems mixes gaps in the issue with
+// open dependencies, so the wording must not blame the issue for either.
 func needsInfoComment(problems []string, readyLabel string) string {
 	var b strings.Builder
-	b.WriteString("🤖 **Execução automática não iniciada**: faltam informações nesta issue.\n\n")
+	b.WriteString("🤖 **Execução automática não iniciada**: há pendências nesta issue.\n\n")
 	for _, p := range problems {
 		fmt.Fprintf(&b, "- %s\n", p)
 	}
-	fmt.Fprintf(&b, "\nAjuste a issue e recoloque a label `%s`.", readyLabel)
+	fmt.Fprintf(&b, "\nResolva as pendências e recoloque a label `%s`.", readyLabel)
 	return b.String()
 }
 
