@@ -133,7 +133,7 @@ func TestReviewPostsShouldSignAsBotKeepingTheMarker(t *testing.T) {
 }
 
 func TestRepliesShouldSignAsBotInEveryFixState(t *testing.T) {
-	a := artifacts.Response{ThreadID: "t1", Verdict: "valid", Reply: "Procede.", Fixed: true}
+	a := artifacts.Response{ThreadID: "t1", Verdict: "valid", Reply: "Prossegue.", Fixed: true}
 	for name, fix := range map[string]*fixRun{
 		"sem correção":    nil,
 		"enviada":         {state: fixPushed, sha: "c0ffee1234567"},
