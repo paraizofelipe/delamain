@@ -49,8 +49,9 @@ type ReviewJobs struct {
 	Run     func(ctx context.Context, repo string, pr int, fg forge.Forge) (pipeline.Result, error)
 }
 
-// Producers is the daemon's job order: issues first, then reviews when enabled. Answering the
-// review comments of delamain's own PRs/MRs is not here: only `delamain review --pr n` does it.
+// Producers is the daemon's job order: issues first, then reviews when enabled. Answering
+// threads — on delamain's own PRs/MRs or on the ones it reviewed — is not here: only
+// `delamain review --pr n` does it.
 func Producers(log *slog.Logger, issues IssueJobs, reviews ReviewJobs) []Producer {
 	ps := []Producer{issues.jobs}
 	if reviews.Enabled {

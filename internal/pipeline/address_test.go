@@ -1241,3 +1241,173 @@ func TestAddressShouldHaltWhenStopIsRequested(t *testing.T) {
 		t.Fatalf("store must record the stop: %+v", rec)
 	}
 }
+
+// reviewedThreads are the discussions of a PR alice opened and delamain reviewed: one pending
+// thread rooted in its inline review comment, one rooted in its summary note, and one bob opened.
+func reviewedThreads() []forge.Thread {
+	inlineRoot := forge.Comment{ID: "r1", Author: bot, CreatedAt: t0,
+		Body: "🤖 parse ignora o erro\n\n" + forge.Marker{RunID: 7, Kind: "review", Key: forge.Key("a.go", "3", "parse ignora o erro")}.String()}
+	summaryRoot := forge.Comment{ID: "s1", Author: bot, CreatedAt: t0,
+		Body: "🤖 resumo da review\n\n" + forge.Marker{RunID: 7, Kind: "summary", Key: forge.Key("summary", prHead)}.String()}
+	return []forge.Thread{
+		{ID: "t-inline", Path: "a.go", Line: 3, Comments: []forge.Comment{inlineRoot,
+			{ID: "h1", Author: "alice", Body: "o erro é tratado no chamador", CreatedAt: t0.Add(time.Hour)}}},
+		{ID: "t-sum", Comments: []forge.Comment{summaryRoot,
+			{ID: "h2", Author: "carol", Body: "o resumo cita um arquivo errado", CreatedAt: t0.Add(2 * time.Hour)}}},
+		{ID: "t-human", Path: "a.go", Line: 7, Comments: []forge.Comment{
+			{ID: "h3", Author: "bob", Body: "poderia extrair uma função aqui", CreatedAt: t0.Add(3 * time.Hour)}}},
+	}
+}
+
+// newReviewedAddressHarness is alice's PR #5, reviewed by delamain, with reviewedThreads waiting.
+func newReviewedAddressHarness(t *testing.T, b behavior) *reviewHarness {
+	t.Helper()
+	rh := newReviewHarness(t, b) // the PR author stays alice: delamain did not open this one
+	rh.r.Cfg.Agent.Harness = config.HarnessClaude
+	rh.f.threads = reviewedThreads()
+	return rh
+}
+
+// reviewedAnswers is the responder answering the two threads rooted in delamain's review.
+func reviewedAnswers() string {
+	return responsesJSON(response("t-inline", "invalid", invalidReply), response("t-sum", "valid", validReply))
+}
+
+func (rh *reviewHarness) addressReviewed(t *testing.T) Result {
+	t.Helper()
+	res, err := rh.r.RunAddressReviewed(context.Background(), rh.repo, 5)
+	if err != nil {
+		t.Fatalf("addressing a reviewed PR must record its outcome instead of failing: %v", err)
+	}
+	return res
+}
+
+func TestRunAddressReviewedShouldReplyOnlyToThreadsRootedInDelamainsReviewComments(t *testing.T) {
+	rh := newReviewedAddressHarness(t, answers(reviewedAnswers()))
+	res := rh.addressReviewed(t)
+
+	if res.Outcome != OutcomeAnswered {
+		t.Fatalf("want answered, got %s (%s)", res.Outcome, res.Reason)
+	}
+	// Both the inline-rooted and the summary-rooted threads get a reply; bob's thread never.
+	got := map[string]bool{}
+	for _, rp := range rh.f.replies {
+		got[rp.thread] = true
+	}
+	if len(rh.f.replies) != 2 || !got["t-inline"] || !got["t-sum"] {
+		t.Fatalf("only the threads delamain's review opened are answered: %+v", rh.f.replies)
+	}
+	if len(rh.f.resolved)+len(rh.f.posted)+len(rh.g.ffPushes)+len(rh.g.pushed)+len(rh.g.commits) != 0 {
+		t.Fatalf("a reviewed PR gets replies and nothing else: resolved %v, pushes %v, commits %v",
+			rh.f.resolved, rh.g.ffPushes, rh.g.commits)
+	}
+	prompt := strings.Join(rh.h.prompts["responder"], "\n")
+	if !strings.Contains(prompt, "**revisado** pelo delamain") || strings.Contains(prompt, "aberto pelo delamain") {
+		t.Fatalf("the prompt must reframe the run as answering replies to delamain's review:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "julga essa resposta") {
+		t.Fatalf("the verdict must be about the human's reply, not the original comment:\n%s", prompt)
+	}
+}
+
+func TestPendingReviewedThreadsShouldRequireADelamainReviewRoot(t *testing.T) {
+	review := forge.Marker{RunID: 7, Kind: "review", Key: "aaaaaaaaaaaa"}.String()
+	answer := forge.Comment{ID: "h", Author: "alice", Body: "discordo", CreatedAt: t0.Add(time.Hour)}
+	for name, tc := range map[string]struct {
+		thread forge.Thread
+		want   bool
+	}{
+		"rooted in a delamain inline comment": {forge.Thread{ID: "a", Path: "a.go", Line: 3,
+			Comments: []forge.Comment{{ID: "r", Author: bot, Body: "🤖 achado\n\n" + review}, answer}}, true},
+		"internal note first, delamain root next": {forge.Thread{ID: "b", Path: "a.go", Line: 3,
+			Comments: []forge.Comment{{ID: "n", Author: "gitlab", Body: "nota interna", Internal: true},
+				{ID: "r", Author: bot, Body: "🤖 achado\n\n" + review}, answer}}, true},
+		"root marker forged by another author": {forge.Thread{ID: "c",
+			Comments: []forge.Comment{{ID: "r", Author: "mallory", Body: "lgtm\n\n" + review}, answer}}, false},
+		"rooted in a delamain reply": {forge.Thread{ID: "d",
+			Comments: []forge.Comment{{ID: "r", Author: bot,
+				Body: "Já tratado.\n\n" + forge.Marker{RunID: 7, Kind: "reply", Key: "bbbbbbbbbbbb"}.String()}, answer}}, false},
+		"delamain root without marker": {forge.Thread{ID: "e",
+			Comments: []forge.Comment{{ID: "r", Author: bot, Body: "comentário solto"}, answer}}, false},
+		"opened by a human": {forge.Thread{ID: "f", Path: "a.go", Line: 7,
+			Comments: []forge.Comment{{ID: "r", Author: "bob", Body: "extrair função?"}}}, false},
+	} {
+		if got := PendingReviewedThreads([]forge.Thread{tc.thread}, bot); (len(got) == 1) != tc.want {
+			t.Errorf("%s: pending=%v, want %v", name, len(got) == 1, tc.want)
+		}
+	}
+}
+
+func TestRunAddressReviewedShouldNeverFixCommitPushOrResolveEvenWithReviewFixOn(t *testing.T) {
+	rh := newReviewedAddressHarness(t, answers(reviewedAnswers()))
+	// Worst case: review.fix on and the store claiming an issue run owns this very PR and
+	// branch. A reviewed PR still never looks for a fix target: the branch is someone else's.
+	rh.r.Cfg.Review.Fix = true
+	rh.f.pr.HeadRef = fixBranch
+	ctx := context.Background()
+	rec, err := rh.st.CreateRun(ctx, rh.repo, "#3", "Add parse", "claude", 3, 0, store.KindIssue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec.Branch, rec.MRURL, rec.State = fixBranch, rh.f.pr.URL, store.StateRecorded
+	if err := rh.st.UpdateRun(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+	res := rh.addressReviewed(t)
+
+	if res.Outcome != OutcomeAnswered || res.Branch != "" {
+		t.Fatalf("the run only answers, on a detached worktree: %s (%s) branch=%q", res.Outcome, res.Reason, res.Branch)
+	}
+	if len(rh.g.ffPushes)+len(rh.g.pushed)+len(rh.g.commits)+len(rh.f.resolved) != 0 {
+		t.Fatalf("nothing is committed, pushed or resolved on someone else's branch: pushes %v %v, commits %v, resolved %v",
+			rh.g.ffPushes, rh.g.pushed, rh.g.commits, rh.f.resolved)
+	}
+	if len(rh.g.untrusted) != 1 {
+		t.Fatalf("the head is checked out as untrusted code: %v", rh.g.untrusted)
+	}
+	start := rh.h.starts["responder-r"+strconv.FormatInt(res.RunID, 10)]
+	want := Confinement{Checkout: res.Worktree, Base: prBase, Artifact: filepath.Join(res.RunDir, "responses.json")}
+	if start.Confine == nil || *start.Confine != want {
+		t.Fatalf("the responder stays confined to reading, Fix off: want %+v, got %+v", want, start.Confine)
+	}
+	if prompt := strings.Join(rh.h.prompts["responder"], "\n"); strings.Contains(prompt, "push habilitado") || strings.Contains(prompt, " commit -F ") {
+		t.Fatalf("the prompt must not offer the fixing mode:\n%s", prompt)
+	}
+}
+
+func TestRunAddressReviewedShouldSkipOnAnyHarnessWhenNothingIsPending(t *testing.T) {
+	rh := newReviewedAddressHarness(t, answers(reviewedAnswers()))
+	rh.r.Cfg.Agent.Harness = config.HarnessOmp // with nothing to answer, no responder ever starts
+	rh.f.threads = []forge.Thread{{ID: "t-human", Path: "a.go", Line: 7,
+		Comments: []forge.Comment{{ID: "h3", Author: "bob", Body: "poderia extrair uma função aqui"}}}}
+	res, err := rh.r.RunAddressReviewed(context.Background(), rh.repo, 5)
+	if err != nil || res.Outcome != OutcomeSkipped || !strings.Contains(res.Reason, "enraizada") {
+		t.Fatalf("a human-only thread list skips without an agent: %s (%s), %v", res.Outcome, res.Reason, err)
+	}
+	if runs, _ := rh.st.RecentRuns(context.Background(), 10); len(runs) != 0 {
+		t.Fatalf("no run is recorded: %+v", runs)
+	}
+	if len(rh.h.starts)+len(rh.f.replies) != 0 {
+		t.Fatal("nothing starts and nothing is posted")
+	}
+}
+
+func TestRunAddressReviewedShouldRequireClaudeWhenSomethingIsPending(t *testing.T) {
+	rh := newReviewedAddressHarness(t, answers(reviewedAnswers()))
+	rh.r.Cfg.Agent.Harness = config.HarnessOmp
+	_, err := rh.r.RunAddressReviewed(context.Background(), rh.repo, 5)
+	if err == nil || !strings.Contains(err.Error(), "agent.harness: claude") {
+		t.Fatalf("a pending thread without a confining harness must be refused: %v", err)
+	}
+	if len(rh.h.starts)+len(rh.f.replies) != 0 {
+		t.Fatal("nothing starts and nothing is posted")
+	}
+}
+
+func TestRunAddressReviewedShouldHaltWhenResponderChangesTheWorktree(t *testing.T) {
+	rh := newReviewedAddressHarness(t, func(string, int, string) reply {
+		return reply{write: reviewedAnswers(), mutate: func(g *fakeGit) { g.head = "eeeeeeee" }}
+	})
+	res := rh.addressReviewed(t)
+	assertNothingAnswered(t, rh, res, "alterou a worktree")
+}

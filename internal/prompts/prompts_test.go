@@ -460,6 +460,36 @@ func TestAddressStageShouldAskForFixesOnlyWhenCanFix(t *testing.T) {
 	}
 }
 
+func TestAddressStageShouldReframeVerdictsAndForbidChangesWhenReviewedPR(t *testing.T) {
+	s := mustLoad(t, embedded.FS)
+	d := SampleStageData()
+	d.CanFix, d.ReviewedPR = false, true
+	out, err := s.Render("address", d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"**revisado** pelo delamain", "julga essa resposta",
+		"julga a **resposta da pessoa**", "a branch é de outra pessoa", "`fixed` é sempre `false`",
+		"Nesta fase você **só responde**"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("on a reviewed PR the address stage must say %q", want)
+		}
+	}
+	for _, unwanted := range []string{"aberto pelo delamain", "push habilitado", "push desabilitado",
+		"add -A", "commit -F", "(review)"} {
+		if strings.Contains(out, unwanted) {
+			t.Errorf("on a reviewed PR the stage must not mention %q:\n%s", unwanted, out)
+		}
+	}
+	// The read-only git commands survive, exactly as the confinement allows them.
+	for _, cmd := range []string{"git -C " + d.Repo.Worktree + " diff --no-ext-diff --no-textconv",
+		"git -C " + d.Repo.Worktree + " log"} {
+		if !strings.Contains(out, cmd) {
+			t.Errorf("the reviewed branch keeps the read-only command %q", cmd)
+		}
+	}
+}
+
 func TestInstallForOmpShouldSetTheSubagentsConfiguredModelAndThinking(t *testing.T) {
 	tree := validTree()
 	tree["agents/analyzer/omp.yml"] = &fstest.MapFile{Data: []byte("name: delamain-analyzer\ndescription: maps the repo\ntools: [read]\nthinking-level: medium\n")}

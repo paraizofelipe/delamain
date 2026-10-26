@@ -99,7 +99,16 @@ type Result struct {
 	CommandSources map[string]string
 	// Review is what a PR review posted; nil for issue runs.
 	Review *ReviewSummary
+	// Skip says why a skipped run skipped, for the callers that route on it.
+	Skip SkipReason
 }
+
+// SkipReason is the typed cause of an OutcomeSkipped a caller may branch on; most skips leave
+// it empty.
+type SkipReason string
+
+// SkipHeadReviewed marks the review skip of a head whose review already posted.
+const SkipHeadReviewed SkipReason = "head_reviewed"
 
 // Iteration records what happened in one implement → verify → review round.
 type Iteration struct {

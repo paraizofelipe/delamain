@@ -171,6 +171,7 @@ func (r *Runner) reviewPR(ctx context.Context, ru *run, p *prRun) error {
 	}
 	if prev.LastHeadSHA == pr.HeadSHA {
 		ru.res.Outcome, ru.res.Reason = OutcomeSkipped, fmt.Sprintf("o head %s do PR/MR #%d já foi revisado", pr.HeadSHA, pr.Number)
+		ru.res.Skip = SkipHeadReviewed
 		return nil
 	}
 	// The agent never starts inside the PR checkout: its harness would load the settings, hooks
@@ -274,6 +275,9 @@ func (r *Runner) reviewPR(ctx context.Context, ru *run, p *prRun) error {
 	}
 	if head2 != head || status2 != status {
 		return haltf("o pr-reviewer alterou a worktree (HEAD %s→%s); review descartada, nada foi postado", short(head), short(head2))
+	}
+	if n := dropRepeated(&review, threads, r.ForgeUser); n > 0 {
+		ru.log.Info("findings someone already discusses dropped", "run", ru.rec.ID, "pr", pr.Number, "repeated", n)
 	}
 	if err := review.ValidateLimit(r.Cfg.Review.MaxComments); err != nil {
 		return haltf("artefato da review rejeitado: %v; nada foi postado", err)
@@ -447,6 +451,55 @@ func reviewBodies(o forge.ReviewOptions) []string {
 		bodies = append(bodies, c.Body)
 	}
 	return bodies
+}
+
+// repeatWindow is how many lines apart a finding and an existing thread still discuss the same
+// spot.
+const repeatWindow = 2
+
+// dropRepeated moves every finding that sits where an unresolved thread someone else opened
+// already discusses — same file, at most repeatWindow lines apart — into rv.Dropped, so the
+// review never repeats a critique a human already made. The reason names only the thread's id
+// and position, never its body: that text is third-party input and the summary is public. A
+// thread delamain itself opened stays out of the filter — its findings are deduplicated by
+// marker key, and dropping on position would silence new findings on busy lines.
+func dropRepeated(rv *artifacts.PRReview, threads []forge.Thread, user string) int {
+	var dropped int
+	for ai := range rv.Axes {
+		kept := rv.Axes[ai].Findings[:0]
+		for _, f := range rv.Axes[ai].Findings {
+			t, ok := discussedBy(f, threads, user)
+			if !ok {
+				kept = append(kept, f)
+				continue
+			}
+			rv.Dropped = append(rv.Dropped, artifacts.Dropped{File: f.File, Line: f.Line, Message: f.Message,
+				Reason: fmt.Sprintf("já discutido na thread %s (%s:%d)", t.ID, t.Path, t.Line)})
+			dropped++
+		}
+		rv.Axes[ai].Findings = kept
+	}
+	return dropped
+}
+
+// discussedBy finds the unresolved inline thread someone other than delamain (user) opened that
+// already discusses finding f.
+func discussedBy(f artifacts.Finding, threads []forge.Thread, user string) (forge.Thread, bool) {
+	if f.File == "" {
+		return forge.Thread{}, false
+	}
+	for _, t := range threads {
+		if t.Path != f.File || t.Resolved {
+			continue
+		}
+		if root, ok := firstPublic(t); !ok || ownComment(root, user) {
+			continue
+		}
+		if d := f.Line - t.Line; -repeatWindow <= d && d <= repeatWindow {
+			return t, true
+		}
+	}
+	return forge.Thread{}, false
 }
 
 // postedKeys are the marker keys of the comments delamain (user) already left on the PR. Markers

@@ -2,7 +2,9 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -106,5 +108,38 @@ func TestReviewShouldNotRefuseAnUnconfinedHarnessBeforeSeeingThePR(t *testing.T)
 	}
 	if !strings.Contains(err.Error(), "GitHub or GitLab origin") {
 		t.Fatalf("the command stops at the missing forge, got %v", err)
+	}
+}
+
+func TestRouteReviewShouldAnswerOnlyWhenTheHeadsReviewAlreadyPosted(t *testing.T) {
+	ctx := t.Context()
+	answered := pipeline.Result{Outcome: pipeline.OutcomeAnswered}
+	answer := func(calls *int) func(context.Context, string, int) (pipeline.Result, error) {
+		return func(context.Context, string, int) (pipeline.Result, error) { *calls++; return answered, nil }
+	}
+	for name, tc := range map[string]struct {
+		review  pipeline.Result
+		err     error
+		want    pipeline.Outcome
+		chained int
+	}{
+		"new head reviewed": {review: pipeline.Result{Outcome: pipeline.OutcomeReviewed}, want: pipeline.OutcomeReviewed},
+		"head already reviewed": {review: pipeline.Result{Outcome: pipeline.OutcomeSkipped, Skip: pipeline.SkipHeadReviewed},
+			want: pipeline.OutcomeAnswered, chained: 1},
+		"skipped for another reason": {review: pipeline.Result{Outcome: pipeline.OutcomeSkipped, Reason: "o PR/MR #5 não está aberto"},
+			want: pipeline.OutcomeSkipped},
+		"review failed": {review: pipeline.Result{}, err: errors.New("forge fora do ar"), want: ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var chained int
+			review := func(context.Context, string, int) (pipeline.Result, error) { return tc.review, tc.err }
+			res, err := routeReview(ctx, "/repo", 5, review, answer(&chained))
+			if tc.err != nil && !errors.Is(err, tc.err) {
+				t.Fatalf("the review's error surfaces untouched: %v", err)
+			}
+			if res.Outcome != tc.want || chained != tc.chained {
+				t.Fatalf("outcome %q (answer called %d×), want %q (%d×)", res.Outcome, chained, tc.want, tc.chained)
+			}
+		})
 	}
 }

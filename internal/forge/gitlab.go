@@ -274,19 +274,31 @@ func (g *gitlabClient) LinkedIssues(ctx context.Context, n int) ([]Issue, error)
 	return readIssues(ctx, g, ns)
 }
 
-// Threads reads the first 100 discussions without GitLab's system notes, dropping discussions
-// made only of them. Path and line come from the first remaining note, Resolved from the first
-// resolvable one.
+// Threads reads every discussion without GitLab's system notes, dropping discussions made only
+// of them. Path and line come from the first remaining note, Resolved from the first resolvable
+// one. Every page is read: a truncated list would make delamain repost what it already posted
+// and miss pending threads.
 func (g *gitlabClient) Threads(ctx context.Context, n int) ([]Thread, error) {
 	var ds []*gogitlab.Discussion
-	err := g.do(ctx, "threads", func() (resp *gogitlab.Response, err error) {
-		ds, resp, err = g.api.Discussions.ListMergeRequestDiscussions(g.repo.Path, int64(n), &gogitlab.ListMergeRequestDiscussionsOptions{
-			ListOptions: gogitlab.ListOptions{PerPage: 100},
-		}, gogitlab.WithContext(ctx))
-		return resp, err
-	})
-	if err != nil {
-		return nil, err
+	opts := &gogitlab.ListMergeRequestDiscussionsOptions{ListOptions: gogitlab.ListOptions{PerPage: 100}}
+	for {
+		var page []*gogitlab.Discussion
+		var next int64
+		err := g.do(ctx, "threads", func() (resp *gogitlab.Response, err error) {
+			page, resp, err = g.api.Discussions.ListMergeRequestDiscussions(g.repo.Path, int64(n), opts, gogitlab.WithContext(ctx))
+			if resp != nil {
+				next = int64(resp.NextPage)
+			}
+			return resp, err
+		})
+		if err != nil {
+			return nil, err
+		}
+		ds = append(ds, page...)
+		if next == 0 {
+			break
+		}
+		opts.Page = next
 	}
 	ts := make([]Thread, 0, len(ds))
 	for _, d := range ds {
