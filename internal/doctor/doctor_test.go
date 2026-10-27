@@ -548,3 +548,43 @@ func TestDoctorShouldSkipHindsightWhenDisabledOrOnOmp(t *testing.T) {
 		})
 	}
 }
+
+func TestDoctorShouldFailHindsightWhenTheConfigOrARuntimeScriptIsMissing(t *testing.T) {
+	const conf, runtime = "/home/u/.hindsight/coding-agent.json", "/home/u/.hindsight/coding-agents"
+	for name, err := range map[string]error{"absent": fs.ErrNotExist, "unreadable": fs.ErrPermission} {
+		t.Run("config "+name, func(t *testing.T) {
+			cfg, d := hindsightHarness(t, map[string]error{conf: err})
+			results := Run(context.Background(), cfg, d)
+			c := byName(results)["hindsight"]
+			if c.Status != Fail || !strings.Contains(c.Detail, conf) || !strings.Contains(c.Detail, err.Error()) {
+				t.Fatalf("a config the hooks cannot read must fail with its path and error: %+v", c)
+			}
+			if !Failed(results) {
+				t.Fatal("doctor must fail")
+			}
+		})
+	}
+	for _, script := range []string{"mcp-server.js", "claude-hook.js", "claude-sessionstart-hook.js"} {
+		t.Run(script, func(t *testing.T) {
+			p := filepath.Join(runtime, "dist", script)
+			cfg, d := hindsightHarness(t, map[string]error{p: fs.ErrNotExist})
+			c := byName(Run(context.Background(), cfg, d))["hindsight"]
+			if c.Status != Fail || !strings.Contains(c.Detail, p) || !strings.Contains(c.Detail, "npx @vectorize-io/hindsight-coding-agents install claude-code") {
+				t.Fatalf("a missing runtime script must fail with its path and the install command: %+v", c)
+			}
+		})
+	}
+}
+
+func TestDoctorShouldFailHindsightWithoutNode(t *testing.T) {
+	cfg, d := hindsightHarness(t, nil)
+	d.LookPath = func(b string) (string, error) {
+		if b == "node" {
+			return "", errors.New("not found")
+		}
+		return "/usr/bin/" + b, nil
+	}
+	if c := byName(Run(context.Background(), cfg, d))["hindsight"]; c.Status != Fail || c.Detail != "node not found in PATH" {
+		t.Fatalf("the hooks run on node: %+v", c)
+	}
+}

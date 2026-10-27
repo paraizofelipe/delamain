@@ -194,8 +194,21 @@ func forgeAuth(ctx context.Context, d Deps, dir string) Check {
 	}
 }
 
-// hindsight checks what the agents' memory needs to run.
-func hindsight(h config.Hindsight, _ Deps) Check {
+// hindsight checks what the agents' memory needs to run and reports only the first problem.
+// The config is read to prove it is readable; its content (URL, token) is discarded unseen.
+func hindsight(h config.Hindsight, d Deps) Check {
+	if _, err := d.ReadFile(h.Config); err != nil {
+		return Check{"hindsight", Fail, fmt.Sprintf("%s: %v", h.Config, err)}
+	}
+	for _, script := range []string{"mcp-server.js", "claude-hook.js", "claude-sessionstart-hook.js"} {
+		p := filepath.Join(h.Runtime, "dist", script)
+		if _, err := d.Stat(p); err != nil {
+			return Check{"hindsight", Fail, fmt.Sprintf("%s: %v (run: npx @vectorize-io/hindsight-coding-agents install claude-code)", p, err)}
+		}
+	}
+	if _, err := d.LookPath("node"); err != nil {
+		return Check{"hindsight", Fail, "node not found in PATH"}
+	}
 	return Check{"hindsight", OK, h.Runtime}
 }
 
