@@ -53,6 +53,8 @@ type AgentOptions struct {
 	// Model and Reasoning (omp's --thinking, claude's --effort) override the harness defaults
 	// for this role; empty keeps them.
 	Model, Reasoning string
+	// Memory turns on the Hindsight memory for this session (claude, unconfined sessions only).
+	Memory bool
 }
 
 // Confinement lets an agent read Checkout, run read-only git there (diff, log, show) and write

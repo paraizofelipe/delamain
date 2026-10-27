@@ -25,6 +25,7 @@ import (
 	"github.com/paraizo/delamain/internal/forge"
 	"github.com/paraizo/delamain/internal/gates"
 	"github.com/paraizo/delamain/internal/gitx"
+	"github.com/paraizo/delamain/internal/hindsight"
 	"github.com/paraizo/delamain/internal/notify"
 	"github.com/paraizo/delamain/internal/omp"
 	"github.com/paraizo/delamain/internal/prompts"
@@ -195,6 +196,9 @@ type run struct {
 	agentDir string
 	// confine restricts agents that read third-party code; nil for issue runs.
 	confine *Confinement
+	// memoryOn gives the agents the Hindsight memory, from bank memoryBank; issue runs on claude only.
+	memoryOn   bool
+	memoryBank string
 }
 
 // Run executes the task end to end. A non-nil error means the run could not even be recorded;
@@ -253,6 +257,7 @@ func (r *Runner) Run(ctx context.Context, t Task) (Result, error) {
 	res.RunDir = ru.dir
 	r.openLog(ru)
 	defer ru.closeLog()
+	r.memory(ru)
 	r.notify(ctx, ru.log, notify.FormatStarted(notifyRun(ru, t, rec.State)))
 	r.issueUpdate(ctx, t, &res, []string{r.Cfg.Forge.Labels.InProgress}, []string{r.Cfg.Forge.Labels.Ready}, "")
 
@@ -557,6 +562,25 @@ func (r *Runner) openLog(ru *run) {
 	ru.closeLog = func() { _ = f.Close() }
 }
 
+// memory decides whether an issue run's agents get the Hindsight memory: claude only, with
+// claude.hindsight enabled and the main checkout opted in by the config. It never fails the run.
+func (r *Runner) memory(ru *run) {
+	h := r.Cfg.Claude.Hindsight
+	if h == nil || !h.Enabled {
+		return
+	}
+	f, _, _ := hindsight.Load(h.Config)
+	ru.memoryBank, ru.memoryOn = f.Resolve(ru.rec.Repo)
+	switch {
+	case !ru.memoryOn:
+		return
+	case ru.memoryBank == "":
+		ru.log.Info("hindsight: ligado", "run", ru.rec.ID)
+	default:
+		ru.log.Info("hindsight: banco "+ru.memoryBank, "run", ru.rec.ID)
+	}
+}
+
 func (r *Runner) startAgent(ctx context.Context, ru *run, role string) error {
 	sessDir := filepath.Join(ru.dir, "sessions", role)
 	logDir := r.logsDir(ru)
@@ -575,13 +599,17 @@ func (r *Runner) startAgent(ctx context.Context, ru *run, role string) error {
 		dir = ru.agentDir
 	}
 	model, reasoning := r.Cfg.AgentOverride(role)
+	// Only the orchestrator publishes work: the agent gets an env where push fails.
+	env := gitx.AgentEnv()
+	if ru.memoryOn {
+		env = append(env, "HINDSIGHT_CONFIG="+r.Cfg.Claude.Hindsight.Config)
+	}
 	agent, err := r.Agents.Start(ctx, AgentOptions{
 		Name: fmt.Sprintf("%s-r%d", role, ru.rec.ID), Dir: dir,
 		SessionDir: sessDir, SystemPrompt: r.PromptsTarget.RolePath(role),
-		// Only the orchestrator publishes work: the agent gets an env where push fails.
-		Env:     gitx.AgentEnv(),
+		Env:     env,
 		LogPath: logPath, ErrPath: filepath.Join(logDir, role+".stderr"),
-		Confine: ru.confine, Model: model, Reasoning: reasoning,
+		Confine: ru.confine, Model: model, Reasoning: reasoning, Memory: ru.memoryOn,
 	})
 	if err != nil {
 		return haltf("o agente %s não subiu: %v", role, err)
@@ -718,7 +746,7 @@ func (r *Runner) stageData(ru *run, iter int, artifact, feedback string) prompts
 	return prompts.StageData{
 		Issue: ru.task, Repo: ru.repo, Iteration: iter, MaxIterations: ru.maxIter,
 		ArtifactPath: artifact, PlanPath: ru.planPath, PlanJSONPath: ru.planJSON,
-		Feedback: feedback, BudgetLeft: ru.budget.Left(),
+		Feedback: feedback, BudgetLeft: ru.budget.Left(), Hindsight: ru.memoryOn,
 	}
 }
 
