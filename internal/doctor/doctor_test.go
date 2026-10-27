@@ -612,3 +612,22 @@ func TestDoctorShouldWarnWithoutTheHindsightTokenAndNeverPrintIt(t *testing.T) {
 		}
 	}
 }
+
+func TestDoctorShouldCheckTheHindsightTokenTheAgentsGetFromClaudeEnv(t *testing.T) {
+	t.Run("set only in claude.env", func(t *testing.T) {
+		cfg, d := hindsightHarness(t, nil)
+		cfg.Claude.Env = map[string]string{"HINDSIGHT_API_TOKEN": "env-secret-marker"}
+		d.Getenv = func(string) string { return "" }
+		c := byName(Run(context.Background(), cfg, d))["hindsight"]
+		if c.Status != OK || strings.Contains(c.Detail, "env-secret-marker") {
+			t.Fatalf("a token from claude.env reaches the agents and must pass unprinted: %+v", c)
+		}
+	})
+	t.Run("emptied by claude.env", func(t *testing.T) {
+		cfg, d := hindsightHarness(t, nil)
+		cfg.Claude.Env = map[string]string{"HINDSIGHT_API_TOKEN": ""}
+		if c := byName(Run(context.Background(), cfg, d))["hindsight"]; c.Status != Warn || c.Detail != "HINDSIGHT_API_TOKEN not set (fine for a server without auth)" {
+			t.Fatalf("claude.env overriding the inherited token with an empty value must warn: %+v", c)
+		}
+	})
+}

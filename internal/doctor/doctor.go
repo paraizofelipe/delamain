@@ -127,7 +127,7 @@ func Run(ctx context.Context, cfg config.Config, d Deps) []Check {
 			add("claude auth", OK, "logged in")
 		}
 		if h := cfg.Claude.Hindsight; h != nil && h.Enabled {
-			checks = append(checks, hindsight(*h, d))
+			checks = append(checks, hindsight(*h, cfg.Claude.Env, d))
 		}
 	} else if p, ok := found["omp"]; !ok { // the pipeline drives every agent over omp's RPC mode
 		add("omp rpc", Fail, "omp unavailable")
@@ -196,7 +196,8 @@ func forgeAuth(ctx context.Context, d Deps, dir string) Check {
 
 // hindsight checks what the agents' memory needs to run and reports only the first problem.
 // The config is read to prove it is readable; its content (URL, token) is discarded unseen.
-func hindsight(h config.Hindsight, d Deps) Check {
+// env is claude.env, whose keys win over the inherited environment in the agents.
+func hindsight(h config.Hindsight, env map[string]string, d Deps) Check {
 	if _, err := d.ReadFile(h.Config); err != nil {
 		return Check{"hindsight", Fail, fmt.Sprintf("%s: %v", h.Config, err)}
 	}
@@ -209,7 +210,11 @@ func hindsight(h config.Hindsight, d Deps) Check {
 	if _, err := d.LookPath("node"); err != nil {
 		return Check{"hindsight", Fail, "node not found in PATH"}
 	}
-	if d.Getenv("HINDSIGHT_API_TOKEN") == "" { // only emptiness is checked: the value never reaches a Detail
+	token, ok := env["HINDSIGHT_API_TOKEN"]
+	if !ok {
+		token = d.Getenv("HINDSIGHT_API_TOKEN")
+	}
+	if token == "" { // only emptiness is checked: the value never reaches a Detail
 		return Check{"hindsight", Warn, "HINDSIGHT_API_TOKEN not set (fine for a server without auth)"}
 	}
 	return Check{"hindsight", OK, h.Runtime}
