@@ -17,7 +17,7 @@ func (c *Client) logEvent(e event) {
 	switch e.Type {
 	case "system":
 		if e.Subtype == "hook_response" {
-			c.logf("%s🧠 recall automático: %d caracteres injetados", sub, len(hookContext(e.Output)))
+			c.logHook(sub, e)
 		}
 	case "assistant":
 		m := e.msg()
@@ -57,6 +57,22 @@ func (c *Client) logEvent(e event) {
 		if s := e.RateLimit.Status; s != "" && s != "allowed" {
 			c.logf("⚠ rate limit %s: %s", e.RateLimit.RateLimitType, s)
 		}
+	}
+}
+
+// logHook reports Hindsight's recall hook, told apart by its tags; other hooks may be the target
+// repo's and are not logged. Only the injected size goes out, never the memory itself.
+func (c *Client) logHook(sub string, e event) {
+	ctx := hookContext(e.Output)
+	recall := strings.Contains(ctx, "<hindsight_memory>")
+	if !recall && !strings.Contains(ctx, "<hindsight_knowledge_refresh>") {
+		return
+	}
+	switch {
+	case e.ExitCode != nil && *e.ExitCode != 0:
+		c.logf("%s✗ recall automático falhou (exit %d)", sub, *e.ExitCode)
+	case recall:
+		c.logf("%s🧠 recall automático: %d caracteres injetados", sub, len(ctx))
 	}
 }
 

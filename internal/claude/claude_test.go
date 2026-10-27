@@ -427,7 +427,22 @@ func hookResponse(injected string, exitCode any) map[string]any {
 // hindsightScenarios are the events each Hindsight scenario plays before its result.
 var hindsightScenarios = map[string][]map[string]any{
 	"hindsight-recall": {hookResponse(recallContext, 0)},
+	"hindsight-hook-foreign": {
+		hookResponse("lint ok "+foreignHookMarker, 0),
+		{"type": "system", "subtype": "hook_response", "hook_event": "UserPromptSubmit", "output": foreignHookMarker + " raw\n", "exit_code": 0},
+	},
+	"hindsight-refresh": {hookResponse("<hindsight_knowledge_refresh>páginas novas</hindsight_knowledge_refresh>", 0)},
+	"hindsight-hook-failed": {
+		hookResponse(recallContext, 2),
+		hookResponse("<hindsight_knowledge_refresh>páginas novas</hindsight_knowledge_refresh>", 1),
+		hookResponse(shortRecall, nil),
+	},
 }
+
+// foreignHookMarker is output from a hook of the target repo, not Hindsight's.
+const foreignHookMarker = "HOOK-ALHEIO-91c2"
+
+const shortRecall = "<hindsight_memory>x</hindsight_memory>"
 
 func TestLogShouldShowTheAutomaticRecallInjectedByTheHindsightHook(t *testing.T) {
 	s := start(t, "hindsight-recall")
@@ -437,5 +452,47 @@ func TestLogShouldShowTheAutomaticRecallInjectedByTheHindsightHook(t *testing.T)
 	want := fmt.Sprintf("🧠 recall automático: %d caracteres injetados", len(recallContext))
 	if log := s.log.String(); !strings.Contains(log, want) {
 		t.Fatalf("log lacks %q:\n%s", want, log)
+	}
+}
+
+func TestLogShouldIgnoreHookResponsesWithoutAHindsightTag(t *testing.T) {
+	s := start(t, "hindsight-hook-foreign")
+	if _, err := s.c.Prompt(context.Background(), "go", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	log := s.log.String()
+	if strings.Contains(log, "recall automático") || strings.Contains(log, foreignHookMarker) || !strings.Contains(log, "■ fim do turno") {
+		t.Fatalf("a hook that is not Hindsight's must not reach the log:\n%s", log)
+	}
+}
+
+func TestLogShouldNotLogTheKnowledgeRefreshHook(t *testing.T) {
+	s := start(t, "hindsight-refresh")
+	if _, err := s.c.Prompt(context.Background(), "go", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if log := s.log.String(); strings.Contains(log, "🧠") || !strings.Contains(log, "■ fim do turno") {
+		t.Fatalf("a knowledge refresh is not a recall:\n%s", log)
+	}
+}
+
+func TestLogShouldShowAFailedHindsightHook(t *testing.T) {
+	s := start(t, "hindsight-hook-failed")
+	if _, err := s.c.Prompt(context.Background(), "go", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	log := s.log.String()
+	for _, want := range []string{
+		"✗ recall automático falhou (exit 2)",
+		"✗ recall automático falhou (exit 1)",
+		// No exit code is not a failure.
+		fmt.Sprintf("🧠 recall automático: %d caracteres injetados", len(shortRecall)),
+	} {
+		if !strings.Contains(log, want) {
+			t.Errorf("log lacks %q:\n%s", want, log)
+		}
+	}
+	if n := strings.Count(log, "🧠 recall automático"); n != 1 {
+		t.Errorf("a failed hook injected nothing, want 1 recall line, got %d:\n%s", n, log)
 	}
 }
