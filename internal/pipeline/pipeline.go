@@ -611,6 +611,10 @@ func (r *Runner) startAgent(ctx context.Context, ru *run, role string) error {
 	env := gitx.AgentEnv()
 	if ru.memoryOn {
 		env = append(env, "HINDSIGHT_CONFIG="+r.Cfg.Claude.Hindsight.Config)
+		// The harness env drops every *_TOKEN; only a session with the memory gets this one back.
+		if token := os.Getenv("HINDSIGHT_API_TOKEN"); token != "" {
+			env = append(env, "HINDSIGHT_API_TOKEN="+token)
+		}
 	}
 	agent, err := r.Agents.Start(ctx, AgentOptions{
 		Name: fmt.Sprintf("%s-r%d", role, ru.rec.ID), Dir: dir,

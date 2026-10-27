@@ -211,3 +211,80 @@ func TestRunReviewAndAddressShouldNeverTurnMemoryOn(t *testing.T) {
 		assertMemoryOff(t, rh.harness)
 	})
 }
+
+func TestRunShouldForwardTheHindsightTokenOnlyWhenMemoryIsOn(t *testing.T) {
+	outside := func(repo string) map[string]any {
+		return map[string]any{"optInOnly": true, "mapPathToBank": map[string]string{filepath.Join(filepath.Dir(repo), "other"): "other"}}
+	}
+	cases := map[string]struct {
+		file  func(repo string) map[string]any
+		token string
+		want  bool
+	}{
+		"memory on":           {file: mappedBank, token: hindsightToken, want: true},
+		"memory on, no token": {file: mappedBank, token: "", want: false},
+		"memory off":          {file: outside, token: hindsightToken, want: false},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("HINDSIGHT_API_TOKEN", c.token)
+			hs, _ := memoryHarness(t, c.file)
+			hs.run(t)
+
+			for _, role := range issueRoles {
+				env := hs.h.starts[role+"-r1"].Env
+				if got := slices.Contains(env, "HINDSIGHT_API_TOKEN="+hindsightToken); got != c.want {
+					t.Errorf("%s gets the token=%v, want %v: %v", role, got, c.want, env)
+				}
+				if !c.want && slices.ContainsFunc(env, func(kv string) bool { return strings.HasPrefix(kv, "HINDSIGHT_API_TOKEN=") }) {
+					t.Errorf("%s must not get an empty or stray token entry: %v", role, env)
+				}
+			}
+		})
+	}
+}
+
+func TestRunShouldNeverWriteTheHindsightTokenToTheRunDir(t *testing.T) {
+	cases := map[string]func(t *testing.T, path string){
+		"valid config": func(*testing.T, string) {},
+		"invalid config": func(t *testing.T, path string) {
+			if err := os.WriteFile(path, []byte(`{"apiToken": "`+hindsightToken+`", "optInOnly": tru`), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		},
+	}
+	for name, write := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("HINDSIGHT_API_TOKEN", hindsightToken)
+			hs, path := memoryHarness(t, mappedBank)
+			write(t, path)
+			res := hs.run(t)
+
+			if strings.Contains(res.Reason, hindsightToken) {
+				t.Errorf("the outcome must not carry the token: %s", res.Reason)
+			}
+			for role, texts := range hs.h.prompts {
+				for _, text := range texts {
+					if strings.Contains(text, hindsightToken) {
+						t.Errorf("the %s prompt must not carry the token", role)
+					}
+				}
+			}
+			files := 0
+			err := filepath.WalkDir(res.RunDir, func(p string, d os.DirEntry, err error) error {
+				if err != nil || d.IsDir() {
+					return err
+				}
+				files++
+				data, err := os.ReadFile(p)
+				if err == nil && strings.Contains(string(data), hindsightToken) {
+					t.Errorf("%s carries the token", p)
+				}
+				return err
+			})
+			if err != nil || files == 0 {
+				t.Fatalf("the run dir must be scanned: files=%d err=%v", files, err)
+			}
+		})
+	}
+}
