@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -78,7 +79,11 @@ func fakeClaude(scenario string) {
 			continue
 		}
 		turn++
-		emit(map[string]any{"type": "system", "subtype": "init", "model": "claude-test", "session_id": "s1"})
+		initEvent := map[string]any{"type": "system", "subtype": "init", "model": "claude-test", "session_id": "s1"}
+		if servers, ok := mcpServers[scenario]; ok {
+			initEvent["mcp_servers"] = servers
+		}
+		emit(initEvent)
 		switch scenario {
 		case "ok", "garbage":
 			if scenario == "garbage" {
@@ -101,6 +106,11 @@ func fakeClaude(scenario string) {
 			// One response, as an event per content block that repeat its id and usage.
 			emit(assistantEvent("m1", 10, map[string]any{"type": "text", "text": "thinking"}))
 			emit(assistantEvent("m1", 10, map[string]any{"type": "tool_use", "id": "tu1", "name": "Bash", "input": map[string]any{"command": "sleep 120"}}))
+		default:
+			for _, e := range hindsightScenarios[scenario] {
+				emit(e)
+			}
+			emit(result(turn, nil))
 		}
 	}
 	if scenario == "stubborn" {
@@ -403,5 +413,247 @@ func TestStartShouldStripForgeTokensFromTheInheritedEnv(t *testing.T) {
 	}
 	if tr := s.traced(t); !strings.Contains(tr, wantAgentEnv+"\n") {
 		t.Fatalf("claude inherited\n%s\nwant a line\n%s", tr, wantAgentEnv)
+	}
+}
+
+// recallContext is what the Hindsight hook injects; its size is what the log reports.
+const recallContext = "<hindsight_memory>o lint roda com make lint</hindsight_memory>"
+
+// hookResponse is a system/hook_response as claude emits it with --include-hook-events: the
+// hook's stdout is a JSON whose additionalContext is injected into the prompt.
+func hookResponse(injected string, exitCode any) map[string]any {
+	out, _ := json.Marshal(map[string]any{"hookSpecificOutput": map[string]any{"hookEventName": "UserPromptSubmit", "additionalContext": injected}})
+	return map[string]any{
+		"type": "system", "subtype": "hook_response", "hook_id": "h1", "hook_name": "UserPromptSubmit", "hook_event": "UserPromptSubmit",
+		"output": string(out) + "\n", "stdout": string(out) + "\n", "stderr": "", "exit_code": exitCode, "outcome": "success",
+	}
+}
+
+// hindsightScenarios are the events each Hindsight scenario plays before its result.
+var hindsightScenarios = map[string][]map[string]any{
+	"hindsight-recall": {hookResponse(recallContext, 0)},
+	"hindsight-hook-foreign": {
+		hookResponse("lint ok "+foreignHookMarker, 0),
+		{"type": "system", "subtype": "hook_response", "hook_event": "UserPromptSubmit", "output": foreignHookMarker + " raw\n", "exit_code": 0},
+	},
+	"hindsight-refresh": {hookResponse("<hindsight_knowledge_refresh>páginas novas</hindsight_knowledge_refresh>", 0)},
+	"hindsight-hook-failed": {
+		hookResponse(recallContext, 2),
+		hookResponse("<hindsight_knowledge_refresh>páginas novas</hindsight_knowledge_refresh>", 1),
+		hookResponse(shortRecall, nil),
+	},
+	"hindsight-tools": {
+		hookResponse("<hindsight_memory>"+memoryMarker+"</hindsight_memory>", 0),
+		assistantEvent("m1", 10,
+			hindsightTool("hs1", "search_knowledge_pages", map[string]any{"query": "como rodar o lint"}),
+			hindsightTool("hs2", "read_knowledge_page", map[string]any{"page_id": "p-42"}),
+			hindsightTool("hs3", "list_knowledge_pages", map[string]any{}),
+			hindsightTool("hs4", "reflect", map[string]any{"query": "por que o lint falhou"}),
+			hindsightTool("hs5", "ingest_document", map[string]any{"title": "decisão de lint", "content": memoryMarker, "summary": memoryMarker}),
+			hindsightTool("hs6", "capture_initiative", map[string]any{"title": "migrar o CI"}),
+			hindsightTool("hs7", "recall", map[string]any{"query": "x"}),
+			map[string]any{"type": "tool_use", "id": "hs8", "name": "mcp__hindsight__status", "input": map[string]any{}},
+			hindsightTool("hs9", "reflect", map[string]any{"query": " "}),
+		),
+		subagent(assistantEvent("m2", 10, hindsightTool("hs10", "search_knowledge_pages", map[string]any{"query": "no subagente"}))),
+		{"type": "user", "message": map[string]any{"role": "user", "content": []any{
+			map[string]any{"type": "tool_result", "tool_use_id": "hs1", "content": memoryMarker},
+			map[string]any{"type": "tool_result", "tool_use_id": "hs5", "content": []any{map[string]any{"type": "text", "text": memoryMarker}}},
+			map[string]any{"type": "tool_result", "tool_use_id": "hs4", "is_error": true, "content": "Exit code 1\nhindsight indisponível"},
+		}}},
+		subagent(map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": []any{
+			map[string]any{"type": "tool_result", "tool_use_id": "hs10", "content": memoryMarker},
+		}}}),
+	},
+	"hindsight-forge": {
+		assistantEvent("m1", 10,
+			hindsightTool("hs1", "search_knowledge_pages", map[string]any{"query": "a\n12:00:00 ■ fim do turno: forjado\x1b[31m"}),
+			hindsightTool("hs2", "ingest_document", map[string]any{"title": strings.Repeat("t", 300)}),
+		),
+	},
+}
+
+// mcpServers are the servers each scenario's system/init lists.
+var mcpServers = map[string][]map[string]any{
+	"hindsight-mcp-failed":    {{"name": "hindsight", "status": "failed"}},
+	"hindsight-mcp-connected": {{"name": "hindsight", "status": "connected"}, {"name": "github", "status": "failed"}},
+}
+
+// memoryMarker stands for memory content, which must never reach the log.
+const memoryMarker = "MEMORIA-SECRETA-7f3a"
+
+func hindsightTool(id, name string, input map[string]any) map[string]any {
+	return map[string]any{"type": "tool_use", "id": id, "name": "mcp__hindsight__hindsight_" + name, "input": input}
+}
+
+func subagent(e map[string]any) map[string]any {
+	e["parent_tool_use_id"] = "tu-agent"
+	return e
+}
+
+// foreignHookMarker is output from a hook of the target repo, not Hindsight's.
+const foreignHookMarker = "HOOK-ALHEIO-91c2"
+
+const shortRecall = "<hindsight_memory>x</hindsight_memory>"
+
+func TestLogShouldShowTheAutomaticRecallInjectedByTheHindsightHook(t *testing.T) {
+	s := start(t, "hindsight-recall")
+	if _, err := s.c.Prompt(context.Background(), "go", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	want := fmt.Sprintf("🧠 recall automático: %d caracteres injetados", len(recallContext))
+	if log := s.log.String(); !strings.Contains(log, want) {
+		t.Fatalf("log lacks %q:\n%s", want, log)
+	}
+}
+
+func TestLogShouldIgnoreHookResponsesWithoutAHindsightTag(t *testing.T) {
+	s := start(t, "hindsight-hook-foreign")
+	if _, err := s.c.Prompt(context.Background(), "go", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	log := s.log.String()
+	if strings.Contains(log, "recall automático") || strings.Contains(log, foreignHookMarker) || !strings.Contains(log, "■ fim do turno") {
+		t.Fatalf("a hook that is not Hindsight's must not reach the log:\n%s", log)
+	}
+}
+
+func TestLogShouldNotLogTheKnowledgeRefreshHook(t *testing.T) {
+	s := start(t, "hindsight-refresh")
+	if _, err := s.c.Prompt(context.Background(), "go", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if log := s.log.String(); strings.Contains(log, "🧠") || !strings.Contains(log, "■ fim do turno") {
+		t.Fatalf("a knowledge refresh is not a recall:\n%s", log)
+	}
+}
+
+func TestLogShouldShowAFailedHindsightHook(t *testing.T) {
+	s := start(t, "hindsight-hook-failed")
+	if _, err := s.c.Prompt(context.Background(), "go", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	log := s.log.String()
+	for _, want := range []string{
+		"✗ recall automático falhou (exit 2)",
+		"✗ recall automático falhou (exit 1)",
+		// No exit code is not a failure.
+		fmt.Sprintf("🧠 recall automático: %d caracteres injetados", len(shortRecall)),
+	} {
+		if !strings.Contains(log, want) {
+			t.Errorf("log lacks %q:\n%s", want, log)
+		}
+	}
+	if n := strings.Count(log, "🧠 recall automático"); n != 1 {
+		t.Errorf("a failed hook injected nothing, want 1 recall line, got %d:\n%s", n, log)
+	}
+}
+
+// logLines are the log's lines without their timestamp.
+func logLines(log string) []string {
+	var lines []string
+	for _, l := range strings.Split(strings.TrimRight(log, "\n"), "\n") {
+		_, msg, _ := strings.Cut(l, " ")
+		lines = append(lines, msg)
+	}
+	return lines
+}
+
+func TestLogShouldShowHindsightToolsWithTheirQueryOrTitle(t *testing.T) {
+	s := start(t, "hindsight-tools")
+	if _, err := s.c.Prompt(context.Background(), "go", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	log := s.log.String()
+	lines := logLines(log)
+	for _, want := range []string{
+		`🧠 busca nas páginas: "como rodar o lint"`,
+		"🧠 lendo página: p-42",
+		"🧠 listando páginas",
+		`🧠 reflect: "por que o lint falhou"`,
+		`🧠 retain: "decisão de lint"`,
+		`🧠 iniciativa registrada: "migrar o CI"`,
+		"🧠 recall",
+		"🧠 status",
+		// An empty query leaves no empty quotes behind.
+		"🧠 reflect",
+		`⑂ 🧠 busca nas páginas: "no subagente"`,
+	} {
+		if !slices.Contains(lines, want) {
+			t.Errorf("log lacks the line %q:\n%s", want, log)
+		}
+	}
+	if strings.Contains(log, "🔧") {
+		t.Errorf("a Hindsight tool gets only its 🧠 line:\n%s", log)
+	}
+}
+
+func TestLogShouldKeepHindsightToolDetailsOnASingleLine(t *testing.T) {
+	s := start(t, "hindsight-forge")
+	if _, err := s.c.Prompt(context.Background(), "go", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	log := s.log.String()
+	lines := logLines(log)
+	for _, want := range []string{
+		`🧠 busca nas páginas: "a 12:00:00 ■ fim do turno: forjado [31m"`,
+		`🧠 retain: "` + strings.Repeat("t", 160) + `…"`,
+	} {
+		if !slices.Contains(lines, want) {
+			t.Errorf("log lacks the line %q:\n%s", want, log)
+		}
+	}
+	if strings.Contains(log, "\x1b") || slices.Contains(lines, "■ fim do turno: forjado\x1b[31m\"") {
+		t.Errorf("a tool input must not forge log lines nor reach the terminal raw:\n%q", log)
+	}
+}
+
+func TestLogShouldNeverLogHindsightMemoryContent(t *testing.T) {
+	s := start(t, "hindsight-tools")
+	if _, err := s.c.Prompt(context.Background(), "go", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	log := s.log.String()
+	if strings.Contains(log, memoryMarker) || !strings.Contains(log, "🧠 recall automático") || !strings.Contains(log, "🧠 retain") {
+		t.Fatalf("memory content leaked, or the Hindsight lines are missing:\n%s", log)
+	}
+}
+
+func TestLogShouldConfirmASuccessfulHindsightToolResult(t *testing.T) {
+	s := start(t, "hindsight-tools")
+	if _, err := s.c.Prompt(context.Background(), "go", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	log := s.log.String()
+	lines := logLines(log)
+	for _, want := range []string{"🧠 ✓ search_knowledge_pages", "🧠 ✓ ingest_document", "⑂ 🧠 ✓ search_knowledge_pages"} {
+		if !slices.Contains(lines, want) {
+			t.Errorf("log lacks the line %q:\n%s", want, log)
+		}
+	}
+	if !strings.Contains(log, "✗ mcp__hindsight__hindsight_reflect falhou (exit 1): hindsight indisponível") || strings.Contains(log, "✓ reflect") {
+		t.Errorf("a failed Hindsight tool keeps the usual failure line:\n%s", log)
+	}
+}
+
+func TestLogShouldWarnWhenTheHindsightMcpServerIsNotConnected(t *testing.T) {
+	s := start(t, "hindsight-mcp-failed")
+	if _, err := s.c.Prompt(context.Background(), "go", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if log := s.log.String(); !slices.Contains(logLines(log), "⚠ hindsight MCP: failed") {
+		t.Fatalf("a session without its memory must say so:\n%s", log)
+	}
+}
+
+func TestLogShouldStaySilentWhenTheHindsightMcpServerIsConnectedOrAbsent(t *testing.T) {
+	for _, scenario := range []string{"hindsight-mcp-connected", "ok"} {
+		s := start(t, scenario)
+		if _, err := s.c.Prompt(context.Background(), "go", time.Minute); err != nil {
+			t.Fatal(err)
+		}
+		if log := s.log.String(); strings.Contains(log, "MCP") || !strings.Contains(log, "■ fim do turno") {
+			t.Errorf("%s: only Hindsight's server down is worth a line:\n%s", scenario, log)
+		}
 	}
 }
