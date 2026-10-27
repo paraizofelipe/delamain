@@ -3,6 +3,7 @@ package claude
 import (
 	"encoding/json"
 	"strings"
+	"unicode"
 
 	"github.com/paraizo/delamain/internal/agent"
 )
@@ -34,6 +35,10 @@ func (c *Client) logEvent(e event) {
 				c.rememberTool(b.ID, b.Name)
 				if b.Name == "Agent" || b.Name == "Task" {
 					c.logf("⑂ subagent %s: %s", field(b.Input, "subagent_type"), agent.Truncate(field(b.Input, "description"), 160))
+					continue
+				}
+				if action, ok := hindsightAction(b.Name); ok {
+					c.logf("%s🧠 %s", sub, hindsightLine(action, b.Input))
 					continue
 				}
 				c.logf("%s🔧 %s: %s", sub, b.Name, toolDetail(b.Input))
@@ -89,6 +94,58 @@ func (c *Client) toolName(id string) string {
 		return n
 	}
 	return "tool"
+}
+
+// hindsightAction is a Hindsight MCP tool's name without its prefixes: search_knowledge_pages for
+// mcp__hindsight__hindsight_search_knowledge_pages.
+func hindsightAction(tool string) (string, bool) {
+	name, ok := strings.CutPrefix(tool, "mcp__hindsight__")
+	return strings.TrimPrefix(name, "hindsight_"), ok
+}
+
+// hindsightLine says what a Hindsight tool call is about by its query, title or page, never by
+// the memory it writes (content, summary).
+func hindsightLine(action string, input json.RawMessage) string {
+	switch action {
+	case "search_knowledge_pages":
+		return labeled("busca nas páginas", quoted(field(input, "query")))
+	case "read_knowledge_page":
+		return labeled("lendo página", oneLine(field(input, "page_id")))
+	case "list_knowledge_pages":
+		return "listando páginas"
+	case "reflect":
+		return labeled("reflect", quoted(field(input, "query")))
+	case "ingest_document":
+		return labeled("retain", quoted(field(input, "title")))
+	case "capture_initiative":
+		return labeled("iniciativa registrada", quoted(field(input, "title")))
+	}
+	return oneLine(action)
+}
+
+func labeled(label, detail string) string {
+	if detail == "" {
+		return label
+	}
+	return label + ": " + detail
+}
+
+func quoted(s string) string {
+	if s = oneLine(s); s == "" {
+		return ""
+	}
+	return `"` + s + `"`
+}
+
+// oneLine truncates s with its control characters blanked, so a model-chosen value can neither
+// forge log lines nor drive the terminal that shows them.
+func oneLine(s string) string {
+	return agent.Truncate(strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, s), 160)
 }
 
 // toolDetail picks what a tool call is about: its description, command, path or pattern.

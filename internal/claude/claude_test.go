@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -437,6 +438,39 @@ var hindsightScenarios = map[string][]map[string]any{
 		hookResponse("<hindsight_knowledge_refresh>páginas novas</hindsight_knowledge_refresh>", 1),
 		hookResponse(shortRecall, nil),
 	},
+	"hindsight-tools": {
+		hookResponse("<hindsight_memory>"+memoryMarker+"</hindsight_memory>", 0),
+		assistantEvent("m1", 10,
+			hindsightTool("hs1", "search_knowledge_pages", map[string]any{"query": "como rodar o lint"}),
+			hindsightTool("hs2", "read_knowledge_page", map[string]any{"page_id": "p-42"}),
+			hindsightTool("hs3", "list_knowledge_pages", map[string]any{}),
+			hindsightTool("hs4", "reflect", map[string]any{"query": "por que o lint falhou"}),
+			hindsightTool("hs5", "ingest_document", map[string]any{"title": "decisão de lint", "content": memoryMarker, "summary": memoryMarker}),
+			hindsightTool("hs6", "capture_initiative", map[string]any{"title": "migrar o CI"}),
+			hindsightTool("hs7", "recall", map[string]any{"query": "x"}),
+			map[string]any{"type": "tool_use", "id": "hs8", "name": "mcp__hindsight__status", "input": map[string]any{}},
+			hindsightTool("hs9", "reflect", map[string]any{"query": " "}),
+		),
+		subagent(assistantEvent("m2", 10, hindsightTool("hs10", "search_knowledge_pages", map[string]any{"query": "no subagente"}))),
+	},
+	"hindsight-forge": {
+		assistantEvent("m1", 10,
+			hindsightTool("hs1", "search_knowledge_pages", map[string]any{"query": "a\n12:00:00 ■ fim do turno: forjado\x1b[31m"}),
+			hindsightTool("hs2", "ingest_document", map[string]any{"title": strings.Repeat("t", 300)}),
+		),
+	},
+}
+
+// memoryMarker stands for memory content, which must never reach the log.
+const memoryMarker = "MEMORIA-SECRETA-7f3a"
+
+func hindsightTool(id, name string, input map[string]any) map[string]any {
+	return map[string]any{"type": "tool_use", "id": id, "name": "mcp__hindsight__hindsight_" + name, "input": input}
+}
+
+func subagent(e map[string]any) map[string]any {
+	e["parent_tool_use_id"] = "tu-agent"
+	return e
 }
 
 // foreignHookMarker is output from a hook of the target repo, not Hindsight's.
@@ -494,5 +528,75 @@ func TestLogShouldShowAFailedHindsightHook(t *testing.T) {
 	}
 	if n := strings.Count(log, "🧠 recall automático"); n != 1 {
 		t.Errorf("a failed hook injected nothing, want 1 recall line, got %d:\n%s", n, log)
+	}
+}
+
+// logLines are the log's lines without their timestamp.
+func logLines(log string) []string {
+	var lines []string
+	for _, l := range strings.Split(strings.TrimRight(log, "\n"), "\n") {
+		_, msg, _ := strings.Cut(l, " ")
+		lines = append(lines, msg)
+	}
+	return lines
+}
+
+func TestLogShouldShowHindsightToolsWithTheirQueryOrTitle(t *testing.T) {
+	s := start(t, "hindsight-tools")
+	if _, err := s.c.Prompt(context.Background(), "go", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	log := s.log.String()
+	lines := logLines(log)
+	for _, want := range []string{
+		`🧠 busca nas páginas: "como rodar o lint"`,
+		"🧠 lendo página: p-42",
+		"🧠 listando páginas",
+		`🧠 reflect: "por que o lint falhou"`,
+		`🧠 retain: "decisão de lint"`,
+		`🧠 iniciativa registrada: "migrar o CI"`,
+		"🧠 recall",
+		"🧠 status",
+		// An empty query leaves no empty quotes behind.
+		"🧠 reflect",
+		`⑂ 🧠 busca nas páginas: "no subagente"`,
+	} {
+		if !slices.Contains(lines, want) {
+			t.Errorf("log lacks the line %q:\n%s", want, log)
+		}
+	}
+	if strings.Contains(log, "🔧") {
+		t.Errorf("a Hindsight tool gets only its 🧠 line:\n%s", log)
+	}
+}
+
+func TestLogShouldKeepHindsightToolDetailsOnASingleLine(t *testing.T) {
+	s := start(t, "hindsight-forge")
+	if _, err := s.c.Prompt(context.Background(), "go", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	log := s.log.String()
+	lines := logLines(log)
+	for _, want := range []string{
+		`🧠 busca nas páginas: "a 12:00:00 ■ fim do turno: forjado [31m"`,
+		`🧠 retain: "` + strings.Repeat("t", 160) + `…"`,
+	} {
+		if !slices.Contains(lines, want) {
+			t.Errorf("log lacks the line %q:\n%s", want, log)
+		}
+	}
+	if strings.Contains(log, "\x1b") || slices.Contains(lines, "■ fim do turno: forjado\x1b[31m\"") {
+		t.Errorf("a tool input must not forge log lines nor reach the terminal raw:\n%q", log)
+	}
+}
+
+func TestLogShouldNeverLogHindsightMemoryContent(t *testing.T) {
+	s := start(t, "hindsight-tools")
+	if _, err := s.c.Prompt(context.Background(), "go", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	log := s.log.String()
+	if strings.Contains(log, memoryMarker) || !strings.Contains(log, "🧠 recall automático") || !strings.Contains(log, "🧠 retain") {
+		t.Fatalf("memory content leaked, or the Hindsight lines are missing:\n%s", log)
 	}
 }
