@@ -46,7 +46,8 @@ func Load(path string) (File, bool, error) {
 }
 
 // Resolve reports whether memory is on for dir and the bank mapped to it ("" when none).
-// disabled, global or for claude-code, turns memory off; under optInOnly, memory is on only inside optInPaths or a mapPathToBank entry with a non-empty bank.
+// disabled, global or for claude-code, turns memory off; under optInOnly, memory is on only inside
+// optInPaths or a mapPathToBank entry with a non-empty bank.
 func (f File) Resolve(dir string) (bank string, on bool) {
 	if f.Disabled || f.Harnesses[harness].Disabled {
 		return "", false
