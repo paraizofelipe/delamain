@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -64,6 +65,11 @@ type Deps struct {
 	PromptsTarget prompts.Target
 	// Notify probes the desktop notification backend; nil skips the check.
 	Notify func(ctx context.Context) notify.Probe
+	// Stat, ReadFile and Getenv back the hindsight check, which only calls them when
+	// claude.hindsight is enabled on the claude harness.
+	Stat     func(string) (fs.FileInfo, error)
+	ReadFile func(string) ([]byte, error)
+	Getenv   func(string) string
 }
 
 // Run executes every check; it never stops at the first failure so the report is complete.
@@ -119,6 +125,9 @@ func Run(ctx context.Context, cfg config.Config, d Deps) []Check {
 			add("claude auth", Fail, "%v (run: claude auth login)", err)
 		} else {
 			add("claude auth", OK, "logged in")
+		}
+		if h := cfg.Claude.Hindsight; h != nil && h.Enabled {
+			checks = append(checks, hindsight(*h, cfg.Claude.Env, d))
 		}
 	} else if p, ok := found["omp"]; !ok { // the pipeline drives every agent over omp's RPC mode
 		add("omp rpc", Fail, "omp unavailable")
@@ -183,6 +192,32 @@ func forgeAuth(ctx context.Context, d Deps, dir string) Check {
 	default:
 		return Check{"forge auth", Warn, fmt.Sprintf("%s%v", where, err)}
 	}
+}
+
+// hindsight checks what the agents' memory needs to run and reports only the first problem.
+// The config is read to prove it is readable; its content (URL, token) is discarded unseen.
+// env is claude.env, whose keys win over the inherited environment in the agents.
+func hindsight(h config.Hindsight, env map[string]string, d Deps) Check {
+	if _, err := d.ReadFile(h.Config); err != nil {
+		return Check{"hindsight", Fail, fmt.Sprintf("%s: %v", h.Config, err)}
+	}
+	for _, script := range []string{"mcp-server.js", "claude-hook.js", "claude-sessionstart-hook.js"} {
+		p := filepath.Join(h.Runtime, "dist", script)
+		if _, err := d.Stat(p); err != nil {
+			return Check{"hindsight", Fail, fmt.Sprintf("%s: %v (run: npx @vectorize-io/hindsight-coding-agents install claude-code)", p, err)}
+		}
+	}
+	if _, err := d.LookPath("node"); err != nil {
+		return Check{"hindsight", Fail, "node not found in PATH"}
+	}
+	token, ok := env["HINDSIGHT_API_TOKEN"]
+	if !ok {
+		token = d.Getenv("HINDSIGHT_API_TOKEN")
+	}
+	if token == "" { // only emptiness is checked: the value never reaches a Detail
+		return Check{"hindsight", Warn, "HINDSIGHT_API_TOKEN not set (fine for a server without auth)"}
+	}
+	return Check{"hindsight", OK, h.Runtime}
 }
 
 // notifyCheck reports the notification backend; without one it only warns: runs never need it.

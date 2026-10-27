@@ -79,6 +79,7 @@ func NewRoot() *cobra.Command {
 					Prompts: set, PromptsTarget: promptsTarget(cfg),
 					ForgeAuth: func(ctx context.Context, dir string) (doctor.ForgeIdentity, error) { return forgeAuth(ctx, cfg, dir) },
 					Notify:    func(ctx context.Context) notify.Probe { return notify.Diagnose(ctx, cfg.Notify) },
+					Stat:      os.Stat, ReadFile: os.ReadFile, Getenv: os.Getenv,
 				})
 				if err := printChecks(cmd.OutOrStdout(), checks); err != nil {
 					return err

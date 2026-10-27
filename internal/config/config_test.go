@@ -600,3 +600,131 @@ func TestWithProjectOverridesShouldRejectAnInvalidMerge(t *testing.T) {
 		t.Fatal("an unknown harness must be rejected")
 	}
 }
+
+func TestLoadShouldDefaultHindsightPathsWhenTheBlockIsPresent(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	for name, body := range map[string]string{
+		"empty block":  "claude:\n  hindsight: {}\n",
+		"only enabled": "claude:\n  hindsight:\n    enabled: true\n",
+		"disabled":     "claude:\n  hindsight:\n    enabled: false\n",
+	} {
+		cfg, err := Load(writeFile(t, body), noEnv)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		h := cfg.Claude.Hindsight
+		if h == nil {
+			t.Fatalf("%s: a present block must be loaded", name)
+		}
+		if h.Config != filepath.Join(home, ".hindsight", "coding-agent.json") || h.Runtime != filepath.Join(home, ".hindsight", "coding-agents") {
+			t.Fatalf("%s: empty paths default under ~/.hindsight, expanded: %+v", name, h)
+		}
+	}
+}
+
+func TestLoadShouldExpandTildeInHindsightPaths(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	p := writeFile(t, "agent:\n  harness: claude\nclaude:\n  hindsight:\n    enabled: true\n    config: ~/mem/agent.json\n    runtime: /opt/hindsight\n")
+	cfg, err := Load(p, noEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := cfg.Claude.Hindsight
+	if h == nil || !h.Enabled {
+		t.Fatalf("enabled block must be loaded: %+v", h)
+	}
+	if h.Config != filepath.Join(home, "mem", "agent.json") || h.Runtime != "/opt/hindsight" {
+		t.Fatalf("~ is expanded and absolute paths are kept: %+v", h)
+	}
+}
+
+func TestLoadShouldLeaveHindsightNilWhenTheBlockIsAbsent(t *testing.T) {
+	cfg, err := Load(writeFile(t, "claude:\n  model: sonnet\n"), noEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Claude.Hindsight != nil {
+		t.Fatalf("no block means no memory config, got %+v", cfg.Claude.Hindsight)
+	}
+	if Default().Claude.Hindsight != nil {
+		t.Fatal("the defaults must not turn the memory on")
+	}
+}
+
+func TestValidateShouldRequireHindsightPathsWhenEnabled(t *testing.T) {
+	for name, h := range map[string]Hindsight{
+		"blank config":  {Enabled: true, Config: " ", Runtime: "/opt/hindsight"},
+		"blank runtime": {Enabled: true, Config: "/etc/agent.json", Runtime: ""},
+	} {
+		cfg := Default()
+		cfg.Agent.Harness = HarnessClaude
+		cfg.Claude.Hindsight = &h
+		err := cfg.Validate()
+		if err == nil || !strings.Contains(err.Error(), "claude.hindsight.") || !strings.Contains(err.Error(), "is required when enabled") {
+			t.Errorf("%s must be rejected while enabled, got %v", name, err)
+		}
+	}
+	cfg := Default()
+	cfg.Agent.Harness = HarnessClaude
+	cfg.Claude.Hindsight = &Hindsight{Enabled: false}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("a disabled block needs no paths: %v", err)
+	}
+	cfg.Claude.Hindsight = &Hindsight{Enabled: true, Config: "/etc/agent.json", Runtime: "/opt/hindsight"}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("an enabled block with both paths is valid: %v", err)
+	}
+}
+
+func TestWithProjectOverridesShouldReplaceHindsightAndExpandTilde(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	global := &Hindsight{Enabled: true, Config: "/etc/global.json", Runtime: "/opt/global"}
+	cfg := Default()
+	cfg.Agent.Harness = HarnessClaude
+	cfg.Claude.Hindsight = global
+
+	project := &Hindsight{Enabled: true, Config: "~/repo-agent.json"}
+	merged, changed, err := cfg.WithProjectOverrides(Agent{}, Claude{Hindsight: project}, Omp{}, nil)
+	if err != nil || !changed {
+		t.Fatalf("changed=%v err=%v", changed, err)
+	}
+	want := Hindsight{Enabled: true, Config: filepath.Join(home, "repo-agent.json"), Runtime: filepath.Join(home, ".hindsight", "coding-agents")}
+	if merged.Claude.Hindsight == nil || *merged.Claude.Hindsight != want {
+		t.Fatalf("the project block replaces the global one whole, with defaults and ~ expanded: %+v", merged.Claude.Hindsight)
+	}
+	if *global != (Hindsight{Enabled: true, Config: "/etc/global.json", Runtime: "/opt/global"}) || cfg.Claude.Hindsight != global {
+		t.Fatalf("the global config must stay untouched: %+v", cfg.Claude.Hindsight)
+	}
+	if project.Config != "~/repo-agent.json" || project.Runtime != "" {
+		t.Fatalf("the project block must not be mutated: %+v", project)
+	}
+
+	merged, changed, err = cfg.WithProjectOverrides(Agent{}, Claude{Hindsight: &Hindsight{Enabled: false}}, Omp{}, nil)
+	if err != nil || !changed {
+		t.Fatalf("changed=%v err=%v", changed, err)
+	}
+	if merged.Claude.Hindsight == nil || merged.Claude.Hindsight.Enabled {
+		t.Fatalf("enabled: false in the project turns the inherited memory off: %+v", merged.Claude.Hindsight)
+	}
+}
+
+func TestWithProjectOverridesShouldInheritHindsightWhenTheProjectOmitsIt(t *testing.T) {
+	global := &Hindsight{Enabled: true, Config: "/etc/global.json", Runtime: "/opt/global"}
+	cfg := Default()
+	cfg.Agent.Harness = HarnessClaude
+	cfg.Claude.Hindsight = global
+
+	merged, changed, err := cfg.WithProjectOverrides(Agent{}, Claude{Model: "sonnet"}, Omp{}, nil)
+	if err != nil || !changed {
+		t.Fatalf("changed=%v err=%v", changed, err)
+	}
+	if merged.Claude.Hindsight == nil || *merged.Claude.Hindsight != *global {
+		t.Fatalf("an omitted block inherits the global one: %+v", merged.Claude.Hindsight)
+	}
+	if _, changed, err := cfg.WithProjectOverrides(Agent{}, Claude{}, Omp{}, nil); changed || err != nil {
+		t.Fatalf("a project without overrides keeps the global config: changed=%v err=%v", changed, err)
+	}
+}

@@ -86,6 +86,9 @@ func (c Config) WithProjectOverrides(agent Agent, claude Claude, omp Omp, agents
 	if claude.Settings != nil {
 		c.Claude.Settings, changed = claude.Settings, true
 	}
+	if claude.Hindsight != nil {
+		c.Claude.Hindsight, changed = claude.Hindsight.resolved(), true // replaces the global block whole
+	}
 	set(&c.Omp.Binary, omp.Binary)
 	set(&c.Omp.AgentDir, expandHome(omp.AgentDir)) // Load expands the global one; mirror it here
 	set(&c.Omp.Model, omp.Model)
@@ -191,6 +194,34 @@ type Claude struct {
 	// isolated config dir is skipped by --setting-sources project, so the helper comes back
 	// through this map.
 	Settings map[string]any `yaml:"settings"`
+	// Hindsight configures the agents' long-term memory; nil when the block is absent.
+	Hindsight *Hindsight `yaml:"hindsight"`
+}
+
+// Hindsight points at the hindsight-coding-agents config and runtime used as agent memory.
+type Hindsight struct {
+	Enabled bool `yaml:"enabled"`
+	// Config is the coding-agent.json the hooks read; defaults to ~/.hindsight/coding-agent.json.
+	Config string `yaml:"config"`
+	// Runtime holds the installed dist/*.js scripts; defaults to ~/.hindsight/coding-agents.
+	Runtime string `yaml:"runtime"`
+}
+
+// resolved returns a copy of h with empty paths defaulted and ~ expanded; nil stays nil. It
+// never touches h, so a project override cannot leak into the shared global config.
+func (h *Hindsight) resolved() *Hindsight {
+	if h == nil {
+		return nil
+	}
+	r := *h
+	if r.Config == "" {
+		r.Config = "~/.hindsight/coding-agent.json"
+	}
+	if r.Runtime == "" {
+		r.Runtime = "~/.hindsight/coding-agents"
+	}
+	r.Config, r.Runtime = expandHome(r.Config), expandHome(r.Runtime)
+	return &r
 }
 
 // Environ renders Env as sorted K=V entries, the way a subprocess environment takes them.
@@ -399,6 +430,7 @@ func Load(path string, getenv func(string) string) (Config, error) {
 	cfg.Paths.WorktreesDir = expandHome(cfg.Paths.WorktreesDir)
 	cfg.Paths.PromptsDir = expandHome(cfg.Paths.PromptsDir)
 	cfg.Omp.AgentDir = expandHome(cfg.Omp.AgentDir)
+	cfg.Claude.Hindsight = cfg.Claude.Hindsight.resolved()
 	for i, r := range cfg.Daemon.Repos {
 		cfg.Daemon.Repos[i] = expandHome(r)
 	}
@@ -631,6 +663,14 @@ func (c Claude) validate() []error {
 	}
 	if strings.TrimSpace(c.Model) == "" {
 		errs = append(errs, errors.New("claude.model is required"))
+	}
+	if h := c.Hindsight; h != nil && h.Enabled {
+		if strings.TrimSpace(h.Config) == "" {
+			errs = append(errs, errors.New("claude.hindsight.config is required when enabled"))
+		}
+		if strings.TrimSpace(h.Runtime) == "" {
+			errs = append(errs, errors.New("claude.hindsight.runtime is required when enabled"))
+		}
 	}
 	return errs
 }

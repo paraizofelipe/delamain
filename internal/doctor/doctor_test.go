@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -481,4 +482,152 @@ func TestRunShouldPassTheClaudeArgsAndEnvToVersionAndAuth(t *testing.T) {
 	if !slices.Equal(envVersion, wantEnv) || !slices.Equal(envAuth, wantEnv) {
 		t.Fatalf("claude.env must reach --version (%v) and auth status (%v)", envVersion, envAuth)
 	}
+}
+
+// hindsightHarness is a claude harness with the memory on and every hindsight piece in place;
+// missing lists the paths Stat and ReadFile report as absent.
+func hindsightHarness(t *testing.T, missing map[string]error) (config.Config, Deps) {
+	cfg, d := claudeHarness(t)
+	cfg.Claude.Hindsight = &config.Hindsight{Enabled: true, Config: "/home/u/.hindsight/coding-agent.json", Runtime: "/home/u/.hindsight/coding-agents"}
+	d.Stat = func(p string) (fs.FileInfo, error) {
+		if err := missing[p]; err != nil {
+			return nil, err
+		}
+		return nil, nil
+	}
+	d.ReadFile = func(p string) ([]byte, error) {
+		if err := missing[p]; err != nil {
+			return nil, err
+		}
+		return []byte(`{"apiUrl":"https://mem.example","apiToken":"config-secret-marker"}`), nil
+	}
+	d.Getenv = func(k string) string {
+		if k == "HINDSIGHT_API_TOKEN" {
+			return "token-secret-marker"
+		}
+		return ""
+	}
+	return cfg, d
+}
+
+func TestDoctorShouldPassHindsightWhenEverythingIsInPlace(t *testing.T) {
+	cfg, d := hindsightHarness(t, nil)
+	results := Run(context.Background(), cfg, d)
+	c, ok := byName(results)["hindsight"]
+	if !ok || c.Status != OK || c.Detail != "/home/u/.hindsight/coding-agents" {
+		t.Fatalf("hindsight must pass with the runtime path: %+v", c)
+	}
+	if Failed(results) {
+		t.Fatalf("a complete memory setup must not fail doctor: %+v", results)
+	}
+}
+
+func TestDoctorShouldSkipHindsightWhenDisabledOrOnOmp(t *testing.T) {
+	enabled := &config.Hindsight{Enabled: true, Config: "/c.json", Runtime: "/r"}
+	for name, setup := range map[string]func(*testing.T) (config.Config, Deps){
+		"omp harness": func(t *testing.T) (config.Config, Deps) {
+			cfg, d := healthy(t)
+			cfg.Claude.Hindsight = enabled
+			return cfg, d
+		},
+		"no block": func(t *testing.T) (config.Config, Deps) { return claudeHarness(t) },
+		"disabled": func(t *testing.T) (config.Config, Deps) {
+			cfg, d := claudeHarness(t)
+			cfg.Claude.Hindsight = &config.Hindsight{Config: "/c.json", Runtime: "/r"}
+			return cfg, d
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg, d := setup(t)
+			d.Stat = func(string) (fs.FileInfo, error) { t.Fatal("Stat must not run without the memory on"); return nil, nil }
+			d.ReadFile = func(string) ([]byte, error) { t.Fatal("ReadFile must not run without the memory on"); return nil, nil }
+			d.Getenv = func(string) string { t.Fatal("Getenv must not run without the memory on"); return "" }
+			if c, ok := byName(Run(context.Background(), cfg, d))["hindsight"]; ok {
+				t.Fatalf("no hindsight check expected: %+v", c)
+			}
+		})
+	}
+}
+
+func TestDoctorShouldFailHindsightWhenTheConfigOrARuntimeScriptIsMissing(t *testing.T) {
+	const conf, runtime = "/home/u/.hindsight/coding-agent.json", "/home/u/.hindsight/coding-agents"
+	for name, err := range map[string]error{"absent": fs.ErrNotExist, "unreadable": fs.ErrPermission} {
+		t.Run("config "+name, func(t *testing.T) {
+			cfg, d := hindsightHarness(t, map[string]error{conf: err})
+			results := Run(context.Background(), cfg, d)
+			c := byName(results)["hindsight"]
+			if c.Status != Fail || !strings.Contains(c.Detail, conf) || !strings.Contains(c.Detail, err.Error()) {
+				t.Fatalf("a config the hooks cannot read must fail with its path and error: %+v", c)
+			}
+			if !Failed(results) {
+				t.Fatal("doctor must fail")
+			}
+		})
+	}
+	for _, script := range []string{"mcp-server.js", "claude-hook.js", "claude-sessionstart-hook.js"} {
+		t.Run(script, func(t *testing.T) {
+			p := filepath.Join(runtime, "dist", script)
+			cfg, d := hindsightHarness(t, map[string]error{p: fs.ErrNotExist})
+			c := byName(Run(context.Background(), cfg, d))["hindsight"]
+			if c.Status != Fail || !strings.Contains(c.Detail, p) || !strings.Contains(c.Detail, "npx @vectorize-io/hindsight-coding-agents install claude-code") {
+				t.Fatalf("a missing runtime script must fail with its path and the install command: %+v", c)
+			}
+		})
+	}
+}
+
+func TestDoctorShouldFailHindsightWithoutNode(t *testing.T) {
+	cfg, d := hindsightHarness(t, nil)
+	d.LookPath = func(b string) (string, error) {
+		if b == "node" {
+			return "", errors.New("not found")
+		}
+		return "/usr/bin/" + b, nil
+	}
+	if c := byName(Run(context.Background(), cfg, d))["hindsight"]; c.Status != Fail || c.Detail != "node not found in PATH" {
+		t.Fatalf("the hooks run on node: %+v", c)
+	}
+}
+
+func TestDoctorShouldWarnWithoutTheHindsightTokenAndNeverPrintIt(t *testing.T) {
+	cfg, d := hindsightHarness(t, nil)
+	d.Getenv = func(string) string { return "" }
+	results := Run(context.Background(), cfg, d)
+	if c := byName(results)["hindsight"]; c.Status != Warn || c.Detail != "HINDSIGHT_API_TOKEN not set (fine for a server without auth)" {
+		t.Fatalf("a missing token only warns: %+v", c)
+	}
+	if Failed(results) {
+		t.Fatalf("a warning must not fail doctor: %+v", results)
+	}
+
+	for name, missing := range map[string]map[string]error{
+		"all in place":   nil,
+		"script missing": {"/home/u/.hindsight/coding-agents/dist/claude-hook.js": fs.ErrNotExist},
+	} {
+		cfg, d := hindsightHarness(t, missing)
+		for _, c := range Run(context.Background(), cfg, d) {
+			if strings.Contains(c.Detail, "token-secret-marker") || strings.Contains(c.Detail, "config-secret-marker") || strings.Contains(c.Detail, "mem.example") {
+				t.Fatalf("%s: %s leaks the token or the config content: %q", name, c.Name, c.Detail)
+			}
+		}
+	}
+}
+
+func TestDoctorShouldCheckTheHindsightTokenTheAgentsGetFromClaudeEnv(t *testing.T) {
+	t.Run("set only in claude.env", func(t *testing.T) {
+		cfg, d := hindsightHarness(t, nil)
+		cfg.Claude.Env = map[string]string{"HINDSIGHT_API_TOKEN": "env-secret-marker"}
+		d.Getenv = func(string) string { return "" }
+		c := byName(Run(context.Background(), cfg, d))["hindsight"]
+		if c.Status != OK || strings.Contains(c.Detail, "env-secret-marker") {
+			t.Fatalf("a token from claude.env reaches the agents and must pass unprinted: %+v", c)
+		}
+	})
+	t.Run("emptied by claude.env", func(t *testing.T) {
+		cfg, d := hindsightHarness(t, nil)
+		cfg.Claude.Env = map[string]string{"HINDSIGHT_API_TOKEN": ""}
+		if c := byName(Run(context.Background(), cfg, d))["hindsight"]; c.Status != Warn || c.Detail != "HINDSIGHT_API_TOKEN not set (fine for a server without auth)" {
+			t.Fatalf("claude.env overriding the inherited token with an empty value must warn: %+v", c)
+		}
+	})
 }
