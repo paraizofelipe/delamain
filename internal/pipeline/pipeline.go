@@ -566,14 +566,22 @@ func (r *Runner) openLog(ru *run) {
 // claude.hindsight enabled and the main checkout opted in by the config. It never fails the run.
 func (r *Runner) memory(ru *run) {
 	h := r.Cfg.Claude.Hindsight
-	if h == nil || !h.Enabled {
+	if r.Cfg.Agent.Harness != config.HarnessClaude || h == nil || !h.Enabled {
 		return
 	}
-	f, _, _ := hindsight.Load(h.Config)
+	f, ok, err := hindsight.Load(h.Config)
+	switch {
+	case err != nil: // the error names the file, never its content
+		ru.log.Warn("hindsight: config ilegível, memória desligada", "run", ru.rec.ID, "err", err)
+		return
+	case !ok:
+		ru.log.Info("hindsight: config ausente, memória desligada", "run", ru.rec.ID)
+		return
+	}
 	ru.memoryBank, ru.memoryOn = f.Resolve(ru.rec.Repo)
 	switch {
 	case !ru.memoryOn:
-		return
+		ru.log.Info("hindsight: repo fora do opt-in, memória desligada", "run", ru.rec.ID)
 	case ru.memoryBank == "":
 		ru.log.Info("hindsight: ligado", "run", ru.rec.ID)
 	default:

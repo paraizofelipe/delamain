@@ -95,3 +95,119 @@ func TestRunShouldTurnMemoryOnForAnOptedInRepoOnClaude(t *testing.T) {
 		})
 	}
 }
+
+// assertMemoryOff proves a run's agents started as they did before the memory existed.
+func assertMemoryOff(t *testing.T, hs *harness) {
+	t.Helper()
+	if len(hs.h.starts) == 0 {
+		t.Fatal("no agent started")
+	}
+	for name, o := range hs.h.starts {
+		if o.Memory || !slices.Equal(o.Env, gitx.AgentEnv()) {
+			t.Errorf("%s must start without the memory, with today's env: memory=%v env=%v", name, o.Memory, o.Env)
+		}
+	}
+	for role, texts := range hs.h.prompts {
+		for _, text := range texts {
+			if strings.Contains(text, "delamain-memory") {
+				t.Errorf("the %s stage must not point to the memory skill", role)
+			}
+		}
+	}
+}
+
+func TestRunShouldKeepMemoryOffOutsideTheOptIn(t *testing.T) {
+	hs, _ := memoryHarness(t, func(repo string) map[string]any {
+		return map[string]any{"optInOnly": true, "mapPathToBank": map[string]string{filepath.Join(filepath.Dir(repo), "other"): "other"}}
+	})
+	res := hs.run(t)
+
+	if res.Outcome != OutcomeApproved {
+		t.Fatalf("the run goes on without the memory: %s (%s)", res.Outcome, res.Reason)
+	}
+	assertMemoryOff(t, hs)
+	if log := runLog(t, res); !strings.Contains(log, "hindsight: repo fora do opt-in, memória desligada run=1") {
+		t.Errorf("delamain.log must say why the memory is off:\n%s", log)
+	}
+}
+
+func TestRunShouldKeepMemoryOffOnOmpOrWhenDisabled(t *testing.T) {
+	cases := map[string]func(hs *harness){
+		"omp":      func(hs *harness) { hs.r.Cfg.Agent.Harness = config.HarnessOmp },
+		"disabled": func(hs *harness) { hs.r.Cfg.Claude.Hindsight.Enabled = false },
+		"no block": func(hs *harness) { hs.r.Cfg.Claude.Hindsight = nil },
+	}
+	for name, setup := range cases {
+		t.Run(name, func(t *testing.T) {
+			hs, _ := memoryHarness(t, mappedBank)
+			setup(hs)
+			res := hs.run(t)
+
+			if res.Outcome != OutcomeApproved {
+				t.Fatalf("got %s (%s)", res.Outcome, res.Reason)
+			}
+			assertMemoryOff(t, hs)
+			if log := runLog(t, res); strings.Contains(log, "hindsight") {
+				t.Errorf("who does not use the memory sees today's log:\n%s", log)
+			}
+		})
+	}
+}
+
+func TestRunShouldKeepMemoryOffWhenTheHindsightConfigIsMissingOrInvalid(t *testing.T) {
+	cases := map[string]struct {
+		write func(t *testing.T, path string)
+		log   string
+	}{
+		"missing": {write: func(*testing.T, string) {}, log: "hindsight: config ausente, memória desligada run=1"},
+		"invalid": {
+			write: func(t *testing.T, path string) {
+				if err := os.WriteFile(path, []byte(`{"optInOnly": tru`), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+			log: "WARN hindsight: config ilegível, memória desligada run=1 err=",
+		},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			hs, path := memoryHarness(t, nil)
+			c.write(t, path)
+			res := hs.run(t)
+
+			if res.Outcome != OutcomeApproved {
+				t.Fatalf("a broken memory config must not fail the run: %s (%s)", res.Outcome, res.Reason)
+			}
+			assertMemoryOff(t, hs)
+			if log := runLog(t, res); !strings.Contains(log, c.log) {
+				t.Errorf("delamain.log must say why the memory is off, missing %q:\n%s", c.log, log)
+			}
+		})
+	}
+}
+
+func TestRunReviewAndAddressShouldNeverTurnMemoryOn(t *testing.T) {
+	enable := func(rh *reviewHarness) {
+		rh.r.Cfg.Agent.Harness = config.HarnessClaude
+		path := filepath.Join(t.TempDir(), "coding-agent.json")
+		data, _ := json.Marshal(mappedBank(rh.repo))
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		rh.r.Cfg.Claude.Hindsight = &config.Hindsight{Enabled: true, Config: path, Runtime: "/rt"}
+	}
+	t.Run("review", func(t *testing.T) {
+		rh := newReviewHarness(t, reviewsPR(prReviewJSON("")))
+		enable(rh)
+		if res := rh.review(t); res.Outcome != OutcomeReviewed {
+			t.Fatalf("got %s (%s)", res.Outcome, res.Reason)
+		}
+		assertMemoryOff(t, rh.harness)
+	})
+	t.Run("address", func(t *testing.T) {
+		rh := newAddressHarness(t, answers(happyAnswers()))
+		enable(rh)
+		rh.address(t)
+		assertMemoryOff(t, rh.harness)
+	})
+}
