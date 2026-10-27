@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -573,5 +574,101 @@ func TestEmbeddedMemorySkillShouldGateRecallRetainAndForbidSecrets(t *testing.T)
 	}
 	if !strings.Contains(fm.Description, "mcp__hindsight__") {
 		t.Errorf("the description must say the skill only applies with the Hindsight tools: %q", fm.Description)
+	}
+}
+
+func TestRenderShouldPointToTheMemorySkillOnlyWhenHindsightIsOn(t *testing.T) {
+	s := mustLoad(t, embedded.FS)
+	// Each role reads before acting and writes only what it owns.
+	roleAction := map[string]string{
+		"plan":      "hindsight_capture_initiative",
+		"implement": "hindsight_ingest_document",
+		"review":    "falso positivo",
+	}
+	for stage, action := range roleAction {
+		t.Run(stage, func(t *testing.T) {
+			d := SampleStageData()
+			d.Hindsight = true
+			out, err := s.Render(stage, d)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range []string{"delamain-memory", "hindsight_search_knowledge_pages", action} {
+				if !strings.Contains(out, want) {
+					t.Errorf("with Hindsight on the %s stage must mention %q", stage, want)
+				}
+			}
+
+			d.Hindsight = false
+			out, err = s.Render(stage, d)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(out, "delamain-memory") || strings.Contains(strings.ToLower(out), "hindsight") {
+				t.Errorf("with Hindsight off the %s stage must not mention the memory:\n%s", stage, out)
+			}
+		})
+	}
+}
+
+func TestRenderShouldLeaveTheStagesUntouchedWhenHindsightIsOff(t *testing.T) {
+	block := regexp.MustCompile(`(?s)\n\{\{- if \.Hindsight\}\}.*?\{\{- end\}\}`)
+	current := mustLoad(t, embedded.FS)
+	for _, stage := range []string{"plan", "implement", "review"} {
+		t.Run(stage, func(t *testing.T) {
+			raw, err := fs.ReadFile(embedded.FS, "stages/"+stage+".md")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if n := len(block.FindAllIndex(raw, -1)); n != 1 {
+				t.Fatalf("the %s stage must carry exactly one Hindsight block, found %d", stage, n)
+			}
+			stripped := block.ReplaceAll(raw, nil)
+			today := mustLoad(t, fstest.MapFS{"stages/" + stage + ".md": {Data: stripped}}, embedded.FS)
+
+			filled := SampleStageData()
+			filled.Hindsight = false
+			empty := filled
+			empty.Feedback, empty.PrevReview = "", ""
+			for name, d := range map[string]StageData{"optional blocks filled": filled, "optional blocks empty": empty} {
+				got, err := current.Render(stage, d)
+				if err != nil {
+					t.Fatal(err)
+				}
+				want, err := today.Render(stage, d)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got != want {
+					t.Errorf("%s: with Hindsight off the %s stage must render exactly as before\ngot:\n%q\nwant:\n%q", name, stage, got, want)
+				}
+			}
+		})
+	}
+}
+
+func TestRenderShouldKeepThePRStagesFreeOfMemory(t *testing.T) {
+	s := mustLoad(t, embedded.FS)
+	variants := map[string]func(*StageData){
+		"review-pr":           func(*StageData) {},
+		"address/can-fix":     func(d *StageData) { d.CanFix, d.ReviewedPR = true, false },
+		"address/reviewed-pr": func(d *StageData) { d.CanFix, d.ReviewedPR = false, true },
+		"address/reply-only":  func(d *StageData) { d.CanFix, d.ReviewedPR = false, false },
+	}
+	for name, mutate := range variants {
+		t.Run(name, func(t *testing.T) {
+			stage, _, _ := strings.Cut(name, "/")
+			d := SampleStageData()
+			d.Hindsight = true
+			mutate(&d)
+			out, err := s.Render(stage, d)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// <memory> there is the repository's stored learnings, not Hindsight.
+			if strings.Contains(out, "delamain-memory") || strings.Contains(strings.ToLower(out), "hindsight") {
+				t.Errorf("the %s stage must never point to the Hindsight memory:\n%s", name, out)
+			}
+		})
 	}
 }

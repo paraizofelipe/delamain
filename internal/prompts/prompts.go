@@ -193,6 +193,8 @@ type StageData struct {
 	ReviewedPR bool
 	// CommitMessagePath is the file a fixing responder writes each commit message to.
 	CommitMessagePath string
+	// Hindsight: the session has the Hindsight memory tools; the stage points to the delamain-memory skill.
+	Hindsight bool
 }
 
 // SampleStageData fills every field so lint can prove each template renders.
@@ -219,6 +221,7 @@ func SampleStageData() StageData {
 		MaxComments:       15,
 		CanFix:            true,
 		CommitMessagePath: "/tmp/run/commit-msg.txt",
+		Hindsight:         true,
 	}
 }
 

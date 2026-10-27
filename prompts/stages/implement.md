@@ -16,6 +16,12 @@ Corrija com a **menor** mudança que resolve o item. Se a correção mínima exi
 {{.Feedback}}
 </feedback>
 {{- end}}
+{{- if .Hindsight}}
+
+## Memória do projeto
+
+A sessão tem a memória Hindsight do projeto: siga a skill `delamain-memory`. Antes de implementar, consulte `hindsight_search_knowledge_pages` e confira no código o que ela disser; no fim de cada fatia, só se houve decisão não óbvia, registre-a com `hindsight_ingest_document`.
+{{- end}}
 
 ## Artefato
 
