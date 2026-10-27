@@ -79,7 +79,11 @@ func fakeClaude(scenario string) {
 			continue
 		}
 		turn++
-		emit(map[string]any{"type": "system", "subtype": "init", "model": "claude-test", "session_id": "s1"})
+		initEvent := map[string]any{"type": "system", "subtype": "init", "model": "claude-test", "session_id": "s1"}
+		if servers, ok := mcpServers[scenario]; ok {
+			initEvent["mcp_servers"] = servers
+		}
+		emit(initEvent)
 		switch scenario {
 		case "ok", "garbage":
 			if scenario == "garbage" {
@@ -469,6 +473,12 @@ var hindsightScenarios = map[string][]map[string]any{
 	},
 }
 
+// mcpServers are the servers each scenario's system/init lists.
+var mcpServers = map[string][]map[string]any{
+	"hindsight-mcp-failed":    {{"name": "hindsight", "status": "failed"}},
+	"hindsight-mcp-connected": {{"name": "hindsight", "status": "connected"}, {"name": "github", "status": "failed"}},
+}
+
 // memoryMarker stands for memory content, which must never reach the log.
 const memoryMarker = "MEMORIA-SECRETA-7f3a"
 
@@ -623,5 +633,27 @@ func TestLogShouldConfirmASuccessfulHindsightToolResult(t *testing.T) {
 	}
 	if !strings.Contains(log, "✗ mcp__hindsight__hindsight_reflect falhou (exit 1): hindsight indisponível") || strings.Contains(log, "✓ reflect") {
 		t.Errorf("a failed Hindsight tool keeps the usual failure line:\n%s", log)
+	}
+}
+
+func TestLogShouldWarnWhenTheHindsightMcpServerIsNotConnected(t *testing.T) {
+	s := start(t, "hindsight-mcp-failed")
+	if _, err := s.c.Prompt(context.Background(), "go", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if log := s.log.String(); !slices.Contains(logLines(log), "⚠ hindsight MCP: failed") {
+		t.Fatalf("a session without its memory must say so:\n%s", log)
+	}
+}
+
+func TestLogShouldStaySilentWhenTheHindsightMcpServerIsConnectedOrAbsent(t *testing.T) {
+	for _, scenario := range []string{"hindsight-mcp-connected", "ok"} {
+		s := start(t, scenario)
+		if _, err := s.c.Prompt(context.Background(), "go", time.Minute); err != nil {
+			t.Fatal(err)
+		}
+		if log := s.log.String(); strings.Contains(log, "MCP") || !strings.Contains(log, "■ fim do turno") {
+			t.Errorf("%s: only Hindsight's server down is worth a line:\n%s", scenario, log)
+		}
 	}
 }

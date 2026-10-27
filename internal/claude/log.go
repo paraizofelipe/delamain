@@ -17,7 +17,15 @@ func (c *Client) logEvent(e event) {
 	}
 	switch e.Type {
 	case "system":
-		if e.Subtype == "hook_response" {
+		switch e.Subtype {
+		case "init":
+			// claude re-sends init every turn, so a server that stays down warns once per turn.
+			for _, m := range e.MCPServers {
+				if m.Name == "hindsight" && m.Status != "connected" {
+					c.logf("⚠ hindsight MCP: %s", oneLine(m.Status))
+				}
+			}
+		case "hook_response":
 			c.logHook(sub, e)
 		}
 	case "assistant":
