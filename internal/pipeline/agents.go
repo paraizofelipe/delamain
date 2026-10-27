@@ -15,6 +15,7 @@ import (
 	"github.com/paraizo/delamain/internal/agent"
 	"github.com/paraizo/delamain/internal/budget"
 	"github.com/paraizo/delamain/internal/claude"
+	"github.com/paraizo/delamain/internal/config"
 	"github.com/paraizo/delamain/internal/omp/rpc"
 	"github.com/paraizo/delamain/internal/store"
 )
@@ -130,6 +131,9 @@ type ClaudeAgents struct {
 	AgentsFile, PluginDir         string   // delamain's subagents and skills (`delamain prompts install`)
 	Env                           []string // "K=V" entries appended to every session's environment
 	Settings                      map[string]any
+	// Hindsight is claude.hindsight: the runtime whose MCP server and hooks a session with
+	// AgentOptions.Memory gets; nil leaves every session without memory.
+	Hindsight *config.Hindsight
 }
 
 func (a ClaudeAgents) args(sessionID, rolePrompt string, o AgentOptions) []string {
@@ -146,8 +150,15 @@ func (a ClaudeAgents) args(sessionID, rolePrompt string, o AgentOptions) []strin
 		// Unattended and apart from the user's own Claude Code setup: no dialog may block a
 		// turn, and only the target repository's project settings apply.
 		"--setting-sources", "project", "--strict-mcp-config",
-		"--permission-prompts", "none", "--disallowed-tools", "AskUserQuestion",
 	}
+	// A session that reads third-party code never gets the memory: it would read the token or
+	// poison the bank that guides later issue runs.
+	memory := o.Memory && c == nil && a.Hindsight != nil
+	if memory {
+		// --mcp-config is variadic: a flag must follow its JSON.
+		args = append(args, "--mcp-config", hindsightMCP(a.Hindsight.Runtime), "--include-hook-events")
+	}
+	args = append(args, "--permission-prompts", "none", "--disallowed-tools", "AskUserQuestion")
 	if c != nil {
 		args = append(args, confined(c)...)
 	}
@@ -155,6 +166,9 @@ func (a ClaudeAgents) args(sessionID, rolePrompt string, o AgentOptions) []strin
 	// no Co-Authored-By trailer, as with omp. Validate() vouched the map encodes as JSON.
 	settings := map[string]any{}
 	maps.Copy(settings, a.Settings)
+	if memory {
+		settings["hooks"] = hindsightHooks(a.Hindsight.Runtime)
+	}
 	settings["attribution"] = map[string]any{"commit": "", "pr": "", "sessionUrl": false}
 	b, err := json.Marshal(settings)
 	if err != nil {
@@ -163,6 +177,27 @@ func (a ClaudeAgents) args(sessionID, rolePrompt string, o AgentOptions) []strin
 		b = []byte(`{"attribution":{"commit":"","pr":"","sessionUrl":false}}`)
 	}
 	return append(args, "--settings", string(b))
+}
+
+// hindsightMCP is the --mcp-config JSON of the hindsight MCP server. Its token comes from the
+// session's env, never from args.
+func hindsightMCP(runtime string) string {
+	server := map[string]any{
+		"command": "node", "args": []string{filepath.Join(runtime, "dist", "mcp-server.js")},
+		"env": map[string]string{"HINDSIGHT_MCP_HARNESS": "claude-code"},
+	}
+	b, _ := json.Marshal(map[string]any{"mcpServers": map[string]any{"hindsight": server}})
+	return string(b)
+}
+
+// hindsightHooks are the recall hooks of the hindsight runtime. No Stop hook: sessions keep no
+// transcript (--no-session-persistence), and the delamain-memory skill retains instead.
+func hindsightHooks(runtime string) map[string]any {
+	hook := func(script string) []any {
+		cmd := `node "` + filepath.Join(runtime, "dist", script) + `"`
+		return []any{map[string]any{"hooks": []any{map[string]any{"type": "command", "command": cmd, "timeout": 30}}}}
+	}
+	return map[string]any{"SessionStart": hook("claude-sessionstart-hook.js"), "UserPromptSubmit": hook("claude-hook.js")}
 }
 
 // confined narrows Claude Code to reading the checkout, two exact git commands in it and writing

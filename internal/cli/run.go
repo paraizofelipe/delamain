@@ -240,7 +240,7 @@ func agentsFor(cfg config.Config, target prompts.Target) pipeline.Agents {
 			Binary: c.Binary, BinaryArgs: c.Args,
 			Model: c.Model, Effort: c.Effort, PermissionMode: c.PermissionMode,
 			AgentsFile: target.AgentsFile(), PluginDir: target.PluginDir(),
-			Env: c.Environ(), Settings: c.Settings,
+			Env: c.Environ(), Settings: c.Settings, Hindsight: c.Hindsight,
 		}
 	}
 	o := cfg.Omp

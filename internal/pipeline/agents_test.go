@@ -2,13 +2,17 @@ package pipeline
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/paraizo/delamain/internal/claude"
+	"github.com/paraizo/delamain/internal/config"
 	"github.com/paraizo/delamain/internal/store"
 )
 
@@ -229,5 +233,111 @@ func TestRPCAgentsShouldRefuseAConfinedSession(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "cannot confine") {
 		t.Fatalf("omp has no per-command allowlist: a confined session must be refused, not started with a free shell: %v", err)
+	}
+}
+
+// claudeSettings decodes the --settings JSON, always the last argument.
+func claudeSettings(t *testing.T, args []string) map[string]any {
+	t.Helper()
+	if len(args) < 2 || args[len(args)-2] != "--settings" {
+		t.Fatalf("--settings must come last: %v", args)
+	}
+	var s map[string]any
+	if err := json.Unmarshal([]byte(args[len(args)-1]), &s); err != nil {
+		t.Fatalf("--settings must be JSON: %v", err)
+	}
+	return s
+}
+
+// decodeJSON is the value a literal JSON document decodes to, to compare with what args carry.
+func decodeJSON(t *testing.T, doc string) any {
+	t.Helper()
+	var v any
+	if err := json.Unmarshal([]byte(doc), &v); err != nil {
+		t.Fatal(err)
+	}
+	return v
+}
+
+func hindsightAgents() ClaudeAgents {
+	return ClaudeAgents{Model: "opus", Effort: "high", PermissionMode: "bypassPermissions", AgentsFile: "/p/agents.json", PluginDir: "/p/plugin",
+		Hindsight: &config.Hindsight{Enabled: true, Config: "/h/coding-agent.json", Runtime: "/rt"}}
+}
+
+var hindsightFlags = []string{"--mcp-config", "--include-hook-events"}
+
+func TestClaudeArgsShouldAddMcpHooksAndHookEventsWhenMemoryIsOn(t *testing.T) {
+	args := hindsightAgents().args("sid", "implement", AgentOptions{Memory: true})
+
+	i := slices.Index(args, "--mcp-config")
+	if i < 0 || i+2 >= len(args) || !strings.HasPrefix(args[i+2], "--") {
+		t.Fatalf("--mcp-config takes one JSON and, being variadic, must be followed by a flag: %v", args)
+	}
+	var mcp any
+	if err := json.Unmarshal([]byte(args[i+1]), &mcp); err != nil {
+		t.Fatalf("--mcp-config must be JSON: %v", err)
+	}
+	wantMCP := decodeJSON(t, `{"mcpServers":{"hindsight":{"command":"node","args":["/rt/dist/mcp-server.js"],"env":{"HINDSIGHT_MCP_HARNESS":"claude-code"}}}}`)
+	if !reflect.DeepEqual(mcp, wantMCP) {
+		t.Errorf("the MCP server comes from the runtime and carries no token:\n got %v\nwant %v", mcp, wantMCP)
+	}
+	if !slices.Contains(args, "--include-hook-events") {
+		t.Errorf("the hook events must reach the stream: %v", args)
+	}
+	if !strings.Contains(strings.Join(args, " "), "--setting-sources project --strict-mcp-config") {
+		t.Errorf("only the given MCP server may load: %v", args)
+	}
+
+	hooks, _ := claudeSettings(t, args)["hooks"].(map[string]any)
+	want := map[string]any{
+		"SessionStart":     decodeJSON(t, `[{"hooks":[{"type":"command","command":"node \"/rt/dist/claude-sessionstart-hook.js\"","timeout":30}]}]`),
+		"UserPromptSubmit": decodeJSON(t, `[{"hooks":[{"type":"command","command":"node \"/rt/dist/claude-hook.js\"","timeout":30}]}]`),
+	}
+	if !reflect.DeepEqual(hooks, want) {
+		t.Errorf("exactly the recall hooks, no Stop (sessions keep no transcript):\n got %v\nwant %v", hooks, want)
+	}
+}
+
+func TestClaudeArgsShouldKeepTheAttributionPolicyWithMemoryOn(t *testing.T) {
+	a := hindsightAgents()
+	a.Settings = map[string]any{"attribution": "mine", "apiKeyHelper": "helper"}
+	s := claudeSettings(t, a.args("sid", "implement", AgentOptions{Memory: true}))
+	want := decodeJSON(t, `{"commit":"","pr":"","sessionUrl":false}`)
+	if !reflect.DeepEqual(s["attribution"], want) || s["apiKeyHelper"] != "helper" {
+		t.Fatalf("with the memory on, commits still carry no Co-Authored-By trailer: %v", s)
+	}
+}
+
+func TestClaudeArgsShouldAddNothingFromHindsightWhenMemoryIsOff(t *testing.T) {
+	plain := ClaudeAgents{Model: "opus", Effort: "high", PermissionMode: "bypassPermissions", AgentsFile: "/p/agents.json", PluginDir: "/p/plugin"}
+	want := plain.args("sid", "implement", AgentOptions{})
+	cases := map[string]struct {
+		a ClaudeAgents
+		o AgentOptions
+	}{
+		"memory off":           {a: hindsightAgents(), o: AgentOptions{}},
+		"no hindsight runtime": {a: plain, o: AgentOptions{Memory: true}},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			if got := c.a.args("sid", "implement", c.o); !slices.Equal(got, want) {
+				t.Fatalf("args must stay as without the memory:\n got %v\nwant %v", got, want)
+			}
+		})
+	}
+}
+
+func TestClaudeArgsShouldNeverAddHindsightToAConfinedSession(t *testing.T) {
+	for _, fix := range []bool{false, true} {
+		c := &Confinement{Checkout: "/wt/pr", Base: "b4se", Artifact: "/run/5/review.json", Fix: fix, CommitMessage: "/run/5/msg"}
+		args := hindsightAgents().args("sid", "review", AgentOptions{Confine: c, Memory: true})
+		for _, flag := range hindsightFlags {
+			if slices.Contains(args, flag) {
+				t.Errorf("a session reading third-party code never gets %s (fix=%v)", flag, fix)
+			}
+		}
+		if _, ok := claudeSettings(t, args)["hooks"]; ok {
+			t.Errorf("a confined session never gets the memory hooks (fix=%v)", fix)
+		}
 	}
 }
