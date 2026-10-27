@@ -74,3 +74,46 @@ func TestLoadShouldFailOnInvalidJSON(t *testing.T) {
 		t.Fatalf("error must not leak the file content, got %q", err)
 	}
 }
+
+func TestResolveShouldTurnMemoryOnUnderOptInPathsWithoutABank(t *testing.T) {
+	f := load(t, `{"optInOnly": true, "optInPaths": ["/home/dev/work"]}`)
+	for _, dir := range []string{"/home/dev/work", "/home/dev/work/repo"} {
+		bank, on := f.Resolve(dir)
+		if !on || bank != "" {
+			t.Fatalf("Resolve(%q) = (%q, %v), want (\"\", true)", dir, bank, on)
+		}
+	}
+}
+
+func TestResolveShouldTurnMemoryOffOutsideTheOptInWhenOptInOnly(t *testing.T) {
+	cases := map[string]struct{ body, dir string }{
+		"outside optInPaths and mapPathToBank": {`{"optInOnly": true, "optInPaths": ["/home/dev/work"], "mapPathToBank": {"/home/dev/projects/delamain": "b"}}`, "/home/dev/other"},
+		"config without any path":              {`{"optInOnly": true}`, "/home/dev/work"},
+		"empty dir":                            {`{"optInOnly": true, "optInPaths": ["/"], "mapPathToBank": {"/": "b"}}`, ""},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			bank, on := load(t, c.body).Resolve(c.dir)
+			if on || bank != "" {
+				t.Fatalf("Resolve(%q) = (%q, %v), want (\"\", false)", c.dir, bank, on)
+			}
+		})
+	}
+}
+
+func TestResolveShouldTurnMemoryOnEverywhereWhenOptInOnlyIsFalse(t *testing.T) {
+	cases := map[string]struct{ body, dir, bank string }{
+		"optInOnly false, unmapped":  {`{"optInOnly": false, "mapPathToBank": {"/home/dev/projects/delamain": "b"}}`, "/tmp/scratch", ""},
+		"optInOnly false, mapped":    {`{"optInOnly": false, "mapPathToBank": {"/home/dev/projects/delamain": "b"}}`, "/home/dev/projects/delamain", "b"},
+		"optInOnly absent, unmapped": {`{}`, "/tmp/scratch", ""},
+		"optInOnly absent, mapped":   {`{"mapPathToBank": {"/home/dev/projects/delamain": "b"}}`, "/home/dev/projects/delamain/cmd", "b"},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			bank, on := load(t, c.body).Resolve(c.dir)
+			if !on || bank != c.bank {
+				t.Fatalf("Resolve(%q) = (%q, %v), want (%q, true)", c.dir, bank, on, c.bank)
+			}
+		})
+	}
+}

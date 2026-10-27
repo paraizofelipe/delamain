@@ -43,9 +43,22 @@ func Load(path string) (File, bool, error) {
 }
 
 // Resolve reports whether memory is on for dir and the bank mapped to it ("" when none).
+// Under optInOnly, memory is on only inside optInPaths or a mapPathToBank entry with a non-empty bank.
 func (f File) Resolve(dir string) (bank string, on bool) {
-	bank = f.lookup(filepath.Clean(dir))
-	return bank, bank != ""
+	if dir == "" {
+		return "", !f.OptInOnly
+	}
+	dir = filepath.Clean(dir)
+	bank = f.lookup(dir)
+	if !f.OptInOnly || bank != "" {
+		return bank, true
+	}
+	for _, p := range f.OptInPaths {
+		if within(dir, configured(p)) {
+			return "", true
+		}
+	}
+	return "", false
 }
 
 // lookup returns the bank of the mapPathToBank key that contains dir.
