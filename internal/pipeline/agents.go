@@ -10,6 +10,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 
 	"github.com/paraizo/delamain/internal/agent"
@@ -167,7 +168,7 @@ func (a ClaudeAgents) args(sessionID, rolePrompt string, o AgentOptions) []strin
 	settings := map[string]any{}
 	maps.Copy(settings, a.Settings)
 	if memory {
-		settings["hooks"] = hindsightHooks(a.Hindsight.Runtime)
+		settings["hooks"] = hindsightHooks(a.Hindsight.Runtime, a.Settings["hooks"])
 	}
 	settings["attribution"] = map[string]any{"commit": "", "pr": "", "sessionUrl": false}
 	b, err := json.Marshal(settings)
@@ -190,14 +191,21 @@ func hindsightMCP(runtime string) string {
 	return string(b)
 }
 
-// hindsightHooks are the recall hooks of the hindsight runtime. No Stop hook: sessions keep no
-// transcript (--no-session-persistence), and the delamain-memory skill retains instead.
-func hindsightHooks(runtime string) map[string]any {
-	hook := func(script string) []any {
-		cmd := `node "` + filepath.Join(runtime, "dist", script) + `"`
-		return []any{map[string]any{"hooks": []any{map[string]any{"type": "command", "command": cmd, "timeout": 30}}}}
+// hindsightHooks appends the recall hooks of the hindsight runtime to the user's own hooks
+// (claude.settings), in new maps and slices: the configured settings are shared by every session.
+// No Stop hook: sessions keep no transcript (--no-session-persistence), and the delamain-memory
+// skill retains instead.
+func hindsightHooks(runtime string, user any) map[string]any {
+	hooks := map[string]any{}
+	if m, ok := user.(map[string]any); ok {
+		maps.Copy(hooks, m)
 	}
-	return map[string]any{"SessionStart": hook("claude-sessionstart-hook.js"), "UserPromptSubmit": hook("claude-hook.js")}
+	for event, script := range map[string]string{"SessionStart": "claude-sessionstart-hook.js", "UserPromptSubmit": "claude-hook.js"} {
+		cmd := `node "` + filepath.Join(runtime, "dist", script) + `"`
+		own, _ := hooks[event].([]any)
+		hooks[event] = append(slices.Clone(own), map[string]any{"hooks": []any{map[string]any{"type": "command", "command": cmd, "timeout": 30}}})
+	}
+	return hooks
 }
 
 // confined narrows Claude Code to reading the checkout, two exact git commands in it and writing

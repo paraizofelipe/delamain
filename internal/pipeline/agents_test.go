@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -339,5 +340,35 @@ func TestClaudeArgsShouldNeverAddHindsightToAConfinedSession(t *testing.T) {
 		if _, ok := claudeSettings(t, args)["hooks"]; ok {
 			t.Errorf("a confined session never gets the memory hooks (fix=%v)", fix)
 		}
+	}
+}
+
+func TestClaudeArgsShouldAppendHindsightHooksToTheUsersOwnHooksWithoutMutatingThem(t *testing.T) {
+	mine := map[string]any{"hooks": []any{map[string]any{"type": "command", "command": "my-hook"}}}
+	a := hindsightAgents()
+	a.Settings = map[string]any{"hooks": map[string]any{
+		"SessionStart": []any{mine},
+		"PreToolUse":   []any{map[string]any{"matcher": "Bash", "hooks": []any{}}},
+	}}
+	before := fmt.Sprint(a.Settings)
+
+	var hooks map[string]any
+	for range 2 { // a second session must not see the first one's hooks
+		hooks, _ = claudeSettings(t, a.args("sid", "implement", AgentOptions{Memory: true}))["hooks"].(map[string]any)
+	}
+	start, _ := hooks["SessionStart"].([]any)
+	wantStart := decodeJSON(t, `[{"hooks":[{"type":"command","command":"my-hook"}]},{"hooks":[{"type":"command","command":"node \"/rt/dist/claude-sessionstart-hook.js\"","timeout":30}]}]`)
+	if !reflect.DeepEqual(start, wantStart) {
+		t.Errorf("the user's SessionStart hook runs first and the memory's once after it:\n got %v\nwant %v", start, wantStart)
+	}
+	if prompt, _ := hooks["UserPromptSubmit"].([]any); len(prompt) != 1 {
+		t.Errorf("an event the user did not hook gets only the memory's hook: %v", prompt)
+	}
+	wantPre := decodeJSON(t, `[{"matcher":"Bash","hooks":[]}]`)
+	if !reflect.DeepEqual(hooks["PreToolUse"], wantPre) {
+		t.Errorf("other user hooks stay as they are: %v", hooks["PreToolUse"])
+	}
+	if after := fmt.Sprint(a.Settings); after != before {
+		t.Fatalf("claude.settings must not be mutated:\nbefore %s\nafter  %s", before, after)
 	}
 }
