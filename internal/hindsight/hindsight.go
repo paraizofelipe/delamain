@@ -21,6 +21,9 @@ type File struct {
 	Harnesses     map[string]Harness `json:"harnesses"`
 }
 
+// harness is the key of this agent in coding-agent.json "harnesses".
+const harness = "claude-code"
+
 // Harness is the per-harness overlay; only its kill switch matters here.
 type Harness struct {
 	Disabled bool `json:"disabled"`
@@ -43,8 +46,11 @@ func Load(path string) (File, bool, error) {
 }
 
 // Resolve reports whether memory is on for dir and the bank mapped to it ("" when none).
-// Under optInOnly, memory is on only inside optInPaths or a mapPathToBank entry with a non-empty bank.
+// disabled, global or for claude-code, turns memory off; under optInOnly, memory is on only inside optInPaths or a mapPathToBank entry with a non-empty bank.
 func (f File) Resolve(dir string) (bank string, on bool) {
+	if f.Disabled || f.Harnesses[harness].Disabled {
+		return "", false
+	}
 	if dir == "" {
 		return "", !f.OptInOnly
 	}

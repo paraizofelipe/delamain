@@ -172,3 +172,26 @@ func TestResolveShouldExpandTildeInMapPathToBankAndOptInPaths(t *testing.T) {
 		}
 	})
 }
+
+func TestResolveShouldTurnMemoryOffWhenDisabledGloballyOrForClaudeCode(t *testing.T) {
+	const mapped = `"optInOnly": true, "mapPathToBank": {"/home/dev/projects/delamain": "b"}`
+	const dir = "/home/dev/projects/delamain"
+	off := map[string]string{
+		"disabled globally":                     `{"disabled": true, ` + mapped + `}`,
+		"disabled for claude-code":              `{"harnesses": {"claude-code": {"disabled": true}}, ` + mapped + `}`,
+		"global true not re-enabled by harness": `{"disabled": true, "harnesses": {"claude-code": {"disabled": false}}, ` + mapped + `}`,
+	}
+	for name, body := range off {
+		t.Run(name, func(t *testing.T) {
+			if bank, on := load(t, body).Resolve(dir); on || bank != "" {
+				t.Fatalf("Resolve(%q) = (%q, %v), want (\"\", false)", dir, bank, on)
+			}
+		})
+	}
+	t.Run("disabled for another harness keeps claude-code on", func(t *testing.T) {
+		f := load(t, `{"harnesses": {"codex": {"disabled": true}}, `+mapped+`}`)
+		if bank, on := f.Resolve(dir); !on || bank != "b" {
+			t.Fatalf("Resolve(%q) = (%q, %v), want (\"b\", true)", dir, bank, on)
+		}
+	})
+}
