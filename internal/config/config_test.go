@@ -677,3 +677,54 @@ func TestValidateShouldRequireHindsightPathsWhenEnabled(t *testing.T) {
 		t.Fatalf("an enabled block with both paths is valid: %v", err)
 	}
 }
+
+func TestWithProjectOverridesShouldReplaceHindsightAndExpandTilde(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	global := &Hindsight{Enabled: true, Config: "/etc/global.json", Runtime: "/opt/global"}
+	cfg := Default()
+	cfg.Agent.Harness = HarnessClaude
+	cfg.Claude.Hindsight = global
+
+	project := &Hindsight{Enabled: true, Config: "~/repo-agent.json"}
+	merged, changed, err := cfg.WithProjectOverrides(Agent{}, Claude{Hindsight: project}, Omp{}, nil)
+	if err != nil || !changed {
+		t.Fatalf("changed=%v err=%v", changed, err)
+	}
+	want := Hindsight{Enabled: true, Config: filepath.Join(home, "repo-agent.json"), Runtime: filepath.Join(home, ".hindsight", "coding-agents")}
+	if merged.Claude.Hindsight == nil || *merged.Claude.Hindsight != want {
+		t.Fatalf("the project block replaces the global one whole, with defaults and ~ expanded: %+v", merged.Claude.Hindsight)
+	}
+	if *global != (Hindsight{Enabled: true, Config: "/etc/global.json", Runtime: "/opt/global"}) || cfg.Claude.Hindsight != global {
+		t.Fatalf("the global config must stay untouched: %+v", cfg.Claude.Hindsight)
+	}
+	if project.Config != "~/repo-agent.json" || project.Runtime != "" {
+		t.Fatalf("the project block must not be mutated: %+v", project)
+	}
+
+	merged, changed, err = cfg.WithProjectOverrides(Agent{}, Claude{Hindsight: &Hindsight{Enabled: false}}, Omp{}, nil)
+	if err != nil || !changed {
+		t.Fatalf("changed=%v err=%v", changed, err)
+	}
+	if merged.Claude.Hindsight == nil || merged.Claude.Hindsight.Enabled {
+		t.Fatalf("enabled: false in the project turns the inherited memory off: %+v", merged.Claude.Hindsight)
+	}
+}
+
+func TestWithProjectOverridesShouldInheritHindsightWhenTheProjectOmitsIt(t *testing.T) {
+	global := &Hindsight{Enabled: true, Config: "/etc/global.json", Runtime: "/opt/global"}
+	cfg := Default()
+	cfg.Agent.Harness = HarnessClaude
+	cfg.Claude.Hindsight = global
+
+	merged, changed, err := cfg.WithProjectOverrides(Agent{}, Claude{Model: "sonnet"}, Omp{}, nil)
+	if err != nil || !changed {
+		t.Fatalf("changed=%v err=%v", changed, err)
+	}
+	if merged.Claude.Hindsight == nil || *merged.Claude.Hindsight != *global {
+		t.Fatalf("an omitted block inherits the global one: %+v", merged.Claude.Hindsight)
+	}
+	if _, changed, err := cfg.WithProjectOverrides(Agent{}, Claude{}, Omp{}, nil); changed || err != nil {
+		t.Fatalf("a project without overrides keeps the global config: changed=%v err=%v", changed, err)
+	}
+}

@@ -86,6 +86,9 @@ func (c Config) WithProjectOverrides(agent Agent, claude Claude, omp Omp, agents
 	if claude.Settings != nil {
 		c.Claude.Settings, changed = claude.Settings, true
 	}
+	if claude.Hindsight != nil {
+		c.Claude.Hindsight, changed = claude.Hindsight.resolved(), true // replaces the global block whole
+	}
 	set(&c.Omp.Binary, omp.Binary)
 	set(&c.Omp.AgentDir, expandHome(omp.AgentDir)) // Load expands the global one; mirror it here
 	set(&c.Omp.Model, omp.Model)
