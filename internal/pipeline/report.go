@@ -132,6 +132,9 @@ func renderReport(res Result, task prompts.Issue) string {
 			for _, a := range it.Review.Axes {
 				fmt.Fprintf(&b, "- %s: %d achados\n", a.Axis, len(a.Findings))
 			}
+			if nb := nonBlockingFeedback(*it.Review); nb != "" {
+				b.WriteString("\n#### Achados não bloqueantes\n\n" + nb + "\n")
+			}
 		}
 		b.WriteString("\n")
 	}

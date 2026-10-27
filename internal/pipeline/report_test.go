@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/paraizo/delamain/internal/artifacts"
+	"github.com/paraizo/delamain/internal/prompts"
 )
 
 func finding(sev, cat, file string, line int, msg string) artifacts.Finding {
@@ -124,5 +125,37 @@ func TestPRBodyShouldListBothSectionsInDraft(t *testing.T) {
 	}
 	if !strings.Contains(second, "achado m") || strings.Contains(second, "achado M") {
 		t.Errorf("a seção não bloqueante deveria ter só m:\n%s", second)
+	}
+}
+
+func TestRenderReportShouldListNonBlockingFindingsPerIteration(t *testing.T) {
+	res := Result{Outcome: OutcomeApproved, Iterations: 3, History: []Iteration{
+		{N: 1, Review: &artifacts.Review{Axes: []artifacts.Axis{{Axis: "spec", Findings: []artifacts.Finding{finding("minor", "docs", "x.go", 1, "achado X")}}}}},
+		{N: 2, Review: &artifacts.Review{Axes: []artifacts.Axis{
+			{Axis: "spec", Findings: []artifacts.Finding{finding("major", "acceptance", "z.go", 3, "achado Z")}},
+			{Axis: "standards", Findings: []artifacts.Finding{finding("minor", "naming", "y.go", 2, "achado Y")}},
+		}}},
+		{N: 3},
+	}}
+	report := renderReport(res, prompts.Issue{Ref: "#82", Title: "t"})
+	_, rest, _ := strings.Cut(report, "## Iteração 1\n")
+	it1, rest, _ := strings.Cut(rest, "## Iteração 2\n")
+	it2, it3, _ := strings.Cut(rest, "## Iteração 3\n")
+
+	const heading = "\n\n#### Achados não bloqueantes\n\n"
+	if !strings.Contains(it1, "- spec: 1 achados"+heading+"- [minor · spec · docs] x.go:1 — achado X") {
+		t.Errorf("iteração 1 deveria listar X depois da contagem por eixo:\n%s", it1)
+	}
+	if !strings.Contains(it2, "- standards: 1 achados"+heading+"- [minor · standards · naming] y.go:2 — achado Y") {
+		t.Errorf("iteração 2 deveria listar Y depois da contagem por eixo:\n%s", it2)
+	}
+	if _, list, _ := strings.Cut(it2, heading); strings.Contains(list, "achado Z") || strings.Contains(it2, "achado X") {
+		t.Errorf("iteração 2 deveria listar só o não bloqueante dela:\n%s", it2)
+	}
+	if strings.Contains(it3, "Achados não bloqueantes") {
+		t.Errorf("iteração sem revisão não deveria ter a seção:\n%s", it3)
+	}
+	if strings.Contains(it1, "achado Y") {
+		t.Errorf("iteração 1 não deveria citar o achado da 2:\n%s", it1)
 	}
 }
