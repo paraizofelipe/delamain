@@ -49,3 +49,28 @@ func TestLoadShouldIgnoreTheApiToken(t *testing.T) {
 		t.Fatalf("apiToken must never be kept in File, got %s", got)
 	}
 }
+
+func TestLoadShouldReportAMissingFileWithoutError(t *testing.T) {
+	_, ok, err := Load(filepath.Join(t.TempDir(), "absent.json"))
+	if ok || err != nil {
+		t.Fatalf("missing file = ok %v, err %v; want ok false and no error", ok, err)
+	}
+}
+
+func TestLoadShouldFailOnInvalidJSON(t *testing.T) {
+	const secret = "hs-secret-token-456"
+	p := filepath.Join(t.TempDir(), "coding-agent.json")
+	if err := os.WriteFile(p, []byte(`{"apiToken": "`+secret+`", "optInPaths": "not-a-list"`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, ok, err := Load(p)
+	if ok || err == nil {
+		t.Fatalf("invalid JSON = ok %v, err %v; want ok false and an error", ok, err)
+	}
+	if !strings.Contains(err.Error(), p) {
+		t.Fatalf("error must name the file, got %q", err)
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Fatalf("error must not leak the file content, got %q", err)
+	}
+}

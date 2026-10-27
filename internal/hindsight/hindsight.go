@@ -4,6 +4,9 @@ package hindsight
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -23,11 +26,19 @@ type Harness struct {
 	Disabled bool `json:"disabled"`
 }
 
-// Load reads path. A missing file returns ok=false and no error.
+// Load reads path. A missing file returns ok=false and no error; errors never carry the file content.
 func Load(path string) (File, bool, error) {
-	data, _ := os.ReadFile(path) //nolint:gosec // reading the user-chosen config path is the intent
+	data, err := os.ReadFile(path) //nolint:gosec // reading the user-chosen config path is the intent
+	if errors.Is(err, fs.ErrNotExist) {
+		return File{}, false, nil
+	}
+	if err != nil {
+		return File{}, false, fmt.Errorf("read %s: %w", path, err)
+	}
 	var f File
-	_ = json.Unmarshal(data, &f)
+	if err := json.Unmarshal(data, &f); err != nil {
+		return File{}, false, fmt.Errorf("parse %s: %w", path, err)
+	}
 	return f, true, nil
 }
 
