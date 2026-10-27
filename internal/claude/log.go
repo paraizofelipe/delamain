@@ -50,8 +50,14 @@ func (c *Client) logEvent(e event) {
 			return
 		}
 		for _, b := range m.Content {
-			if b.Type == "tool_result" && b.IsError {
-				c.logf("%s✗ %s falhou%s", sub, c.toolName(b.ToolUseID), agent.ToolFailure(resultText(b.Content)))
+			if b.Type != "tool_result" {
+				continue
+			}
+			name := c.toolName(b.ToolUseID)
+			if b.IsError {
+				c.logf("%s✗ %s falhou%s", sub, name, agent.ToolFailure(resultText(b.Content)))
+			} else if action, ok := hindsightAction(name); ok {
+				c.logf("%s🧠 ✓ %s", sub, oneLine(action))
 			}
 		}
 	case "result":

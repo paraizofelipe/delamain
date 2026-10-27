@@ -452,6 +452,14 @@ var hindsightScenarios = map[string][]map[string]any{
 			hindsightTool("hs9", "reflect", map[string]any{"query": " "}),
 		),
 		subagent(assistantEvent("m2", 10, hindsightTool("hs10", "search_knowledge_pages", map[string]any{"query": "no subagente"}))),
+		{"type": "user", "message": map[string]any{"role": "user", "content": []any{
+			map[string]any{"type": "tool_result", "tool_use_id": "hs1", "content": memoryMarker},
+			map[string]any{"type": "tool_result", "tool_use_id": "hs5", "content": []any{map[string]any{"type": "text", "text": memoryMarker}}},
+			map[string]any{"type": "tool_result", "tool_use_id": "hs4", "is_error": true, "content": "Exit code 1\nhindsight indisponível"},
+		}}},
+		subagent(map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": []any{
+			map[string]any{"type": "tool_result", "tool_use_id": "hs10", "content": memoryMarker},
+		}}}),
 	},
 	"hindsight-forge": {
 		assistantEvent("m1", 10,
@@ -598,5 +606,22 @@ func TestLogShouldNeverLogHindsightMemoryContent(t *testing.T) {
 	log := s.log.String()
 	if strings.Contains(log, memoryMarker) || !strings.Contains(log, "🧠 recall automático") || !strings.Contains(log, "🧠 retain") {
 		t.Fatalf("memory content leaked, or the Hindsight lines are missing:\n%s", log)
+	}
+}
+
+func TestLogShouldConfirmASuccessfulHindsightToolResult(t *testing.T) {
+	s := start(t, "hindsight-tools")
+	if _, err := s.c.Prompt(context.Background(), "go", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	log := s.log.String()
+	lines := logLines(log)
+	for _, want := range []string{"🧠 ✓ search_knowledge_pages", "🧠 ✓ ingest_document", "⑂ 🧠 ✓ search_knowledge_pages"} {
+		if !slices.Contains(lines, want) {
+			t.Errorf("log lacks the line %q:\n%s", want, log)
+		}
+	}
+	if !strings.Contains(log, "✗ mcp__hindsight__hindsight_reflect falhou (exit 1): hindsight indisponível") || strings.Contains(log, "✓ reflect") {
+		t.Errorf("a failed Hindsight tool keeps the usual failure line:\n%s", log)
 	}
 }
