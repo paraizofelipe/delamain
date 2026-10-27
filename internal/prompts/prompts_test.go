@@ -558,6 +558,8 @@ func TestEmbeddedMemorySkillShouldGateRecallRetainAndForbidSecrets(t *testing.T)
 		"gate":   {"mcp__hindsight__", "curl", "ToolSearch"},
 		"recall": {"hindsight_search_knowledge_pages", "hindsight_reflect", "Hindsight (<página>)"},
 		"retain": {"hindsight_capture_initiative", "hindsight_ingest_document", "delamain: <título da issue>", "delamain: decisão — <tema>", "delamain: falso positivo — <tema>"},
+		// What each role writes, so a page is useful to the next run and not just a title.
+		"retain content": {"summary com objetivo, escopo e fora do escopo", "decisão, motivo e arquivo:linha", "o fato e a evidência (arquivo:linha)"},
 		// Memory outlives the run and is shared with the developer's sessions.
 		"forbidden": {"segredos", "tokens", "variáveis de ambiente", "dados pessoais", "saída de comandos"},
 	}

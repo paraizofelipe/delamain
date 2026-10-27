@@ -27,13 +27,13 @@ Sem as ferramentas `mcp__hindsight__*` na sessão, **ignore esta skill em silên
 - Quando a memória pesar numa decisão, cite `Hindsight (<página>)` no artefato.
 
 ### Retain por papel
-| Papel | Quando | Ferramenta | Título |
-|---|---|---|---|
-| planner | Depois de gravar o plano | `hindsight_capture_initiative` | `delamain: <título da issue>` |
-| implementer | No fim de uma fatia, só se houve decisão não óbvia | `hindsight_ingest_document` | `delamain: decisão — <tema>` |
-| reviewer | Quando um achado se mostrou falso por um fato estável do repositório | `hindsight_ingest_document` | `delamain: falso positivo — <tema>` |
+| Papel | Quando | Ferramenta | Título | Conteúdo |
+|---|---|---|---|---|
+| planner | Depois de gravar o plano | `hindsight_capture_initiative` | `delamain: <título da issue>` | summary com objetivo, escopo e fora do escopo |
+| implementer | No fim de uma fatia, só se houve decisão não óbvia | `hindsight_ingest_document` | `delamain: decisão — <tema>` | decisão, motivo e arquivo:linha |
+| reviewer | Quando um achado se mostrou falso por um fato estável do repositório | `hindsight_ingest_document` | `delamain: falso positivo — <tema>` | o fato e a evidência (arquivo:linha) |
 
-Grave só o que a tabela do seu papel prevê, em poucas frases, com o porquê. Gravar no Hindsight não altera arquivo do repositório.
+Grave só o que a tabela do seu papel prevê, com o conteúdo da coluna, em poucas frases. Gravar no Hindsight não altera arquivo do repositório.
 
 ### Proibido gravar
 Nunca grave:
