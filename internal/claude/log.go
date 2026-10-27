@@ -15,6 +15,10 @@ func (c *Client) logEvent(e event) {
 		sub = "⑂ " // a subagent's own work
 	}
 	switch e.Type {
+	case "system":
+		if e.Subtype == "hook_response" {
+			c.logf("%s🧠 recall automático: %d caracteres injetados", sub, len(hookContext(e.Output)))
+		}
 	case "assistant":
 		m := e.msg()
 		if m == nil {
@@ -107,4 +111,17 @@ func resultText(content json.RawMessage) string {
 		}
 	}
 	return strings.Join(parts, "\n")
+}
+
+// hookContext is what a hook injected: its JSON output's additionalContext, or its raw stdout.
+func hookContext(output string) string {
+	var o struct {
+		HookSpecificOutput struct {
+			AdditionalContext string `json:"additionalContext"`
+		} `json:"hookSpecificOutput"`
+	}
+	if json.Unmarshal([]byte(output), &o) == nil && o.HookSpecificOutput.AdditionalContext != "" {
+		return o.HookSpecificOutput.AdditionalContext
+	}
+	return output
 }

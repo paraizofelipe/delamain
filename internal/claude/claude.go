@@ -65,6 +65,10 @@ type event struct {
 	APIErrorStatus json.RawMessage       `json:"api_error_status"`
 	Errors         []string              `json:"errors"`
 	ModelUsage     map[string]modelUsage `json:"modelUsage"`
+	// system/hook_response, with --include-hook-events
+	HookEvent string `json:"hook_event"`
+	Output    string `json:"output"`
+	ExitCode  *int   `json:"exit_code"`
 	// rate_limit_event
 	RateLimit struct {
 		Status        string `json:"status"`

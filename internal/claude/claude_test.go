@@ -101,6 +101,11 @@ func fakeClaude(scenario string) {
 			// One response, as an event per content block that repeat its id and usage.
 			emit(assistantEvent("m1", 10, map[string]any{"type": "text", "text": "thinking"}))
 			emit(assistantEvent("m1", 10, map[string]any{"type": "tool_use", "id": "tu1", "name": "Bash", "input": map[string]any{"command": "sleep 120"}}))
+		default:
+			for _, e := range hindsightScenarios[scenario] {
+				emit(e)
+			}
+			emit(result(turn, nil))
 		}
 	}
 	if scenario == "stubborn" {
@@ -403,5 +408,34 @@ func TestStartShouldStripForgeTokensFromTheInheritedEnv(t *testing.T) {
 	}
 	if tr := s.traced(t); !strings.Contains(tr, wantAgentEnv+"\n") {
 		t.Fatalf("claude inherited\n%s\nwant a line\n%s", tr, wantAgentEnv)
+	}
+}
+
+// recallContext is what the Hindsight hook injects; its size is what the log reports.
+const recallContext = "<hindsight_memory>o lint roda com make lint</hindsight_memory>"
+
+// hookResponse is a system/hook_response as claude emits it with --include-hook-events: the
+// hook's stdout is a JSON whose additionalContext is injected into the prompt.
+func hookResponse(injected string, exitCode any) map[string]any {
+	out, _ := json.Marshal(map[string]any{"hookSpecificOutput": map[string]any{"hookEventName": "UserPromptSubmit", "additionalContext": injected}})
+	return map[string]any{
+		"type": "system", "subtype": "hook_response", "hook_id": "h1", "hook_name": "UserPromptSubmit", "hook_event": "UserPromptSubmit",
+		"output": string(out) + "\n", "stdout": string(out) + "\n", "stderr": "", "exit_code": exitCode, "outcome": "success",
+	}
+}
+
+// hindsightScenarios are the events each Hindsight scenario plays before its result.
+var hindsightScenarios = map[string][]map[string]any{
+	"hindsight-recall": {hookResponse(recallContext, 0)},
+}
+
+func TestLogShouldShowTheAutomaticRecallInjectedByTheHindsightHook(t *testing.T) {
+	s := start(t, "hindsight-recall")
+	if _, err := s.c.Prompt(context.Background(), "go", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	want := fmt.Sprintf("🧠 recall automático: %d caracteres injetados", len(recallContext))
+	if log := s.log.String(); !strings.Contains(log, want) {
+		t.Fatalf("log lacks %q:\n%s", want, log)
 	}
 }
