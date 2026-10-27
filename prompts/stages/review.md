@@ -27,6 +27,12 @@ Regras da catraca, para a barra não subir a cada iteração:
 - **Achado `minor` já reportado e ainda não corrigido** em código inalterado: repita-o como está, sem reescrever a redação. Não gaste a revisão re-derivando o que já está na lista.
 - **Nada disso afrouxa o checklist "sempre `critical`"** do eixo Segurança, nem um teste que não testa nada: esses bloqueiam sempre, justificativa ou não.
 {{- end}}
+{{- if .Hindsight}}
+
+## Memória do projeto
+
+A sessão tem a memória Hindsight do projeto: siga a skill `delamain-memory`. Antes de julgar os achados, consulte `hindsight_search_knowledge_pages` e confira no código o que ela disser; quando um achado se mostrar falso por um fato estável do repositório, registre-o como "falso positivo" com `hindsight_ingest_document`. Gravar no Hindsight não é alterar arquivo do repositório.
+{{- end}}
 
 ## Artefato
 
