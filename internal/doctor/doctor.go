@@ -209,6 +209,9 @@ func hindsight(h config.Hindsight, d Deps) Check {
 	if _, err := d.LookPath("node"); err != nil {
 		return Check{"hindsight", Fail, "node not found in PATH"}
 	}
+	if d.Getenv("HINDSIGHT_API_TOKEN") == "" { // only emptiness is checked: the value never reaches a Detail
+		return Check{"hindsight", Warn, "HINDSIGHT_API_TOKEN not set (fine for a server without auth)"}
+	}
 	return Check{"hindsight", OK, h.Runtime}
 }
 

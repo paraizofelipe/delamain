@@ -588,3 +588,27 @@ func TestDoctorShouldFailHindsightWithoutNode(t *testing.T) {
 		t.Fatalf("the hooks run on node: %+v", c)
 	}
 }
+
+func TestDoctorShouldWarnWithoutTheHindsightTokenAndNeverPrintIt(t *testing.T) {
+	cfg, d := hindsightHarness(t, nil)
+	d.Getenv = func(string) string { return "" }
+	results := Run(context.Background(), cfg, d)
+	if c := byName(results)["hindsight"]; c.Status != Warn || c.Detail != "HINDSIGHT_API_TOKEN not set (fine for a server without auth)" {
+		t.Fatalf("a missing token only warns: %+v", c)
+	}
+	if Failed(results) {
+		t.Fatalf("a warning must not fail doctor: %+v", results)
+	}
+
+	for name, missing := range map[string]map[string]error{
+		"all in place":   nil,
+		"script missing": {"/home/u/.hindsight/coding-agents/dist/claude-hook.js": fs.ErrNotExist},
+	} {
+		cfg, d := hindsightHarness(t, missing)
+		for _, c := range Run(context.Background(), cfg, d) {
+			if strings.Contains(c.Detail, "token-secret-marker") || strings.Contains(c.Detail, "config-secret-marker") || strings.Contains(c.Detail, "mem.example") {
+				t.Fatalf("%s: %s leaks the token or the config content: %q", name, c.Name, c.Detail)
+			}
+		}
+	}
+}
