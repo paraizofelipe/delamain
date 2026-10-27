@@ -61,19 +61,32 @@ func (f File) Resolve(dir string) (bank string, on bool) {
 	return "", false
 }
 
-// lookup returns the bank of the mapPathToBank key that contains dir.
+// lookup returns the bank of the longest mapPathToBank key that contains dir.
 func (f File) lookup(dir string) string {
-	for k, bank := range f.MapPathToBank {
-		if within(dir, configured(k)) {
-			return bank
+	bank, longest := "", -1
+	for k, b := range f.MapPathToBank {
+		if c := configured(k); within(dir, c) && len(c) > longest {
+			bank, longest = b, len(c)
 		}
 	}
-	return ""
+	return bank
 }
 
-// configured normalizes a path written in coding-agent.json.
+// configured normalizes a path written in coding-agent.json: expands ~, cleans and drops trailing separators.
 func configured(p string) string {
-	return strings.TrimRight(filepath.Clean(p), string(filepath.Separator))
+	return strings.TrimRight(filepath.Clean(expandHome(p)), string(filepath.Separator))
+}
+
+// expandHome expands ~ and ~/; without a home directory the path is kept as is, so it matches nothing.
+func expandHome(p string) string {
+	if p != "~" && !strings.HasPrefix(p, "~/") {
+		return p
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return p
+	}
+	return filepath.Join(home, p[1:])
 }
 
 // within reports whether dir is c or lies under it, respecting the separator boundary.

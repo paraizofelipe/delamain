@@ -117,3 +117,58 @@ func TestResolveShouldTurnMemoryOnEverywhereWhenOptInOnlyIsFalse(t *testing.T) {
 		})
 	}
 }
+
+func TestResolveShouldPickTheLongestMatchingPrefix(t *testing.T) {
+	f := load(t, `{"optInOnly": true, "mapPathToBank": {"/": "root", "/a": "bank-a", "/a/b": "bank-ab"}}`)
+	cases := map[string]struct{ dir, bank string }{
+		"deepest key wins": {"/a/b/c", "bank-ab"},
+		"middle key wins":  {"/a/x", "bank-a"},
+		"only root":        {"/z", "root"},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			bank, on := f.Resolve(c.dir)
+			if !on || bank != c.bank {
+				t.Fatalf("Resolve(%q) = (%q, %v), want (%q, true)", c.dir, bank, on, c.bank)
+			}
+		})
+	}
+}
+
+func TestResolveShouldNotMatchASiblingDirectorySharingThePrefix(t *testing.T) {
+	f := load(t, `{"optInOnly": true, "optInPaths": ["/p/work"], "mapPathToBank": {"/a/b": "private"}}`)
+	for _, dir := range []string{"/a/bc", "/a/b/../bc", "/p/workshop"} {
+		bank, on := f.Resolve(dir)
+		if on || bank != "" {
+			t.Fatalf("Resolve(%q) = (%q, %v), want (\"\", false): a sibling must not get the bank", dir, bank, on)
+		}
+	}
+}
+
+func TestResolveShouldExpandTildeInMapPathToBankAndOptInPaths(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	cases := map[string]struct{ body, dir, bank string }{
+		"~/ in mapPathToBank": {`{"optInOnly": true, "mapPathToBank": {"~/projects/delamain": "b"}}`, filepath.Join(home, "projects", "delamain", "cmd"), "b"},
+		"~ in mapPathToBank":  {`{"optInOnly": true, "mapPathToBank": {"~": "home-bank"}}`, filepath.Join(home, "x"), "home-bank"},
+		"~/ in optInPaths":    {`{"optInOnly": true, "optInPaths": ["~/work"]}`, filepath.Join(home, "work", "repo"), ""},
+		"~ in optInPaths":     {`{"optInOnly": true, "optInPaths": ["~"]}`, home, ""},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			bank, on := load(t, c.body).Resolve(c.dir)
+			if !on || bank != c.bank {
+				t.Fatalf("Resolve(%q) = (%q, %v), want (%q, true)", c.dir, bank, on, c.bank)
+			}
+		})
+	}
+	t.Run("without $HOME the tilde does not expand to everything", func(t *testing.T) {
+		t.Setenv("HOME", "")
+		for _, p := range []string{"~", "~/"} {
+			f := load(t, `{"optInOnly": true, "optInPaths": ["`+p+`"], "mapPathToBank": {"`+p+`": "b"}}`)
+			if bank, on := f.Resolve("/home/dev/work"); on || bank != "" {
+				t.Fatalf("%q without $HOME: Resolve = (%q, %v), want (\"\", false)", p, bank, on)
+			}
+		}
+	})
+}
