@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -480,5 +481,70 @@ func TestRunShouldPassTheClaudeArgsAndEnvToVersionAndAuth(t *testing.T) {
 	wantEnv := []string{"MIA_NO_ONBOARDING=1", "MIA_NO_RELOGIN=1"}
 	if !slices.Equal(envVersion, wantEnv) || !slices.Equal(envAuth, wantEnv) {
 		t.Fatalf("claude.env must reach --version (%v) and auth status (%v)", envVersion, envAuth)
+	}
+}
+
+// hindsightHarness is a claude harness with the memory on and every hindsight piece in place;
+// missing lists the paths Stat and ReadFile report as absent.
+func hindsightHarness(t *testing.T, missing map[string]error) (config.Config, Deps) {
+	cfg, d := claudeHarness(t)
+	cfg.Claude.Hindsight = &config.Hindsight{Enabled: true, Config: "/home/u/.hindsight/coding-agent.json", Runtime: "/home/u/.hindsight/coding-agents"}
+	d.Stat = func(p string) (fs.FileInfo, error) {
+		if err := missing[p]; err != nil {
+			return nil, err
+		}
+		return nil, nil
+	}
+	d.ReadFile = func(p string) ([]byte, error) {
+		if err := missing[p]; err != nil {
+			return nil, err
+		}
+		return []byte(`{"apiUrl":"https://mem.example","apiToken":"config-secret-marker"}`), nil
+	}
+	d.Getenv = func(k string) string {
+		if k == "HINDSIGHT_API_TOKEN" {
+			return "token-secret-marker"
+		}
+		return ""
+	}
+	return cfg, d
+}
+
+func TestDoctorShouldPassHindsightWhenEverythingIsInPlace(t *testing.T) {
+	cfg, d := hindsightHarness(t, nil)
+	results := Run(context.Background(), cfg, d)
+	c, ok := byName(results)["hindsight"]
+	if !ok || c.Status != OK || c.Detail != "/home/u/.hindsight/coding-agents" {
+		t.Fatalf("hindsight must pass with the runtime path: %+v", c)
+	}
+	if Failed(results) {
+		t.Fatalf("a complete memory setup must not fail doctor: %+v", results)
+	}
+}
+
+func TestDoctorShouldSkipHindsightWhenDisabledOrOnOmp(t *testing.T) {
+	enabled := &config.Hindsight{Enabled: true, Config: "/c.json", Runtime: "/r"}
+	for name, setup := range map[string]func(*testing.T) (config.Config, Deps){
+		"omp harness": func(t *testing.T) (config.Config, Deps) {
+			cfg, d := healthy(t)
+			cfg.Claude.Hindsight = enabled
+			return cfg, d
+		},
+		"no block": func(t *testing.T) (config.Config, Deps) { return claudeHarness(t) },
+		"disabled": func(t *testing.T) (config.Config, Deps) {
+			cfg, d := claudeHarness(t)
+			cfg.Claude.Hindsight = &config.Hindsight{Config: "/c.json", Runtime: "/r"}
+			return cfg, d
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg, d := setup(t)
+			d.Stat = func(string) (fs.FileInfo, error) { t.Fatal("Stat must not run without the memory on"); return nil, nil }
+			d.ReadFile = func(string) ([]byte, error) { t.Fatal("ReadFile must not run without the memory on"); return nil, nil }
+			d.Getenv = func(string) string { t.Fatal("Getenv must not run without the memory on"); return "" }
+			if c, ok := byName(Run(context.Background(), cfg, d))["hindsight"]; ok {
+				t.Fatalf("no hindsight check expected: %+v", c)
+			}
+		})
 	}
 }
