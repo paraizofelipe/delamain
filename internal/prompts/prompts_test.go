@@ -529,3 +529,49 @@ func TestInstallForClaudeShouldSetTheSubagentsConfiguredModelAndEffort(t *testin
 		t.Fatalf("agents.json must carry the subagent's model and effort: %s", b)
 	}
 }
+
+func TestInstallShouldShipTheMemorySkill(t *testing.T) {
+	root := t.TempDir()
+	target := Target{Harness: HarnessClaude, ClaudeDir: filepath.Join(root, "claude"), RolesDir: filepath.Join(root, "roles"), OmpAgentDir: filepath.Join(root, "omp")}
+	if _, err := mustLoad(t, embedded.FS).Install(target); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(filepath.Join(target.PluginDir(), "skills", "delamain-memory", "SKILL.md"))
+	if err != nil {
+		t.Fatalf("the memory skill must ship with the plugin: %v", err)
+	}
+	if !strings.Contains(string(b), "name: delamain-memory") {
+		t.Fatalf("the installed skill must be named delamain-memory:\n%s", b)
+	}
+}
+
+func TestEmbeddedMemorySkillShouldGateRecallRetainAndForbidSecrets(t *testing.T) {
+	b, err := fs.ReadFile(embedded.FS, "skills/memory/SKILL.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(b)
+	anchors := map[string][]string{
+		"sections": {"<role>", "<rules>", "<checklist>"},
+		// Without the MCP tools the skill is inert: no reaching the server by other means.
+		"gate":   {"mcp__hindsight__", "curl", "ToolSearch"},
+		"recall": {"hindsight_search_knowledge_pages", "hindsight_reflect", "Hindsight (<página>)"},
+		"retain": {"hindsight_capture_initiative", "hindsight_ingest_document", "delamain: <título da issue>", "delamain: decisão — <tema>", "delamain: falso positivo — <tema>"},
+		// Memory outlives the run and is shared with the developer's sessions.
+		"forbidden": {"segredos", "tokens", "variáveis de ambiente", "dados pessoais", "saída de comandos"},
+	}
+	for part, wants := range anchors {
+		for _, want := range wants {
+			if !strings.Contains(body, want) {
+				t.Errorf("the memory skill's %s must mention %q", part, want)
+			}
+		}
+	}
+	fm, err := parseFrontmatter(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(fm.Description, "mcp__hindsight__") {
+		t.Errorf("the description must say the skill only applies with the Hindsight tools: %q", fm.Description)
+	}
+}

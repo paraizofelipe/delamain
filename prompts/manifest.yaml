@@ -29,6 +29,7 @@ skills:
   - tdd
   - implement
   - commit-gate
+  - memory
 
 # Prompts de cada passo, enviados ao omp em modo RPC. Go text/template.
 stages:
