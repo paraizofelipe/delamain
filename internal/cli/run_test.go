@@ -33,6 +33,19 @@ func TestAgentsForShouldCarryTheClaudeLauncherArgsEnvAndSettings(t *testing.T) {
 	}
 }
 
+func TestAgentsForShouldCarryTheHindsightConfig(t *testing.T) {
+	cfg := config.Default()
+	cfg.Agent.Harness = config.HarnessClaude
+	cfg.Claude.Hindsight = &config.Hindsight{Enabled: true, Config: "/h/coding-agent.json", Runtime: "/h/coding-agents"}
+	a, ok := agentsFor(cfg, prompts.Target{}).(pipeline.ClaudeAgents)
+	if !ok {
+		t.Fatalf("harness claude must start ClaudeAgents: %T", agentsFor(cfg, prompts.Target{}))
+	}
+	if a.Hindsight == nil || *a.Hindsight != *cfg.Claude.Hindsight {
+		t.Fatalf("the sessions must know the hindsight runtime: %+v", a.Hindsight)
+	}
+}
+
 func TestProjectConfigShouldRetargetTheHarnessPerRepo(t *testing.T) {
 	cfg := config.Default() // harness omp
 	repo := t.TempDir()
