@@ -421,3 +421,52 @@ func TestStartShouldTreatAWaitErrorAsWaiting(t *testing.T) {
 		t.Fatalf("want one warning with the job and the error, got %q\n%s", warns, logs.String())
 	}
 }
+
+func TestStartShouldLogAWaitingReasonOnlyWhenItChanges(t *testing.T) {
+	type answer struct {
+		reason string
+		err    error
+	}
+	errX := errors.New("could not read the dependencies")
+	script := []answer{{reason: "blocked by #1"}, {reason: "blocked by #1"}, {reason: "blocked by #2"}, {err: errX}, {err: errX}, {}, {reason: "blocked by #2"}}
+	step := 0
+	var logs strings.Builder
+	d := New(Options{MaxParallel: 1, Log: slog.New(slog.NewTextHandler(&logs, nil)), Queue: func(context.Context) ([]Job, error) {
+		return []Job{{Key: "/q#1", Queue: true,
+			Wait: func(context.Context) (string, error) { return script[step].reason, script[step].err },
+			Run:  func(context.Context) (pipeline.Result, error) { return pipeline.Result{}, nil },
+		}}, nil
+	}})
+	for ; step < len(script); step++ {
+		want := 0
+		if script[step] == (answer{}) {
+			want = 1
+		}
+		if n := d.PollQueue(context.Background()); n != want {
+			t.Fatalf("step %d started %d, want %d", step, n, want)
+		}
+		d.Wait()
+	}
+	var got []string
+	for _, l := range strings.Split(logs.String(), "\n") {
+		if !strings.Contains(l, `msg="queue item waiting"`) {
+			continue
+		}
+		if !strings.Contains(l, "job=/q#1") {
+			t.Fatalf("a waiting item is logged with its key: %s", l)
+		}
+		switch {
+		case strings.Contains(l, "level=INFO") && strings.Contains(l, `reason="blocked by #1"`):
+			got = append(got, "#1")
+		case strings.Contains(l, "level=INFO") && strings.Contains(l, `reason="blocked by #2"`):
+			got = append(got, "#2")
+		case strings.Contains(l, "level=WARN") && strings.Contains(l, errX.Error()):
+			got = append(got, "err")
+		default:
+			t.Fatalf("unexpected line: %s", l)
+		}
+	}
+	if want := []string{"#1", "#2", "err", "#2"}; !slices.Equal(got, want) {
+		t.Fatalf("logged %v, want each reason once, when it changes\n%s", got, logs.String())
+	}
+}

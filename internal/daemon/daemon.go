@@ -50,6 +50,8 @@ type Daemon struct {
 	atMax bool
 	// daySpent is true once the day's budget stopped the runs, for the same reason.
 	daySpent bool
+	// waiting is the last reason logged for each queue item that waits, by Key.
+	waiting map[string]string
 }
 
 // queueInterval paces the queue between polls: it reads the state database only, never a forge,
@@ -57,7 +59,7 @@ type Daemon struct {
 const queueInterval = 5 * time.Second
 
 func New(o Options) *Daemon {
-	d := &Daemon{opts: o, slots: make(chan struct{}, max(o.MaxParallel, 1)), inflight: map[string]bool{}, wake: make(chan struct{}, 1)}
+	d := &Daemon{opts: o, slots: make(chan struct{}, max(o.MaxParallel, 1)), inflight: map[string]bool{}, waiting: map[string]string{}, wake: make(chan struct{}, 1)}
 	d.cond = sync.NewCond(&d.mu)
 	return d
 }
@@ -192,14 +194,13 @@ func (d *Daemon) start(ctx context.Context, jobs []Job) int {
 		}
 		if j.Queue && j.Wait != nil {
 			if reason, err := j.Wait(ctx); reason != "" || err != nil {
-				if err != nil {
-					d.opts.Log.Warn("queue item waiting", "job", j.Key, "err", err)
-				}
+				d.logWaiting(j.Key, reason, err)
 				release()
 				<-d.slots
 				head = false // a waiting head leaves its place to the next item of the queue
 				continue
 			}
+			delete(d.waiting, j.Key)
 		}
 		d.mu.Lock()
 		d.inflight[j.Key] = true
@@ -212,6 +213,23 @@ func (d *Daemon) start(ctx context.Context, jobs []Job) int {
 		go d.run(ctx, j, release)
 	}
 	return started
+}
+
+// logWaiting logs why a queue item waits, once per reason: the queue is polled every few seconds.
+// An error of Wait counts as its reason and is a warning.
+func (d *Daemon) logWaiting(key, reason string, err error) {
+	if err != nil {
+		reason = err.Error()
+	}
+	if last, ok := d.waiting[key]; ok && last == reason {
+		return
+	}
+	d.waiting[key] = reason
+	if err != nil {
+		d.opts.Log.Warn("queue item waiting", "job", key, "err", err)
+		return
+	}
+	d.opts.Log.Info("queue item waiting", "job", key, "reason", reason)
 }
 
 // reachedMax logs once that a job found every slot held, until a poll finds one again.
