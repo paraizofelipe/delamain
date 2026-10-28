@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -304,5 +305,114 @@ func TestVerifyShouldFailWhenACommitSubjectIsTooLong(t *testing.T) {
 	}
 	if !strings.Contains(hs.h.prompts["implementer"][1], "commits") {
 		t.Fatal("the implementer must be told which gate rejected the iteration")
+	}
+}
+
+func TestRunShouldRefuseWithNeedsInfoWhenOnlyANativeBlockerIsOpen(t *testing.T) {
+	hs := newHarness(t, happy)
+	f := withForge(hs)
+	f.blockers = []forge.Blocker{{Number: 82, Ref: "#82", Open: true}}
+	res := hs.run(t)
+	if res.Outcome != OutcomeNeedsInfo || !strings.Contains(res.Reason, "depende da issue #82 (link), que ainda está aberta") {
+		t.Fatalf("an open native blocker refuses the run: %s %s", res.Outcome, res.Reason)
+	}
+	if runs, _ := hs.st.UnfinishedRuns(context.Background()); len(runs) != 0 {
+		t.Fatal("blocked tasks create no run")
+	}
+}
+
+func TestOpenBlockersShouldJoinBodyAndNativeBlockers(t *testing.T) {
+	f := &fakeForge{
+		issues: map[int]forge.Issue{3: {Number: 3, Open: true}},
+		blockers: []forge.Blocker{
+			{Number: 82, Ref: "#82", Open: true},
+			{Number: 90, Ref: "acme/other#90", Open: true},
+			{Number: 95, Open: true}, // no ref: falls back to the number
+		},
+	}
+	task := Task{Issue: 7, Body: "- depends_on: #3"}
+	got, err := OpenBlockers(context.Background(), f, task)
+	want := []string{"#3 (corpo)", "#82 (link)", "acme/other#90 (link)", "#95 (link)"}
+	if err != nil || !slices.Equal(got, want) {
+		t.Fatalf("got %q, %v; want %q", got, err, want)
+	}
+}
+
+func TestOpenBlockersShouldListADependencyFromBothSourcesOnce(t *testing.T) {
+	f := &fakeForge{
+		issues: map[int]forge.Issue{82: {Number: 82, Open: true}, 90: {Number: 90, Open: true}},
+		blockers: []forge.Blocker{
+			{Number: 90, Ref: "#90", Open: true},
+			{Number: 82, Ref: "acme/other#82", Open: true},
+			{Number: 82, Ref: "#82", Open: true},
+			{Number: 5, Ref: "#5", Open: true},
+		},
+	}
+	task := Task{Issue: 7, Body: "- depends_on: #90, #82"}
+	got, err := OpenBlockers(context.Background(), f, task)
+	want := []string{"#5 (link)", "#82 (corpo, link)", "acme/other#82 (link)", "#90 (corpo, link)"}
+	if err != nil || !slices.Equal(got, want) {
+		t.Fatalf("got %q, %v; want %q", got, err, want)
+	}
+}
+
+func TestOpenBlockersShouldIgnoreClosedBlockers(t *testing.T) {
+	f := &fakeForge{
+		issues:   map[int]forge.Issue{3: {Number: 3, Open: false}},
+		blockers: []forge.Blocker{{Number: 82, Ref: "#82", Open: false}, {Number: 90, Ref: "acme/other#90", Open: false}},
+	}
+	task := Task{Issue: 7, Body: "- depends_on: #3"}
+	got, err := OpenBlockers(context.Background(), f, task)
+	if err != nil || len(got) != 0 {
+		t.Fatalf("closed blockers do not block: %q, %v", got, err)
+	}
+}
+
+func TestOpenBlockersShouldReturnErrorsWhenTheForgeCannotBeRead(t *testing.T) {
+	apiErr := &forge.APIError{Forge: forge.GitHub, Op: "blocked_by", Status: 502, Message: "bad gateway"}
+	for _, tc := range []struct {
+		name   string
+		forge  *fakeForge
+		body   string
+		prefix string
+		target error
+	}{
+		{"malformed depends_on", &fakeForge{}, "- depends_on: 81", "depends_on inválido: ", nil},
+		{"unreadable dependency", &fakeForge{}, "- depends_on: #9", "não foi possível verificar a dependência #9: ", nil},
+		{"unreadable native blockers", &fakeForge{blockersErr: apiErr}, "", "não foi possível verificar os bloqueadores da issue #7: ", apiErr},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := OpenBlockers(context.Background(), tc.forge, Task{Issue: 7, Body: tc.body})
+			if err == nil || got != nil || !strings.HasPrefix(err.Error(), tc.prefix) {
+				t.Fatalf("got %q, %v; want an error starting with %q", got, err, tc.prefix)
+			}
+			if tc.target != nil && !errors.Is(err, tc.target) {
+				t.Fatalf("the forge error is wrapped: %v", err)
+			}
+		})
+	}
+	t.Run("run refuses when native blockers cannot be read", func(t *testing.T) {
+		hs := newHarness(t, happy)
+		f := withForge(hs)
+		f.blockersErr = apiErr
+		res := hs.run(t)
+		if res.Outcome != OutcomeNeedsInfo || !strings.Contains(res.Reason, "não foi possível verificar os bloqueadores da issue #7: ") {
+			t.Fatalf("an unreadable blocker list fails closed: %s %s", res.Outcome, res.Reason)
+		}
+		if runs, _ := hs.st.UnfinishedRuns(context.Background()); len(runs) != 0 {
+			t.Fatal("refused tasks create no run")
+		}
+	})
+}
+
+func TestOpenBlockersShouldSkipNativeBlockersForLocalTasks(t *testing.T) {
+	f := &fakeForge{
+		issues:      map[int]forge.Issue{3: {Number: 3, Open: true}},
+		blockers:    []forge.Blocker{{Number: 82, Ref: "#82", Open: true}},
+		blockersErr: errors.New("issue #0: HTTP 404"),
+	}
+	got, err := OpenBlockers(context.Background(), f, Task{Ref: "task:x", Body: "- depends_on: #3"})
+	if err != nil || !slices.Equal(got, []string{"#3 (corpo)"}) {
+		t.Fatalf("a local task has no native relations, only its body: %q, %v", got, err)
 	}
 }
