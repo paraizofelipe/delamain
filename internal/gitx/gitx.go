@@ -86,9 +86,13 @@ func (g Git) Head(ctx context.Context, dir string) (string, error) {
 	return g.run(ctx, dir, "rev-parse", "HEAD")
 }
 
-// ResetHard moves the run's worktree dir back to sha, discarding commits and changes made since.
+// ResetHard moves the run's worktree dir back to sha, discarding commits and changes made since,
+// untracked files included (ignored ones stay).
 func (g Git) ResetHard(ctx context.Context, dir, sha string) error {
-	_, err := g.run(ctx, dir, "reset", "--hard", sha)
+	if _, err := g.run(ctx, dir, "reset", "--hard", sha); err != nil {
+		return err
+	}
+	_, err := g.run(ctx, dir, "clean", "-fd")
 	return err
 }
 

@@ -1014,6 +1014,27 @@ func TestResetHardShouldMoveTheWorktreeBackToTheGivenCommit(t *testing.T) {
 	}
 }
 
+func TestResetHardShouldRemoveUntrackedFiles(t *testing.T) {
+	g, ctx := New(), context.Background()
+	dir := repo(t)
+	a := commitFile(t, dir, "calc.go", "A")
+	for _, name := range []string{"new.go", filepath.Join("pkg", "new.go")} {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, name)), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := g.ResetHard(ctx, dir, a); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := g.Status(ctx, dir); st != "" {
+		t.Fatalf("files the pass created must not survive the reset, status=%q", st)
+	}
+}
+
 func TestResetHardShouldFailForAnUnknownCommit(t *testing.T) {
 	g, ctx := New(), context.Background()
 	dir := repo(t)
