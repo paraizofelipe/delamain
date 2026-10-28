@@ -256,3 +256,28 @@ func TestRunShouldShowMinorPassStatusInPRAndReport(t *testing.T) {
 		t.Errorf("report.md must show the pass status below the non-blocking findings:\n%s", report)
 	}
 }
+
+func TestMinorPassShouldHaltWhenTheWorktreeLeftTheRunBranch(t *testing.T) {
+	hs := newHarness(t, onMinorPass(func(rep reply) reply {
+		rep.mutate = func(g *fakeGit) {
+			// The pass commits on the run's branch, then checks another one out: a reset there
+			// would leave the pass's commits on the branch that gets pushed.
+			fixAdd(g)
+			g.branch = "outra"
+		}
+		return rep
+	}))
+	hs.r.Cfg.Pipeline.FixMinors = true
+	f := withForge(hs)
+	res := hs.run(t)
+
+	if res.Outcome != OutcomeHalted || !strings.Contains(res.Reason, "saiu da branch de trabalho") {
+		t.Fatalf("a pass that left the run's branch cannot be discarded and must halt, got %s: %s", res.Outcome, res.Reason)
+	}
+	if len(hs.g.resets) != 0 || res.MinorPass != "" {
+		t.Fatalf("no reset may run off the run's branch: resets=%v minor=%q", hs.g.resets, res.MinorPass)
+	}
+	if len(f.created) == 1 && !f.created[0].Draft {
+		t.Fatalf("unverified commits must never ship in a ready PR: %+v", f.created)
+	}
+}

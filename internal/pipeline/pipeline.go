@@ -512,9 +512,17 @@ func (r *Runner) minorPassFailed(ctx context.Context, ru *run, head string, err 
 }
 
 // discardMinorPass resets the worktree to head, the approved commit, unless head was never read.
-// A failed reset halts: the discarded work would otherwise ship in a ready PR.
+// A failed reset halts: the discarded work would otherwise ship in a ready PR. So does a worktree
+// off the run's branch: the reset would move the ref the agent checked out, not the one pushed.
 func (r *Runner) discardMinorPass(ctx context.Context, ru *run, head, reason string) error {
 	if head != "" {
+		branch, err := r.Git.CurrentBranch(ctx, ru.repo.Worktree)
+		if err != nil {
+			return haltf("passe de ajustes não bloqueantes: branch da worktree ilegível: %v", err)
+		}
+		if branch != ru.repo.Branch {
+			return haltf("passe de ajustes não bloqueantes: a worktree saiu da branch de trabalho (%s → %s); descarte impossível", ru.repo.Branch, branch)
+		}
 		if err := r.Git.ResetHard(ctx, ru.repo.Worktree, head); err != nil {
 			return haltf("passe de ajustes não bloqueantes: reset falhou: %v", err)
 		}
