@@ -103,6 +103,38 @@ func TestReadImplShouldAcceptPendingSliceWithoutEvidence(t *testing.T) {
 	}
 }
 
+func TestReadMinorImplShouldAcceptAPassThatDeclinesEveryItem(t *testing.T) {
+	_, err := Read[MinorImpl](write(t, `{"slices":[],
+"feedback_addressed":[{"item":"log impreciso","resolution":"não aplicado: o log já cita o id"}],
+"full_suite":{},"lint":{},"typecheck":{},"pending":[]}`))
+	if err != nil {
+		t.Fatalf("declining every item is a valid minor pass: %v", err)
+	}
+}
+
+func TestReadMinorImplShouldAcceptADoneSliceWithoutRedEvidence(t *testing.T) {
+	_, err := Read[MinorImpl](write(t, `{"slices":[{"id":"S1","status":"done","red":{},"green":{},"commits":["abc1234"]}],
+"feedback_addressed":[],"full_suite":{},"lint":{},"typecheck":{},"pending":[]}`))
+	if err != nil {
+		t.Fatalf("a fix that changes no behavior has no red to show: %v", err)
+	}
+}
+
+func TestReadMinorImplShouldRejectAnEmptyReport(t *testing.T) {
+	_, err := Read[MinorImpl](write(t, `{"slices":[],"feedback_addressed":[],"full_suite":{},"lint":{},"typecheck":{},"pending":[]}`))
+	if err == nil {
+		t.Fatal("a pass that reports nothing must be rejected")
+	}
+}
+
+func TestReadMinorImplShouldRejectAnUnknownSliceStatus(t *testing.T) {
+	_, err := Read[MinorImpl](write(t, `{"slices":[{"id":"S1","status":"maybe","red":{},"green":{},"commits":[]}],
+"feedback_addressed":[],"full_suite":{},"lint":{},"typecheck":{},"pending":[]}`))
+	if err == nil || !strings.Contains(err.Error(), "status must be done or pending") {
+		t.Fatalf("slice statuses stay checked, got %v", err)
+	}
+}
+
 func review(findings string) string {
 	return `{"verdict":"approve","axes":[{"axis":"spec","executed":true,"findings":` + findings + `},
 {"axis":"standards","executed":true,"findings":[]},{"axis":"security","executed":true,"findings":[]}]}`

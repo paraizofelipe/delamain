@@ -213,6 +213,25 @@ func (im Impl) Validate() error {
 	return errors.Join(errs...)
 }
 
+// MinorImpl is the artifact of the minor pass. Unlike Impl it may report no slices, because the
+// pass may decline every item, and a done slice needs no red evidence, because the pass asks for
+// tests only when behavior changes.
+type MinorImpl Impl
+
+// Validate checks shape only: something must be reported, and slice statuses must be known.
+func (m MinorImpl) Validate() error {
+	if len(m.Slices) == 0 && len(m.FeedbackAddressed) == 0 {
+		return errors.New("neither slices nor feedback_addressed reported")
+	}
+	var errs []error
+	for _, s := range m.Slices {
+		if s.Status != "done" && s.Status != "pending" {
+			errs = append(errs, fmt.Errorf("slice %q: status must be done or pending, got %q", s.ID, s.Status))
+		}
+	}
+	return errors.Join(errs...)
+}
+
 // Severity values; critical and major block approval.
 const (
 	SeverityCritical = "critical"
