@@ -444,3 +444,28 @@ func TestPlanValidateShouldAcceptSliceWithoutRefs(t *testing.T) {
 		t.Fatalf("no refs in the JSON, got %+v", p.Slices[0].Refs)
 	}
 }
+
+func TestPlanValidateShouldRejectAbsoluteRefPath(t *testing.T) {
+	body := planWithRefs(t, `[{"path":"/home/u/.ssh/id_ed25519","lines":"1-5","why":"chave"}]`)
+	_, err := Read[Plan](write(t, body))
+	if err == nil || !strings.Contains(err.Error(), `slice "S1" ref 1: path`) {
+		t.Fatalf("an absolute path reads outside the worktree, got %v", err)
+	}
+}
+
+func TestPlanValidateShouldRejectRefPathEscapingWorktree(t *testing.T) {
+	body := planWithRefs(t, `[{"path":"calc.go","lines":"1-5","why":"ok"},
+{"path":"a/../../.config/gh/hosts.yml","lines":"1-5","why":"token"}]`)
+	_, err := Read[Plan](write(t, body))
+	if err == nil || !strings.Contains(err.Error(), `slice "S1" ref 2: path`) {
+		t.Fatalf("a path that climbs out of the worktree must be rejected, got %v", err)
+	}
+}
+
+func TestPlanValidateShouldRejectEmptyRefPath(t *testing.T) {
+	body := planWithRefs(t, `[{"path":"","lines":"1-5","why":"nada"}]`)
+	_, err := Read[Plan](write(t, body))
+	if err == nil || !strings.Contains(err.Error(), `slice "S1" ref 1: path`) {
+		t.Fatalf("an empty path points nowhere, got %v", err)
+	}
+}

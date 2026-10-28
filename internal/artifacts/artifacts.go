@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -39,6 +40,15 @@ type Ref struct {
 	Path  string `json:"path"`
 	Lines string `json:"lines"`
 	Why   string `json:"why"`
+}
+
+// validate checks the ref's format only; whether the file exists is up to whoever reads it.
+func (r Ref) validate() []error {
+	var errs []error
+	if !filepath.IsLocal(r.Path) {
+		errs = append(errs, fmt.Errorf("path must be relative to the worktree root without escaping it, got %q", r.Path))
+	}
+	return errs
 }
 
 type Acceptance struct {
@@ -140,6 +150,11 @@ func (p Plan) Validate() error {
 			errs = append(errs, fmt.Errorf("slice id %q repeated", s.ID))
 		}
 		ids[s.ID] = true
+		for j, r := range s.Refs {
+			for _, err := range r.validate() {
+				errs = append(errs, fmt.Errorf("slice %q ref %d: %w", s.ID, j+1, err))
+			}
+		}
 	}
 	if len(p.Acceptance) == 0 {
 		errs = append(errs, errors.New("no acceptance criteria"))
