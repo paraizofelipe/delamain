@@ -97,6 +97,26 @@ func TestServesThePageAndTheAPI(t *testing.T) {
 	}
 }
 
+func TestServesTheWaitingLookOfAQueuedCard(t *testing.T) {
+	ts := newTestServer(t, &fakeSource{}, true)
+
+	_, js := get(t, ts.URL+"/board.js")
+	for _, want := range []string{"&& 'waiting'", "'⏳ aguardando '"} {
+		if !strings.Contains(js, want) {
+			t.Errorf("board.js has no %q", want)
+		}
+	}
+	if strings.Contains(js, "innerHTML") {
+		t.Error("board.js writes HTML: the waiting reason comes from an issue and must stay text")
+	}
+	_, css := get(t, ts.URL+"/board.css")
+	for _, want := range []string{".card.queued.waiting {", ".card.queued.waiting:hover", ".tag.waiting {"} {
+		if !strings.Contains(css, want) {
+			t.Errorf("board.css has no %q", want)
+		}
+	}
+}
+
 func TestRefusesAForeignHost(t *testing.T) {
 	ts := newTestServer(t, &fakeSource{}, true)
 	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/api/snapshot", nil) //nolint:noctx // test

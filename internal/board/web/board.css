@@ -112,6 +112,11 @@ code, pre, .mono { font-family: var(--mono); }
 .card:hover, .card:focus-visible { border-color: var(--active); outline: none; }
 .card.queued { cursor: default; border-style: dashed; }
 .card.queued:hover { border-color: var(--line); }
+.card.queued.waiting {
+  border-color: color-mix(in srgb, var(--changes) 70%, var(--line));
+  background: color-mix(in srgb, var(--changes) 12%, var(--card));
+}
+.card.queued.waiting:hover { border-color: color-mix(in srgb, var(--changes) 70%, var(--line)); }
 .card.live { border-color: color-mix(in srgb, var(--active) 45%, var(--line)); }
 .card.human { border-color: var(--human); box-shadow: 0 0 0 1px color-mix(in srgb, var(--human) 30%, transparent), 0 0 12px color-mix(in srgb, var(--human) 18%, transparent); }
 .card.done { opacity: .75; }
@@ -130,6 +135,7 @@ code, pre, .mono { font-family: var(--mono); }
 }
 .tag.kind-review, .tag.kind-address { color: var(--done); border-color: color-mix(in srgb, var(--done) 50%, var(--line)); }
 .tag.flag { color: var(--human); border-color: var(--human); }
+.tag.waiting { color: var(--changes); border-color: color-mix(in srgb, var(--changes) 50%, var(--line)); }
 .reason { margin-top: 6px; font-size: 12px; color: var(--muted); word-break: break-word; }
 .hint { margin-top: 6px; font: 11px var(--mono); color: var(--human); }
 .rounds { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
