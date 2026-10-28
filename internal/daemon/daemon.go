@@ -191,7 +191,10 @@ func (d *Daemon) start(ctx context.Context, jobs []Job) int {
 			release = rel
 		}
 		if j.Queue && j.Wait != nil {
-			if reason, _ := j.Wait(ctx); reason != "" {
+			if reason, err := j.Wait(ctx); reason != "" || err != nil {
+				if err != nil {
+					d.opts.Log.Warn("queue item waiting", "job", j.Key, "err", err)
+				}
 				release()
 				<-d.slots
 				head = false // a waiting head leaves its place to the next item of the queue

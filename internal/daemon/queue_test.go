@@ -386,3 +386,38 @@ func TestStartShouldNotAskWaitOfAJobOutsideTheQueue(t *testing.T) {
 	close(r.release)
 	d.Wait()
 }
+
+func TestStartShouldTreatAWaitErrorAsWaiting(t *testing.T) {
+	r := newRunner()
+	q := newQueue(r, "1", "2")
+	q.wait = map[string]func(context.Context) (string, error){"1": func(context.Context) (string, error) {
+		return "", errors.New("could not read the dependencies")
+	}}
+	slots := &slotsStub{queue: true}
+	var logs strings.Builder
+	d := New(Options{MaxParallel: 1, Log: slog.New(slog.NewTextHandler(&logs, nil)), Queue: q.jobs, Acquire: slots.acquire})
+	if n := d.PollQueue(context.Background()); n != 1 {
+		t.Fatalf("started %d, want the item after the one whose Wait failed", n)
+	}
+	if got := <-r.began; got != "/q#2" {
+		t.Fatalf("started %s, want the second item", got)
+	}
+	close(r.release)
+	d.Wait()
+	slots.mu.Lock()
+	asked, released := slices.Clone(slots.asked), slots.released
+	slots.mu.Unlock()
+	if want := []bool{true, true}; !slices.Equal(asked, want) || released != 2 {
+		t.Fatalf("the failed item gives its slot back: asked %v, %d releases", asked, released)
+	}
+	var warns []string
+	for _, l := range strings.Split(logs.String(), "\n") {
+		if strings.Contains(l, `msg="queue item waiting"`) {
+			warns = append(warns, l)
+		}
+	}
+	if len(warns) != 1 || !strings.Contains(warns[0], "level=WARN") || !strings.Contains(warns[0], "job=/q#1") ||
+		!strings.Contains(warns[0], "could not read the dependencies") {
+		t.Fatalf("want one warning with the job and the error, got %q\n%s", warns, logs.String())
+	}
+}
