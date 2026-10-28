@@ -202,7 +202,7 @@ func (s boardSource) Queue(ctx context.Context) ([]board.QueueItem, error) {
 	}
 	out := make([]board.QueueItem, 0, len(items))
 	for _, it := range items {
-		out = append(out, board.QueueItem{Position: it.Position, Repo: it.Repo, Issue: it.Issue, Title: it.Title, AddedAt: it.AddedAt})
+		out = append(out, board.QueueItem{Position: it.Position, Repo: it.Repo, Issue: it.Issue, Title: it.Title, AddedAt: it.AddedAt, Waiting: it.Waiting})
 	}
 	return out, nil
 }

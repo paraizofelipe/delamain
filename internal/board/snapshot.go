@@ -34,7 +34,8 @@ type Card struct {
 	Outcome       string    `json:"outcome,omitempty"`
 	Reason        string    `json:"reason,omitempty"`
 	Spend         string    `json:"spend,omitempty"`
-	Hint          string    `json:"hint,omitempty"` // the command a person runs next
+	Hint          string    `json:"hint,omitempty"`    // the command a person runs next
+	Waiting       string    `json:"waiting,omitempty"` // what a queued item waits for
 	Rounds        []Round   `json:"rounds,omitempty"`
 	UpdatedAt     time.Time `json:"updated_at"`
 }
@@ -115,7 +116,7 @@ func (b *builder) snapshot(ctx context.Context) (Snapshot, error) {
 		c.Cards = append(c.Cards, Card{
 			Key: fmt.Sprintf("queue-%d", q.Position), Kind: "queued", Repo: filepath.Base(q.Repo),
 			Issue: fmt.Sprintf("#%d", q.Issue), Title: q.Title, UpdatedAt: q.AddedAt,
-			Hint: fmt.Sprintf("posição %d", q.Position),
+			Hint: fmt.Sprintf("posição %d", q.Position), Waiting: q.Waiting,
 		})
 	}
 	for _, r := range runs {

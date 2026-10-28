@@ -192,7 +192,10 @@ func TestRoundsOfPRRuns(t *testing.T) {
 
 func TestSnapshotPlacesEveryCard(t *testing.T) {
 	src := &fakeSource{
-		queue: []QueueItem{{Position: 1, Repo: "/src/app", Issue: 9, Title: "next"}},
+		queue: []QueueItem{
+			{Position: 1, Repo: "/src/app", Issue: 9, Title: "next", Waiting: "blocked by #7"},
+			{Position: 2, Repo: "/src/app", Issue: 10, Title: "then"},
+		},
 		runs: []Run{
 			{ID: 1, Repo: "/src/app", State: "plan", Dir: t.TempDir()},
 			{ID: 2, Repo: "/src/app", State: "implement", Orphaned: true, Dir: t.TempDir()},
@@ -212,10 +215,16 @@ func TestSnapshotPlacesEveryCard(t *testing.T) {
 			where[col.Key+"/"+c.Key] = c
 		}
 	}
-	for _, key := range []string{"queue/queue-1", "plan/run-1", "human/run-2", "done/run-3", "human/run-4"} {
+	for _, key := range []string{"queue/queue-1", "queue/queue-2", "plan/run-1", "human/run-2", "done/run-3", "human/run-4"} {
 		if _, ok := where[key]; !ok {
 			t.Errorf("no card %s in %v", key, where)
 		}
+	}
+	if c := where["queue/queue-1"]; c.Kind != "queued" || c.Waiting != "blocked by #7" {
+		t.Errorf("waiting queued card = %+v", c)
+	}
+	if c := where["queue/queue-2"]; c.Waiting != "" {
+		t.Errorf("queued card that waits for nothing = %+v", c)
 	}
 	if c := where["plan/run-1"]; !c.Live || c.Repo != "app" || c.Kind != "issue" {
 		t.Errorf("active card = %+v", c)

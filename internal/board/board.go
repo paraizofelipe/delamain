@@ -67,6 +67,7 @@ type QueueItem struct {
 	Issue    int       `json:"issue"`
 	Title    string    `json:"title"`
 	AddedAt  time.Time `json:"added_at"`
+	Waiting  string    `json:"waiting,omitempty"` // what the item waits for before it can start
 }
 
 // Status is the header of the board: the daemon, the slots and the day's spend.
