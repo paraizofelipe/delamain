@@ -283,16 +283,80 @@ func Matrix(dir string, plan artifacts.Plan, changed []string) []string {
 	return problems
 }
 
-var dependsRe = regexp.MustCompile(`(?i)\b(?:blocked by|depends on|depende de|bloquead[ao] por)\s+#(\d+)`)
+var (
+	dependsRe = regexp.MustCompile(`(?i)\b(?:blocked by|depends on|depende de|bloquead[ao] por)\s+#(\d+)`)
+	// dependsOnLine is the canonical marker: "depends_on:" at the start of a line, optionally
+	// inside quotes and after a list marker.
+	dependsOnLine = regexp.MustCompile(`^[ \t]*(?:>[ \t]*)*(?:[-*+][ \t]*)?depends_on:(.*)$`)
+	dependsOnRef  = regexp.MustCompile(`^#([0-9]+)$`)
+	// fenceLine opens or closes a fenced code block, also inside quotes.
+	fenceLine = regexp.MustCompile("^[ \\t]*(?:>[ \\t]*)*(`{3,}|~{3,})(.*)$")
+)
 
-// Dependencies lists the issue numbers a body declares as blockers, sorted and unique.
-func Dependencies(body string) []int {
+// maxQuotedLine caps how much of a malformed line the error echoes: the line comes from the
+// issue author and ends up in the needs-info comment.
+const maxQuotedLine = 80
+
+// Dependencies lists the issue numbers a body declares as blockers, sorted and unique. Lines
+// "depends_on: #N" win: when the body has any, the legacy mentions ("blocked by #N") are ignored.
+// The first malformed "depends_on:" line is an error that quotes it. Lines inside fenced code
+// blocks are examples, not markers; the legacy mentions still scan the whole body.
+func Dependencies(body string) ([]int, error) {
 	var out []int
-	for _, m := range dependsRe.FindAllStringSubmatch(body, -1) {
-		if n, err := strconv.Atoi(m[1]); err == nil && !slices.Contains(out, n) {
-			out = append(out, n)
+	marked := false
+	fence := "" // the open fence, "" outside a code block
+	for line := range strings.SplitSeq(strings.ReplaceAll(body, "\r", ""), "\n") {
+		if f := fenceLine.FindStringSubmatch(line); f != nil {
+			switch {
+			case fence == "":
+				fence = f[1]
+				continue
+			case f[1][0] == fence[0] && len(f[1]) >= len(fence) && strings.TrimSpace(f[2]) == "":
+				fence = ""
+				continue
+			}
+		}
+		if fence != "" {
+			continue
+		}
+		m := dependsOnLine.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		marked = true
+		refs := strings.FieldsFunc(m[1], func(r rune) bool { return r == ',' || r == ' ' || r == '\t' })
+		if len(refs) == 0 {
+			return nil, malformedDependsOn(line)
+		}
+		for _, ref := range refs {
+			d := dependsOnRef.FindStringSubmatch(ref)
+			if d == nil {
+				return nil, malformedDependsOn(line)
+			}
+			n, err := strconv.Atoi(d[1])
+			if err != nil || n <= 0 {
+				return nil, malformedDependsOn(line)
+			}
+			if !slices.Contains(out, n) {
+				out = append(out, n)
+			}
+		}
+	}
+	if !marked {
+		for _, m := range dependsRe.FindAllStringSubmatch(body, -1) {
+			if n, err := strconv.Atoi(m[1]); err == nil && !slices.Contains(out, n) {
+				out = append(out, n)
+			}
 		}
 	}
 	slices.Sort(out)
-	return out
+	return out, nil
+}
+
+func malformedDependsOn(line string) error {
+	line = strings.TrimSpace(line)
+	if r := []rune(line); len(r) > maxQuotedLine {
+		line = string(r[:maxQuotedLine]) + "…"
+	}
+	return fmt.Errorf("linha %q: esperado #N separados por vírgula ou espaço", line)
 }

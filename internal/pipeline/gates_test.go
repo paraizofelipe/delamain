@@ -245,6 +245,37 @@ func TestPreflightShouldFailClosedWhenABlockerCannotBeChecked(t *testing.T) {
 	}
 }
 
+func TestBlockersShouldUseOnlyDependsOnLinesWhenPresent(t *testing.T) {
+	hs := newHarness(t, happy)
+	f := withForge(hs)
+	f.issues = map[int]forge.Issue{3: {Number: 3, Open: true}, 4: {Number: 4, Open: true}}
+	hs.task.Body += "\n\nblocked by #4\n- depends_on: #3"
+	res := hs.run(t)
+	if res.Outcome != OutcomeNeedsInfo || !strings.Contains(res.Reason, "#3") || strings.Contains(res.Reason, "#4") {
+		t.Fatalf("a depends_on line replaces the legacy mentions: %s %s", res.Outcome, res.Reason)
+	}
+	if runs, _ := hs.st.UnfinishedRuns(context.Background()); len(runs) != 0 {
+		t.Fatal("blocked tasks create no run")
+	}
+}
+
+func TestBlockersShouldRefuseTheRunWhenDependsOnIsMalformed(t *testing.T) {
+	hs := newHarness(t, happy)
+	f := withForge(hs) // no issue known: a lookup would add "não foi possível verificar"
+	hs.task.Body += "\n\n- depends_on: 81"
+	res := hs.run(t)
+	if res.Outcome != OutcomeNeedsInfo || !strings.Contains(res.Reason, "depends_on inválido:") ||
+		!strings.Contains(res.Reason, "depends_on: 81") || strings.Contains(res.Reason, "verificar") {
+		t.Fatalf("a malformed depends_on line refuses the run: %s %s", res.Outcome, res.Reason)
+	}
+	if runs, _ := hs.st.UnfinishedRuns(context.Background()); len(runs) != 0 {
+		t.Fatal("refused tasks create no run")
+	}
+	if len(f.comments) == 0 || !strings.Contains(f.comments[len(f.comments)-1], "depends_on inválido:") {
+		t.Fatalf("the issue is told why: %v", f.comments)
+	}
+}
+
 func TestVerifyShouldFailWhenACommitSubjectIsTooLong(t *testing.T) {
 	hs := newHarness(t, happy)
 	hs.h.behave = func(role string, n int, text string) reply {

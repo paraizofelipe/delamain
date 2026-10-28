@@ -3,6 +3,7 @@ package gates
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -180,17 +181,137 @@ func TestMatrixShouldRejectPathsEscapingTheWorktree(t *testing.T) {
 	}
 }
 
-func TestDependenciesShouldFindBlockingIssueReferences(t *testing.T) {
-	body := "Blocked by #12.\nDepende de #3 e depends on #40\nbloqueada por #7\nveja #99"
-	got := Dependencies(body)
-	want := []int{3, 7, 12, 40}
-	if len(got) != len(want) {
-		t.Fatalf("got %v, want %v", got, want)
+func TestDependenciesShouldKeepTheLegacyRegexWithoutDependsOn(t *testing.T) {
+	for name, tc := range map[string]struct {
+		body string
+		want []int
+	}{
+		"legacy mentions":           {"Blocked by #12.\nDepende de #3 e depends on #40\nbloqueada por #7\nveja #99", []int{3, 7, 12, 40}},
+		"marker in the middle":      {"veja depends_on: #5 no meio da frase\nblocked by #2", []int{2}},
+		"marker with another case":  {"Depends_On: #5\nblocked by #2", []int{2}},
+		"marker with spaced colon":  {"depends_on : #5\nblocked by #2", []int{2}},
+		"marker as a checkbox item": {"- [ ] depends_on: #5\nblocked by #2", []int{2}},
+		"empty body":                {"", nil},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := Dependencies(tc.body)
+			if err != nil || !slices.Equal(got, tc.want) {
+				t.Fatalf("got %v %v, want %v", got, err, tc.want)
+			}
+		})
 	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("got %v, want %v", got, want)
-		}
+}
+
+func TestDependenciesShouldReadDependsOnLines(t *testing.T) {
+	for name, body := range map[string]string{
+		"dash item":       "Contexto.\n\n- depends_on: #81\n",
+		"no marker":       "depends_on: #81",
+		"quote":           "> depends_on: #81",
+		"quoted item":     "> - depends_on: #81",
+		"star item":       "* depends_on: #81",
+		"plus item":       "+ depends_on: #81",
+		"indented":        "  \t- depends_on: #81",
+		"nested quote":    ">> depends_on: #81",
+		"crlf body":       "Contexto.\r\n\r\n- depends_on: #81\r\n",
+		"trailing spaces": "- depends_on:   #81   ",
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := Dependencies(body)
+			if err != nil || !slices.Equal(got, []int{81}) {
+				t.Fatalf("got %v %v, want [81]", got, err)
+			}
+		})
+	}
+	got, err := Dependencies("- depends_on: #82\n- depends_on: #81")
+	if err != nil || !slices.Equal(got, []int{81, 82}) {
+		t.Fatalf("two lines: got %v %v, want [81 82]", got, err)
+	}
+}
+
+func TestDependenciesShouldReadSeveralIssuesInOneDependsOnLine(t *testing.T) {
+	for name, line := range map[string]string{
+		"commas":           "- depends_on: #82, #83",
+		"spaces":           "- depends_on: #82 #83",
+		"no spaces, dup":   "- depends_on: #83,#82,#82",
+		"loose separators": "- depends_on: #82 , #83,",
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := Dependencies(line)
+			if err != nil || !slices.Equal(got, []int{82, 83}) {
+				t.Fatalf("got %v %v, want [82 83]", got, err)
+			}
+		})
+	}
+}
+
+func TestDependenciesShouldIgnoreTheLegacyRegexWhenDependsOnIsPresent(t *testing.T) {
+	got, err := Dependencies("blocked by #4\nDepende de #5\n- depends_on: #3")
+	if err != nil || !slices.Equal(got, []int{3}) {
+		t.Fatalf("got %v %v, want [3]", got, err)
+	}
+}
+
+func TestDependenciesShouldRejectMalformedDependsOnLines(t *testing.T) {
+	for name, tc := range map[string]struct{ body, line string }{
+		"number without hash":    {"- depends_on: 81", "- depends_on: 81"},
+		"trailing words":         {"depends_on: #81 até sair", "depends_on: #81 até sair"},
+		"zero":                   {"depends_on: #0", "depends_on: #0"},
+		"empty":                  {"depends_on:", "depends_on:"},
+		"blank":                  {"- depends_on:   ", "- depends_on:"},
+		"bare hash":              {"depends_on: #", "depends_on: #"},
+		"negative":               {"depends_on: #-1", "depends_on: #-1"},
+		"signed":                 {"depends_on: #+1", "depends_on: #+1"},
+		"letters":                {"depends_on: #8a", "depends_on: #8a"},
+		"trailing dot":           {"depends_on: #81.", "depends_on: #81."},
+		"overflow":               {"depends_on: #99999999999999999999", "depends_on: #99999999999999999999"},
+		"valid then malformed":   {"- depends_on: #3\nblocked by #4\n- depends_on: 81", "- depends_on: 81"},
+		"first malformed counts": {"depends_on: x\ndepends_on: y", "depends_on: x"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := Dependencies(tc.body)
+			if err == nil || !strings.Contains(err.Error(), tc.line) {
+				t.Fatalf("got %v %v, want an error quoting %q", got, err, tc.line)
+			}
+		})
+	}
+	if got, err := Dependencies("depends_on: #081"); err != nil || !slices.Equal(got, []int{81}) {
+		t.Fatalf("leading zeros are still a number: %v %v", got, err)
+	}
+}
+
+func TestDependenciesShouldQuoteAndTruncateTheMalformedLineInTheError(t *testing.T) {
+	_, err := Dependencies("depends_on: #1 " + strings.Repeat("x", 10000) + "\x1b")
+	if err == nil || len(err.Error()) >= 200 || !strings.Contains(err.Error(), `…"`) {
+		t.Fatalf("a long line is cut short: %v", err)
+	}
+	_, err = Dependencies("depends_on: #1 \x1b[31mvermelho")
+	if err == nil || strings.Contains(err.Error(), "\x1b") || !strings.Contains(err.Error(), `\x1b[31mvermelho"`) {
+		t.Fatalf("control characters are escaped: %q", err)
+	}
+}
+
+func TestDependenciesShouldIgnoreDependsOnInsideCodeBlocks(t *testing.T) {
+	for name, tc := range map[string]struct {
+		body string
+		want []int
+	}{
+		"backticks":            {"```\n- depends_on: #5\n```\n- depends_on: #6", []int{6}},
+		"tildes":               {"~~~yaml\n- depends_on: #5\n~~~\n- depends_on: #6", []int{6}},
+		"malformed inside":     {"```\ndepends_on: 81\n```\n- depends_on: #6", []int{6}},
+		"long fence":           {"````\n```\n- depends_on: #5\n````\n- depends_on: #6", []int{6}},
+		"other fence char":     {"```\n~~~\n- depends_on: #5\n```\n- depends_on: #6", []int{6}},
+		"unclosed fence":       {"- depends_on: #6\n```\n- depends_on: #5\ndepends_on: 81", []int{6}},
+		"fence inside a quote": {"> ```\n> - depends_on: #5\n> ```\n- depends_on: #6", []int{6}},
+		"crlf fence":           {"```\r\n- depends_on: #5\r\n```\r\n- depends_on: #6\r\n", []int{6}},
+		"only inside a block":  {"```\n- depends_on: #5\n```\nblocked by #7", []int{7}},
+		"indented code counts": {"    - depends_on: #6\nblocked by #7", []int{6}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := Dependencies(tc.body)
+			if err != nil || !slices.Equal(got, tc.want) {
+				t.Fatalf("got %v %v, want %v", got, err, tc.want)
+			}
+		})
 	}
 }
 
