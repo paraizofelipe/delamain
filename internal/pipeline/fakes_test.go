@@ -540,14 +540,15 @@ func (g *fakeGit) RemoteBranchExists(_ context.Context, _, branch string) (bool,
 
 // fakeForge records deliveries and issue updates.
 type fakeForge struct {
-	open       *forge.PR
-	created    []forge.PROptions
-	createErr  error
-	comments   []string
-	relabels   [][2][]string // {add, remove}
-	relabelErr error
-	issues     map[int]forge.Issue
-	blockers   []forge.Blocker
+	open        *forge.PR
+	created     []forge.PROptions
+	createErr   error
+	comments    []string
+	relabels    [][2][]string // {add, remove}
+	relabelErr  error
+	issues      map[int]forge.Issue
+	blockers    []forge.Blocker
+	blockersErr error
 	// PR review state.
 	kind    forge.Kind // "" is GitHub
 	pr      forge.PRDetail
@@ -578,7 +579,9 @@ func (f *fakeForge) Issue(_ context.Context, n int) (forge.Issue, error) {
 	}
 	return forge.Issue{}, fmt.Errorf("issue #%d: HTTP 404", n)
 }
-func (f *fakeForge) Blockers(context.Context, int) ([]forge.Blocker, error)   { return f.blockers, nil }
+func (f *fakeForge) Blockers(context.Context, int) ([]forge.Blocker, error) {
+	return f.blockers, f.blockersErr
+}
 func (f *fakeForge) ListReady(context.Context, string) ([]forge.Issue, error) { return nil, nil }
 func (f *fakeForge) OpenPR(context.Context, string) (*forge.PR, error)        { return f.open, nil }
 func (f *fakeForge) CreatePR(_ context.Context, o forge.PROptions) (forge.PR, error) {

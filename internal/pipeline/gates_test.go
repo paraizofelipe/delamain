@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -364,5 +365,54 @@ func TestOpenBlockersShouldIgnoreClosedBlockers(t *testing.T) {
 	got, err := OpenBlockers(context.Background(), f, task)
 	if err != nil || len(got) != 0 {
 		t.Fatalf("closed blockers do not block: %q, %v", got, err)
+	}
+}
+
+func TestOpenBlockersShouldReturnErrorsWhenTheForgeCannotBeRead(t *testing.T) {
+	apiErr := &forge.APIError{Forge: forge.GitHub, Op: "blocked_by", Status: 502, Message: "bad gateway"}
+	for _, tc := range []struct {
+		name   string
+		forge  *fakeForge
+		body   string
+		prefix string
+		target error
+	}{
+		{"malformed depends_on", &fakeForge{}, "- depends_on: 81", "depends_on inválido: ", nil},
+		{"unreadable dependency", &fakeForge{}, "- depends_on: #9", "não foi possível verificar a dependência #9: ", nil},
+		{"unreadable native blockers", &fakeForge{blockersErr: apiErr}, "", "não foi possível verificar os bloqueadores da issue #7: ", apiErr},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := OpenBlockers(context.Background(), tc.forge, Task{Issue: 7, Body: tc.body})
+			if err == nil || got != nil || !strings.HasPrefix(err.Error(), tc.prefix) {
+				t.Fatalf("got %q, %v; want an error starting with %q", got, err, tc.prefix)
+			}
+			if tc.target != nil && !errors.Is(err, tc.target) {
+				t.Fatalf("the forge error is wrapped: %v", err)
+			}
+		})
+	}
+	t.Run("run refuses when native blockers cannot be read", func(t *testing.T) {
+		hs := newHarness(t, happy)
+		f := withForge(hs)
+		f.blockersErr = apiErr
+		res := hs.run(t)
+		if res.Outcome != OutcomeNeedsInfo || !strings.Contains(res.Reason, "não foi possível verificar os bloqueadores da issue #7: ") {
+			t.Fatalf("an unreadable blocker list fails closed: %s %s", res.Outcome, res.Reason)
+		}
+		if runs, _ := hs.st.UnfinishedRuns(context.Background()); len(runs) != 0 {
+			t.Fatal("refused tasks create no run")
+		}
+	})
+}
+
+func TestOpenBlockersShouldSkipNativeBlockersForLocalTasks(t *testing.T) {
+	f := &fakeForge{
+		issues:      map[int]forge.Issue{3: {Number: 3, Open: true}},
+		blockers:    []forge.Blocker{{Number: 82, Ref: "#82", Open: true}},
+		blockersErr: errors.New("issue #0: HTTP 404"),
+	}
+	got, err := OpenBlockers(context.Background(), f, Task{Ref: "task:x", Body: "- depends_on: #3"})
+	if err != nil || !slices.Equal(got, []string{"#3 (corpo)"}) {
+		t.Fatalf("a local task has no native relations, only its body: %q, %v", got, err)
 	}
 }

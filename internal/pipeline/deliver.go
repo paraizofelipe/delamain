@@ -35,8 +35,9 @@ func (r *Runner) blockers(ctx context.Context, t Task) []string {
 
 // OpenBlockers lists the open issues that block t: the dependencies its body declares ("depends_on:
 // #N" lines or, when there are none, the legacy mentions) and the forge's native "blocked by"
-// relations. Each one reads "<ref> (<sources>)", e.g. "#82 (corpo)" or "acme/other#90 (link)".
-// A malformed "depends_on:" line or a blocker that cannot be read is an error.
+// relations. Each one reads "<ref> (<sources>)", e.g. "#82 (corpo, link)" or "acme/other#90 (link)",
+// once per ref and sorted by number. A malformed "depends_on:" line or a blocker that cannot be
+// read is an error.
 func OpenBlockers(ctx context.Context, fg forge.Forge, t Task) ([]string, error) {
 	deps, err := gates.Dependencies(t.Body)
 	if err != nil {
@@ -67,9 +68,11 @@ func OpenBlockers(ctx context.Context, fg forge.Forge, t Task) ([]string, error)
 			add(n, fmt.Sprintf("#%d", n), "corpo")
 		}
 	}
-	native, err := fg.Blockers(ctx, t.Issue)
-	if err != nil {
-		return nil, err
+	var native []forge.Blocker
+	if t.Issue != 0 { // a local task has no issue, so no native relations
+		if native, err = fg.Blockers(ctx, t.Issue); err != nil {
+			return nil, fmt.Errorf("não foi possível verificar os bloqueadores da issue #%d: %w", t.Issue, err)
+		}
 	}
 	for _, b := range native {
 		if !b.Open {
