@@ -533,3 +533,30 @@ func TestGitLabBlockersShouldNameBlockersFromAnotherProject(t *testing.T) {
 		t.Fatalf("blockers = %+v, want %+v", bs, want)
 	}
 }
+
+func TestGitLabBlockersShouldReturnEmptyWithoutBlockingLinks(t *testing.T) {
+	// GitLab Free has no blocking links: the issue has none or only relates_to ones.
+	for _, tc := range []struct{ name, links string }{
+		{"no links", `[]`},
+		{"only relates_to", `[{"iid":4,"state":"opened","link_type":"relates_to","references":{"full":"grp/api#4"}}]`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, api := gitlabAt(t, map[string]func(http.ResponseWriter, *http.Request){
+				"GET " + glProject + "/issues/7/links": reply(200, tc.links),
+			})
+			bs, err := f.Blockers(context.Background(), 7)
+			if err != nil || len(bs) != 0 {
+				t.Fatalf("an issue without blocking links must have no blockers: %+v %v", bs, err)
+			}
+			api.find(t, http.MethodGet, glProject+"/issues/7/links")
+		})
+	}
+}
+
+func TestGitLabBlockersShouldPropagateAPIErrors(t *testing.T) {
+	f, _ := gitlabAt(t, map[string]func(http.ResponseWriter, *http.Request){
+		"GET " + glProject + "/issues/7/links": forbidden,
+	})
+	bs, err := f.Blockers(context.Background(), 7)
+	wantForbidden(t, bs, err)
+}
