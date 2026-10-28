@@ -395,7 +395,21 @@ func (g *gitlabClient) RelabelPR(ctx context.Context, n int, add, remove []strin
 	})
 }
 
-// Blockers is empty until GitLab's issue links are read (epic #95).
-func (g *gitlabClient) Blockers(context.Context, int) ([]Blocker, error) {
-	return nil, nil
+// Blockers reads the issue's links and keeps the "is_blocked_by" ones; GitLab doesn't page them.
+func (g *gitlabClient) Blockers(ctx context.Context, n int) ([]Blocker, error) {
+	var vs []*gogitlab.IssueRelation
+	err := g.do(ctx, "blockers", func() (resp *gogitlab.Response, err error) {
+		vs, resp, err = g.api.IssueLinks.ListIssueRelations(g.repo.Path, int64(n), gogitlab.WithContext(ctx))
+		return resp, err
+	})
+	if err != nil {
+		return nil, err
+	}
+	bs := []Blocker{}
+	for _, v := range vs {
+		if v.LinkType == "is_blocked_by" {
+			bs = append(bs, Blocker{Number: int(v.IID), Ref: "#" + strconv.FormatInt(v.IID, 10), Open: v.State == opened})
+		}
+	}
+	return bs, nil
 }
