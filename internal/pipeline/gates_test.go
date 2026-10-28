@@ -336,3 +336,21 @@ func TestOpenBlockersShouldJoinBodyAndNativeBlockers(t *testing.T) {
 		t.Fatalf("got %q, %v; want %q", got, err, want)
 	}
 }
+
+func TestOpenBlockersShouldListADependencyFromBothSourcesOnce(t *testing.T) {
+	f := &fakeForge{
+		issues: map[int]forge.Issue{82: {Number: 82, Open: true}, 90: {Number: 90, Open: true}},
+		blockers: []forge.Blocker{
+			{Number: 90, Ref: "#90", Open: true},
+			{Number: 82, Ref: "acme/other#82", Open: true},
+			{Number: 82, Ref: "#82", Open: true},
+			{Number: 5, Ref: "#5", Open: true},
+		},
+	}
+	task := Task{Issue: 7, Body: "- depends_on: #90, #82"}
+	got, err := OpenBlockers(context.Background(), f, task)
+	want := []string{"#5 (link)", "#82 (corpo, link)", "acme/other#82 (link)", "#90 (corpo, link)"}
+	if err != nil || !slices.Equal(got, want) {
+		t.Fatalf("got %q, %v; want %q", got, err, want)
+	}
+}

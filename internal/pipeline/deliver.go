@@ -1,9 +1,11 @@
 package pipeline
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -40,14 +42,29 @@ func OpenBlockers(ctx context.Context, fg forge.Forge, t Task) ([]string, error)
 	if err != nil {
 		return nil, fmt.Errorf("depends_on inválido: %w", err)
 	}
-	var open []string
+	type blocker struct {
+		number  int
+		ref     string
+		sources []string
+	}
+	var open []*blocker
+	byRef := map[string]*blocker{}
+	add := func(number int, ref, source string) {
+		if b, ok := byRef[ref]; ok {
+			b.sources = append(b.sources, source)
+			return
+		}
+		b := &blocker{number: number, ref: ref, sources: []string{source}}
+		byRef[ref] = b
+		open = append(open, b)
+	}
 	for _, n := range deps {
 		is, err := fg.Issue(ctx, n)
 		if err != nil {
 			return nil, fmt.Errorf("não foi possível verificar a dependência #%d: %w", n, err)
 		}
 		if is.Open {
-			open = append(open, fmt.Sprintf("#%d (corpo)", n))
+			add(n, fmt.Sprintf("#%d", n), "corpo")
 		}
 	}
 	native, err := fg.Blockers(ctx, t.Issue)
@@ -59,9 +76,16 @@ func OpenBlockers(ctx context.Context, fg forge.Forge, t Task) ([]string, error)
 		if ref == "" {
 			ref = fmt.Sprintf("#%d", b.Number)
 		}
-		open = append(open, ref+" (link)")
+		add(b.Number, ref, "link")
 	}
-	return open, nil
+	slices.SortFunc(open, func(a, b *blocker) int {
+		return cmp.Or(cmp.Compare(a.number, b.number), strings.Compare(a.ref, b.ref))
+	})
+	out := make([]string, 0, len(open))
+	for _, b := range open {
+		out = append(out, fmt.Sprintf("%s (%s)", b.ref, strings.Join(b.sources, ", ")))
+	}
+	return out, nil
 }
 
 // checkForge stops before any worktree exists when the branch was already published or has an
