@@ -1,9 +1,11 @@
 package pipeline
 
 import (
+	"errors"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // minorReview approves with one non-blocking finding on every review.
@@ -136,5 +138,98 @@ func TestMinorPassShouldResetWorktreeWhenGatesFail(t *testing.T) {
 	}
 	if len(res.Commits) != 1 {
 		t.Fatalf("only the approved commit is delivered, commits=%v", res.Commits)
+	}
+}
+
+// onMinorPass replaces the implementer's second turn, the minor pass, with pass.
+func onMinorPass(pass func(rep reply) reply) behavior {
+	return func(role string, n int, text string) reply {
+		rep := minorReview(role, n, text)
+		if role == "implementer" && n == 2 {
+			return pass(rep)
+		}
+		return rep
+	}
+}
+
+func minorPassWarnings(res Result) []string {
+	var ws []string
+	for _, w := range res.Warnings {
+		if strings.Contains(w, "passe de ajustes") {
+			ws = append(ws, w)
+		}
+	}
+	return ws
+}
+
+func TestMinorPassShouldResetAndWarnWhenImplementerFails(t *testing.T) {
+	hs := newHarness(t, onMinorPass(func(reply) reply { return reply{err: errors.New("boom")} }))
+	hs.r.Cfg.Pipeline.FixMinors = true
+	f := withForge(hs)
+	res := hs.run(t)
+
+	if want := []string{hs.g.wt + " 00000001"}; !slices.Equal(hs.g.resets, want) {
+		t.Fatalf("a failed pass is reset to the approved head, resets=%v want %v", hs.g.resets, want)
+	}
+	if !strings.HasPrefix(res.MinorPass, "descartado:") || !strings.Contains(res.MinorPass, "boom") {
+		t.Fatalf("the discard must carry the error, minor=%q", res.MinorPass)
+	}
+	if ws := minorPassWarnings(res); len(ws) != 1 || !strings.Contains(ws[0], "boom") {
+		t.Fatalf("a failed pass leaves exactly one warning with the error, warnings=%v", res.Warnings)
+	}
+	if res.Outcome != OutcomeApproved || len(f.created) != 1 || f.created[0].Draft {
+		t.Fatalf("a failed pass keeps the run approved with a ready PR: %s (%s) %+v", res.Outcome, res.Reason, f.created)
+	}
+}
+
+func TestMinorPassShouldResetAndStayApprovedWhenBudgetRunsOut(t *testing.T) {
+	hs := newHarness(t, onMinorPass(func(rep reply) reply {
+		rep.usage = 20_000
+		return rep
+	}))
+	hs.r.Cfg.Pipeline.FixMinors = true
+	hs.r.Cfg.Budget.PerIssue = 10_000
+	res := hs.run(t)
+
+	if want := []string{hs.g.wt + " 00000001"}; !slices.Equal(hs.g.resets, want) {
+		t.Fatalf("a pass stopped by the budget is reset to the approved head, resets=%v want %v", hs.g.resets, want)
+	}
+	if !strings.HasPrefix(res.MinorPass, "descartado:") || res.Outcome != OutcomeApproved {
+		t.Fatalf("the budget discards the pass, not the approval: %s (%s) minor=%q", res.Outcome, res.Reason, res.MinorPass)
+	}
+	if len(res.Commits) != 1 {
+		t.Fatalf("only the approved commit is delivered, commits=%v", res.Commits)
+	}
+}
+
+func TestMinorPassShouldHaltWithoutDiscardingWhenStopIsRequested(t *testing.T) {
+	var hs *harness
+	hs = newHarness(t, onMinorPass(func(rep reply) reply {
+		requestStop(t, hs, "#7")
+		rep.hang = true
+		return rep
+	}))
+	hs.r.Cfg.Pipeline.FixMinors = true
+	hs.r.StopPoll = 5 * time.Millisecond
+	hs.r.Cfg.Pipeline.PromptTimeout = 5 * time.Second
+	res := hs.run(t)
+
+	if res.Outcome != OutcomeHalted || res.Reason != "parada pelo usuário (delamain stop)" {
+		t.Fatalf("a stop during the pass halts the run, got %s: %s", res.Outcome, res.Reason)
+	}
+	if len(hs.g.resets) != 0 || res.MinorPass != "" || len(minorPassWarnings(res)) != 0 {
+		t.Fatalf("a stop is not a discard: resets=%v minor=%q warnings=%v", hs.g.resets, res.MinorPass, res.Warnings)
+	}
+}
+
+func TestMinorPassShouldHaltWhenResetFails(t *testing.T) {
+	hs := newHarness(t, minorReview)
+	hs.r.Cfg.Pipeline.FixMinors = true
+	hs.h.checks = failSecondTest
+	hs.g.resetErr = errors.New("index.lock exists")
+	res := hs.run(t)
+
+	if res.Outcome != OutcomeHalted || !strings.Contains(res.Reason, "index.lock exists") {
+		t.Fatalf("a pass that cannot be discarded must not ship as approved, got %s: %s", res.Outcome, res.Reason)
 	}
 }

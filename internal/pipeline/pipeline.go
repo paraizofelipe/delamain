@@ -461,40 +461,66 @@ func (r *Runner) maybeMinorPass(ctx context.Context, ru *run, iter int, review a
 
 // minorPass gives the implementer one turn over the non-blocking findings of the approved
 // iteration iter, then re-runs the gates. It is not an iteration: no review, no History entry.
+// A pass the gates reject or that fails is discarded and the run stays approved.
 func (r *Runner) minorPass(ctx context.Context, ru *run, iter int, review artifacts.Review) error {
 	// Read before the agent's turn: nothing the pass leaves behind may pick the reset target.
 	head, err := r.Git.Head(ctx, ru.repo.Worktree)
 	if err != nil {
-		return err
+		return r.minorPassFailed(ctx, ru, "", err)
 	}
-	dir := filepath.Join(ru.dir, "minors")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	if err := r.setState(ctx, ru, store.StateImplement); err != nil {
-		return err
-	}
-	data := r.stageData(ru, iter, filepath.Join(dir, "impl.json"), nonBlockingFeedback(review))
-	data.MinorPass = true
-	if _, err := stepArtifact[artifacts.Impl](ctx, r, ru, "implementer", "implement", data); err != nil {
-		return err
-	}
-	if err := r.setState(ctx, ru, store.StateVerify); err != nil {
-		return err
-	}
-	checks, err := r.verify(ctx, ru, dir)
+	checks, err := r.runMinorPass(ctx, ru, iter, review)
 	if err != nil {
-		return err
+		return r.minorPassFailed(ctx, ru, head, err)
 	}
 	if allPassed(checks) {
 		ru.res.MinorPass = "aplicado"
 		return nil
 	}
-	if err := r.Git.ResetHard(ctx, ru.repo.Worktree, head); err != nil {
+	return r.discardMinorPass(ctx, ru, head, fmt.Sprintf("gates %s falharam", strings.Join(failedChecks(checks), ", ")))
+}
+
+func (r *Runner) runMinorPass(ctx context.Context, ru *run, iter int, review artifacts.Review) ([]CheckResult, error) {
+	dir := filepath.Join(ru.dir, "minors")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, err
+	}
+	if err := r.setState(ctx, ru, store.StateImplement); err != nil {
+		return nil, err
+	}
+	data := r.stageData(ru, iter, filepath.Join(dir, "impl.json"), nonBlockingFeedback(review))
+	data.MinorPass = true
+	if _, err := stepArtifact[artifacts.Impl](ctx, r, ru, "implementer", "implement", data); err != nil {
+		return nil, err
+	}
+	if err := r.setState(ctx, ru, store.StateVerify); err != nil {
+		return nil, err
+	}
+	return r.verify(ctx, ru, dir)
+}
+
+// minorPassFailed discards a pass that errored, budget halts included, and warns about it. A
+// cancelled run (delamain stop, interrupt) is not a discard: the error halts it as any stop does.
+func (r *Runner) minorPassFailed(ctx context.Context, ru *run, head string, err error) error {
+	if ctx.Err() != nil {
 		return err
 	}
-	ru.res.MinorPass = fmt.Sprintf("descartado: gates %s falharam", strings.Join(failedChecks(checks), ", "))
-	ru.log.Info("minor pass discarded", "run", ru.rec.ID, "status", ru.res.MinorPass, "head", short(head))
+	if derr := r.discardMinorPass(ctx, ru, head, err.Error()); derr != nil {
+		return derr
+	}
+	ru.res.Warnings = append(ru.res.Warnings, "passe de ajustes não bloqueantes descartado: "+err.Error())
+	return nil
+}
+
+// discardMinorPass resets the worktree to head, the approved commit, unless head was never read.
+// A failed reset halts: the discarded work would otherwise ship in a ready PR.
+func (r *Runner) discardMinorPass(ctx context.Context, ru *run, head, reason string) error {
+	if head != "" {
+		if err := r.Git.ResetHard(ctx, ru.repo.Worktree, head); err != nil {
+			return haltf("passe de ajustes não bloqueantes: reset falhou: %v", err)
+		}
+	}
+	ru.res.MinorPass = "descartado: " + reason
+	ru.log.Warn("minor pass discarded", "run", ru.rec.ID, "status", ru.res.MinorPass, "head", short(head))
 	return nil
 }
 
