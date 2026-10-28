@@ -150,8 +150,9 @@ function renderRepoFilter(snap) {
 function cardNode(c, col) {
   const queued = c.kind === 'queued'
   const human = col === 'human'
-  const classes = ['card', queued && 'queued', c.live && 'live', human && 'human', col === 'done' && 'done'].filter(Boolean)
+  const classes = ['card', queued && 'queued', queued && c.waiting && 'waiting', c.live && 'live', human && 'human', col === 'done' && 'done'].filter(Boolean)
   const meta = []
+  if (queued && c.waiting) meta.push(el('span', { class: 'tag waiting', text: '⏳ aguardando ' + c.waiting }))
   if (c.kind !== 'issue' && !queued) meta.push(el('span', { class: `tag kind-${c.kind}`, text: KIND_LABEL[c.kind] || c.kind }))
   if (c.complexity) meta.push(el('span', { class: 'tag', text: c.complexity }))
   if (c.iteration) meta.push(el('span', { text: `iter ${c.iteration}/${c.max_iterations || '?'}` }))

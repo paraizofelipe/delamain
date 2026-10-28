@@ -113,3 +113,77 @@ func TestBoardShouldServeTheRunsOfTheStore(t *testing.T) {
 		t.Fatal("serveBoard did not stop with its context")
 	}
 }
+
+func TestBoardQueueShouldExposeWhatAnItemWaitsFor(t *testing.T) {
+	f := newFixture(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	blocked, err := f.st.Enqueue(ctx, f.repo, 4, "Blocked")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.st.Enqueue(ctx, f.repo, 5, "Free"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.st.SetQueueWaiting(ctx, blocked.ID, "blocked by #7"); err != nil {
+		t.Fatal(err)
+	}
+
+	in, closeIn, err := openInspector(ctx, func() (config.Config, error) { return config.Load(f.cfgFile, os.Getenv) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeIn()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	served := make(chan error, 1)
+	go func() {
+		served <- serveBoard(ctx, ln, boardSource{in: in}, boardOptions{interval: 50 * time.Millisecond, limit: 20})
+	}()
+
+	res, err := http.Get("http://" + ln.Addr().String() + "/api/snapshot") //nolint:noctx // test
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+	var snap struct {
+		Columns []struct {
+			Key   string           `json:"key"`
+			Cards []map[string]any `json:"cards"`
+		} `json:"columns"`
+	}
+	if err := json.Unmarshal(body, &snap); err != nil {
+		t.Fatalf("%v: %s", err, body)
+	}
+	cards := map[string]map[string]any{}
+	for _, col := range snap.Columns {
+		if col.Key != board.ColQueue {
+			continue
+		}
+		for _, c := range col.Cards {
+			key, _ := c["key"].(string)
+			cards[key] = c
+		}
+	}
+	if got := cards["queue-1"]["waiting"]; got != "blocked by #7" {
+		t.Errorf("waiting of the blocked item = %v, want %q (body: %s)", got, "blocked by #7", body)
+	}
+	if c, ok := cards["queue-2"]; !ok {
+		t.Errorf("no queue-2 in %s", body)
+	} else if got, ok := c["waiting"]; ok {
+		t.Errorf("an item that waits for nothing has waiting = %v (body: %s)", got, body)
+	}
+
+	cancel()
+	select {
+	case err := <-served:
+		if err != nil {
+			t.Fatalf("serveBoard: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("serveBoard did not stop with its context")
+	}
+}
