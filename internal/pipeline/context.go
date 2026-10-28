@@ -23,7 +23,7 @@ const maxContextLines = 800
 func planContext(worktree string, plan artifacts.Plan) string {
 	root, rootErr := os.OpenRoot(worktree)
 	if rootErr == nil {
-		defer root.Close()
+		defer func() { _ = root.Close() }()
 	}
 	var blocks []string
 	left := maxContextLines
