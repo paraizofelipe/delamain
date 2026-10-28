@@ -480,3 +480,11 @@ func TestGitLabThreadsShouldFollowPaginationPastOneHundredDiscussions(t *testing
 		t.Fatalf("the second page must be fetched exactly once, got %d calls", calls)
 	}
 }
+
+func TestGitLabBlockersShouldReturnEmpty(t *testing.T) {
+	f, _ := gitlabAt(t, map[string]func(http.ResponseWriter, *http.Request){})
+	bs, err := f.Blockers(context.Background(), 7)
+	if err != nil || len(bs) != 0 {
+		t.Fatalf("gitlab has no native blockers yet: %+v %v", bs, err)
+	}
+}

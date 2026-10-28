@@ -394,3 +394,8 @@ func (g *gitlabClient) RelabelPR(ctx context.Context, n int, add, remove []strin
 		return resp, err
 	})
 }
+
+// Blockers is empty until GitLab's issue links are read (epic #95).
+func (g *gitlabClient) Blockers(context.Context, int) ([]Blocker, error) {
+	return nil, nil
+}

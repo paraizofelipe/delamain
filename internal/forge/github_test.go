@@ -542,3 +542,107 @@ func TestGitHubResolveThreadShouldSendResolveReviewThreadMutation(t *testing.T) 
 		t.Fatal("a mutation GraphQL rejects must be an error")
 	}
 }
+
+func TestGitHubBlockersShouldListOpenAndClosedBlockers(t *testing.T) {
+	f, api := githubAt(t, map[string]func(http.ResponseWriter, *http.Request){
+		"GET /repos/acme/api/issues/7/dependencies/blocked_by": reply(200, `[
+			{"number":3,"state":"open","repository_url":"https://api.github.com/repos/acme/api"},
+			{"number":5,"state":"closed","repository_url":"https://api.github.com/repos/acme/api"}]`),
+	})
+	bs, err := f.Blockers(context.Background(), 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Blocker{{Number: 3, Ref: "#3", Open: true}, {Number: 5, Ref: "#5", Open: false}}
+	if !reflect.DeepEqual(bs, want) {
+		t.Fatalf("blockers = %+v, want %+v", bs, want)
+	}
+	if q := api.find(t, http.MethodGet, "/repos/acme/api/issues/7/dependencies/blocked_by").query; q != "per_page=100" {
+		t.Fatalf("query = %q, want per_page=100", q)
+	}
+}
+
+func TestGitHubBlockersShouldNameBlockersFromAnotherRepository(t *testing.T) {
+	// #3 of evil/api must not be mistaken for #3 of acme/api.
+	f, _ := githubAt(t, map[string]func(http.ResponseWriter, *http.Request){
+		"GET /repos/acme/api/issues/7/dependencies/blocked_by": reply(200, `[
+			{"number":3,"state":"open","repository_url":"https://api.github.com/repos/evil/api","repository":{"full_name":"evil/api"}},
+			{"number":3,"state":"open","repository_url":"https://api.github.com/repos/other/lib"},
+			{"number":4,"state":"closed","repository_url":"https://api.github.com/repos/Acme/API","repository":{"full_name":"Acme/API"}}]`),
+	})
+	bs, err := f.Blockers(context.Background(), 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Blocker{{Number: 3, Ref: "evil/api#3", Open: true}, {Number: 3, Ref: "other/lib#3", Open: true}, {Number: 4, Ref: "#4", Open: false}}
+	if !reflect.DeepEqual(bs, want) {
+		t.Fatalf("blockers = %+v, want %+v", bs, want)
+	}
+}
+
+func TestGitHubBlockersShouldFollowPaginationPastOneHundredBlockers(t *testing.T) {
+	// A blocker left on a later page would let a blocked issue run.
+	f, api := githubAt(t, map[string]func(http.ResponseWriter, *http.Request){
+		"GET /repos/acme/api/issues/7/dependencies/blocked_by": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			if r.URL.Query().Get("page") == "2" {
+				io.WriteString(w, `[{"number":9,"state":"open","repository_url":"https://api.github.com/repos/acme/api"}]`)
+				return
+			}
+			w.Header().Set("Link", `<http://`+r.Host+r.URL.Path+`?page=2&per_page=100>; rel="next"`)
+			io.WriteString(w, `[{"number":3,"state":"closed","repository_url":"https://api.github.com/repos/acme/api"}]`)
+		},
+	})
+	bs, err := f.Blockers(context.Background(), 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Blocker{{Number: 3, Ref: "#3", Open: false}, {Number: 9, Ref: "#9", Open: true}}
+	if !reflect.DeepEqual(bs, want) {
+		t.Fatalf("both pages' blockers must come back: %+v", bs)
+	}
+	var calls int
+	for _, rq := range api.requests() {
+		if rq.method == http.MethodGet && strings.HasSuffix(rq.path, "/dependencies/blocked_by") {
+			calls++
+		}
+	}
+	if calls != 2 {
+		t.Fatalf("the second page must be fetched exactly once, got %d calls", calls)
+	}
+}
+
+func TestGitHubBlockersShouldReturnEmptyWhenThereAreNone(t *testing.T) {
+	f, _ := githubAt(t, map[string]func(http.ResponseWriter, *http.Request){
+		"GET /repos/acme/api/issues/7/dependencies/blocked_by": reply(200, `[]`),
+	})
+	bs, err := f.Blockers(context.Background(), 7)
+	if err != nil || len(bs) != 0 {
+		t.Fatalf("an issue without blockers must have none: %+v %v", bs, err)
+	}
+}
+
+func TestGitHubBlockersShouldPropagateAPIErrors(t *testing.T) {
+	const path = "/repos/acme/api/issues/7/dependencies/blocked_by"
+	for _, tc := range []struct {
+		name  string
+		route func(http.ResponseWriter, *http.Request)
+	}{
+		{"first page", forbidden},
+		{"later page", func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Query().Get("page") == "2" {
+				forbidden(w, r)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Link", `<http://`+r.Host+path+`?page=2&per_page=100>; rel="next"`)
+			io.WriteString(w, `[{"number":3,"state":"open","repository_url":"https://api.github.com/repos/acme/api"}]`)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, _ := githubAt(t, map[string]func(http.ResponseWriter, *http.Request){"GET " + path: tc.route})
+			bs, err := f.Blockers(context.Background(), 7)
+			wantForbidden(t, bs, err)
+		})
+	}
+}

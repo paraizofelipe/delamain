@@ -424,3 +424,48 @@ func (g *githubClient) ResolveThread(ctx context.Context, _ int, threadID string
 func (g *githubClient) RelabelPR(ctx context.Context, n int, add, remove []string) error {
 	return g.Relabel(ctx, n, add, remove)
 }
+
+// Blockers reads every page of the issue's "blocked by" dependencies: a blocker left out would
+// let a blocked issue run.
+func (g *githubClient) Blockers(ctx context.Context, n int) ([]Blocker, error) {
+	var vs []*gogithub.Issue
+	opts := &gogithub.ListOptions{PerPage: 100}
+	for {
+		var page []*gogithub.Issue
+		var next int
+		err := g.do(ctx, "blockers", func() (resp *gogithub.Response, err error) {
+			page, resp, err = g.api.Issues.ListBlockedBy(ctx, g.owner, g.name, int64(n), opts)
+			if resp != nil {
+				next = resp.NextPage
+			}
+			return resp, err
+		})
+		if err != nil {
+			return nil, err
+		}
+		vs = append(vs, page...)
+		if next == 0 {
+			break
+		}
+		opts.Page = next
+	}
+	bs := make([]Blocker, 0, len(vs))
+	for _, v := range vs {
+		bs = append(bs, g.blocker(v))
+	}
+	return bs, nil
+}
+
+// blocker names a blocker of another repository in full: "#N" would read as the issue N of this
+// one. The repository comes from repository.full_name or, without it, from repository_url.
+func (g *githubClient) blocker(v *gogithub.Issue) Blocker {
+	ref := "#" + strconv.Itoa(v.GetNumber())
+	repo := v.GetRepository().GetFullName()
+	if repo == "" {
+		_, repo, _ = strings.Cut(v.GetRepositoryURL(), "/repos/")
+	}
+	if repo != "" && !strings.EqualFold(repo, g.repo.Path) {
+		ref = repo + ref
+	}
+	return Blocker{Number: v.GetNumber(), Ref: ref, Open: v.GetState() == "open"}
+}
