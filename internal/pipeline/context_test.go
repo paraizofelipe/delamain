@@ -107,3 +107,40 @@ func TestPlanContextShouldListRefsAsUnreadableWhenWorktreeCannotBeOpened(t *test
 		t.Fatalf("a worktree that cannot be opened lists every ref as unreadable:\n%q", got)
 	}
 }
+
+func TestPlanContextShouldClampEndLineToFileLength(t *testing.T) {
+	wt := t.TempDir()
+	seedFile(t, wt, "calc.go", "one\ntwo\nthree\n")
+	got := planContext(wt, planWithRefs(artifacts.Ref{Path: "calc.go", Lines: "2-40", Why: "fim"}))
+
+	if want := "### S1 · calc.go:2-3 — fim\n\n```\ntwo\nthree\n```"; got != want {
+		t.Fatalf("the range ends at the file's last line and the header says so:\ngot:\n%q\nwant:\n%q", got, want)
+	}
+}
+
+func TestPlanContextShouldSkipRefStartingPastEndOfFile(t *testing.T) {
+	wt := t.TempDir()
+	seedFile(t, wt, "calc.go", "one\ntwo\nthree\n")
+	got := planContext(wt, planWithRefs(
+		artifacts.Ref{Path: "calc.go", Lines: "4-9", Why: "além"},
+		artifacts.Ref{Path: "calc.go", Lines: "1-1", Why: "início"},
+	))
+
+	if !strings.Contains(got, "- S1 · calc.go:4-9 — não incluído: intervalo além do fim do arquivo") {
+		t.Fatalf("a range starting past the end is listed as not included:\n%s", got)
+	}
+	if !strings.Contains(got, "### S1 · calc.go:1-1 — início\n\n```\none\n```") {
+		t.Fatalf("the next ref is still read:\n%s", got)
+	}
+}
+
+func TestPlanContextShouldReportMalformedLinesWithoutFailing(t *testing.T) {
+	wt := t.TempDir()
+	seedFile(t, wt, "calc.go", "one\n")
+	for _, lines := range []string{"", "7", "3-1", "0-2", "a-b"} {
+		got := planContext(wt, planWithRefs(artifacts.Ref{Path: "calc.go", Lines: lines, Why: "x"}))
+		if want := "- S1 · calc.go:" + lines + " — não incluído: intervalo inválido"; got != want {
+			t.Errorf("lines %q: got %q, want %q", lines, got, want)
+		}
+	}
+}

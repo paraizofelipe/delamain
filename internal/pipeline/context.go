@@ -23,17 +23,34 @@ func planContext(worktree string, plan artifacts.Plan) string {
 	var blocks []string
 	for _, s := range plan.Slices {
 		for _, ref := range s.Refs {
-			lines, reason := readRef(root, worktree, ref.Path)
+			first, last, body, reason := excerpt(root, worktree, ref)
 			if reason != "" {
 				blocks = append(blocks, fmt.Sprintf("- %s · %s:%s — não incluído: %s", s.ID, ref.Path, ref.Lines, reason))
 				continue
 			}
-			first, last, _ := parseLines(ref.Lines)
 			blocks = append(blocks, fmt.Sprintf("### %s · %s:%d-%d — %s\n\n```\n%s\n```", s.ID, ref.Path, first, last, ref.Why,
-				strings.Join(lines[first-1:last], "\n")))
+				strings.Join(body, "\n")))
 		}
 	}
 	return strings.Join(blocks, "\n\n")
+}
+
+// excerpt returns the lines ref points to, with the range's end clamped to the file's last
+// line. The reason is empty on success.
+func excerpt(root *os.Root, worktree string, ref artifacts.Ref) (first, last int, body []string, reason string) {
+	first, last, ok := parseLines(ref.Lines)
+	if !ok {
+		return 0, 0, nil, "intervalo inválido"
+	}
+	lines, reason := readRef(root, worktree, ref.Path)
+	if reason != "" {
+		return 0, 0, nil, reason
+	}
+	if first > len(lines) {
+		return 0, 0, nil, "intervalo além do fim do arquivo"
+	}
+	last = min(last, len(lines))
+	return first, last, lines[first-1 : last], ""
 }
 
 // readRef reads the lines of name through root, which refuses anything outside the worktree,
