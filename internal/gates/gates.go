@@ -284,7 +284,8 @@ func Matrix(dir string, plan artifacts.Plan, changed []string) []string {
 }
 
 var (
-	dependsRe = regexp.MustCompile(`(?i)\b(?:blocked by|depends on|depende de|bloquead[ao] por)\s+#(\d+)`)
+	// legacyLine is the old free-form declaration, read only at the start of a line.
+	legacyLine = regexp.MustCompile(`(?i)^[ \t]*(?:blocked by|depends on|depende de|bloquead[ao] por)[ \t]+#([0-9]+)`)
 	// dependsOnLine is the canonical marker: "depends_on:" at the start of a line, optionally
 	// inside quotes and after a list marker.
 	dependsOnLine = regexp.MustCompile(`^[ \t]*(?:>[ \t]*)*(?:[-*+][ \t]*)?depends_on:(.*)$`)
@@ -300,9 +301,10 @@ const maxQuotedLine = 80
 // Dependencies lists the issue numbers a body declares as blockers, sorted and unique. Lines
 // "depends_on: #N" win: when the body has any, the legacy mentions ("blocked by #N") are ignored.
 // The first malformed "depends_on:" line is an error that quotes it. Lines inside fenced code
-// blocks are examples, not markers; the legacy mentions still scan the whole body.
+// blocks are examples, not markers, for both forms; a legacy mention counts only at the start
+// of a line, so a sentence that merely talks about an issue declares nothing.
 func Dependencies(body string) ([]int, error) {
-	var out []int
+	var out, legacy []int
 	marked := false
 	fence := "" // the open fence, "" outside a code block
 	for line := range strings.SplitSeq(strings.ReplaceAll(body, "\r", ""), "\n") {
@@ -321,6 +323,11 @@ func Dependencies(body string) ([]int, error) {
 		}
 		m := dependsOnLine.FindStringSubmatch(line)
 		if m == nil {
+			if l := legacyLine.FindStringSubmatch(line); l != nil {
+				if n, err := strconv.Atoi(l[1]); err == nil && !slices.Contains(legacy, n) {
+					legacy = append(legacy, n)
+				}
+			}
 			continue
 		}
 		marked = true
@@ -343,11 +350,7 @@ func Dependencies(body string) ([]int, error) {
 		}
 	}
 	if !marked {
-		for _, m := range dependsRe.FindAllStringSubmatch(body, -1) {
-			if n, err := strconv.Atoi(m[1]); err == nil && !slices.Contains(out, n) {
-				out = append(out, n)
-			}
-		}
+		out = legacy
 	}
 	slices.Sort(out)
 	return out, nil

@@ -186,12 +186,52 @@ func TestDependenciesShouldKeepTheLegacyRegexWithoutDependsOn(t *testing.T) {
 		body string
 		want []int
 	}{
-		"legacy mentions":           {"Blocked by #12.\nDepende de #3 e depends on #40\nbloqueada por #7\nveja #99", []int{3, 7, 12, 40}},
+		"legacy mentions":           {"Blocked by #12.\nDepende de #3 e depends on #40\nbloqueada por #7\nveja #99", []int{3, 7, 12}},
 		"marker in the middle":      {"veja depends_on: #5 no meio da frase\nblocked by #2", []int{2}},
 		"marker with another case":  {"Depends_On: #5\nblocked by #2", []int{2}},
 		"marker with spaced colon":  {"depends_on : #5\nblocked by #2", []int{2}},
 		"marker as a checkbox item": {"- [ ] depends_on: #5\nblocked by #2", []int{2}},
 		"empty body":                {"", nil},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := Dependencies(tc.body)
+			if err != nil || !slices.Equal(got, tc.want) {
+				t.Fatalf("got %v %v, want %v", got, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestLegacyDependenciesShouldIgnoreDeclarationsInTheMiddleOfASentence(t *testing.T) {
+	for name, tc := range map[string]struct {
+		body string
+		want []int
+	}{
+		"negated sentence":       {"isso não depende de #82", nil},
+		"issue depends on issue": {"a #45 depende de #46", nil},
+		"after a colon":          {"veja: blocked by #3", nil},
+		"leading spaces":         {"   blocked by #4", []int{4}},
+		"mixed body":             {"blocked by #1\nisso não depende de #2\nDepends on #3", []int{1, 3}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := Dependencies(tc.body)
+			if err != nil || !slices.Equal(got, tc.want) {
+				t.Fatalf("got %v %v, want %v", got, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestLegacyDependenciesShouldIgnoreCodeBlocks(t *testing.T) {
+	for name, tc := range map[string]struct {
+		body string
+		want []int
+	}{
+		"backticks":            {"```\nblocked by #5\n```\nblocked by #6", []int{6}},
+		"tildes":               {"~~~text\ndepende de #5\n~~~", nil},
+		"fence inside a quote": {"> ```\n> blocked by #5\n> ```\nblocked by #6", []int{6}},
+		"unclosed fence":       {"blocked by #6\n```\nblocked by #5", []int{6}},
+		"after the closing":    {"```go\ndepends on #5\n```\ndepends on #6", []int{6}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			got, err := Dependencies(tc.body)
