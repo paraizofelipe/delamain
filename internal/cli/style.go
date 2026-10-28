@@ -15,32 +15,34 @@ import (
 // styles are the looks of `status`, `ls` and `logs`; a renderer without colors (not a terminal,
 // NO_COLOR) makes every one of them print the text unchanged.
 type styles struct {
-	label   lipgloss.Style // labels of the first block
-	heading lipgloss.Style // section titles: WORKTREES, AGENTS
-	header  lipgloss.Style // column headers
-	none    lipgloss.Style // values with no meaning to color
-	ok      lipgloss.Style
-	warn    lipgloss.Style
-	bad     lipgloss.Style
-	muted   lipgloss.Style
-	info    lipgloss.Style
-	magenta lipgloss.Style
-	blue    lipgloss.Style
-	slot    lipgloss.Style // a place taken in the queue grid of `watch`
+	label    lipgloss.Style // labels of the first block
+	heading  lipgloss.Style // section titles: WORKTREES, AGENTS
+	header   lipgloss.Style // column headers
+	none     lipgloss.Style // values with no meaning to color
+	ok       lipgloss.Style
+	warn     lipgloss.Style
+	bad      lipgloss.Style
+	muted    lipgloss.Style
+	info     lipgloss.Style
+	magenta  lipgloss.Style
+	blue     lipgloss.Style
+	slot     lipgloss.Style // a place taken in the queue grid of `watch`
+	slotWait lipgloss.Style // a place in that grid whose item waits for its blockers
 }
 
 func newStyles(r *lipgloss.Renderer) styles {
 	bold := r.NewStyle().Bold(true)
 	return styles{
 		label: bold, heading: bold, header: bold, none: r.NewStyle(),
-		ok:      r.NewStyle().Foreground(lipgloss.Color("2")),
-		warn:    r.NewStyle().Foreground(lipgloss.Color("3")),
-		bad:     r.NewStyle().Foreground(lipgloss.Color("1")),
-		muted:   r.NewStyle().Faint(true),
-		info:    r.NewStyle().Foreground(lipgloss.Color("6")),
-		magenta: r.NewStyle().Foreground(lipgloss.Color("5")),
-		blue:    r.NewStyle().Foreground(lipgloss.Color("4")),
-		slot:    r.NewStyle().Background(lipgloss.Color("62")).Foreground(lipgloss.Color("231")).Bold(true),
+		ok:       r.NewStyle().Foreground(lipgloss.Color("2")),
+		warn:     r.NewStyle().Foreground(lipgloss.Color("3")),
+		bad:      r.NewStyle().Foreground(lipgloss.Color("1")),
+		muted:    r.NewStyle().Faint(true),
+		info:     r.NewStyle().Foreground(lipgloss.Color("6")),
+		magenta:  r.NewStyle().Foreground(lipgloss.Color("5")),
+		blue:     r.NewStyle().Foreground(lipgloss.Color("4")),
+		slot:     r.NewStyle().Background(lipgloss.Color("62")).Foreground(lipgloss.Color("231")).Bold(true),
+		slotWait: r.NewStyle().Background(lipgloss.Color("3")).Foreground(lipgloss.Color("0")).Bold(true),
 	}
 }
 
