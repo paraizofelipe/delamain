@@ -290,6 +290,31 @@ func TestDependenciesShouldQuoteAndTruncateTheMalformedLineInTheError(t *testing
 	}
 }
 
+func TestDependenciesShouldIgnoreDependsOnInsideCodeBlocks(t *testing.T) {
+	for name, tc := range map[string]struct {
+		body string
+		want []int
+	}{
+		"backticks":            {"```\n- depends_on: #5\n```\n- depends_on: #6", []int{6}},
+		"tildes":               {"~~~yaml\n- depends_on: #5\n~~~\n- depends_on: #6", []int{6}},
+		"malformed inside":     {"```\ndepends_on: 81\n```\n- depends_on: #6", []int{6}},
+		"long fence":           {"````\n```\n- depends_on: #5\n````\n- depends_on: #6", []int{6}},
+		"other fence char":     {"```\n~~~\n- depends_on: #5\n```\n- depends_on: #6", []int{6}},
+		"unclosed fence":       {"- depends_on: #6\n```\n- depends_on: #5\ndepends_on: 81", []int{6}},
+		"fence inside a quote": {"> ```\n> - depends_on: #5\n> ```\n- depends_on: #6", []int{6}},
+		"crlf fence":           {"```\r\n- depends_on: #5\r\n```\r\n- depends_on: #6\r\n", []int{6}},
+		"only inside a block":  {"```\n- depends_on: #5\n```\nblocked by #7", []int{7}},
+		"indented code counts": {"    - depends_on: #6\nblocked by #7", []int{6}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := Dependencies(tc.body)
+			if err != nil || !slices.Equal(got, tc.want) {
+				t.Fatalf("got %v %v, want %v", got, err, tc.want)
+			}
+		})
+	}
+}
+
 func TestParseRepoConfigShouldTreatEmptyInputAsEmptyConfigAndRejectTypos(t *testing.T) {
 	for name, raw := range map[string]string{"nil": "", "blank": "\n  \n", "comment only": "# nada\n"} {
 		if rc, err := ParseRepoConfig([]byte(raw)); err != nil || rc.Commands.Test != "" {

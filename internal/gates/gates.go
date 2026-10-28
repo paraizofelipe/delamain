@@ -289,6 +289,8 @@ var (
 	// inside quotes and after a list marker.
 	dependsOnLine = regexp.MustCompile(`^[ \t]*(?:>[ \t]*)*(?:[-*+][ \t]*)?depends_on:(.*)$`)
 	dependsOnRef  = regexp.MustCompile(`^#([0-9]+)$`)
+	// fenceLine opens or closes a fenced code block, also inside quotes.
+	fenceLine = regexp.MustCompile("^[ \\t]*(?:>[ \\t]*)*(`{3,}|~{3,})(.*)$")
 )
 
 // maxQuotedLine caps how much of a malformed line the error echoes: the line comes from the
@@ -297,11 +299,26 @@ const maxQuotedLine = 80
 
 // Dependencies lists the issue numbers a body declares as blockers, sorted and unique. Lines
 // "depends_on: #N" win: when the body has any, the legacy mentions ("blocked by #N") are ignored.
-// The first malformed "depends_on:" line is an error that quotes it.
+// The first malformed "depends_on:" line is an error that quotes it. Lines inside fenced code
+// blocks are examples, not markers; the legacy mentions still scan the whole body.
 func Dependencies(body string) ([]int, error) {
 	var out []int
 	marked := false
+	fence := "" // the open fence, "" outside a code block
 	for line := range strings.SplitSeq(strings.ReplaceAll(body, "\r", ""), "\n") {
+		if f := fenceLine.FindStringSubmatch(line); f != nil {
+			switch {
+			case fence == "":
+				fence = f[1]
+				continue
+			case f[1][0] == fence[0] && len(f[1]) >= len(fence) && strings.TrimSpace(f[2]) == "":
+				fence = ""
+				continue
+			}
+		}
+		if fence != "" {
+			continue
+		}
 		m := dependsOnLine.FindStringSubmatch(line)
 		if m == nil {
 			continue
