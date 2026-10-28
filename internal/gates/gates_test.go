@@ -251,6 +251,45 @@ func TestDependenciesShouldIgnoreTheLegacyRegexWhenDependsOnIsPresent(t *testing
 	}
 }
 
+func TestDependenciesShouldRejectMalformedDependsOnLines(t *testing.T) {
+	for name, tc := range map[string]struct{ body, line string }{
+		"number without hash":    {"- depends_on: 81", "- depends_on: 81"},
+		"trailing words":         {"depends_on: #81 até sair", "depends_on: #81 até sair"},
+		"zero":                   {"depends_on: #0", "depends_on: #0"},
+		"empty":                  {"depends_on:", "depends_on:"},
+		"blank":                  {"- depends_on:   ", "- depends_on:"},
+		"bare hash":              {"depends_on: #", "depends_on: #"},
+		"negative":               {"depends_on: #-1", "depends_on: #-1"},
+		"signed":                 {"depends_on: #+1", "depends_on: #+1"},
+		"letters":                {"depends_on: #8a", "depends_on: #8a"},
+		"trailing dot":           {"depends_on: #81.", "depends_on: #81."},
+		"overflow":               {"depends_on: #99999999999999999999", "depends_on: #99999999999999999999"},
+		"valid then malformed":   {"- depends_on: #3\nblocked by #4\n- depends_on: 81", "- depends_on: 81"},
+		"first malformed counts": {"depends_on: x\ndepends_on: y", "depends_on: x"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := Dependencies(tc.body)
+			if err == nil || !strings.Contains(err.Error(), tc.line) {
+				t.Fatalf("got %v %v, want an error quoting %q", got, err, tc.line)
+			}
+		})
+	}
+	if got, err := Dependencies("depends_on: #081"); err != nil || !slices.Equal(got, []int{81}) {
+		t.Fatalf("leading zeros are still a number: %v %v", got, err)
+	}
+}
+
+func TestDependenciesShouldQuoteAndTruncateTheMalformedLineInTheError(t *testing.T) {
+	_, err := Dependencies("depends_on: #1 " + strings.Repeat("x", 10000) + "\x1b")
+	if err == nil || len(err.Error()) >= 200 || !strings.Contains(err.Error(), `…"`) {
+		t.Fatalf("a long line is cut short: %v", err)
+	}
+	_, err = Dependencies("depends_on: #1 \x1b[31mvermelho")
+	if err == nil || strings.Contains(err.Error(), "\x1b") || !strings.Contains(err.Error(), `\x1b[31mvermelho"`) {
+		t.Fatalf("control characters are escaped: %q", err)
+	}
+}
+
 func TestParseRepoConfigShouldTreatEmptyInputAsEmptyConfigAndRejectTypos(t *testing.T) {
 	for name, raw := range map[string]string{"nil": "", "blank": "\n  \n", "comment only": "# nada\n"} {
 		if rc, err := ParseRepoConfig([]byte(raw)); err != nil || rc.Commands.Test != "" {

@@ -288,10 +288,16 @@ var (
 	// dependsOnLine is the canonical marker: "depends_on:" at the start of a line, optionally
 	// inside quotes and after a list marker.
 	dependsOnLine = regexp.MustCompile(`^[ \t]*(?:>[ \t]*)*(?:[-*+][ \t]*)?depends_on:(.*)$`)
+	dependsOnRef  = regexp.MustCompile(`^#([0-9]+)$`)
 )
+
+// maxQuotedLine caps how much of a malformed line the error echoes: the line comes from the
+// issue author and ends up in the needs-info comment.
+const maxQuotedLine = 80
 
 // Dependencies lists the issue numbers a body declares as blockers, sorted and unique. Lines
 // "depends_on: #N" win: when the body has any, the legacy mentions ("blocked by #N") are ignored.
+// The first malformed "depends_on:" line is an error that quotes it.
 func Dependencies(body string) ([]int, error) {
 	var out []int
 	marked := false
@@ -302,8 +308,19 @@ func Dependencies(body string) ([]int, error) {
 		}
 		marked = true
 		refs := strings.FieldsFunc(m[1], func(r rune) bool { return r == ',' || r == ' ' || r == '\t' })
+		if len(refs) == 0 {
+			return nil, malformedDependsOn(line)
+		}
 		for _, ref := range refs {
-			if n, err := strconv.Atoi(strings.TrimPrefix(ref, "#")); err == nil && !slices.Contains(out, n) {
+			d := dependsOnRef.FindStringSubmatch(ref)
+			if d == nil {
+				return nil, malformedDependsOn(line)
+			}
+			n, err := strconv.Atoi(d[1])
+			if err != nil || n <= 0 {
+				return nil, malformedDependsOn(line)
+			}
+			if !slices.Contains(out, n) {
 				out = append(out, n)
 			}
 		}
@@ -317,4 +334,12 @@ func Dependencies(body string) ([]int, error) {
 	}
 	slices.Sort(out)
 	return out, nil
+}
+
+func malformedDependsOn(line string) error {
+	line = strings.TrimSpace(line)
+	if r := []rune(line); len(r) > maxQuotedLine {
+		line = string(r[:maxQuotedLine]) + "…"
+	}
+	return fmt.Errorf("linha %q: esperado #N separados por vírgula ou espaço", line)
 }
