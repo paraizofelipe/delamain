@@ -12,6 +12,10 @@ import (
 	"github.com/paraizo/delamain/internal/artifacts"
 )
 
+// maxContextLines caps the code lines planContext injects, so refs cannot inflate every turn's
+// prompt; a ref that does not fit whole is only listed.
+const maxContextLines = 800
+
 // planContext renders the excerpts the plan's slices point to in refs, read from the worktree
 // as it is now, so the implementer starts from what the planner already read. Reads never leave
 // the worktree; a ref that cannot be read is listed as not included and never fails the run.
@@ -21,6 +25,7 @@ func planContext(worktree string, plan artifacts.Plan) string {
 		defer root.Close()
 	}
 	var blocks []string
+	left := maxContextLines
 	for _, s := range plan.Slices {
 		for _, ref := range s.Refs {
 			first, last, body, reason := excerpt(root, worktree, ref)
@@ -28,6 +33,11 @@ func planContext(worktree string, plan artifacts.Plan) string {
 				blocks = append(blocks, fmt.Sprintf("- %s · %s:%s — não incluído: %s", s.ID, ref.Path, ref.Lines, reason))
 				continue
 			}
+			if len(body) > left {
+				blocks = append(blocks, fmt.Sprintf("- %s · %s:%d-%d — %s (não incluído: limite de contexto)", s.ID, ref.Path, first, last, ref.Why))
+				continue
+			}
+			left -= len(body)
 			blocks = append(blocks, fmt.Sprintf("### %s · %s:%d-%d — %s\n\n```\n%s\n```", s.ID, ref.Path, first, last, ref.Why,
 				strings.Join(body, "\n")))
 		}

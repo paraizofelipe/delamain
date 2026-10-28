@@ -144,3 +144,24 @@ func TestPlanContextShouldReportMalformedLinesWithoutFailing(t *testing.T) {
 		}
 	}
 }
+
+func TestPlanContextShouldListRefsBeyondTotalLineCap(t *testing.T) {
+	wt := t.TempDir()
+	seedFile(t, wt, "big.go", strings.Repeat("x\n", 1000))
+	seedFile(t, wt, "small.go", "s1\ns2\n")
+	got := planContext(wt, planWithRefs(
+		artifacts.Ref{Path: "big.go", Lines: "1-700", Why: "primeiro"},
+		artifacts.Ref{Path: "big.go", Lines: "701-900", Why: "estoura"},
+		artifacts.Ref{Path: "small.go", Lines: "1-2", Why: "ainda cabe"},
+	))
+
+	if n := strings.Count(got, "x\n"); n != 700 {
+		t.Fatalf("700 lines fit the 800-line cap and 200 more do not: got %d code lines", n)
+	}
+	if !strings.Contains(got, "- S1 · big.go:701-900 — estoura (não incluído: limite de contexto)") {
+		t.Fatalf("the ref past the cap is listed, not dropped:\n%s", got[len(got)-400:])
+	}
+	if !strings.Contains(got, "### S1 · small.go:1-2 — ainda cabe\n\n```\ns1\ns2\n```") {
+		t.Fatalf("a later ref that still fits keeps its excerpt:\n%s", got[len(got)-400:])
+	}
+}
