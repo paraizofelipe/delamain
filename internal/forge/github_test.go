@@ -611,3 +611,13 @@ func TestGitHubBlockersShouldFollowPaginationPastOneHundredBlockers(t *testing.T
 		t.Fatalf("the second page must be fetched exactly once, got %d calls", calls)
 	}
 }
+
+func TestGitHubBlockersShouldReturnEmptyWhenThereAreNone(t *testing.T) {
+	f, _ := githubAt(t, map[string]func(http.ResponseWriter, *http.Request){
+		"GET /repos/acme/api/issues/7/dependencies/blocked_by": reply(200, `[]`),
+	})
+	bs, err := f.Blockers(context.Background(), 7)
+	if err != nil || len(bs) != 0 {
+		t.Fatalf("an issue without blockers must have none: %+v %v", bs, err)
+	}
+}
