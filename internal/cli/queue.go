@@ -248,6 +248,11 @@ func queueJobs(cfg config.Config, st *store.Store, run func(ctx context.Context,
 // once none is open the reason is cleared and the item may run. An error leaves the reason alone.
 func queueWait(ctx context.Context, st *store.Store, fg forge.Forge, it store.QueueItem) (string, error) {
 	is, err := fg.Issue(ctx, it.Issue)
+	var apiErr *forge.APIError
+	gone := errors.As(err, &apiErr) && apiErr.Status == http.StatusNotFound
+	if gone || (err == nil && !is.Open) {
+		return "", nil // its job takes it out of the queue: it would wait forever
+	}
 	if err != nil {
 		return "", fmt.Errorf("issue #%d: %w", it.Issue, err)
 	}

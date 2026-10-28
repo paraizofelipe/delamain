@@ -467,3 +467,33 @@ func TestQueueWaitShouldReleaseTheIssueOnceDependenciesClose(t *testing.T) {
 		t.Fatalf("its run takes it out of the queue: %q", got)
 	}
 }
+
+func TestQueueWaitShouldNotWaitForAClosedIssue(t *testing.T) {
+	blocked := map[int][]forge.Blocker{12: {{Number: 7, Ref: "#7", Open: true}}}
+	for _, c := range []struct {
+		name string
+		fg   issuesForge
+	}{
+		{"closed", issuesForge{open: map[int]string{7: "base"}, blockers: blocked}},
+		{"missing", issuesForge{open: map[int]string{7: "base"}, blockers: blocked, errs: map[int]error{12: &forge.APIError{Status: 404}}}},
+	} {
+		f := newFixture(t)
+		q := f.queueDaemon(t, c.fg, 12)
+		js, err := queueJobs(config.Default(), f.st, nil)(context.Background())
+		if err != nil || len(js) != 1 {
+			t.Fatalf("%s: jobs: %+v %v", c.name, js, err)
+		}
+		if reason, err := js[0].Wait(context.Background()); reason != "" || err != nil {
+			t.Fatalf("%s: an issue that will never run does not wait: %q %v", c.name, reason, err)
+		}
+		if got := f.waiting(t)[12]; got != "" {
+			t.Fatalf("%s: no reason is recorded: %q", c.name, got)
+		}
+		if started, ran := q.poll(t); started != 1 || len(ran) != 0 {
+			t.Fatalf("%s: its job starts and is not run: started %d ran %v", c.name, started, ran)
+		}
+		if got := f.queued(t); got != "" {
+			t.Fatalf("%s: the job removes it from the queue: %q", c.name, got)
+		}
+	}
+}
