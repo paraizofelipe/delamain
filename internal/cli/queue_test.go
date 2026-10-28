@@ -62,6 +62,16 @@ func (f *fixture) queued(t *testing.T) string {
 	return strings.Join(out, " ")
 }
 
+func TestQueueLongShouldSayAnIssueWaitsForOpenDependencies(t *testing.T) {
+	long := newQueueCmd(nil).Long
+	text := strings.Join(strings.Fields(long), " ") // the help wraps its lines anywhere
+	for _, want := range []string{"open dependencies", "stays in the queue", "next one runs", "queue list", "WAITING"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("the help of queue says how an issue waits for its dependencies, want %q:\n%s", want, long)
+		}
+	}
+}
+
 func TestQueueAddShouldAppendOpenIssuesInOrder(t *testing.T) {
 	f := newFixture(t)
 	f.withForge(t, map[int]string{12: "Fix login", 21: "Add export", 30: "Bump deps"})
