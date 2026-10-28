@@ -38,6 +38,7 @@ type Git interface {
 	ResolveBase(ctx context.Context, repo string) (string, error)
 	BranchExists(ctx context.Context, repo, branch string) bool
 	Head(ctx context.Context, dir string) (string, error)
+	ResetHard(ctx context.Context, dir, sha string) error
 	CurrentBranch(ctx context.Context, dir string) (string, error)
 	Status(ctx context.Context, dir string) (string, error)
 	CommitsSince(ctx context.Context, dir, base string) ([]string, error)
@@ -461,6 +462,11 @@ func (r *Runner) maybeMinorPass(ctx context.Context, ru *run, iter int, review a
 // minorPass gives the implementer one turn over the non-blocking findings of the approved
 // iteration iter, then re-runs the gates. It is not an iteration: no review, no History entry.
 func (r *Runner) minorPass(ctx context.Context, ru *run, iter int, review artifacts.Review) error {
+	// Read before the agent's turn: nothing the pass leaves behind may pick the reset target.
+	head, err := r.Git.Head(ctx, ru.repo.Worktree)
+	if err != nil {
+		return err
+	}
 	dir := filepath.Join(ru.dir, "minors")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
@@ -482,7 +488,13 @@ func (r *Runner) minorPass(ctx context.Context, ru *run, iter int, review artifa
 	}
 	if allPassed(checks) {
 		ru.res.MinorPass = "aplicado"
+		return nil
 	}
+	if err := r.Git.ResetHard(ctx, ru.repo.Worktree, head); err != nil {
+		return err
+	}
+	ru.res.MinorPass = fmt.Sprintf("descartado: gates %s falharam", strings.Join(failedChecks(checks), ", "))
+	ru.log.Info("minor pass discarded", "run", ru.rec.ID, "status", ru.res.MinorPass, "head", short(head))
 	return nil
 }
 

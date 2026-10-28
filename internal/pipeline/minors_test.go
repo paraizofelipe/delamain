@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
@@ -99,5 +100,41 @@ func TestMinorPassShouldNotCountAsIteration(t *testing.T) {
 	}
 	if a, b := with.finalRun(t, got.RunID).Iteration, without.finalRun(t, base.RunID).Iteration; a != b {
 		t.Fatalf("the stored iteration must not move: %d, want %d", a, b)
+	}
+}
+
+// failSecondTest fails the test gate on its second run: the one after the minor pass.
+func failSecondTest(name string, n int) int {
+	if name == "test" && n == 2 {
+		return 1
+	}
+	return defaultChecks(name, n)
+}
+
+func TestMinorPassShouldResetWorktreeWhenGatesFail(t *testing.T) {
+	var approvedHead string
+	hs := newHarness(t, func(role string, n int, text string) reply {
+		rep := minorReview(role, n, text)
+		if role == "reviewer" {
+			rep.mutate = func(g *fakeGit) { approvedHead = g.head } // the head the review approved
+		}
+		return rep
+	})
+	hs.r.Cfg.Pipeline.FixMinors = true
+	hs.h.checks = failSecondTest
+	f := withForge(hs)
+	res := hs.run(t)
+
+	if want := []string{hs.g.wt + " " + approvedHead}; !slices.Equal(hs.g.resets, want) {
+		t.Fatalf("the pass must be reset to the approved head on the run's worktree, resets=%v want %v", hs.g.resets, want)
+	}
+	if res.MinorPass != "descartado: gates test falharam" {
+		t.Fatalf("the discard must name the failed gates, minor=%q", res.MinorPass)
+	}
+	if res.Outcome != OutcomeApproved || len(f.created) != 1 || f.created[0].Draft {
+		t.Fatalf("a discarded pass keeps the run approved with a ready PR: %s (%s) %+v", res.Outcome, res.Reason, f.created)
+	}
+	if len(res.Commits) != 1 {
+		t.Fatalf("only the approved commit is delivered, commits=%v", res.Commits)
 	}
 }
