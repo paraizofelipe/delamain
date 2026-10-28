@@ -16,6 +16,9 @@ type Job struct {
 	Run func(ctx context.Context) (pipeline.Result, error)
 	// Queue marks a job of the queue: it runs in the queue's slot, one at a time.
 	Queue bool
+	// Wait, for a job of the queue, says why it cannot run yet; asked only once its slot is
+	// taken. A reason or an error skips it for the next item of the queue. nil never waits.
+	Wait func(ctx context.Context) (reason string, err error)
 }
 
 // Producer lists the jobs a source has ready now.
