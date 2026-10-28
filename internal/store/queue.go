@@ -12,7 +12,7 @@ import (
 var ErrQueued = errors.New("already in the queue")
 
 // QueueItem is one issue waiting for the daemon to start it. Position is its rank, from 1: the
-// next one to run.
+// next one to run. Waiting is why it is held back, empty when it is not.
 type QueueItem struct {
 	ID       int64
 	Position int
@@ -20,6 +20,7 @@ type QueueItem struct {
 	Issue    int
 	Title    string
 	AddedAt  time.Time
+	Waiting  string
 }
 
 // Enqueue appends issue of repo to the end of the queue.
@@ -47,7 +48,7 @@ func (s *Store) Enqueue(ctx context.Context, repo string, issue int, title strin
 
 // Queue lists the queue in execution order.
 func (s *Store) Queue(ctx context.Context) ([]QueueItem, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, repo, issue, title, added_at FROM queue ORDER BY pos, id`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, repo, issue, title, added_at, waiting FROM queue ORDER BY pos, id`)
 	if err != nil {
 		return nil, err
 	}
@@ -55,7 +56,7 @@ func (s *Store) Queue(ctx context.Context) ([]QueueItem, error) {
 	var out []QueueItem
 	for rows.Next() {
 		it := QueueItem{Position: len(out) + 1}
-		if err := rows.Scan(&it.ID, &it.Repo, &it.Issue, &it.Title, &it.AddedAt); err != nil {
+		if err := rows.Scan(&it.ID, &it.Repo, &it.Issue, &it.Title, &it.AddedAt, &it.Waiting); err != nil {
 			return nil, err
 		}
 		out = append(out, it)

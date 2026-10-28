@@ -145,6 +145,41 @@ func TestOpenShouldMigrateV9ToTheQueue(t *testing.T) {
 	}
 }
 
+func TestMigrationShouldAddWaitingToAnExistingQueue(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "delamain.db")
+	ctx := context.Background()
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	qs := append(append([]string{}, migrations[:10]...), "PRAGMA user_version = 10",
+		`INSERT INTO queue (repo, issue, title, pos, added_at) VALUES ('repo', 21, 'second', 2, '2026-01-01 00:00:00')`,
+		`INSERT INTO queue (repo, issue, title, pos, added_at) VALUES ('repo', 12, 'first', 1, '2026-01-01 00:00:00')`)
+	for _, q := range qs {
+		if _, err := db.ExecContext(ctx, q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db.Close()
+	s, err := Open(ctx, path)
+	if err != nil {
+		t.Fatalf("v10 must migrate: %v", err)
+	}
+	defer s.Close()
+	items, err := s.Queue(ctx)
+	if err != nil {
+		t.Fatalf("queue after migration: %v", err)
+	}
+	if len(items) != 2 || items[0].Issue != 12 || items[1].Issue != 21 {
+		t.Fatalf("the queued items survive in order: %+v", items)
+	}
+	for _, it := range items {
+		if it.Waiting != "" {
+			t.Fatalf("an existing item is not waiting: %+v", it)
+		}
+	}
+}
+
 func TestDequeueIssueShouldRemoveOnlyThatIssue(t *testing.T) {
 	s := openTest(t)
 	enqueue(t, s, 12, 21)
