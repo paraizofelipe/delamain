@@ -245,6 +245,20 @@ func TestPreflightShouldFailClosedWhenABlockerCannotBeChecked(t *testing.T) {
 	}
 }
 
+func TestBlockersShouldUseOnlyDependsOnLinesWhenPresent(t *testing.T) {
+	hs := newHarness(t, happy)
+	f := withForge(hs)
+	f.issues = map[int]forge.Issue{3: {Number: 3, Open: true}, 4: {Number: 4, Open: true}}
+	hs.task.Body += "\n\nblocked by #4\n- depends_on: #3"
+	res := hs.run(t)
+	if res.Outcome != OutcomeNeedsInfo || !strings.Contains(res.Reason, "#3") || strings.Contains(res.Reason, "#4") {
+		t.Fatalf("a depends_on line replaces the legacy mentions: %s %s", res.Outcome, res.Reason)
+	}
+	if runs, _ := hs.st.UnfinishedRuns(context.Background()); len(runs) != 0 {
+		t.Fatal("blocked tasks create no run")
+	}
+}
+
 func TestVerifyShouldFailWhenACommitSubjectIsTooLong(t *testing.T) {
 	hs := newHarness(t, happy)
 	hs.h.behave = func(role string, n int, text string) reply {

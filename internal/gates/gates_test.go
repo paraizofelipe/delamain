@@ -3,6 +3,7 @@ package gates
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -180,17 +181,57 @@ func TestMatrixShouldRejectPathsEscapingTheWorktree(t *testing.T) {
 	}
 }
 
-func TestDependenciesShouldFindBlockingIssueReferences(t *testing.T) {
-	body := "Blocked by #12.\nDepende de #3 e depends on #40\nbloqueada por #7\nveja #99"
-	got := Dependencies(body)
-	want := []int{3, 7, 12, 40}
-	if len(got) != len(want) {
-		t.Fatalf("got %v, want %v", got, want)
+func TestDependenciesShouldKeepTheLegacyRegexWithoutDependsOn(t *testing.T) {
+	for name, tc := range map[string]struct {
+		body string
+		want []int
+	}{
+		"legacy mentions":           {"Blocked by #12.\nDepende de #3 e depends on #40\nbloqueada por #7\nveja #99", []int{3, 7, 12, 40}},
+		"marker in the middle":      {"veja depends_on: #5 no meio da frase\nblocked by #2", []int{2}},
+		"marker with another case":  {"Depends_On: #5\nblocked by #2", []int{2}},
+		"marker with spaced colon":  {"depends_on : #5\nblocked by #2", []int{2}},
+		"marker as a checkbox item": {"- [ ] depends_on: #5\nblocked by #2", []int{2}},
+		"empty body":                {"", nil},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := Dependencies(tc.body)
+			if err != nil || !slices.Equal(got, tc.want) {
+				t.Fatalf("got %v %v, want %v", got, err, tc.want)
+			}
+		})
 	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("got %v, want %v", got, want)
-		}
+}
+
+func TestDependenciesShouldReadDependsOnLines(t *testing.T) {
+	for name, body := range map[string]string{
+		"dash item":       "Contexto.\n\n- depends_on: #81\n",
+		"no marker":       "depends_on: #81",
+		"quote":           "> depends_on: #81",
+		"quoted item":     "> - depends_on: #81",
+		"star item":       "* depends_on: #81",
+		"plus item":       "+ depends_on: #81",
+		"indented":        "  \t- depends_on: #81",
+		"nested quote":    ">> depends_on: #81",
+		"crlf body":       "Contexto.\r\n\r\n- depends_on: #81\r\n",
+		"trailing spaces": "- depends_on:   #81   ",
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := Dependencies(body)
+			if err != nil || !slices.Equal(got, []int{81}) {
+				t.Fatalf("got %v %v, want [81]", got, err)
+			}
+		})
+	}
+	got, err := Dependencies("- depends_on: #82\n- depends_on: #81")
+	if err != nil || !slices.Equal(got, []int{81, 82}) {
+		t.Fatalf("two lines: got %v %v, want [81 82]", got, err)
+	}
+}
+
+func TestDependenciesShouldIgnoreTheLegacyRegexWhenDependsOnIsPresent(t *testing.T) {
+	got, err := Dependencies("blocked by #4\nDepende de #5\n- depends_on: #3")
+	if err != nil || !slices.Equal(got, []int{3}) {
+		t.Fatalf("got %v %v, want [3]", got, err)
 	}
 }
 

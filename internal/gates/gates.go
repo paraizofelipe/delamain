@@ -283,16 +283,35 @@ func Matrix(dir string, plan artifacts.Plan, changed []string) []string {
 	return problems
 }
 
-var dependsRe = regexp.MustCompile(`(?i)\b(?:blocked by|depends on|depende de|bloquead[ao] por)\s+#(\d+)`)
+var (
+	dependsRe = regexp.MustCompile(`(?i)\b(?:blocked by|depends on|depende de|bloquead[ao] por)\s+#(\d+)`)
+	// dependsOnLine is the canonical marker: "depends_on:" at the start of a line, optionally
+	// inside quotes and after a list marker.
+	dependsOnLine = regexp.MustCompile(`^[ \t]*(?:>[ \t]*)*(?:[-*+][ \t]*)?depends_on:(.*)$`)
+)
 
-// Dependencies lists the issue numbers a body declares as blockers, sorted and unique.
-func Dependencies(body string) []int {
+// Dependencies lists the issue numbers a body declares as blockers, sorted and unique. Lines
+// "depends_on: #N" win: when the body has any, the legacy mentions ("blocked by #N") are ignored.
+func Dependencies(body string) ([]int, error) {
 	var out []int
-	for _, m := range dependsRe.FindAllStringSubmatch(body, -1) {
-		if n, err := strconv.Atoi(m[1]); err == nil && !slices.Contains(out, n) {
+	marked := false
+	for line := range strings.SplitSeq(strings.ReplaceAll(body, "\r", ""), "\n") {
+		m := dependsOnLine.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		marked = true
+		if n, err := strconv.Atoi(strings.TrimPrefix(strings.TrimSpace(m[1]), "#")); err == nil && !slices.Contains(out, n) {
 			out = append(out, n)
 		}
 	}
+	if !marked {
+		for _, m := range dependsRe.FindAllStringSubmatch(body, -1) {
+			if n, err := strconv.Atoi(m[1]); err == nil && !slices.Contains(out, n) {
+				out = append(out, n)
+			}
+		}
+	}
 	slices.Sort(out)
-	return out
+	return out, nil
 }

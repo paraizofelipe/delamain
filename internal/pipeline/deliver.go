@@ -13,14 +13,16 @@ import (
 	"github.com/paraizo/delamain/internal/store"
 )
 
-// blockers resolves the issues a task declares as dependencies ("blocked by #N", "depende de #N").
-// It fails closed: an unverifiable blocker counts as open.
+// blockers resolves the issues a task declares as dependencies: "depends_on: #N" lines or, when
+// there are none, the legacy mentions ("blocked by #N", "depende de #N"). It fails closed: an
+// unverifiable blocker counts as open.
 func (r *Runner) blockers(ctx context.Context, t Task) []string {
 	if r.Forge == nil {
 		return nil
 	}
+	deps, _ := gates.Dependencies(t.Body)
 	var problems []string
-	for _, n := range gates.Dependencies(t.Body) {
+	for _, n := range deps {
 		is, err := r.Forge.Issue(ctx, n)
 		switch {
 		case err != nil:
