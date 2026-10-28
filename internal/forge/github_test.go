@@ -561,3 +561,21 @@ func TestGitHubBlockersShouldListOpenAndClosedBlockers(t *testing.T) {
 		t.Fatalf("query = %q, want per_page=100", q)
 	}
 }
+
+func TestGitHubBlockersShouldNameBlockersFromAnotherRepository(t *testing.T) {
+	// #3 of evil/api must not be mistaken for #3 of acme/api.
+	f, _ := githubAt(t, map[string]func(http.ResponseWriter, *http.Request){
+		"GET /repos/acme/api/issues/7/dependencies/blocked_by": reply(200, `[
+			{"number":3,"state":"open","repository_url":"https://api.github.com/repos/evil/api","repository":{"full_name":"evil/api"}},
+			{"number":3,"state":"open","repository_url":"https://api.github.com/repos/other/lib"},
+			{"number":4,"state":"closed","repository_url":"https://api.github.com/repos/Acme/API","repository":{"full_name":"Acme/API"}}]`),
+	})
+	bs, err := f.Blockers(context.Background(), 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Blocker{{Number: 3, Ref: "evil/api#3", Open: true}, {Number: 3, Ref: "other/lib#3", Open: true}, {Number: 4, Ref: "#4", Open: false}}
+	if !reflect.DeepEqual(bs, want) {
+		t.Fatalf("blockers = %+v, want %+v", bs, want)
+	}
+}

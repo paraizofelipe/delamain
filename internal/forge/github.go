@@ -437,7 +437,21 @@ func (g *githubClient) Blockers(ctx context.Context, n int) ([]Blocker, error) {
 	}
 	bs := make([]Blocker, 0, len(vs))
 	for _, v := range vs {
-		bs = append(bs, Blocker{Number: v.GetNumber(), Ref: "#" + strconv.Itoa(v.GetNumber()), Open: v.GetState() == "open"})
+		bs = append(bs, g.blocker(v))
 	}
 	return bs, nil
+}
+
+// blocker names a blocker of another repository in full: "#N" would read as the issue N of this
+// one. The repository comes from repository.full_name or, without it, from repository_url.
+func (g *githubClient) blocker(v *gogithub.Issue) Blocker {
+	ref := "#" + strconv.Itoa(v.GetNumber())
+	repo := v.GetRepository().GetFullName()
+	if repo == "" {
+		_, repo, _ = strings.Cut(v.GetRepositoryURL(), "/repos/")
+	}
+	if repo != "" && !strings.EqualFold(repo, g.repo.Path) {
+		ref = repo + ref
+	}
+	return Blocker{Number: v.GetNumber(), Ref: ref, Open: v.GetState() == "open"}
 }
