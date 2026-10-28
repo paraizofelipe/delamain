@@ -72,6 +72,9 @@ func OpenBlockers(ctx context.Context, fg forge.Forge, t Task) ([]string, error)
 		return nil, err
 	}
 	for _, b := range native {
+		if !b.Open {
+			continue
+		}
 		ref := b.Ref
 		if ref == "" {
 			ref = fmt.Sprintf("#%d", b.Number)

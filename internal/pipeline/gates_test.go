@@ -354,3 +354,15 @@ func TestOpenBlockersShouldListADependencyFromBothSourcesOnce(t *testing.T) {
 		t.Fatalf("got %q, %v; want %q", got, err, want)
 	}
 }
+
+func TestOpenBlockersShouldIgnoreClosedBlockers(t *testing.T) {
+	f := &fakeForge{
+		issues:   map[int]forge.Issue{3: {Number: 3, Open: false}},
+		blockers: []forge.Blocker{{Number: 82, Ref: "#82", Open: false}, {Number: 90, Ref: "acme/other#90", Open: false}},
+	}
+	task := Task{Issue: 7, Body: "- depends_on: #3"}
+	got, err := OpenBlockers(context.Background(), f, task)
+	if err != nil || len(got) != 0 {
+		t.Fatalf("closed blockers do not block: %q, %v", got, err)
+	}
+}
