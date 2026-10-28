@@ -112,7 +112,7 @@ func renderReport(res Result, task prompts.Issue) string {
 		}
 		b.WriteString("\n")
 	}
-	for _, it := range res.History {
+	for i, it := range res.History {
 		fmt.Fprintf(&b, "## Iteração %d\n\n", it.N)
 		if it.Feedback != "" {
 			b.WriteString("Feedback recebido da iteração anterior: sim\n\n")
@@ -134,6 +134,9 @@ func renderReport(res Result, task prompts.Issue) string {
 			}
 			if nb := nonBlockingFeedback(*it.Review); nb != "" {
 				b.WriteString("\n#### Achados não bloqueantes\n\n" + nb + "\n")
+				if i == len(res.History)-1 && res.MinorPass != "" {
+					b.WriteString("\nPasse de ajustes não bloqueantes: " + res.MinorPass + "\n")
+				}
 			}
 		}
 		b.WriteString("\n")
@@ -244,6 +247,9 @@ func prBody(ru *run, draft bool) string {
 			}
 			if nb := nonBlockingFeedback(*last.Review); nb != "" {
 				b.WriteString("### Achados não bloqueantes\n\nNão impediram a aprovação; ficam para o revisor decidir.\n\n" + nb + "\n\n")
+				if res.MinorPass != "" {
+					b.WriteString("Passe de ajustes não bloqueantes: " + res.MinorPass + "\n\n")
+				}
 			}
 		}
 	}

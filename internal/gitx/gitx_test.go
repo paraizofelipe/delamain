@@ -990,3 +990,55 @@ func TestCommitMessagesShouldReturnTheWholeMessageOfEachNewCommit(t *testing.T) 
 		t.Fatalf("no new commit, no message: %q %v", got, err)
 	}
 }
+
+func TestResetHardShouldMoveTheWorktreeBackToTheGivenCommit(t *testing.T) {
+	g, ctx := New(), context.Background()
+	dir := repo(t)
+	a := commitFile(t, dir, "calc.go", "A")
+	commitFile(t, dir, "calc.go", "B")
+	if err := os.WriteFile(filepath.Join(dir, "calc.go"), []byte("uncommitted"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := g.ResetHard(ctx, dir, a); err != nil {
+		t.Fatal(err)
+	}
+	if head, _ := g.Head(ctx, dir); head != a {
+		t.Fatalf("HEAD = %s, want %s", head, a)
+	}
+	if body, _ := os.ReadFile(filepath.Join(dir, "calc.go")); string(body) != "A" {
+		t.Fatalf("the file must hold commit A, got %q", body)
+	}
+	if st, _ := g.Status(ctx, dir); st != "" {
+		t.Fatalf("the worktree must be clean after the reset, status=%q", st)
+	}
+}
+
+func TestResetHardShouldRemoveUntrackedFiles(t *testing.T) {
+	g, ctx := New(), context.Background()
+	dir := repo(t)
+	a := commitFile(t, dir, "calc.go", "A")
+	for _, name := range []string{"new.go", filepath.Join("pkg", "new.go")} {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, name)), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := g.ResetHard(ctx, dir, a); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := g.Status(ctx, dir); st != "" {
+		t.Fatalf("files the pass created must not survive the reset, status=%q", st)
+	}
+}
+
+func TestResetHardShouldFailForAnUnknownCommit(t *testing.T) {
+	g, ctx := New(), context.Background()
+	dir := repo(t)
+	if err := g.ResetHard(ctx, dir, "0123456789abcdef0123456789abcdef01234567"); err == nil {
+		t.Fatal("a commit that does not exist must fail the reset")
+	}
+}

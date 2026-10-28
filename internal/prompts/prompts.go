@@ -195,6 +195,8 @@ type StageData struct {
 	CommitMessagePath string
 	// Hindsight: the session has the Hindsight memory tools; the stage points to the delamain-memory skill.
 	Hindsight bool
+	// MinorPass: implement only; Feedback lists the non-blocking findings of an approved iteration.
+	MinorPass bool
 }
 
 // SampleStageData fills every field so lint can prove each template renders.
@@ -222,6 +224,7 @@ func SampleStageData() StageData {
 		CanFix:            true,
 		CommitMessagePath: "/tmp/run/commit-msg.txt",
 		Hindsight:         true,
+		MinorPass:         true,
 	}
 }
 

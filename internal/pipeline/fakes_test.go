@@ -320,6 +320,9 @@ type fakeGit struct {
 	rewritten  bool              // the new commits do not descend from the recorded origin head
 	unpushed   map[string]bool   // local commits origin does not have
 	bodies     map[string]string // commit sha -> message body below the subject
+	// Minor pass discards.
+	resets   []string // "<dir> <sha>" per ResetHard
+	resetErr error    // ResetHard failure
 }
 
 // ffPush is one PushFastForward call and the HEAD it would publish.
@@ -426,6 +429,22 @@ func (g *fakeGit) MainWorktree(_ context.Context, dir string) (string, error) {
 func (g *fakeGit) ResolveBase(context.Context, string) (string, error) { return "main", nil }
 func (g *fakeGit) BranchExists(_ context.Context, _, b string) bool    { return g.existing[b] }
 func (g *fakeGit) Head(context.Context, string) (string, error)        { return g.head, nil }
+
+// ResetHard drops the commits made after sha, or every commit when sha is the initial head.
+func (g *fakeGit) ResetHard(_ context.Context, dir, sha string) error {
+	g.resets = append(g.resets, dir+" "+sha)
+	if g.resetErr != nil {
+		return g.resetErr
+	}
+	keep := 0
+	for i, c := range g.commits {
+		if strings.HasPrefix(c, sha+" ") {
+			keep = i + 1
+		}
+	}
+	g.commits, g.head, g.status = g.commits[:keep], sha, ""
+	return nil
+}
 func (g *fakeGit) CurrentBranch(context.Context, string) (string, error) {
 	return g.branch, nil
 }

@@ -159,3 +159,37 @@ func TestRenderReportShouldListNonBlockingFindingsPerIteration(t *testing.T) {
 		t.Errorf("iteração 1 não deveria citar o achado da 2:\n%s", it1)
 	}
 }
+
+func TestPRBodyShouldShowMinorPassStatus(t *testing.T) {
+	ru := approvedRun(&artifacts.Review{Axes: []artifacts.Axis{{Axis: "spec", Findings: []artifacts.Finding{finding("minor", "docs", "b.go", 2, "doc faltando")}}}})
+	ru.res.MinorPass = "descartado: gates test falharam"
+	body := prBody(ru, false)
+	_, after, ok := strings.Cut(body, nonBlockingHeading)
+	if !ok || !strings.Contains(after, "Passe de ajustes não bloqueantes: descartado: gates test falharam\n") {
+		t.Errorf("o status do passe deveria vir depois da seção de não bloqueantes:\n%s", body)
+	}
+
+	ru.res.MinorPass = ""
+	if body := prBody(ru, false); strings.Contains(body, "Passe de ajustes") {
+		t.Errorf("sem passe, a linha não deveria aparecer:\n%s", body)
+	}
+}
+
+func TestRenderReportShouldShowMinorPassStatus(t *testing.T) {
+	minor := &artifacts.Review{Axes: []artifacts.Axis{{Axis: "spec", Findings: []artifacts.Finding{finding("minor", "docs", "x.go", 1, "achado X")}}}}
+	res := Result{Outcome: OutcomeApproved, Iterations: 2, MinorPass: "aplicado", History: []Iteration{{N: 1, Review: minor}, {N: 2, Review: minor}}}
+	report := renderReport(res, prompts.Issue{Ref: "#83", Title: "t"})
+	it1, it2, _ := strings.Cut(report, "## Iteração 2\n")
+	_, after, ok := strings.Cut(it2, "#### Achados não bloqueantes\n")
+	if !ok || !strings.Contains(after, "\nPasse de ajustes não bloqueantes: aplicado\n") {
+		t.Errorf("o status do passe deveria vir depois dos não bloqueantes da última iteração:\n%s", it2)
+	}
+	if strings.Contains(it1, "Passe de ajustes") {
+		t.Errorf("o passe só segue a iteração aprovada, a última:\n%s", it1)
+	}
+
+	res.MinorPass = ""
+	if report := renderReport(res, prompts.Issue{Ref: "#83", Title: "t"}); strings.Contains(report, "Passe de ajustes") {
+		t.Errorf("sem passe, a linha não deveria aparecer:\n%s", report)
+	}
+}
