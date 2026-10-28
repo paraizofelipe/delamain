@@ -579,3 +579,35 @@ func TestGitHubBlockersShouldNameBlockersFromAnotherRepository(t *testing.T) {
 		t.Fatalf("blockers = %+v, want %+v", bs, want)
 	}
 }
+
+func TestGitHubBlockersShouldFollowPaginationPastOneHundredBlockers(t *testing.T) {
+	// A blocker left on a later page would let a blocked issue run.
+	f, api := githubAt(t, map[string]func(http.ResponseWriter, *http.Request){
+		"GET /repos/acme/api/issues/7/dependencies/blocked_by": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			if r.URL.Query().Get("page") == "2" {
+				io.WriteString(w, `[{"number":9,"state":"open","repository_url":"https://api.github.com/repos/acme/api"}]`)
+				return
+			}
+			w.Header().Set("Link", `<http://`+r.Host+r.URL.Path+`?page=2&per_page=100>; rel="next"`)
+			io.WriteString(w, `[{"number":3,"state":"closed","repository_url":"https://api.github.com/repos/acme/api"}]`)
+		},
+	})
+	bs, err := f.Blockers(context.Background(), 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Blocker{{Number: 3, Ref: "#3", Open: false}, {Number: 9, Ref: "#9", Open: true}}
+	if !reflect.DeepEqual(bs, want) {
+		t.Fatalf("both pages' blockers must come back: %+v", bs)
+	}
+	var calls int
+	for _, rq := range api.requests() {
+		if rq.method == http.MethodGet && strings.HasSuffix(rq.path, "/dependencies/blocked_by") {
+			calls++
+		}
+	}
+	if calls != 2 {
+		t.Fatalf("the second page must be fetched exactly once, got %d calls", calls)
+	}
+}

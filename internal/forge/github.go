@@ -425,15 +425,29 @@ func (g *githubClient) RelabelPR(ctx context.Context, n int, add, remove []strin
 	return g.Relabel(ctx, n, add, remove)
 }
 
-// Blockers reads the issue's "blocked by" dependencies.
+// Blockers reads every page of the issue's "blocked by" dependencies: a blocker left out would
+// let a blocked issue run.
 func (g *githubClient) Blockers(ctx context.Context, n int) ([]Blocker, error) {
 	var vs []*gogithub.Issue
-	err := g.do(ctx, "blockers", func() (resp *gogithub.Response, err error) {
-		vs, resp, err = g.api.Issues.ListBlockedBy(ctx, g.owner, g.name, int64(n), &gogithub.ListOptions{PerPage: 100})
-		return resp, err
-	})
-	if err != nil {
-		return nil, err
+	opts := &gogithub.ListOptions{PerPage: 100}
+	for {
+		var page []*gogithub.Issue
+		var next int
+		err := g.do(ctx, "blockers", func() (resp *gogithub.Response, err error) {
+			page, resp, err = g.api.Issues.ListBlockedBy(ctx, g.owner, g.name, int64(n), opts)
+			if resp != nil {
+				next = resp.NextPage
+			}
+			return resp, err
+		})
+		if err != nil {
+			return nil, err
+		}
+		vs = append(vs, page...)
+		if next == 0 {
+			break
+		}
+		opts.Page = next
 	}
 	bs := make([]Blocker, 0, len(vs))
 	for _, v := range vs {
