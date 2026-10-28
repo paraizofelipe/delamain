@@ -469,3 +469,25 @@ func TestPlanValidateShouldRejectEmptyRefPath(t *testing.T) {
 		t.Fatalf("an empty path points nowhere, got %v", err)
 	}
 }
+
+func TestPlanValidateShouldRejectMalformedLines(t *testing.T) {
+	cases := map[string]string{
+		"empty":            "",
+		"single number":    "10",
+		"not numbers":      "a-b",
+		"starts at zero":   "0-5",
+		"reversed":         "20-10",
+		"spaces":           " 1-5",
+		"signed":           "+1-5",
+		"overflows an int": "1-99999999999999999999",
+	}
+	for name, lines := range cases {
+		t.Run(name, func(t *testing.T) {
+			body := planWithRefs(t, `[{"path":"calc.go","lines":"`+lines+`","why":"Add"}]`)
+			_, err := Read[Plan](write(t, body))
+			if err == nil || !strings.Contains(err.Error(), `slice "S1" ref 1: lines`) {
+				t.Fatalf("lines %q is not A-B with 1 <= A <= B, got %v", lines, err)
+			}
+		})
+	}
+}

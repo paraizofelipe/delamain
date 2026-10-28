@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 )
@@ -48,7 +49,22 @@ func (r Ref) validate() []error {
 	if !filepath.IsLocal(r.Path) {
 		errs = append(errs, fmt.Errorf("path must be relative to the worktree root without escaping it, got %q", r.Path))
 	}
+	if !validLines(r.Lines) {
+		errs = append(errs, fmt.Errorf("lines must be A-B with integers 1 <= A <= B, got %q", r.Lines))
+	}
 	return errs
+}
+
+var linesRange = regexp.MustCompile(`^(\d+)-(\d+)$`)
+
+func validLines(lines string) bool {
+	m := linesRange.FindStringSubmatch(lines)
+	if m == nil {
+		return false
+	}
+	a, errA := strconv.Atoi(m[1])
+	b, errB := strconv.Atoi(m[2])
+	return errA == nil && errB == nil && a >= 1 && a <= b
 }
 
 type Acceptance struct {
