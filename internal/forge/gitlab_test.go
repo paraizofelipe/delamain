@@ -515,3 +515,21 @@ func TestGitLabBlockersShouldMapOpenedStateToOpen(t *testing.T) {
 		t.Fatalf("blockers = %+v, want %+v", bs, want)
 	}
 }
+
+func TestGitLabBlockersShouldNameBlockersFromAnotherProject(t *testing.T) {
+	// #3 of evil/api must not be mistaken for #3 of grp/api.
+	f, _ := gitlabAt(t, map[string]func(http.ResponseWriter, *http.Request){
+		"GET " + glProject + "/issues/7/links": reply(200, `[
+			{"iid":3,"state":"opened","link_type":"is_blocked_by","references":{"full":"evil/api#3"}},
+			{"iid":3,"state":"opened","link_type":"is_blocked_by","references":{"full":"grp/sub/api#3"}},
+			{"iid":4,"state":"closed","link_type":"is_blocked_by","references":{"full":"GRP/API#4"}}]`),
+	})
+	bs, err := f.Blockers(context.Background(), 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Blocker{{Number: 3, Ref: "evil/api#3", Open: true}, {Number: 3, Ref: "grp/sub/api#3", Open: true}, {Number: 4, Ref: "#4", Open: false}}
+	if !reflect.DeepEqual(bs, want) {
+		t.Fatalf("blockers = %+v, want %+v", bs, want)
+	}
+}

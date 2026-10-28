@@ -408,8 +408,20 @@ func (g *gitlabClient) Blockers(ctx context.Context, n int) ([]Blocker, error) {
 	bs := []Blocker{}
 	for _, v := range vs {
 		if v.LinkType == "is_blocked_by" {
-			bs = append(bs, Blocker{Number: int(v.IID), Ref: "#" + strconv.FormatInt(v.IID, 10), Open: v.State == opened})
+			bs = append(bs, g.blocker(v))
 		}
 	}
 	return bs, nil
+}
+
+// blocker names a blocker of another project by references.full: "#N" would read as the issue N
+// of this one.
+func (g *gitlabClient) blocker(v *gogitlab.IssueRelation) Blocker {
+	ref := "#" + strconv.FormatInt(v.IID, 10)
+	if v.References != nil {
+		if i := strings.LastIndexByte(v.References.Full, '#'); i > 0 && !strings.EqualFold(v.References.Full[:i], g.repo.Path) {
+			ref = v.References.Full
+		}
+	}
+	return Blocker{Number: int(v.IID), Ref: ref, Open: v.State == opened}
 }
