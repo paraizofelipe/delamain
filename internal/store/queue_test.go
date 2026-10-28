@@ -221,6 +221,49 @@ func TestSetQueueWaitingShouldPersistTheReason(t *testing.T) {
 	}
 }
 
+func TestSetQueueWaitingShouldClearTheReasonWithEmpty(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	enqueue(t, s, 12, 21)
+	items, err := s.Queue(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, it := range items {
+		if err := s.SetQueueWaiting(ctx, it.ID, "blocked"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.SetQueueWaiting(ctx, items[0].ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := waiting(t, s); !equalStrings(got, []string{"", "blocked"}) {
+		t.Fatalf("waiting reasons: %q", got)
+	}
+}
+
+func TestSetQueueWaitingShouldIgnoreAMissingItem(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	it, err := s.Enqueue(ctx, "repo", 12, "fix login")
+	if err != nil {
+		t.Fatal(err)
+	}
+	enqueue(t, s, 21)
+	if ok, err := s.Dequeue(ctx, it.ID); !ok || err != nil {
+		t.Fatalf("dequeue: %v %v", ok, err)
+	}
+	if err := s.SetQueueWaiting(ctx, it.ID, "blocked"); err != nil {
+		t.Fatalf("an item no longer in the queue is not an error: %v", err)
+	}
+	if got := queued(t, s); !equalInts(got, []int{21}) {
+		t.Fatalf("queue: %v", got)
+	}
+	if got := waiting(t, s); !equalStrings(got, []string{""}) {
+		t.Fatalf("waiting reasons: %q", got)
+	}
+}
+
 func TestDequeueIssueShouldRemoveOnlyThatIssue(t *testing.T) {
 	s := openTest(t)
 	enqueue(t, s, 12, 21)
