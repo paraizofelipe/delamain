@@ -29,6 +29,16 @@ type Slice struct {
 	Seam     string   `json:"seam"`
 	Files    []string `json:"files"`
 	Tests    []string `json:"tests"`
+	// Refs is the minimal reading the implementer needs for this slice; optional.
+	Refs []Ref `json:"refs,omitempty"`
+}
+
+// Ref points to the narrow range of a file the implementer must read for a slice: a path
+// relative to the worktree root, an "A-B" line range and why it matters.
+type Ref struct {
+	Path  string `json:"path"`
+	Lines string `json:"lines"`
+	Why   string `json:"why"`
 }
 
 type Acceptance struct {
