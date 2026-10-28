@@ -45,6 +45,13 @@ type Issue struct {
 	Confidential bool
 }
 
+// Blocker is an issue that blocks another through the forge's own "blocked by" relation.
+type Blocker struct {
+	Number int
+	Ref    string // "#N" in the same repository, "owner/repo#N" in another
+	Open   bool
+}
+
 // PR is a GitHub pull request or a GitLab merge request.
 type PR struct {
 	Number int
@@ -113,6 +120,9 @@ type ReviewOptions struct {
 type Forge interface {
 	Repo() Repo
 	Issue(ctx context.Context, number int) (Issue, error)
+	// Blockers returns the issues that block number through the forge's own relation; empty
+	// when there is none or the forge does not offer it.
+	Blockers(ctx context.Context, number int) ([]Blocker, error)
 	// ListReady returns open issues carrying label, oldest (lowest number) first.
 	ListReady(ctx context.Context, label string) ([]Issue, error)
 	// OpenPR returns the open PR/MR whose source is head, or nil.

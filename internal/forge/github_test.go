@@ -542,3 +542,22 @@ func TestGitHubResolveThreadShouldSendResolveReviewThreadMutation(t *testing.T) 
 		t.Fatal("a mutation GraphQL rejects must be an error")
 	}
 }
+
+func TestGitHubBlockersShouldListOpenAndClosedBlockers(t *testing.T) {
+	f, api := githubAt(t, map[string]func(http.ResponseWriter, *http.Request){
+		"GET /repos/acme/api/issues/7/dependencies/blocked_by": reply(200, `[
+			{"number":3,"state":"open","repository_url":"https://api.github.com/repos/acme/api"},
+			{"number":5,"state":"closed","repository_url":"https://api.github.com/repos/acme/api"}]`),
+	})
+	bs, err := f.Blockers(context.Background(), 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Blocker{{Number: 3, Ref: "#3", Open: true}, {Number: 5, Ref: "#5", Open: false}}
+	if !reflect.DeepEqual(bs, want) {
+		t.Fatalf("blockers = %+v, want %+v", bs, want)
+	}
+	if q := api.find(t, http.MethodGet, "/repos/acme/api/issues/7/dependencies/blocked_by").query; q != "per_page=100" {
+		t.Fatalf("query = %q, want per_page=100", q)
+	}
+}

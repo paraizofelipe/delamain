@@ -424,3 +424,20 @@ func (g *githubClient) ResolveThread(ctx context.Context, _ int, threadID string
 func (g *githubClient) RelabelPR(ctx context.Context, n int, add, remove []string) error {
 	return g.Relabel(ctx, n, add, remove)
 }
+
+// Blockers reads the issue's "blocked by" dependencies.
+func (g *githubClient) Blockers(ctx context.Context, n int) ([]Blocker, error) {
+	var vs []*gogithub.Issue
+	err := g.do(ctx, "blockers", func() (resp *gogithub.Response, err error) {
+		vs, resp, err = g.api.Issues.ListBlockedBy(ctx, g.owner, g.name, int64(n), &gogithub.ListOptions{PerPage: 100})
+		return resp, err
+	})
+	if err != nil {
+		return nil, err
+	}
+	bs := make([]Blocker, 0, len(vs))
+	for _, v := range vs {
+		bs = append(bs, Blocker{Number: v.GetNumber(), Ref: "#" + strconv.Itoa(v.GetNumber()), Open: v.GetState() == "open"})
+	}
+	return bs, nil
+}
