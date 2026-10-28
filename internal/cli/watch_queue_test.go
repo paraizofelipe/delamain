@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"maps"
 	"strings"
 	"testing"
 
@@ -61,6 +62,37 @@ func TestQueueCellsShouldHaveTheSlotBackground(t *testing.T) {
 	m := watchModel{st: lineStyles(termenv.ANSI256), data: watchData{queue: queueOf(12)}}
 	if got := m.queueLines(40)[0]; !strings.Contains(got, "48;5;62") {
 		t.Fatalf("a taken position is painted on the slot background: %q", got)
+	}
+}
+
+func TestQueueLinesShouldUseTheWaitingSlotStyleForWaitingItems(t *testing.T) {
+	st := lineStyles(termenv.ANSI)
+	items := queueOf(12, 21)
+	items[0].Waiting = "#7 (link)"
+	got := watchModel{st: st, data: watchData{queue: items}}.queueLines(40)
+	if len(got) != 1 {
+		t.Fatalf("both cells fit in a row: %q", got)
+	}
+	wantCodes(t, got[0], " P:1", " P:1 #12 ⏳ ", "43", "30", "1")
+	ready := watchModel{st: st, data: watchData{queue: queueOf(12, 21)}}.queueLines(40)[0]
+	want, _ := codesOf(ready, " P:1", " P:2 #21 ")
+	if codes, _ := codesOf(got[0], " P:1", " P:2 #21 "); !maps.Equal(codes, want) || codes["43"] {
+		t.Fatalf("a ready cell keeps the slot look %v, got %v:\n%q", want, codes, got[0])
+	}
+	if plain := stripANSI(got[0]); strings.Count(plain, "⏳") != 1 || !strings.HasSuffix(plain, " P:2 #21 ") {
+		t.Fatalf("only the waiting cell is marked: %q", plain)
+	}
+}
+
+func TestQueueLinesShouldWrapCorrectlyWithTheWaitingMarker(t *testing.T) {
+	items := queueOf(12, 21)
+	items[0].Waiting, items[1].Waiting = "#7 (link)", "#8 (corpo)"
+	m := watchModel{st: noColors(), data: watchData{queue: items}}
+	if got := m.queueLines(25); len(got) != 1 || got[0] != " P:1 #12 ⏳   P:2 #21 ⏳ " {
+		t.Fatalf("two waiting cells, 12 columns each, fit in 25: %q", got)
+	}
+	if got := m.queueLines(24); len(got) != 2 || got[0] != " P:1 #12 ⏳ " || got[1] != " P:2 #21 ⏳ " {
+		t.Fatalf("the ⏳ takes two columns, so 24 wraps them: %q", got)
 	}
 }
 

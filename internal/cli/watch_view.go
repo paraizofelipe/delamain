@@ -605,6 +605,7 @@ func clean(s string) string {
 // queueLines are the queue as a grid, like the contributions graph of GitHub: one cell per item,
 // "P:<position> #<issue>" on the slot background, in execution order, wrapped at inner columns.
 // A queue of several repositories names each issue's, "P:1 app#12", as the numbers may repeat.
+// An item that waits for its blockers is "P:1 #12 ⏳" on the yellow slotWait background.
 // Every row is returned: the panel shows queueRows of them and scrolls through the rest.
 func (m watchModel) queueLines(inner int) []string {
 	items := m.data.queue
@@ -622,12 +623,15 @@ func (m watchModel) queueLines(inner int) []string {
 		if len(repos) > 1 {
 			repo = clean(filepath.Base(it.Repo))
 		}
-		c := fmt.Sprintf(" P:%d %s#%d ", it.Position, repo, it.Issue)
-		w := lipgloss.Width(c)
+		c, sty := fmt.Sprintf(" P:%d %s#%d ", it.Position, repo, it.Issue), m.st.slot
+		if it.Waiting != "" {
+			c, sty = c+"⏳ ", m.st.slotWait
+		}
+		w := lipgloss.Width(c) // the ⏳ takes two columns
 		if len(rows) == 0 || width+1+w > inner {
 			rows, width = append(rows, nil), -1
 		}
-		rows[len(rows)-1] = append(rows[len(rows)-1], paint(m.st.slot, c))
+		rows[len(rows)-1] = append(rows[len(rows)-1], paint(sty, c))
 		width += 1 + w
 	}
 	lines := make([]string, len(rows))

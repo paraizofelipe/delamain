@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/muesli/termenv"
+
 	"github.com/paraizo/delamain/internal/config"
 	"github.com/paraizo/delamain/internal/daemon"
 	"github.com/paraizo/delamain/internal/forge"
@@ -557,5 +559,55 @@ func TestRenderQueueShouldShowWhatEachItemWaitsFor(t *testing.T) {
 	col := strings.Index(lines[0], "WAITING")
 	if !strings.HasPrefix(lines[2][col:], "- ") {
 		t.Fatalf("an item that does not wait shows -:\n%s", out.String())
+	}
+}
+
+func TestRenderQueueShouldPaintWaitingItemsYellowAndSayTheyWereSkipped(t *testing.T) {
+	var out strings.Builder
+	items := []store.QueueItem{
+		{Position: 1, Repo: "/r/app", Issue: 12, Title: "Fix login", AddedAt: time.Now().Add(-5 * time.Minute), Waiting: "#7 (link)\x1b[2J"},
+		{Position: 2, Repo: "/r/app", Issue: 21, Title: "Add export", AddedAt: time.Now().Add(-5 * time.Minute)},
+	}
+	if err := renderQueue(&out, items, lineStyles(termenv.ANSI)); err != nil {
+		t.Fatal(err)
+	}
+	for _, text := range []string{"1", "#12", "app", "5m", "⏳ pulada · aguardando #7 (link)[2J", "Fix login"} {
+		wantCodes(t, out.String(), "1 ", text, "33")
+	}
+	if plain := stripANSI(out.String()); strings.Contains(plain, "\x1b") || !strings.Contains(plain, "⏳ pulada · aguardando #7 (link)[2J") {
+		t.Fatalf("the waiting item says it was skipped, without control characters:\n%q", out.String())
+	}
+}
+
+func TestRenderQueueShouldKeepReadyItemsUnchanged(t *testing.T) {
+	added := time.Now().Add(-5 * time.Minute)
+	ready := store.QueueItem{Position: 2, Repo: "/r/app", Issue: 21, Title: "Add export", AddedAt: added}
+	var mixed strings.Builder
+	items := []store.QueueItem{
+		{Position: 1, Repo: "/r/app", Issue: 12, Title: "Fix login", AddedAt: added, Waiting: "#7 (link)"},
+		ready,
+	}
+	if err := renderQueue(&mixed, items, lineStyles(termenv.ANSI)); err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(mixed.String(), "\n")
+	if !strings.Contains(lines[1], "⏳") || strings.Contains(lines[2], "⏳") {
+		t.Fatalf("only the waiting item is marked:\n%s", mixed.String())
+	}
+	wantCodes(t, mixed.String(), "2 ", "2")
+	wantCodes(t, mixed.String(), "2 ", "#21", "36")
+	wantCodes(t, mixed.String(), "2 ", "app")
+	wantCodes(t, mixed.String(), "2 ", "5m", "2")
+	wantCodes(t, mixed.String(), "2 ", "-")
+	wantCodes(t, mixed.String(), "2 ", "Add export")
+
+	var alone strings.Builder
+	if err := renderQueue(&alone, []store.QueueItem{ready}, lineStyles(termenv.ANSI)); err != nil {
+		t.Fatal(err)
+	}
+	want := "\x1b[1mPOS\x1b[0m  \x1b[1mISSUE\x1b[0m  \x1b[1mREPO\x1b[0m  \x1b[1mADDED\x1b[0m  \x1b[1mWAITING\x1b[0m  \x1b[1mTITLE\x1b[0m\n" +
+		"2    \x1b[36m#21\x1b[0m    app   \x1b[2m5m\x1b[0m     -        Add export\n"
+	if alone.String() != want {
+		t.Fatalf("a queue of ready items prints as before:\n%q\nwant\n%q", alone.String(), want)
 	}
 }
