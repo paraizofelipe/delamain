@@ -242,6 +242,31 @@ func TestLegacyDependenciesShouldIgnoreCodeBlocks(t *testing.T) {
 	}
 }
 
+func TestLegacyDependenciesShouldAcceptQuotesListsAndCheckboxes(t *testing.T) {
+	for name, tc := range map[string]struct {
+		body string
+		want []int
+	}{
+		"quoted item":        {"> - depende de #72", []int{72}},
+		"open checkbox":      {"- [ ] blocked by #9", []int{9}},
+		"nested quote":       {">> depends on #5", []int{5}},
+		"checked star item":  {"* [x] bloqueado por #6", []int{6}},
+		"plus item":          {"+ bloqueada por #7", []int{7}},
+		"ordered item":       {"1. depende de #8", []int{8}},
+		"indented, any case": {"  - [X] Blocked By #10", []int{10}},
+		"unknown checkbox":   {"[y] blocked by #9", nil},
+		"double dash":        {"-- blocked by #9", nil},
+		"dash without space": {"-blocked by #9", nil},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := Dependencies(tc.body)
+			if err != nil || !slices.Equal(got, tc.want) {
+				t.Fatalf("got %v %v, want %v", got, err, tc.want)
+			}
+		})
+	}
+}
+
 func TestDependenciesShouldReadDependsOnLines(t *testing.T) {
 	for name, body := range map[string]string{
 		"dash item":       "Contexto.\n\n- depends_on: #81\n",

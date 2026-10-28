@@ -284,8 +284,9 @@ func Matrix(dir string, plan artifacts.Plan, changed []string) []string {
 }
 
 var (
-	// legacyLine is the old free-form declaration, read only at the start of a line.
-	legacyLine = regexp.MustCompile(`(?i)^[ \t]*(?:blocked by|depends on|depende de|bloquead[ao] por)[ \t]+#([0-9]+)`)
+	// legacyLine is the old free-form declaration, read only at the start of a line, optionally
+	// inside quotes and after a list marker and a checkbox.
+	legacyLine = regexp.MustCompile(`(?i)^[ \t]*(?:>[ \t]*)*(?:(?:[-*+]|[0-9]+\.)[ \t]+)?(?:\[[ x]\][ \t]+)?(?:blocked by|depends on|depende de|bloquead[ao] por)[ \t]+#([0-9]+)`)
 	// dependsOnLine is the canonical marker: "depends_on:" at the start of a line, optionally
 	// inside quotes and after a list marker.
 	dependsOnLine = regexp.MustCompile(`^[ \t]*(?:>[ \t]*)*(?:[-*+][ \t]*)?depends_on:(.*)$`)
