@@ -313,6 +313,17 @@ func TestLoadShouldReadComplexityProfiles(t *testing.T) {
 	}
 }
 
+func TestLoadShouldReadFixMinorsFromThePipelineSection(t *testing.T) {
+	p := writeFile(t, "pipeline:\n  fix_minors: true\n")
+	cfg, err := Load(p, noEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Pipeline.FixMinors {
+		t.Fatal("pipeline.fix_minors: true in the file must turn the minor pass on")
+	}
+}
+
 func TestLimitsShouldInheritGlobalForZeroOrUnknown(t *testing.T) {
 	cfg := Default()
 	for _, level := range []string{"low", ""} {

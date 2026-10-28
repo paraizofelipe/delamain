@@ -102,6 +102,8 @@ type Result struct {
 	Review *ReviewSummary
 	// Skip says why a skipped run skipped, for the callers that route on it.
 	Skip SkipReason
+	// MinorPass is the status of the pass over non-blocking findings; "" when it did not run.
+	MinorPass string
 }
 
 // SkipReason is the typed cause of an OutcomeSkipped a caller may branch on; most skips leave
@@ -419,6 +421,11 @@ func (r *Runner) execute(ctx context.Context, ru *run, repo string, t Task) erro
 		ru.res.History = append(ru.res.History, it)
 		if review.EffectiveVerdict() == artifacts.VerdictApprove {
 			ru.res.Outcome = OutcomeApproved
+			if r.Cfg.Pipeline.FixMinors {
+				if err := r.minorPass(ctx, ru, iter, review); err != nil {
+					return err
+				}
+			}
 			return r.setState(ctx, ru, store.StateDeliver)
 		}
 		feedback, digest, why = reviewFeedback(review), prevReviewDigest(review), reviewReason(review)
@@ -437,6 +444,34 @@ func (r *Runner) execute(ctx context.Context, ru *run, repo string, t Task) erro
 	ru.res.Outcome = OutcomeExhausted
 	ru.res.Reason = fmt.Sprintf("%d iterações sem aprovação", ru.maxIter)
 	return r.setState(ctx, ru, store.StateDeliverDraft)
+}
+
+// minorPass gives the implementer one turn over the non-blocking findings of the approved
+// iteration iter, then re-runs the gates. It is not an iteration: no review, no History entry.
+func (r *Runner) minorPass(ctx context.Context, ru *run, iter int, review artifacts.Review) error {
+	dir := filepath.Join(ru.dir, "minors")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	if err := r.setState(ctx, ru, store.StateImplement); err != nil {
+		return err
+	}
+	data := r.stageData(ru, iter, filepath.Join(dir, "impl.json"), nonBlockingFeedback(review))
+	data.MinorPass = true
+	if _, err := stepArtifact[artifacts.Impl](ctx, r, ru, "implementer", "implement", data); err != nil {
+		return err
+	}
+	if err := r.setState(ctx, ru, store.StateVerify); err != nil {
+		return err
+	}
+	checks, err := r.verify(ctx, ru, dir)
+	if err != nil {
+		return err
+	}
+	if allPassed(checks) {
+		ru.res.MinorPass = "aplicado"
+	}
+	return nil
 }
 
 // divergingReviews is how many reviews in a row may raise only brand-new blockers before the run

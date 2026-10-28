@@ -5,6 +5,16 @@ Implemente o plano com a skill `delamain-implement` (e `delamain-tdd` em cada fa
 - Plano: `{{.PlanPath}}` e `{{.PlanJSONPath}}`
 - Budget restante: {{.BudgetLeft}}. Priorize fechar fatias verdes a abrir frentes novas.
 {{- if .Feedback}}
+{{- if .MinorPass}}
+
+## Ajustes não bloqueantes (a iteração já foi aprovada)
+
+A revisão aprovou o trabalho e deixou as observações abaixo. Corrija as que forem válidas com a menor mudança possível, com teste quando mudar comportamento. Não toque em nada fora desta lista. Se discordar de um item, não o aplique: registre em `feedback_addressed` com `resolution: "não aplicado: <motivo com evidência>"`.
+
+<feedback>
+{{.Feedback}}
+</feedback>
+{{- else}}
 
 ## Feedback da iteração anterior (prioridade máxima)
 
@@ -15,6 +25,7 @@ Corrija com a **menor** mudança que resolve o item. Se a correção mínima exi
 <feedback>
 {{.Feedback}}
 </feedback>
+{{- end}}
 {{- end}}
 {{- if .Hindsight}}
 

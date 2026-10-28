@@ -248,6 +248,9 @@ type Pipeline struct {
 	PromptTimeout time.Duration `yaml:"prompt_timeout"`
 	// CheckTimeout bounds each deterministic gate (lint, typecheck, test) run by the orchestrator.
 	CheckTimeout time.Duration `yaml:"check_timeout"`
+	// FixMinors gives an approved issue run with non-blocking findings one pass of fixes, re-checked
+	// by the gates without a new review; a pass the gates reject is discarded. Global config only.
+	FixMinors bool `yaml:"fix_minors"`
 }
 
 type Budget struct {
