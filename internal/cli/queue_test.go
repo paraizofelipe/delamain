@@ -352,6 +352,9 @@ func (f *fixture) queueDaemon(t *testing.T, fg issuesForge, issues ...int) *queu
 	prev := queueForge
 	queueForge = func(context.Context, config.Config, string) (forge.Forge, error) { return fg, nil }
 	t.Cleanup(func() { queueForge = prev })
+	prevEvery := queueWaitEvery
+	queueWaitEvery = 0 // every poll asks the forge
+	t.Cleanup(func() { queueWaitEvery = prevEvery })
 	q := &queueDaemon{}
 	run := func(_ context.Context, tk pipeline.Task, _ forge.Forge) (pipeline.Result, error) {
 		q.mu.Lock()
@@ -466,6 +469,28 @@ func TestQueueWaitShouldReleaseTheIssueOnceDependenciesClose(t *testing.T) {
 	}
 	if got := f.queued(t); got != "" {
 		t.Fatalf("its run takes it out of the queue: %q", got)
+	}
+}
+
+func TestQueueWaitShouldNotAskTheForgeAgainWithinThePause(t *testing.T) {
+	f := newFixture(t)
+	fg := issuesForge{
+		open:     map[int]string{7: "base", 12: "a"},
+		blockers: map[int][]forge.Blocker{12: {{Number: 7, Ref: "#7", Open: true}}},
+	}
+	q := f.queueDaemon(t, fg, 12)
+	queueWaitEvery = time.Hour
+	if started, _ := q.poll(t); started != 0 {
+		t.Fatalf("the blocked issue waits: started %d", started)
+	}
+	fg.blockers[12] = []forge.Blocker{{Number: 7, Ref: "#7", Open: false}}
+	delete(fg.open, 7)
+	if started, ran := q.poll(t); started != 0 || len(ran) != 0 {
+		t.Fatalf("within the pause the forge is not asked: started %d ran %v", started, ran)
+	}
+	queueWaitEvery = 0
+	if started, ran := q.poll(t); started != 1 || !slices.Equal(ran, []int{12}) {
+		t.Fatalf("after the pause the issue runs: started %d ran %v", started, ran)
 	}
 }
 

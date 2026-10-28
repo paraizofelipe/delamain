@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
@@ -209,10 +210,21 @@ func renderQueue(w io.Writer, items []store.QueueItem, st styles) error {
 	return writeTable(w, rows)
 }
 
+// queueWaitEvery is how long a queue item that waits keeps its reason before the forge is asked
+// again: the queue is polled every few seconds, and each ask costs several requests. Tests shorten it.
+var queueWaitEvery = time.Minute
+
+// queueChecked is what the forge last said about a queue item that waits, and when.
+type queueChecked struct {
+	reason string
+	at     time.Time
+}
+
 // queueJobs lists the daemon's jobs of the queue, in its order. An item leaves the queue when its
 // job starts; a forge is opened once per repository.
 func queueJobs(cfg config.Config, st *store.Store, run func(ctx context.Context, t pipeline.Task, fg forge.Forge) (pipeline.Result, error)) func(context.Context) ([]daemon.Job, error) {
 	forges := map[string]forge.Forge{} // only the daemon's loop calls it: no lock
+	checked := map[int64]queueChecked{}
 	return func(ctx context.Context) ([]daemon.Job, error) {
 		items, err := st.Queue(ctx)
 		if err != nil {
@@ -238,7 +250,16 @@ func queueJobs(cfg config.Config, st *store.Store, run func(ctx context.Context,
 					return runQueued(ctx, st, fg, it, run)
 				},
 				Wait: func(ctx context.Context) (string, error) {
-					return queueWait(ctx, st, fg, it)
+					if c, ok := checked[it.ID]; ok && time.Since(c.at) < queueWaitEvery {
+						return c.reason, nil // still within the pause: no request to the forge
+					}
+					reason, err := queueWait(ctx, st, fg, it)
+					if reason == "" || err != nil {
+						delete(checked, it.ID) // a free item or a failed read asks again next time
+						return reason, err
+					}
+					checked[it.ID] = queueChecked{reason: reason, at: time.Now()}
+					return reason, nil
 				},
 			})
 		}

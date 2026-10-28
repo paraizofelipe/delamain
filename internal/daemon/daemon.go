@@ -54,8 +54,9 @@ type Daemon struct {
 	waiting map[string]string
 }
 
-// queueInterval paces the queue between polls: it reads the state database only, never a forge,
-// so it picks up new items and the slots other processes free without spending API calls.
+// queueInterval paces the queue between polls: it reads the state database and asks a forge only
+// about an item that is due to be checked (see Job.Wait), so it picks up new items and the slots
+// other processes free without spending API calls.
 const queueInterval = 5 * time.Second
 
 func New(o Options) *Daemon {
