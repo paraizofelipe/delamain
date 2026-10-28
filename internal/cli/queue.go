@@ -35,7 +35,9 @@ func newQueueCmd(load func() (config.Config, error)) *cobra.Command {
 		Long: `The queue holds issues in the order the daemon runs them, one at a time: position 1 is the
 next one, and it starts when the previous one ends. An issue leaves the queue when it becomes a
 run. While the queue has issues, one of the pipeline.max_parallel slots is reserved for it, and
-delamain run and the issues labeled forge.labels.ready share the others.`,
+delamain run and the issues labeled forge.labels.ready share the others. An issue with open
+dependencies stays in the queue, waiting, and the next one runs in its place; queue list shows
+what it waits for under WAITING, and it runs once they are closed.`,
 	}
 	withStore := func(run func(*cobra.Command, config.Config, *store.Store, []string) error) func(*cobra.Command, []string) error {
 		return func(c *cobra.Command, args []string) error {
