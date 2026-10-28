@@ -148,7 +148,8 @@ func (d *Daemon) queue(ctx context.Context) []Job {
 
 // start runs jobs in order while slots are free and returns how many it started. Of the queue's
 // jobs only the head is a candidate, and only while no other issue of the queue runs: the queue
-// is sequential, and a head already running some other way holds the rest back.
+// is sequential, and a head already running some other way holds the rest back. A head that
+// waits gives its slots back and the next item of the queue takes its place.
 func (d *Daemon) start(ctx context.Context, jobs []Job) int {
 	started, head, blocked := 0, false, false
 	defer func() { d.reachedMax(blocked) }()
@@ -188,6 +189,14 @@ func (d *Daemon) start(ctx context.Context, jobs []Job) int {
 				return started // the slots are held elsewhere or left to the queue
 			}
 			release = rel
+		}
+		if j.Queue && j.Wait != nil {
+			if reason, _ := j.Wait(ctx); reason != "" {
+				release()
+				<-d.slots
+				head = false // a waiting head leaves its place to the next item of the queue
+				continue
+			}
 		}
 		d.mu.Lock()
 		d.inflight[j.Key] = true

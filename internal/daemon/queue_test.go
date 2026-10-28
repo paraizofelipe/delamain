@@ -18,6 +18,8 @@ type queueStub struct {
 	mu  sync.Mutex
 	ns  []string
 	run *runner
+	// wait is the Wait of each issue that has one, by number.
+	wait map[string]func(ctx context.Context) (string, error)
 }
 
 func newQueue(r *runner, ns ...string) *queueStub { return &queueStub{ns: ns, run: r} }
@@ -32,7 +34,7 @@ func (q *queueStub) jobs(context.Context) ([]Job, error) {
 			q.ns = slices.DeleteFunc(q.ns, func(s string) bool { return s == n })
 			q.mu.Unlock()
 			return q.run.run(ctx, pipeline.Task{Repo: "/q", Ref: "#" + n}, nil)
-		}})
+		}, Wait: q.wait[n]})
 	}
 	return out, nil
 }
@@ -236,4 +238,151 @@ func TestAFailedJobShouldNotWakeTheQueueUp(t *testing.T) {
 		t.Fatal("a failed job waits for the queue's tick instead of retrying at once")
 	default:
 	}
+}
+
+// waitCounter is a Wait that always answers reason and counts how many times it was asked.
+type waitCounter struct {
+	mu     sync.Mutex
+	reason string
+	calls  int
+}
+
+func (w *waitCounter) wait(context.Context) (string, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.calls++
+	return w.reason, nil
+}
+
+func (w *waitCounter) count() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.calls
+}
+
+func TestStartShouldSkipAWaitingQueueHeadAndStartTheNextItem(t *testing.T) {
+	r := newRunner()
+	q := newQueue(r, "1", "2")
+	q.wait = map[string]func(context.Context) (string, error){"1": (&waitCounter{reason: "blocked by #5"}).wait}
+	slots := &slotsStub{queue: true}
+	d := New(Options{MaxParallel: 1, Log: discard, Queue: q.jobs, Acquire: slots.acquire})
+	if n := d.PollQueue(context.Background()); n != 1 {
+		t.Fatalf("started %d, want the item after the waiting head", n)
+	}
+	if got := <-r.began; got != "/q#2" {
+		t.Fatalf("started %s, want the second item", got)
+	}
+	slots.mu.Lock()
+	asked := slices.Clone(slots.asked)
+	slots.mu.Unlock()
+	if want := []bool{true, true}; !slices.Equal(asked, want) {
+		t.Fatalf("slots asked %v, want the queue's slot taken back by the next item", asked)
+	}
+	close(r.release)
+	d.Wait()
+}
+
+func TestStartShouldReleaseTheSlotOfAWaitingItem(t *testing.T) {
+	r := newRunner()
+	q := newQueue(r, "1")
+	w := &waitCounter{reason: "blocked by #5"}
+	q.wait = map[string]func(context.Context) (string, error){"1": w.wait}
+	slots := &slotsStub{queue: true}
+	d := New(Options{MaxParallel: 1, Log: discard, Queue: q.jobs, Acquire: slots.acquire})
+	if n := d.PollQueue(context.Background()); n != 0 {
+		t.Fatalf("started %d, want the waiting item skipped", n)
+	}
+	slots.mu.Lock()
+	released, free := slots.released, slots.queue
+	slots.mu.Unlock()
+	if released != 1 || !free {
+		t.Fatalf("the queue's slot is given back: %d releases, free %v", released, free)
+	}
+	d.mu.Lock()
+	busy, inflight := d.queueBusy, len(d.inflight)
+	d.mu.Unlock()
+	if len(d.slots) != 0 || busy || inflight != 0 || d.atMax {
+		t.Fatalf("a waiting item holds nothing: %d slots, queue busy %v, %d in flight, at max %v", len(d.slots), busy, inflight, d.atMax)
+	}
+	w.mu.Lock()
+	w.reason = ""
+	w.mu.Unlock()
+	if n := d.PollQueue(context.Background()); n != 1 {
+		t.Fatalf("started %d, want the item once it stops waiting", n)
+	}
+	if got := <-r.began; got != "/q#1" {
+		t.Fatalf("started %s", got)
+	}
+	close(r.release)
+	d.Wait()
+}
+
+func TestStartShouldNotCallWaitWithoutAFreeSlot(t *testing.T) {
+	t.Run("the queue's slot is held elsewhere", func(t *testing.T) {
+		r := newRunner()
+		q := newQueue(r, "1", "2")
+		w := &waitCounter{reason: "blocked by #5"}
+		q.wait = map[string]func(context.Context) (string, error){"1": w.wait, "2": w.wait}
+		slots := &slotsStub{queue: false}
+		d := New(Options{MaxParallel: 1, Log: discard, Queue: q.jobs, Acquire: slots.acquire})
+		if n := d.PollQueue(context.Background()); n != 0 {
+			t.Fatalf("started %d without the queue's slot", n)
+		}
+		if c := w.count(); c != 0 {
+			t.Fatalf("Wait asked %d times without a slot", c)
+		}
+		slots.mu.Lock()
+		asked := slices.Clone(slots.asked)
+		slots.mu.Unlock()
+		if want := []bool{true}; !slices.Equal(asked, want) {
+			t.Fatalf("slots asked %v, want %v", asked, want)
+		}
+	})
+	t.Run("every slot of the process runs", func(t *testing.T) {
+		r := newRunner()
+		d := New(Options{
+			Sources: []Source{{Repo: "/a", Forge: &stubForge{ready: issues(7)}}}, MaxParallel: 1, Log: discard,
+			Producers: Producers(discard, IssueJobs{Label: "delamain:ready", Run: r.run}, ReviewJobs{}),
+		})
+		if n := d.Poll(context.Background()); n != 1 {
+			t.Fatalf("the ready issue starts: %d", n)
+		}
+		<-r.began
+		q := newQueue(r, "1")
+		w := &waitCounter{reason: "blocked by #5"}
+		q.wait = map[string]func(context.Context) (string, error){"1": w.wait}
+		d.opts.Queue = q.jobs
+		if n := d.PollQueue(context.Background()); n != 0 {
+			t.Fatalf("started %d without a free slot", n)
+		}
+		if c := w.count(); c != 0 {
+			t.Fatalf("Wait asked %d times without a slot", c)
+		}
+		close(r.release)
+		d.Wait()
+	})
+}
+
+func TestStartShouldNotAskWaitOfAJobOutsideTheQueue(t *testing.T) {
+	r := newRunner()
+	w := &waitCounter{reason: "blocked by #5"}
+	d := New(Options{
+		Sources: []Source{{Repo: "/a"}}, MaxParallel: 1, Log: discard,
+		Producers: []Producer{func(context.Context, Source) ([]Job, error) {
+			return []Job{{Key: "/a#7", Wait: w.wait, Run: func(ctx context.Context) (pipeline.Result, error) {
+				return r.run(ctx, pipeline.Task{Repo: "/a", Ref: "#7"}, nil)
+			}}}, nil
+		}},
+	})
+	if n := d.Poll(context.Background()); n != 1 {
+		t.Fatalf("started %d, want the job outside the queue as before", n)
+	}
+	if got := <-r.began; got != "/a#7" {
+		t.Fatalf("started %s", got)
+	}
+	if c := w.count(); c != 0 {
+		t.Fatalf("Wait asked %d times of a job outside the queue", c)
+	}
+	close(r.release)
+	d.Wait()
 }
