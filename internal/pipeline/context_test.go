@@ -192,3 +192,16 @@ func TestPlanContextShouldKeepRefHeaderOnOneLine(t *testing.T) {
 		t.Fatalf("plan text in headers stays on one line:\ngot:\n%q\nwant:\n%q", got, want)
 	}
 }
+
+func TestPlanContextShouldReadCurrentFileContentOnEachCall(t *testing.T) {
+	wt := t.TempDir()
+	plan := planWithRefs(artifacts.Ref{Path: "calc.go", Lines: "1-1", Why: "Add"})
+	seedFile(t, wt, "calc.go", "return a - b\n")
+	first := planContext(wt, plan)
+	seedFile(t, wt, "calc.go", "return a + b\n")
+	second := planContext(wt, plan)
+
+	if !strings.Contains(first, "return a - b") || !strings.Contains(second, "return a + b") || strings.Contains(second, "a - b") {
+		t.Fatalf("each call reads the file as it is now:\nfirst:\n%s\nsecond:\n%s", first, second)
+	}
+}

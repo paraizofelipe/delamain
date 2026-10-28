@@ -490,7 +490,7 @@ func (r *Runner) runMinorPass(ctx context.Context, ru *run, iter int, review art
 		return nil, err
 	}
 	data := r.stageData(ru, iter, filepath.Join(dir, "impl.json"), nonBlockingFeedback(review))
-	data.MinorPass = true
+	data.MinorPass, data.Context = true, planContext(ru.repo.Worktree, ru.plan)
 	if _, err := stepArtifact[artifacts.MinorImpl](ctx, r, ru, "implementer", "implement", data); err != nil {
 		return nil, err
 	}

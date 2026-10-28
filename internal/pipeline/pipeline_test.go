@@ -1033,3 +1033,30 @@ func TestRunShouldNotPassPlanContextToReviewPrompt(t *testing.T) {
 		t.Fatal("the run must reach the review for this test to mean anything")
 	}
 }
+
+func TestRunShouldRefreshPlanContextOnEachImplementIteration(t *testing.T) {
+	hs := newHarness(t, func(role string, n int, text string) reply {
+		if role == "reviewer" && n == 1 {
+			return reply{write: reviewJSON("major")}
+		}
+		return refPlanned(role, n, text)
+	})
+	hs.g.onWorktree = seedCalc
+	if res := hs.run(t); res.Outcome != OutcomeApproved || res.Iterations != 2 {
+		t.Fatalf("want approved on iteration 2, got %s after %d (%s)", res.Outcome, res.Iterations, res.Reason)
+	}
+	first, second := contextSection(hs.h.prompts["implementer"][0]), contextSection(hs.h.prompts["implementer"][1])
+	if !strings.Contains(first, "return a - b") {
+		t.Fatalf("the first iteration sees the seeded code:\n%s", first)
+	}
+	if !strings.Contains(second, "func Add(a, b int) int { return a + b }") || strings.Contains(second, "return a - b") {
+		t.Fatalf("the second iteration sees the code the first one wrote:\n%s", second)
+	}
+}
+
+// contextSection is the "## Contexto do plano" section of an implementer prompt, up to the next one.
+func contextSection(prompt string) string {
+	_, rest, _ := strings.Cut(prompt, "## Contexto do plano")
+	section, _, _ := strings.Cut(rest, "\n## ")
+	return section
+}
