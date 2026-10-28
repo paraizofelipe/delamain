@@ -421,10 +421,8 @@ func (r *Runner) execute(ctx context.Context, ru *run, repo string, t Task) erro
 		ru.res.History = append(ru.res.History, it)
 		if review.EffectiveVerdict() == artifacts.VerdictApprove {
 			ru.res.Outcome = OutcomeApproved
-			if r.Cfg.Pipeline.FixMinors {
-				if err := r.minorPass(ctx, ru, iter, review); err != nil {
-					return err
-				}
+			if err := r.maybeMinorPass(ctx, ru, iter, review); err != nil {
+				return err
 			}
 			return r.setState(ctx, ru, store.StateDeliver)
 		}
@@ -444,6 +442,20 @@ func (r *Runner) execute(ctx context.Context, ru *run, repo string, t Task) erro
 	ru.res.Outcome = OutcomeExhausted
 	ru.res.Reason = fmt.Sprintf("%d iterações sem aprovação", ru.maxIter)
 	return r.setState(ctx, ru, store.StateDeliverDraft)
+}
+
+// maybeMinorPass runs the minor pass when fix_minors is on and the approved review left
+// non-blocking findings; past the soft budget limit it records the skip instead.
+func (r *Runner) maybeMinorPass(ctx context.Context, ru *run, iter int, review artifacts.Review) error {
+	if !r.Cfg.Pipeline.FixMinors || nonBlockingFeedback(review) == "" {
+		return nil
+	}
+	if ru.budget.Level >= budget.Soft {
+		ru.log.Info("minor pass skipped: budget", "run", ru.rec.ID, "reason", ru.budget.Reason)
+		ru.res.MinorPass = "pulado: budget"
+		return nil
+	}
+	return r.minorPass(ctx, ru, iter, review)
 }
 
 // minorPass gives the implementer one turn over the non-blocking findings of the approved

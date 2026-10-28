@@ -313,6 +313,16 @@ func TestLoadShouldReadComplexityProfiles(t *testing.T) {
 	}
 }
 
+func TestConfigShouldDefaultFixMinorsToFalse(t *testing.T) {
+	cfg, err := Load(filepath.Join(t.TempDir(), "absent.yaml"), noEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Pipeline.FixMinors || Default().Pipeline.FixMinors {
+		t.Fatal("the minor pass is opt-in: fix_minors defaults to false")
+	}
+}
+
 func TestLoadShouldReadFixMinorsFromThePipelineSection(t *testing.T) {
 	p := writeFile(t, "pipeline:\n  fix_minors: true\n")
 	cfg, err := Load(p, noEnv)
