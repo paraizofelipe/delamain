@@ -35,6 +35,9 @@ type Slice struct {
 	Refs []Ref `json:"refs,omitempty"`
 }
 
+// maxRefsPerSlice bounds the reading of a slice, so a plan cannot bloat the implementer prompt.
+const maxRefsPerSlice = 12
+
 // Ref points to the narrow range of a file the implementer must read for a slice: a path
 // relative to the worktree root, an "A-B" line range and why it matters.
 type Ref struct {
@@ -51,6 +54,9 @@ func (r Ref) validate() []error {
 	}
 	if !validLines(r.Lines) {
 		errs = append(errs, fmt.Errorf("lines must be A-B with integers 1 <= A <= B, got %q", r.Lines))
+	}
+	if strings.TrimSpace(r.Why) == "" {
+		errs = append(errs, errors.New("why is empty"))
 	}
 	return errs
 }
@@ -166,6 +172,9 @@ func (p Plan) Validate() error {
 			errs = append(errs, fmt.Errorf("slice id %q repeated", s.ID))
 		}
 		ids[s.ID] = true
+		if len(s.Refs) > maxRefsPerSlice {
+			errs = append(errs, fmt.Errorf("slice %q: at most %d refs, got %d", s.ID, maxRefsPerSlice, len(s.Refs)))
+		}
 		for j, r := range s.Refs {
 			for _, err := range r.validate() {
 				errs = append(errs, fmt.Errorf("slice %q ref %d: %w", s.ID, j+1, err))

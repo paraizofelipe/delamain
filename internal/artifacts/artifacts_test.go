@@ -491,3 +491,28 @@ func TestPlanValidateShouldRejectMalformedLines(t *testing.T) {
 		})
 	}
 }
+
+func TestPlanValidateShouldRejectEmptyWhy(t *testing.T) {
+	body := planWithRefs(t, `[{"path":"calc.go","lines":"1-5","why":"  "}]`)
+	_, err := Read[Plan](write(t, body))
+	if err == nil || !strings.Contains(err.Error(), `slice "S1" ref 1: why`) {
+		t.Fatalf("a ref without a reason is noise, got %v", err)
+	}
+}
+
+func TestPlanValidateShouldRejectMoreThanMaxRefsPerSlice(t *testing.T) {
+	refs := func(n int) string {
+		r := make([]string, n)
+		for i := range r {
+			r[i] = `{"path":"calc.go","lines":"1-5","why":"Add"}`
+		}
+		return "[" + strings.Join(r, ",") + "]"
+	}
+	if _, err := Read[Plan](write(t, planWithRefs(t, refs(12)))); err != nil {
+		t.Fatalf("12 refs is the limit and stays valid: %v", err)
+	}
+	_, err := Read[Plan](write(t, planWithRefs(t, refs(13))))
+	if err == nil || !strings.Contains(err.Error(), `slice "S1": at most 12 refs, got 13`) {
+		t.Fatalf("13 refs bloat the implementer prompt, got %v", err)
+	}
+}
