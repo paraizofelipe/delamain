@@ -3,6 +3,7 @@ package artifacts
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -399,5 +400,119 @@ func TestResponsesShouldRejectAReplyCarryingADelamainMarker(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "marker") {
 			t.Errorf("a reply must not carry its own marker %q: %v", m, err)
 		}
+	}
+}
+
+// planWithRefs puts refsJSON as the refs of slice S1 in validPlan.
+func planWithRefs(t *testing.T, refsJSON string) string {
+	t.Helper()
+	from := `"tests":["calc_test.go::TestAdd"]}]`
+	body := strings.Replace(validPlan, from, `"tests":["calc_test.go::TestAdd"],"refs":`+refsJSON+`}]`, 1)
+	if body == validPlan {
+		t.Fatal("fixture replacement did not apply")
+	}
+	return body
+}
+
+func TestPlanValidateShouldAcceptValidRefs(t *testing.T) {
+	body := planWithRefs(t, `[{"path":"calc.go","lines":"120-185","why":"Add e seus chamadores"},
+{"path":"a/../calc_test.go","lines":"7-7","why":"linha única"}]`)
+	if _, err := Read[Plan](write(t, body)); err != nil {
+		t.Fatalf("refs with local paths and A-B lines are valid: %v", err)
+	}
+}
+
+func TestPlanShouldDecodeRefsFromJSON(t *testing.T) {
+	body := planWithRefs(t, `[{"path":"internal/calc/calc.go","lines":"120-185","why":"Add e seus chamadores"}]`)
+	p, err := Read[Plan](write(t, body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Ref{{Path: "internal/calc/calc.go", Lines: "120-185", Why: "Add e seus chamadores"}}
+	if !slices.Equal(p.Slices[0].Refs, want) {
+		t.Fatalf("refs decoded wrong: got %+v, want %+v", p.Slices[0].Refs, want)
+	}
+}
+
+func TestPlanValidateShouldAcceptSliceWithoutRefs(t *testing.T) {
+	// Plans written before refs existed carry none and must stay valid.
+	p, err := Read[Plan](write(t, validPlan))
+	if err != nil {
+		t.Fatalf("a slice without refs stays valid: %v", err)
+	}
+	if len(p.Slices[0].Refs) != 0 {
+		t.Fatalf("no refs in the JSON, got %+v", p.Slices[0].Refs)
+	}
+}
+
+func TestPlanValidateShouldRejectAbsoluteRefPath(t *testing.T) {
+	body := planWithRefs(t, `[{"path":"/home/u/.ssh/id_ed25519","lines":"1-5","why":"chave"}]`)
+	_, err := Read[Plan](write(t, body))
+	if err == nil || !strings.Contains(err.Error(), `slice "S1" ref 1: path`) {
+		t.Fatalf("an absolute path reads outside the worktree, got %v", err)
+	}
+}
+
+func TestPlanValidateShouldRejectRefPathEscapingWorktree(t *testing.T) {
+	body := planWithRefs(t, `[{"path":"calc.go","lines":"1-5","why":"ok"},
+{"path":"a/../../.config/gh/hosts.yml","lines":"1-5","why":"token"}]`)
+	_, err := Read[Plan](write(t, body))
+	if err == nil || !strings.Contains(err.Error(), `slice "S1" ref 2: path`) {
+		t.Fatalf("a path that climbs out of the worktree must be rejected, got %v", err)
+	}
+}
+
+func TestPlanValidateShouldRejectEmptyRefPath(t *testing.T) {
+	body := planWithRefs(t, `[{"path":"","lines":"1-5","why":"nada"}]`)
+	_, err := Read[Plan](write(t, body))
+	if err == nil || !strings.Contains(err.Error(), `slice "S1" ref 1: path`) {
+		t.Fatalf("an empty path points nowhere, got %v", err)
+	}
+}
+
+func TestPlanValidateShouldRejectMalformedLines(t *testing.T) {
+	cases := map[string]string{
+		"empty":            "",
+		"single number":    "10",
+		"not numbers":      "a-b",
+		"starts at zero":   "0-5",
+		"reversed":         "20-10",
+		"spaces":           " 1-5",
+		"signed":           "+1-5",
+		"overflows an int": "1-99999999999999999999",
+	}
+	for name, lines := range cases {
+		t.Run(name, func(t *testing.T) {
+			body := planWithRefs(t, `[{"path":"calc.go","lines":"`+lines+`","why":"Add"}]`)
+			_, err := Read[Plan](write(t, body))
+			if err == nil || !strings.Contains(err.Error(), `slice "S1" ref 1: lines`) {
+				t.Fatalf("lines %q is not A-B with 1 <= A <= B, got %v", lines, err)
+			}
+		})
+	}
+}
+
+func TestPlanValidateShouldRejectEmptyWhy(t *testing.T) {
+	body := planWithRefs(t, `[{"path":"calc.go","lines":"1-5","why":"  "}]`)
+	_, err := Read[Plan](write(t, body))
+	if err == nil || !strings.Contains(err.Error(), `slice "S1" ref 1: why`) {
+		t.Fatalf("a ref without a reason is noise, got %v", err)
+	}
+}
+
+func TestPlanValidateShouldRejectMoreThanMaxRefsPerSlice(t *testing.T) {
+	refs := func(n int) string {
+		r := make([]string, n)
+		for i := range r {
+			r[i] = `{"path":"calc.go","lines":"1-5","why":"Add"}`
+		}
+		return "[" + strings.Join(r, ",") + "]"
+	}
+	if _, err := Read[Plan](write(t, planWithRefs(t, refs(12)))); err != nil {
+		t.Fatalf("12 refs is the limit and stays valid: %v", err)
+	}
+	_, err := Read[Plan](write(t, planWithRefs(t, refs(13))))
+	if err == nil || !strings.Contains(err.Error(), `slice "S1": at most 12 refs, got 13`) {
+		t.Fatalf("13 refs bloat the implementer prompt, got %v", err)
 	}
 }

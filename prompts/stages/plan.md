@@ -27,7 +27,7 @@ A sessão tem a memória Hindsight do projeto: siga a skill `delamain-memory`. A
   "kind": "feature | bug",
   "assumptions": ["decisão tomada sem resposta humana, com a justificativa"],
   "slices": [
-    {"id": "S1", "behavior": "comportamento observável", "seam": "interface pública onde o teste observa", "files": ["path"], "tests": ["path::should ... when ..."]}
+    {"id": "S1", "behavior": "comportamento observável", "seam": "interface pública onde o teste observa", "files": ["path"], "tests": ["path::should ... when ..."], "refs": [{"path": "path", "lines": "120-185", "why": "o que o implementer precisa ver neste trecho"}]}
   ],
   "acceptance": [
     {"criterion": "critério de aceite observável", "tests": ["path::should ... when ..."], "flow": true}
@@ -43,6 +43,8 @@ A sessão tem a memória Hindsight do projeto: siga a skill `delamain-memory`. A
 `security` é o modelo de ameaça: obrigatório quando a mudança toca entrada não confiável, execução de código ou ferramenta de terceiros, rede, credencial ou segredo, ou amplia a permissão de um agente; `[]` quando nenhum desses se aplica. Ele é o critério de parada da revisão de segurança, então cada mitigação precisa ter fatia e teste.
 
 Regras do formato: todo critério tem ≥1 teste e pelo menos um com `"flow": true` por critério; `commands.test` é **obrigatório**: o comando que roda a suíte depois da implementação, mesmo que o projeto ainda não exista (repo vazio → o comando do stack que você vai criar, ex. `go test ./...`); os demais comandos ficam `""` quando não se aplicam; `regression_tests` vazio só em `feature`.
+
+`refs` (opcional) é a **leitura mínima** de cada fatia: os trechos que o implementer precisa ler para fazê-la, nada além. Cada ref tem `path` relativo à raiz da worktree (sem caminho absoluto nem `..`), `lines` no formato `A-B` com `1 <= A <= B` e `why` dizendo o que aquele trecho mostra; no máximo 12 por fatia. Prefira intervalos estreitos, aponte o trecho e não cole código no plano. Omita `refs` quando a fatia não pede leitura de código existente.
 
 Regras de `complexity` (obrigatório; o orquestrador calcula o nível a partir dela, então seja fiel ao código): `components` é `single_module`, `multiple_modules` ou `multiple_services`; `change` é `localized`, `cross_cutting` ou `architectural`; `dependencies` lista **só o que a mudança toca** entre `api` (API externa), `database` (banco/migração), `queue` (fila) e `integration` (integração com outro serviço), e fica `[]` se nenhuma; `tests` é não vazio, com os tipos de teste necessários entre `unit`, `integration`, `migration` e `regression`, sem repetir. Teste de fluxo que roda em processo, pela seam pública, sem processo externo real, conta como `unit`; `integration` é só quando o teste exige processo ou serviço externo real (banco, servidor HTTP, fila, outro serviço); `migration` é teste de migração de schema ou dados; `regression` significa suíte de regressão **ampla**, não o teste que reproduz o bug (esse costuma ser `unit`). O orquestrador conta os arquivos pelas fatias e ignora arquivos de teste, então `files` de cada fatia precisa listar todos os arquivos de produção.
 
