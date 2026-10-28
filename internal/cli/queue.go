@@ -244,18 +244,22 @@ func queueJobs(cfg config.Config, st *store.Store, run func(ctx context.Context,
 	}
 }
 
-// queueWait says which open issues the queued item it waits for and records them as its reason.
+// queueWait says which open issues the queued item it waits for and records them as its reason;
+// once none is open the reason is cleared and the item may run. An error leaves the reason alone.
 func queueWait(ctx context.Context, st *store.Store, fg forge.Forge, it store.QueueItem) (string, error) {
 	is, err := fg.Issue(ctx, it.Issue)
 	if err != nil {
 		return "", fmt.Errorf("issue #%d: %w", it.Issue, err)
 	}
 	blockers, err := pipeline.OpenBlockers(ctx, fg, pipeline.TaskFromIssue(is, it.Repo))
-	if err != nil || len(blockers) == 0 {
+	if err != nil {
 		return "", err
 	}
-	reason := strings.Join(blockers, ", ")
-	return reason, st.SetQueueWaiting(ctx, it.ID, reason)
+	reason := strings.Join(blockers, ", ") // none clears the reason
+	if err := st.SetQueueWaiting(ctx, it.ID, reason); err != nil {
+		return "", err
+	}
+	return reason, nil
 }
 
 // runQueued runs the queued issue it once the forge confirms it is open. The item leaves the queue

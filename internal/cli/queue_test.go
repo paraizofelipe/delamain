@@ -437,3 +437,33 @@ func TestQueueWaitShouldReportAForgeThatCannotBeRead(t *testing.T) {
 		t.Fatalf("a failed read leaves the recorded reason alone: %q", got)
 	}
 }
+
+func TestQueueWaitShouldReleaseTheIssueOnceDependenciesClose(t *testing.T) {
+	f := newFixture(t)
+	fg := issuesForge{
+		open:     map[int]string{7: "base", 12: "a"},
+		blockers: map[int][]forge.Blocker{12: {{Number: 7, Ref: "#7", Open: true}}},
+	}
+	q := f.queueDaemon(t, fg, 12)
+	if started, ran := q.poll(t); started != 0 || len(ran) != 0 || f.waiting(t)[12] != "#7 (link)" {
+		t.Fatalf("the blocked issue waits: started %d ran %v waiting %q", started, ran, f.waiting(t)[12])
+	}
+	fg.blockers[12] = []forge.Blocker{{Number: 7, Ref: "#7", Open: false}}
+	delete(fg.open, 7)
+	js, err := queueJobs(config.Default(), f.st, nil)(context.Background())
+	if err != nil || len(js) != 1 {
+		t.Fatalf("jobs: %+v %v", js, err)
+	}
+	if reason, err := js[0].Wait(context.Background()); reason != "" || err != nil {
+		t.Fatalf("a closed blocker holds nothing: %q %v", reason, err)
+	}
+	if got := f.waiting(t)[12]; got != "" {
+		t.Fatalf("the reason is cleared once nothing blocks the issue: %q", got)
+	}
+	if started, ran := q.poll(t); started != 1 || !slices.Equal(ran, []int{12}) {
+		t.Fatalf("the next poll runs it: started %d ran %v", started, ran)
+	}
+	if got := f.queued(t); got != "" {
+		t.Fatalf("its run takes it out of the queue: %q", got)
+	}
+}
