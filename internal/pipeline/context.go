@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/paraizo/delamain/internal/artifacts"
 )
@@ -27,22 +28,51 @@ func planContext(worktree string, plan artifacts.Plan) string {
 	var blocks []string
 	left := maxContextLines
 	for _, s := range plan.Slices {
+		id := oneLine(s.ID)
 		for _, ref := range s.Refs {
+			path, why := oneLine(ref.Path), oneLine(ref.Why)
 			first, last, body, reason := excerpt(root, worktree, ref)
 			if reason != "" {
-				blocks = append(blocks, fmt.Sprintf("- %s · %s:%s — não incluído: %s", s.ID, ref.Path, ref.Lines, reason))
+				blocks = append(blocks, fmt.Sprintf("- %s · %s:%s — não incluído: %s", id, path, oneLine(ref.Lines), reason))
 				continue
 			}
 			if len(body) > left {
-				blocks = append(blocks, fmt.Sprintf("- %s · %s:%d-%d — %s (não incluído: limite de contexto)", s.ID, ref.Path, first, last, ref.Why))
+				blocks = append(blocks, fmt.Sprintf("- %s · %s:%d-%d — %s (não incluído: limite de contexto)", id, path, first, last, why))
 				continue
 			}
 			left -= len(body)
-			blocks = append(blocks, fmt.Sprintf("### %s · %s:%d-%d — %s\n\n```\n%s\n```", s.ID, ref.Path, first, last, ref.Why,
-				strings.Join(body, "\n")))
+			code := strings.Join(body, "\n")
+			fence := fenceFor(code)
+			blocks = append(blocks, fmt.Sprintf("### %s · %s:%d-%d — %s\n\n%s\n%s\n%s", id, path, first, last, why, fence, code, fence))
 		}
 	}
 	return strings.Join(blocks, "\n\n")
+}
+
+// fenceFor returns a code fence longer than any backtick run in code, so the excerpt cannot
+// close its block and pass as instructions.
+func fenceFor(code string) string {
+	longest, run := 0, 0
+	for _, c := range code {
+		if c == '`' {
+			run++
+			longest = max(longest, run)
+		} else {
+			run = 0
+		}
+	}
+	return strings.Repeat("`", max(3, longest+1))
+}
+
+// oneLine turns control characters (line breaks included) into spaces: plan text in a header
+// must not open sections or fences of its own.
+func oneLine(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, s)
 }
 
 // excerpt returns the lines ref points to, with the range's end clamped to the file's last
