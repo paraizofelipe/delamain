@@ -145,6 +145,125 @@ func TestOpenShouldMigrateV9ToTheQueue(t *testing.T) {
 	}
 }
 
+func TestMigrationShouldAddWaitingToAnExistingQueue(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "delamain.db")
+	ctx := context.Background()
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	qs := append(append([]string{}, migrations[:10]...), "PRAGMA user_version = 10",
+		`INSERT INTO queue (repo, issue, title, pos, added_at) VALUES ('repo', 21, 'second', 2, '2026-01-01 00:00:00')`,
+		`INSERT INTO queue (repo, issue, title, pos, added_at) VALUES ('repo', 12, 'first', 1, '2026-01-01 00:00:00')`)
+	for _, q := range qs {
+		if _, err := db.ExecContext(ctx, q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db.Close()
+	s, err := Open(ctx, path)
+	if err != nil {
+		t.Fatalf("v10 must migrate: %v", err)
+	}
+	defer s.Close()
+	items, err := s.Queue(ctx)
+	if err != nil {
+		t.Fatalf("queue after migration: %v", err)
+	}
+	if len(items) != 2 || items[0].Issue != 12 || items[1].Issue != 21 {
+		t.Fatalf("the queued items survive in order: %+v", items)
+	}
+	for _, it := range items {
+		if it.Waiting != "" {
+			t.Fatalf("an existing item is not waiting: %+v", it)
+		}
+	}
+}
+
+func waiting(t *testing.T, s *Store) []string {
+	t.Helper()
+	items, err := s.Queue(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, it := range items {
+		out = append(out, it.Waiting)
+	}
+	return out
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func TestSetQueueWaitingShouldPersistTheReason(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	it, err := s.Enqueue(ctx, "repo", 12, "fix login")
+	if err != nil {
+		t.Fatal(err)
+	}
+	enqueue(t, s, 21)
+	if err := s.SetQueueWaiting(ctx, it.ID, "blocked by #7"); err != nil {
+		t.Fatal(err)
+	}
+	if got := waiting(t, s); !equalStrings(got, []string{"blocked by #7", ""}) {
+		t.Fatalf("waiting reasons: %q", got)
+	}
+}
+
+func TestSetQueueWaitingShouldClearTheReasonWithEmpty(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	enqueue(t, s, 12, 21)
+	items, err := s.Queue(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, it := range items {
+		if err := s.SetQueueWaiting(ctx, it.ID, "blocked"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.SetQueueWaiting(ctx, items[0].ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := waiting(t, s); !equalStrings(got, []string{"", "blocked"}) {
+		t.Fatalf("waiting reasons: %q", got)
+	}
+}
+
+func TestSetQueueWaitingShouldIgnoreAMissingItem(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	it, err := s.Enqueue(ctx, "repo", 12, "fix login")
+	if err != nil {
+		t.Fatal(err)
+	}
+	enqueue(t, s, 21)
+	if ok, err := s.Dequeue(ctx, it.ID); !ok || err != nil {
+		t.Fatalf("dequeue: %v %v", ok, err)
+	}
+	if err := s.SetQueueWaiting(ctx, it.ID, "blocked"); err != nil {
+		t.Fatalf("an item no longer in the queue is not an error: %v", err)
+	}
+	if got := queued(t, s); !equalInts(got, []int{21}) {
+		t.Fatalf("queue: %v", got)
+	}
+	if got := waiting(t, s); !equalStrings(got, []string{""}) {
+		t.Fatalf("waiting reasons: %q", got)
+	}
+}
+
 func TestDequeueIssueShouldRemoveOnlyThatIssue(t *testing.T) {
 	s := openTest(t)
 	enqueue(t, s, 12, 21)

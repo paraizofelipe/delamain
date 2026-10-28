@@ -235,6 +235,8 @@ var migrations = []string{
 		held       INTEGER NOT NULL,
 		created_at TIMESTAMP NOT NULL
 	);`,
+	// Why a queued item is held back; empty when it is not.
+	`ALTER TABLE queue ADD COLUMN waiting TEXT NOT NULL DEFAULT '';`,
 }
 
 func (s *Store) migrate(ctx context.Context) error {
