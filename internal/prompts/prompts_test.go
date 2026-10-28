@@ -719,3 +719,16 @@ func TestRenderShouldKeepThePRStagesFreeOfMemory(t *testing.T) {
 		})
 	}
 }
+
+func TestEmbeddedPlanStageShouldAskForMinimalReadingRefsWithoutPastedCode(t *testing.T) {
+	out, err := mustLoad(t, embedded.FS).Render("plan", SampleStageData())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The field names must match artifacts.Ref: plan.json is decoded with unknown fields rejected.
+	for _, want := range []string{`"refs": [{"path": "path", "lines": "120-185", "why":`, "leitura mínima", "não cole código"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the plan stage must carry %q", want)
+		}
+	}
+}
