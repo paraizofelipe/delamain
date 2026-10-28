@@ -23,6 +23,22 @@ func reviewFeedback(r artifacts.Review) string {
 	return strings.TrimSpace(b.String())
 }
 
+// nonBlockingFeedback mirrors reviewFeedback for the findings that did not block approval, so
+// the human reviewer still gets to weigh them.
+func nonBlockingFeedback(r artifacts.Review) string {
+	var b strings.Builder
+	for _, a := range r.Axes {
+		for _, f := range a.Findings {
+			if f.Blocking() {
+				continue
+			}
+			fmt.Fprintf(&b, "- [%s · %s · %s] %s:%d — %s\n  regra: %s\n  evidência: %s\n",
+				f.Severity, a.Axis, f.Category, f.File, f.Line, f.Message, f.Rule, f.Evidence)
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
 // findingKey fingerprints a finding so two reviews can be compared. The message gets reworded
 // between iterations and the line moves with the code, so neither belongs in the identity.
 func findingKey(axis string, f artifacts.Finding) string {
@@ -115,6 +131,9 @@ func renderReport(res Result, task prompts.Issue) string {
 			fmt.Fprintf(&b, "\nRevisão: **%s** — %d achados bloqueantes\n", it.Review.EffectiveVerdict(), len(it.Review.Blocking()))
 			for _, a := range it.Review.Axes {
 				fmt.Fprintf(&b, "- %s: %d achados\n", a.Axis, len(a.Findings))
+			}
+			if nb := nonBlockingFeedback(*it.Review); nb != "" {
+				b.WriteString("\n#### Achados não bloqueantes\n\n" + nb + "\n")
 			}
 		}
 		b.WriteString("\n")
@@ -222,6 +241,9 @@ func prBody(ru *run, draft bool) string {
 			fmt.Fprintf(&b, "Revisão automática (spec, standards, security): **%s**\n\n", last.Review.EffectiveVerdict())
 			if fb := reviewFeedback(*last.Review); fb != "" {
 				b.WriteString("### Achados bloqueantes\n\n" + fb + "\n\n")
+			}
+			if nb := nonBlockingFeedback(*last.Review); nb != "" {
+				b.WriteString("### Achados não bloqueantes\n\nNão impediram a aprovação; ficam para o revisor decidir.\n\n" + nb + "\n\n")
 			}
 		}
 	}
