@@ -4,22 +4,33 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/paraizo/delamain/internal/config"
+	"github.com/paraizo/delamain/internal/daemon"
 	"github.com/paraizo/delamain/internal/forge"
 	"github.com/paraizo/delamain/internal/pipeline"
 	"github.com/paraizo/delamain/internal/store"
 )
 
 // issuesForge knows the open issues of open; any other number is closed, unless errs fails it.
+// blockers are the native "blocked by" relations of each issue.
 type issuesForge struct {
 	forge.Forge
-	open map[int]string
-	errs map[int]error
+	open     map[int]string
+	errs     map[int]error
+	blockers map[int][]forge.Blocker
+}
+
+func (f issuesForge) Blockers(_ context.Context, n int) ([]forge.Blocker, error) {
+	return f.blockers[n], nil
 }
 
 func (f issuesForge) Issue(_ context.Context, n int) (forge.Issue, error) {
@@ -320,5 +331,109 @@ func TestRunQueuedShouldDropAClosedOrMissingIssueWithoutRunningIt(t *testing.T) 
 		if got := f.queued(t); got != "1:#21" {
 			t.Fatalf("%s: it leaves the queue so the next one can run: %q", c.name, got)
 		}
+	}
+}
+
+// queueDaemon is a daemon over the fixture's queue served by fg; it records the issues run starts.
+type queueDaemon struct {
+	*daemon.Daemon
+	mu  sync.Mutex
+	ran []int
+}
+
+func (f *fixture) queueDaemon(t *testing.T, fg issuesForge, issues ...int) *queueDaemon {
+	t.Helper()
+	for _, n := range issues {
+		if _, err := f.st.Enqueue(context.Background(), f.repo, n, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	prev := queueForge
+	queueForge = func(context.Context, config.Config, string) (forge.Forge, error) { return fg, nil }
+	t.Cleanup(func() { queueForge = prev })
+	q := &queueDaemon{}
+	run := func(_ context.Context, tk pipeline.Task, _ forge.Forge) (pipeline.Result, error) {
+		q.mu.Lock()
+		q.ran = append(q.ran, tk.Issue)
+		q.mu.Unlock()
+		return pipeline.Result{RunID: int64(tk.Issue), Outcome: pipeline.OutcomeApproved}, nil
+	}
+	q.Daemon = daemon.New(daemon.Options{MaxParallel: 1, Log: slog.New(slog.NewTextHandler(io.Discard, nil)), Queue: queueJobs(config.Default(), f.st, run)})
+	return q
+}
+
+// poll polls the queue once and waits for what it started.
+func (q *queueDaemon) poll(t *testing.T) (started int, ran []int) {
+	t.Helper()
+	started = q.PollQueue(context.Background())
+	q.Wait()
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return started, slices.Clone(q.ran)
+}
+
+func (f *fixture) waiting(t *testing.T) map[int]string {
+	t.Helper()
+	items, err := f.st.Queue(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := map[int]string{}
+	for _, it := range items {
+		out[it.Issue] = it.Waiting
+	}
+	return out
+}
+
+func TestQueueWaitShouldKeepAnIssueWithOpenDependenciesQueued(t *testing.T) {
+	f := newFixture(t)
+	fg := issuesForge{
+		open:     map[int]string{7: "base", 12: "a", 21: "b"},
+		blockers: map[int][]forge.Blocker{12: {{Number: 7, Ref: "#7", Open: true}}},
+	}
+	q := f.queueDaemon(t, fg, 12, 21)
+	started, ran := q.poll(t)
+	if started != 1 || !slices.Equal(ran, []int{21}) {
+		t.Fatalf("the blocked head is not run (no comment, no label) and the next item runs: started %d ran %v", started, ran)
+	}
+	if got := f.queued(t); got != "1:#12" {
+		t.Fatalf("the blocked issue stays in the queue: %q", got)
+	}
+	if got := f.waiting(t)[12]; got != "#7 (link)" {
+		t.Fatalf("the queue records what it waits for: %q", got)
+	}
+}
+
+func TestQueueWaitShouldReportAForgeThatCannotBeRead(t *testing.T) {
+	f := newFixture(t)
+	fg := issuesForge{
+		open: map[int]string{21: "b"},
+		errs: map[int]error{12: &forge.APIError{Status: 502, Message: "bad gateway"}},
+	}
+	q := f.queueDaemon(t, fg, 12, 21)
+	items, err := f.st.Queue(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.st.SetQueueWaiting(context.Background(), items[0].ID, "#7 (link)"); err != nil {
+		t.Fatal(err)
+	}
+	wait := queueJobs(config.Default(), f.st, nil)
+	js, err := wait(context.Background())
+	if err != nil || len(js) != 2 || js[0].Wait == nil {
+		t.Fatalf("every queue job says whether it waits: %+v %v", js, err)
+	}
+	if reason, err := js[0].Wait(context.Background()); err == nil || !strings.Contains(err.Error(), "bad gateway") || reason != "" {
+		t.Fatalf("a forge that cannot be read is an error: %q %v", reason, err)
+	}
+	started, ran := q.poll(t)
+	if started != 1 || !slices.Equal(ran, []int{21}) {
+		t.Fatalf("the unreadable item waits and the next one runs: started %d ran %v", started, ran)
+	}
+	if got := f.queued(t); got != "1:#12" {
+		t.Fatalf("the unreadable issue stays in the queue: %q", got)
+	}
+	if got := f.waiting(t)[12]; got != "#7 (link)" {
+		t.Fatalf("a failed read leaves the recorded reason alone: %q", got)
 	}
 }

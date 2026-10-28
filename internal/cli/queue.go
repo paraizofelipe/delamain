@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
@@ -234,10 +235,27 @@ func queueJobs(cfg config.Config, st *store.Store, run func(ctx context.Context,
 				Run: func(ctx context.Context) (pipeline.Result, error) {
 					return runQueued(ctx, st, fg, it, run)
 				},
+				Wait: func(ctx context.Context) (string, error) {
+					return queueWait(ctx, st, fg, it)
+				},
 			})
 		}
 		return jobs, errors.Join(errs...)
 	}
+}
+
+// queueWait says which open issues the queued item it waits for and records them as its reason.
+func queueWait(ctx context.Context, st *store.Store, fg forge.Forge, it store.QueueItem) (string, error) {
+	is, err := fg.Issue(ctx, it.Issue)
+	if err != nil {
+		return "", fmt.Errorf("issue #%d: %w", it.Issue, err)
+	}
+	blockers, err := pipeline.OpenBlockers(ctx, fg, pipeline.TaskFromIssue(is, it.Repo))
+	if err != nil || len(blockers) == 0 {
+		return "", err
+	}
+	reason := strings.Join(blockers, ", ")
+	return reason, st.SetQueueWaiting(ctx, it.ID, reason)
 }
 
 // runQueued runs the queued issue it once the forge confirms it is open. The item leaves the queue
