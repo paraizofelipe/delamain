@@ -3,6 +3,7 @@ package artifacts
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -399,5 +400,47 @@ func TestResponsesShouldRejectAReplyCarryingADelamainMarker(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "marker") {
 			t.Errorf("a reply must not carry its own marker %q: %v", m, err)
 		}
+	}
+}
+
+// planWithRefs puts refsJSON as the refs of slice S1 in validPlan.
+func planWithRefs(t *testing.T, refsJSON string) string {
+	t.Helper()
+	from := `"tests":["calc_test.go::TestAdd"]}]`
+	body := strings.Replace(validPlan, from, `"tests":["calc_test.go::TestAdd"],"refs":`+refsJSON+`}]`, 1)
+	if body == validPlan {
+		t.Fatal("fixture replacement did not apply")
+	}
+	return body
+}
+
+func TestPlanValidateShouldAcceptValidRefs(t *testing.T) {
+	body := planWithRefs(t, `[{"path":"calc.go","lines":"120-185","why":"Add e seus chamadores"},
+{"path":"a/../calc_test.go","lines":"7-7","why":"linha única"}]`)
+	if _, err := Read[Plan](write(t, body)); err != nil {
+		t.Fatalf("refs with local paths and A-B lines are valid: %v", err)
+	}
+}
+
+func TestPlanShouldDecodeRefsFromJSON(t *testing.T) {
+	body := planWithRefs(t, `[{"path":"internal/calc/calc.go","lines":"120-185","why":"Add e seus chamadores"}]`)
+	p, err := Read[Plan](write(t, body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Ref{{Path: "internal/calc/calc.go", Lines: "120-185", Why: "Add e seus chamadores"}}
+	if !slices.Equal(p.Slices[0].Refs, want) {
+		t.Fatalf("refs decoded wrong: got %+v, want %+v", p.Slices[0].Refs, want)
+	}
+}
+
+func TestPlanValidateShouldAcceptSliceWithoutRefs(t *testing.T) {
+	// Plans written before refs existed carry none and must stay valid.
+	p, err := Read[Plan](write(t, validPlan))
+	if err != nil {
+		t.Fatalf("a slice without refs stays valid: %v", err)
+	}
+	if len(p.Slices[0].Refs) != 0 {
+		t.Fatalf("no refs in the JSON, got %+v", p.Slices[0].Refs)
 	}
 }
