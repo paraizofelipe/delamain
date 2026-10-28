@@ -8,34 +8,60 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/paraizo/delamain/internal/forge"
 	"github.com/paraizo/delamain/internal/gates"
 	"github.com/paraizo/delamain/internal/notify"
 	"github.com/paraizo/delamain/internal/store"
 )
 
-// blockers resolves the issues a task declares as dependencies: "depends_on: #N" lines or, when
-// there are none, the legacy mentions ("blocked by #N", "depende de #N"). It fails closed: an
-// unverifiable blocker counts as open, and a malformed "depends_on:" line refuses the task without
-// checking any blocker.
+// blockers resolves the issues that block a task through OpenBlockers. It fails closed: an
+// unverifiable blocker or a malformed "depends_on:" line refuses the task.
 func (r *Runner) blockers(ctx context.Context, t Task) []string {
 	if r.Forge == nil {
 		return nil
 	}
-	deps, err := gates.Dependencies(t.Body)
+	open, err := OpenBlockers(ctx, r.Forge, t)
 	if err != nil {
-		return []string{"depends_on inválido: " + err.Error()}
+		return []string{err.Error()}
 	}
-	var problems []string
-	for _, n := range deps {
-		is, err := r.Forge.Issue(ctx, n)
-		switch {
-		case err != nil:
-			problems = append(problems, fmt.Sprintf("não foi possível verificar a dependência #%d: %v", n, err))
-		case is.Open:
-			problems = append(problems, fmt.Sprintf("depende da issue #%d, que ainda está aberta", n))
-		}
+	problems := make([]string, 0, len(open))
+	for _, b := range open {
+		problems = append(problems, fmt.Sprintf("depende da issue %s, que ainda está aberta", b))
 	}
 	return problems
+}
+
+// OpenBlockers lists the open issues that block t: the dependencies its body declares ("depends_on:
+// #N" lines or, when there are none, the legacy mentions) and the forge's native "blocked by"
+// relations. Each one reads "<ref> (<sources>)", e.g. "#82 (corpo)" or "acme/other#90 (link)".
+// A malformed "depends_on:" line or a blocker that cannot be read is an error.
+func OpenBlockers(ctx context.Context, fg forge.Forge, t Task) ([]string, error) {
+	deps, err := gates.Dependencies(t.Body)
+	if err != nil {
+		return nil, fmt.Errorf("depends_on inválido: %w", err)
+	}
+	var open []string
+	for _, n := range deps {
+		is, err := fg.Issue(ctx, n)
+		if err != nil {
+			return nil, fmt.Errorf("não foi possível verificar a dependência #%d: %w", n, err)
+		}
+		if is.Open {
+			open = append(open, fmt.Sprintf("#%d (corpo)", n))
+		}
+	}
+	native, err := fg.Blockers(ctx, t.Issue)
+	if err != nil {
+		return nil, err
+	}
+	for _, b := range native {
+		ref := b.Ref
+		if ref == "" {
+			ref = fmt.Sprintf("#%d", b.Number)
+		}
+		open = append(open, ref+" (link)")
+	}
+	return open, nil
 }
 
 // checkForge stops before any worktree exists when the branch was already published or has an

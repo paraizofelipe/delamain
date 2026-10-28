@@ -306,3 +306,33 @@ func TestVerifyShouldFailWhenACommitSubjectIsTooLong(t *testing.T) {
 		t.Fatal("the implementer must be told which gate rejected the iteration")
 	}
 }
+
+func TestRunShouldRefuseWithNeedsInfoWhenOnlyANativeBlockerIsOpen(t *testing.T) {
+	hs := newHarness(t, happy)
+	f := withForge(hs)
+	f.blockers = []forge.Blocker{{Number: 82, Ref: "#82", Open: true}}
+	res := hs.run(t)
+	if res.Outcome != OutcomeNeedsInfo || !strings.Contains(res.Reason, "depende da issue #82 (link), que ainda está aberta") {
+		t.Fatalf("an open native blocker refuses the run: %s %s", res.Outcome, res.Reason)
+	}
+	if runs, _ := hs.st.UnfinishedRuns(context.Background()); len(runs) != 0 {
+		t.Fatal("blocked tasks create no run")
+	}
+}
+
+func TestOpenBlockersShouldJoinBodyAndNativeBlockers(t *testing.T) {
+	f := &fakeForge{
+		issues: map[int]forge.Issue{3: {Number: 3, Open: true}},
+		blockers: []forge.Blocker{
+			{Number: 82, Ref: "#82", Open: true},
+			{Number: 90, Ref: "acme/other#90", Open: true},
+			{Number: 95, Open: true}, // no ref: falls back to the number
+		},
+	}
+	task := Task{Issue: 7, Body: "- depends_on: #3"}
+	got, err := OpenBlockers(context.Background(), f, task)
+	want := []string{"#3 (corpo)", "#82 (link)", "acme/other#90 (link)", "#95 (link)"}
+	if err != nil || !slices.Equal(got, want) {
+		t.Fatalf("got %q, %v; want %q", got, err, want)
+	}
+}
