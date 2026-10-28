@@ -287,7 +287,7 @@ var (
 	// legacyLine is the old free-form declaration, read only at the start of a line, optionally
 	// inside quotes and after a list marker and a checkbox. Its list of issues ("#1, #2 e #3")
 	// ends at the first token that is not a reference, a comma, "e" or "and".
-	legacyLine = regexp.MustCompile(`(?i)^[ \t]*(?:>[ \t]*)*(?:(?:[-*+]|[0-9]+\.)[ \t]+)?(?:\[[ x]\][ \t]+)?(?:blocked by|depends on|depende de|bloquead[ao] por)[ \t]+(#[0-9]+(?:(?:[ \t]*,[ \t]*|[ \t]+(?:e|and)[ \t]+|[ \t]+)#[0-9]+)*)`)
+	legacyLine = regexp.MustCompile(`(?i)^[ \t]*(?:>[ \t]*)*(?:(?:[-*+]|[0-9]+\.)[ \t]+)?(?:\[[ x]\][ \t]+)?(?:blocked by|depends on|depende d(?:as|os|e|a|o)|bloquead[ao] por)[ \t]+(#[0-9]+(?:(?:[ \t]*,[ \t]*|[ \t]+(?:e|and)[ \t]+|[ \t]+)#[0-9]+)*)`)
 	legacyRef  = regexp.MustCompile(`#([0-9]+)`)
 	// dependsOnLine is the canonical marker: "depends_on:" at the start of a line, optionally
 	// inside quotes and after a list marker.

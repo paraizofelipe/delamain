@@ -290,6 +290,28 @@ func TestLegacyDependenciesShouldReadListsOfIssues(t *testing.T) {
 	}
 }
 
+func TestLegacyDependenciesShouldAcceptDaDasDoDos(t *testing.T) {
+	for name, tc := range map[string]struct {
+		body string
+		want []int
+	}{
+		"da":             {"depende da #82", []int{82}},
+		"das":            {"Depende das #1 e #2", []int{1, 2}},
+		"do":             {"depende do #3", []int{3}},
+		"dos":            {"depende dos #4, #5", []int{4, 5}},
+		"other word":     {"depende di #6", nil},
+		"glued word":     {"depende dados #6", nil},
+		"no preposition": {"depende #6", nil},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := Dependencies(tc.body)
+			if err != nil || !slices.Equal(got, tc.want) {
+				t.Fatalf("got %v %v, want %v", got, err, tc.want)
+			}
+		})
+	}
+}
+
 func TestDependenciesShouldReadDependsOnLines(t *testing.T) {
 	for name, body := range map[string]string{
 		"dash item":       "Contexto.\n\n- depends_on: #81\n",
