@@ -228,6 +228,22 @@ func TestDependenciesShouldReadDependsOnLines(t *testing.T) {
 	}
 }
 
+func TestDependenciesShouldReadSeveralIssuesInOneDependsOnLine(t *testing.T) {
+	for name, line := range map[string]string{
+		"commas":           "- depends_on: #82, #83",
+		"spaces":           "- depends_on: #82 #83",
+		"no spaces, dup":   "- depends_on: #83,#82,#82",
+		"loose separators": "- depends_on: #82 , #83,",
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := Dependencies(line)
+			if err != nil || !slices.Equal(got, []int{82, 83}) {
+				t.Fatalf("got %v %v, want [82 83]", got, err)
+			}
+		})
+	}
+}
+
 func TestDependenciesShouldIgnoreTheLegacyRegexWhenDependsOnIsPresent(t *testing.T) {
 	got, err := Dependencies("blocked by #4\nDepende de #5\n- depends_on: #3")
 	if err != nil || !slices.Equal(got, []int{3}) {

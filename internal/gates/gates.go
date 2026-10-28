@@ -301,8 +301,11 @@ func Dependencies(body string) ([]int, error) {
 			continue
 		}
 		marked = true
-		if n, err := strconv.Atoi(strings.TrimPrefix(strings.TrimSpace(m[1]), "#")); err == nil && !slices.Contains(out, n) {
-			out = append(out, n)
+		refs := strings.FieldsFunc(m[1], func(r rune) bool { return r == ',' || r == ' ' || r == '\t' })
+		for _, ref := range refs {
+			if n, err := strconv.Atoi(strings.TrimPrefix(ref, "#")); err == nil && !slices.Contains(out, n) {
+				out = append(out, n)
+			}
 		}
 	}
 	if !marked {
