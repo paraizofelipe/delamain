@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"errors"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -231,5 +232,27 @@ func TestMinorPassShouldHaltWhenResetFails(t *testing.T) {
 
 	if res.Outcome != OutcomeHalted || !strings.Contains(res.Reason, "index.lock exists") {
 		t.Fatalf("a pass that cannot be discarded must not ship as approved, got %s: %s", res.Outcome, res.Reason)
+	}
+}
+
+func TestRunShouldShowMinorPassStatusInPRAndReport(t *testing.T) {
+	hs := newHarness(t, minorReview)
+	hs.r.Cfg.Pipeline.FixMinors = true
+	f := withForge(hs)
+	res := hs.run(t)
+
+	const line = "Passe de ajustes não bloqueantes: aplicado"
+	if len(f.created) != 1 {
+		t.Fatalf("the approved run must open a PR, created=%+v", f.created)
+	}
+	if _, after, ok := strings.Cut(f.created[0].Body, "### Achados não bloqueantes"); !ok || !strings.Contains(after, line) {
+		t.Errorf("the PR must show the pass status below the non-blocking findings:\n%s", f.created[0].Body)
+	}
+	report, err := os.ReadFile(res.ReportPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, after, ok := strings.Cut(string(report), "#### Achados não bloqueantes"); !ok || !strings.Contains(after, line) {
+		t.Errorf("report.md must show the pass status below the non-blocking findings:\n%s", report)
 	}
 }
