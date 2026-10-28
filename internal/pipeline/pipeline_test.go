@@ -983,3 +983,53 @@ func TestRunShouldCallCreatedOnceTheRunIsRecorded(t *testing.T) {
 		t.Fatalf("got %s", res.Outcome)
 	}
 }
+
+// planWithCalcRef is planJSON with slice S1 pointing to the first line of calc.go.
+var planWithCalcRef = strings.Replace(planJSON, `"tests":["calc_test.go::TestAdd"]}]`,
+	`"tests":["calc_test.go::TestAdd"],"refs":[{"path":"calc.go","lines":"1-1","why":"Add subtrai"}]}]`, 1)
+
+// refPlanned plans with planWithCalcRef and behaves as happy otherwise.
+func refPlanned(role string, n int, text string) reply {
+	if role == "planner" {
+		return reply{write: planWithCalcRef}
+	}
+	return happy(role, n, text)
+}
+
+// seedCalc puts the buggy calc.go in the base checkout the refs point to.
+func seedCalc(path string) {
+	_ = os.WriteFile(filepath.Join(path, "calc.go"), []byte("func Add(a, b int) int { return a - b }\n"), 0o600)
+}
+
+func TestRunShouldPassPlanContextToImplementPrompt(t *testing.T) {
+	if planWithCalcRef == planJSON {
+		t.Fatal("fixture replacement did not apply")
+	}
+	hs := newHarness(t, refPlanned)
+	hs.g.onWorktree = seedCalc
+	if res := hs.run(t); res.Outcome != OutcomeApproved {
+		t.Fatalf("want approved, got %s (%s)", res.Outcome, res.Reason)
+	}
+	impl := hs.h.prompts["implementer"][0]
+	for _, want := range []string{"## Contexto do plano", "### S1 · calc.go:1-1 — Add subtrai", "func Add(a, b int) int { return a - b }"} {
+		if !strings.Contains(impl, want) {
+			t.Errorf("the implementer must get the plan's excerpts, missing %q:\n%s", want, impl)
+		}
+	}
+}
+
+func TestRunShouldNotPassPlanContextToReviewPrompt(t *testing.T) {
+	hs := newHarness(t, refPlanned)
+	hs.g.onWorktree = seedCalc
+	hs.run(t)
+	for _, role := range []string{"planner", "reviewer"} {
+		for _, p := range hs.h.prompts[role] {
+			if strings.Contains(p, "## Contexto do plano") {
+				t.Errorf("only the implementer gets the plan's excerpts, %s got them:\n%s", role, p)
+			}
+		}
+	}
+	if len(hs.h.prompts["reviewer"]) == 0 {
+		t.Fatal("the run must reach the review for this test to mean anything")
+	}
+}

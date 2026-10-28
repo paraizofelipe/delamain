@@ -452,6 +452,36 @@ func TestImplementPromptShouldUseMinorPassBlockOnlyWhenMinorPass(t *testing.T) {
 	}
 }
 
+func TestRenderImplementShouldOmitContextSectionWhenEmpty(t *testing.T) {
+	s := mustLoad(t, embedded.FS)
+	d := SampleStageData()
+	d.Context = ""
+	out, err := s.Render("implement", d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "## Contexto do plano") {
+		t.Fatalf("a plan without refs has no context section:\n%s", out)
+	}
+}
+
+func TestRenderImplementShouldShowContextSectionAfterThePlan(t *testing.T) {
+	s := mustLoad(t, embedded.FS)
+	d := SampleStageData()
+	d.Context = "### S1 · calc.go:1-1 — Add\n\n```\nfunc Add() {}\n```"
+	out, err := s.Render("implement", d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := strings.Index(out, d.PlanJSONPath)
+	section := strings.Index(out, "## Contexto do plano")
+	excerpt := strings.Index(out, d.Context)
+	feedback := strings.Index(out, "<feedback>")
+	if plan < 0 || section < plan || excerpt < section || feedback < excerpt {
+		t.Fatalf("the excerpts go verbatim under their own section, after the plan and before any feedback block:\n%s", out)
+	}
+}
+
 func TestRenderShouldKeepMinorPassFeedbackInsideItsDelimiter(t *testing.T) {
 	s := mustLoad(t, embedded.FS)
 	d := SampleStageData()

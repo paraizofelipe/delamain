@@ -393,7 +393,9 @@ func (r *Runner) execute(ctx context.Context, ru *run, repo string, t Task) erro
 		if err := r.setState(ctx, ru, store.StateImplement); err != nil {
 			return err
 		}
-		if _, err := stepArtifact[artifacts.Impl](ctx, r, ru, "implementer", "implement", r.stageData(ru, iter, filepath.Join(iterDir, "impl.json"), feedback)); err != nil {
+		data := r.stageData(ru, iter, filepath.Join(iterDir, "impl.json"), feedback)
+		data.Context = planContext(ru.repo.Worktree, ru.plan)
+		if _, err := stepArtifact[artifacts.Impl](ctx, r, ru, "implementer", "implement", data); err != nil {
 			return err
 		}
 
