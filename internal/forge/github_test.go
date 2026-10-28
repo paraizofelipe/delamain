@@ -621,3 +621,28 @@ func TestGitHubBlockersShouldReturnEmptyWhenThereAreNone(t *testing.T) {
 		t.Fatalf("an issue without blockers must have none: %+v %v", bs, err)
 	}
 }
+
+func TestGitHubBlockersShouldPropagateAPIErrors(t *testing.T) {
+	const path = "/repos/acme/api/issues/7/dependencies/blocked_by"
+	for _, tc := range []struct {
+		name  string
+		route func(http.ResponseWriter, *http.Request)
+	}{
+		{"first page", forbidden},
+		{"later page", func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Query().Get("page") == "2" {
+				forbidden(w, r)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Link", `<http://`+r.Host+path+`?page=2&per_page=100>; rel="next"`)
+			io.WriteString(w, `[{"number":3,"state":"open","repository_url":"https://api.github.com/repos/acme/api"}]`)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, _ := githubAt(t, map[string]func(http.ResponseWriter, *http.Request){"GET " + path: tc.route})
+			bs, err := f.Blockers(context.Background(), 7)
+			wantForbidden(t, bs, err)
+		})
+	}
+}
