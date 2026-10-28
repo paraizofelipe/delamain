@@ -149,3 +149,10 @@ func (s *Store) DequeueIssue(ctx context.Context, repo string, issue int) error 
 	_, err := s.db.ExecContext(ctx, `DELETE FROM queue WHERE repo = ? AND issue = ?`, repo, issue)
 	return err
 }
+
+// SetQueueWaiting records why the item id is held back; an empty reason clears it. An item no
+// longer in the queue is not an error.
+func (s *Store) SetQueueWaiting(ctx context.Context, id int64, reason string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE queue SET waiting = ? WHERE id = ?`, reason, id)
+	return err
+}

@@ -180,6 +180,47 @@ func TestMigrationShouldAddWaitingToAnExistingQueue(t *testing.T) {
 	}
 }
 
+func waiting(t *testing.T, s *Store) []string {
+	t.Helper()
+	items, err := s.Queue(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, it := range items {
+		out = append(out, it.Waiting)
+	}
+	return out
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func TestSetQueueWaitingShouldPersistTheReason(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	it, err := s.Enqueue(ctx, "repo", 12, "fix login")
+	if err != nil {
+		t.Fatal(err)
+	}
+	enqueue(t, s, 21)
+	if err := s.SetQueueWaiting(ctx, it.ID, "blocked by #7"); err != nil {
+		t.Fatal(err)
+	}
+	if got := waiting(t, s); !equalStrings(got, []string{"blocked by #7", ""}) {
+		t.Fatalf("waiting reasons: %q", got)
+	}
+}
+
 func TestDequeueIssueShouldRemoveOnlyThatIssue(t *testing.T) {
 	s := openTest(t)
 	enqueue(t, s, 12, 21)
