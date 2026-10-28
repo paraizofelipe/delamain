@@ -1,5 +1,6 @@
 // Package gitx wraps the few git operations the orchestrator performs itself.
-// It never merges, rebases, resets or pushes to a protected branch.
+// It never merges, rebases or pushes to a protected branch, and its only reset is ResetHard on
+// a run's own worktree.
 package gitx
 
 import (
@@ -83,6 +84,12 @@ func (g Git) ResolveBase(ctx context.Context, repo string) (string, error) {
 
 func (g Git) Head(ctx context.Context, dir string) (string, error) {
 	return g.run(ctx, dir, "rev-parse", "HEAD")
+}
+
+// ResetHard moves the run's worktree dir back to sha, discarding commits and changes made since.
+func (g Git) ResetHard(ctx context.Context, dir, sha string) error {
+	_, err := g.run(ctx, dir, "reset", "--hard", sha)
+	return err
 }
 
 func (g Git) CurrentBranch(ctx context.Context, dir string) (string, error) {
