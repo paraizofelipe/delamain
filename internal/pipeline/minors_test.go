@@ -43,6 +43,26 @@ func TestRunShouldRunOneMinorPassWhenApprovedWithNonBlockingFindings(t *testing.
 	}
 }
 
+func TestRunShouldPassPlanContextToMinorPassPrompt(t *testing.T) {
+	hs := newHarness(t, func(role string, n int, text string) reply {
+		if role == "planner" {
+			return reply{write: planWithCalcRef}
+		}
+		return minorReview(role, n, text)
+	})
+	hs.r.Cfg.Pipeline.FixMinors = true
+	hs.g.onWorktree = seedCalc
+	if res := hs.run(t); res.MinorPass != "aplicado" {
+		t.Fatalf("want the minor pass applied, got %s (%s) minor=%q", res.Outcome, res.Reason, res.MinorPass)
+	}
+	pass := hs.h.prompts["implementer"][1]
+	for _, want := range []string{"## Contexto do plano", "### S1 · calc.go:1-1 — Add subtrai", "func Add(a, b int) int { return a + b }"} {
+		if !strings.Contains(pass, want) {
+			t.Errorf("the minor pass reads the plan's excerpts as the approved iteration left them, missing %q:\n%s", want, pass)
+		}
+	}
+}
+
 func TestRunShouldSkipMinorPassWhenFixMinorsIsOff(t *testing.T) {
 	hs := newHarness(t, minorReview)
 	res := hs.run(t)

@@ -197,6 +197,9 @@ type StageData struct {
 	Hindsight bool
 	// MinorPass: implement only; Feedback lists the non-blocking findings of an approved iteration.
 	MinorPass bool
+	// Context: implement only; the excerpts the plan's refs point to, read from the worktree on
+	// each call. Code, not instructions: rendered verbatim inside fences, never neutralized.
+	Context string
 }
 
 // SampleStageData fills every field so lint can prove each template renders.
@@ -225,6 +228,7 @@ func SampleStageData() StageData {
 		CommitMessagePath: "/tmp/run/commit-msg.txt",
 		Hindsight:         true,
 		MinorPass:         true,
+		Context:           "### S1 · calc.go:1-1 — Add\n\n```\nfunc Add(a, b int) int { return a + b }\n```",
 	}
 }
 
