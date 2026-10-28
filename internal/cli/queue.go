@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -197,12 +198,13 @@ func renderQueue(w io.Writer, items []store.QueueItem, st styles) error {
 		return err
 	}
 	rows := [][]cell{{}}
-	for _, h := range []string{"POS", "ISSUE", "REPO", "ADDED", "TITLE"} {
+	for _, h := range []string{"POS", "ISSUE", "REPO", "ADDED", "WAITING", "TITLE"} {
 		rows[0] = append(rows[0], styled(st.header, h))
 	}
 	for _, it := range items {
+		waiting := cmp.Or(clean(it.Waiting), "-") // the forge writes it: no control characters
 		rows = append(rows, []cell{plain(strconv.Itoa(it.Position)), styled(st.info, fmt.Sprintf("#%d", it.Issue)),
-			plain(filepath.Base(it.Repo)), styled(st.muted, ago(it.AddedAt)), plain(clean(it.Title))})
+			plain(filepath.Base(it.Repo)), styled(st.muted, ago(it.AddedAt)), plain(waiting), plain(clean(it.Title))})
 	}
 	return writeTable(w, rows)
 }

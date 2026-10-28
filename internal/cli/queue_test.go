@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/paraizo/delamain/internal/config"
 	"github.com/paraizo/delamain/internal/daemon"
@@ -495,5 +496,31 @@ func TestQueueWaitShouldNotWaitForAClosedIssue(t *testing.T) {
 		if got := f.queued(t); got != "" {
 			t.Fatalf("%s: the job removes it from the queue: %q", c.name, got)
 		}
+	}
+}
+
+func TestRenderQueueShouldShowWhatEachItemWaitsFor(t *testing.T) {
+	var out strings.Builder
+	items := []store.QueueItem{
+		{Position: 1, Repo: "/r/app", Issue: 12, Title: "Fix login", AddedAt: time.Now(), Waiting: "#7 (link),\x1b[2J\nacme/other#90 (link)"},
+		{Position: 2, Repo: "/r/app", Issue: 21, Title: "Add export", AddedAt: time.Now()},
+	}
+	if err := renderQueue(&out, items, noColors()); err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimRight(out.String(), "\n"), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("one line per item and the header:\n%s", out.String())
+	}
+	header := strings.Fields(lines[0])
+	if !slices.Equal(header, []string{"POS", "ISSUE", "REPO", "ADDED", "WAITING", "TITLE"}) {
+		t.Fatalf("WAITING sits between ADDED and TITLE: %q", header)
+	}
+	if strings.ContainsAny(out.String(), "\x1b") || !strings.Contains(lines[1], "#7 (link),[2J acme/other#90 (link)") {
+		t.Fatalf("the reason is shown without control characters:\n%q", lines[1])
+	}
+	col := strings.Index(lines[0], "WAITING")
+	if !strings.HasPrefix(lines[2][col:], "- ") {
+		t.Fatalf("an item that does not wait shows -:\n%s", out.String())
 	}
 }
