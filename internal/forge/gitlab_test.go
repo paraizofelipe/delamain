@@ -481,10 +481,82 @@ func TestGitLabThreadsShouldFollowPaginationPastOneHundredDiscussions(t *testing
 	}
 }
 
-func TestGitLabBlockersShouldReturnEmpty(t *testing.T) {
-	f, _ := gitlabAt(t, map[string]func(http.ResponseWriter, *http.Request){})
+func TestGitLabBlockersShouldKeepOnlyIsBlockedByLinks(t *testing.T) {
+	f, api := gitlabAt(t, map[string]func(http.ResponseWriter, *http.Request){
+		"GET " + glProject + "/issues/7/links": reply(200, `[
+			{"iid":3,"state":"opened","link_type":"is_blocked_by","references":{"full":"grp/api#3"}},
+			{"iid":4,"state":"opened","link_type":"relates_to","references":{"full":"grp/api#4"}},
+			{"iid":5,"state":"opened","link_type":"blocks","references":{"full":"grp/api#5"}},
+			{"iid":6,"state":"opened","link_type":"is_blocked_by","references":{"full":"grp/api#6"}}]`),
+	})
 	bs, err := f.Blockers(context.Background(), 7)
-	if err != nil || len(bs) != 0 {
-		t.Fatalf("gitlab has no native blockers yet: %+v %v", bs, err)
+	if err != nil {
+		t.Fatal(err)
 	}
+	want := []Blocker{{Number: 3, Ref: "#3", Open: true}, {Number: 6, Ref: "#6", Open: true}}
+	if !reflect.DeepEqual(bs, want) {
+		t.Fatalf("blockers = %+v, want %+v", bs, want)
+	}
+	api.find(t, http.MethodGet, glProject+"/issues/7/links")
+}
+
+func TestGitLabBlockersShouldMapOpenedStateToOpen(t *testing.T) {
+	f, _ := gitlabAt(t, map[string]func(http.ResponseWriter, *http.Request){
+		"GET " + glProject + "/issues/7/links": reply(200, `[
+			{"iid":3,"state":"opened","link_type":"is_blocked_by","references":{"full":"grp/api#3"}},
+			{"iid":5,"state":"closed","link_type":"is_blocked_by","references":{"full":"grp/api#5"}}]`),
+	})
+	bs, err := f.Blockers(context.Background(), 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Blocker{{Number: 3, Ref: "#3", Open: true}, {Number: 5, Ref: "#5", Open: false}}
+	if !reflect.DeepEqual(bs, want) {
+		t.Fatalf("blockers = %+v, want %+v", bs, want)
+	}
+}
+
+func TestGitLabBlockersShouldNameBlockersFromAnotherProject(t *testing.T) {
+	// #3 of evil/api must not be mistaken for #3 of grp/api.
+	f, _ := gitlabAt(t, map[string]func(http.ResponseWriter, *http.Request){
+		"GET " + glProject + "/issues/7/links": reply(200, `[
+			{"iid":3,"state":"opened","link_type":"is_blocked_by","references":{"full":"evil/api#3"}},
+			{"iid":3,"state":"opened","link_type":"is_blocked_by","references":{"full":"grp/sub/api#3"}},
+			{"iid":4,"state":"closed","link_type":"is_blocked_by","references":{"full":"GRP/API#4"}}]`),
+	})
+	bs, err := f.Blockers(context.Background(), 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Blocker{{Number: 3, Ref: "evil/api#3", Open: true}, {Number: 3, Ref: "grp/sub/api#3", Open: true}, {Number: 4, Ref: "#4", Open: false}}
+	if !reflect.DeepEqual(bs, want) {
+		t.Fatalf("blockers = %+v, want %+v", bs, want)
+	}
+}
+
+func TestGitLabBlockersShouldReturnEmptyWithoutBlockingLinks(t *testing.T) {
+	// GitLab Free has no blocking links: the issue has none or only relates_to ones.
+	for _, tc := range []struct{ name, links string }{
+		{"no links", `[]`},
+		{"only relates_to", `[{"iid":4,"state":"opened","link_type":"relates_to","references":{"full":"grp/api#4"}}]`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, api := gitlabAt(t, map[string]func(http.ResponseWriter, *http.Request){
+				"GET " + glProject + "/issues/7/links": reply(200, tc.links),
+			})
+			bs, err := f.Blockers(context.Background(), 7)
+			if err != nil || len(bs) != 0 {
+				t.Fatalf("an issue without blocking links must have no blockers: %+v %v", bs, err)
+			}
+			api.find(t, http.MethodGet, glProject+"/issues/7/links")
+		})
+	}
+}
+
+func TestGitLabBlockersShouldPropagateAPIErrors(t *testing.T) {
+	f, _ := gitlabAt(t, map[string]func(http.ResponseWriter, *http.Request){
+		"GET " + glProject + "/issues/7/links": forbidden,
+	})
+	bs, err := f.Blockers(context.Background(), 7)
+	wantForbidden(t, bs, err)
 }
