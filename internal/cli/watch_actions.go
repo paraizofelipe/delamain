@@ -47,6 +47,9 @@ type watchActions interface {
 	// StartIssue is `delamain run --issue issue --repo repo`, detached from the TUI: it waits for
 	// the run to end, and an exit code other than 0 comes back as a startIssueExit.
 	StartIssue(repo string, issue int) error
+	// StartReview is `delamain review --pr pr --repo repo`, detached from the TUI: it waits for
+	// the review to end, and an exit code other than 0 comes back as a startReviewExit.
+	StartReview(repo string, pr int) error
 }
 
 // dialogKeys are the keys of the open dialog: nothing else acts while it is open.
@@ -65,12 +68,13 @@ var dialogKeys = struct {
 type dialogKind int
 
 const (
-	dialogNone       dialogKind = iota
-	dialogStop                  // stop the run
-	dialogRemove                // remove the run
-	dialogRecover               // recover the run whose owner died
-	dialogHelp                  // the keys
-	dialogStartIssue            // start a run of an issue
+	dialogNone        dialogKind = iota
+	dialogStop                   // stop the run
+	dialogRemove                 // remove the run
+	dialogRecover                // recover the run whose owner died
+	dialogHelp                   // the keys
+	dialogStartIssue             // start a run of an issue
+	dialogStartReview            // start a review of a PR
 )
 
 // watchDialog is the open dialog and the run it acts on, as it was when it opened.
@@ -80,7 +84,7 @@ type watchDialog struct {
 	dirty  string      // why rm refused the worktree: F removes it anyway
 	scroll int         // lines of a dialog taller than the screen scrolled past
 	at     time.Time   // when it opened: it is only answered confirmGrace later
-	issue  issuePicker // the repository and the issue of a run to start
+	issue  issuePicker // the repository and the issue or the PR of a run to start
 }
 
 // confirmGrace is how long a dialog ignores the key that opened it: s opens the stop and s
@@ -199,7 +203,7 @@ func (m watchModel) openDialog(kind dialogKind) watchModel {
 // dialogKey handles a key while a dialog is open.
 func (m watchModel) dialogKey(msg tea.KeyMsg) (watchModel, tea.Cmd) {
 	switch {
-	case m.dialog.kind == dialogStartIssue:
+	case m.dialog.kind == dialogStartIssue, m.dialog.kind == dialogStartReview:
 		return m.issueKey(msg)
 	case key.Matches(msg, watchKeys.up):
 		m.dialog.scroll = max(min(m.dialog.scroll, m.maxScroll())-1, 0)
@@ -370,6 +374,9 @@ func (m watchModel) dialogLines() (string, lipgloss.Style, dialogWriter) {
 	case m.dialog.kind == dialogStartIssue:
 		title, look = "delamain run", st.info
 		m.pickerLines(&d)
+	case m.dialog.kind == dialogStartReview:
+		title, look = "delamain review", st.info
+		m.pickerLines(&d)
 	case v.terminal:
 		d.text(st.none.Bold(true), fmt.Sprintf("run %d already finished", v.ID))
 		d.scroll()
@@ -411,6 +418,7 @@ var helpKeys = [][2]string{
 	{"s · d", "stop the run (delamain stop) · remove it (delamain rm)"},
 	{"c", "recover a run whose owner died (delamain recover)"},
 	{"i", "start an issue run (delamain run --issue)"},
+	{"r", "review an open PR (delamain review --pr)"},
 	{"o · y", "open the PR in the browser · copy the run ID"},
 	{"q · ctrl+c", "quit; the runs go on in the daemon"},
 }
@@ -658,32 +666,51 @@ func (a *storeWatchActions) Copy(text string) error {
 // It takes neither the mutex nor the context of the actions: close would wait for a run that
 // takes hours, or kill it. Quitting the watch leaves the run going, as the daemon's runs do.
 func (a *storeWatchActions) StartIssue(repo string, issue int) error {
+	path, err := a.launch(fmt.Sprintf("issue-%d", issue), func(exe string, log *os.File) *exec.Cmd {
+		return launchCmd(exe, repo, issue, log)
+	})
+	if ee, ok := errors.AsType[*exec.ExitError](err); ok {
+		return startIssueExit{issue: issue, code: ee.ExitCode(), log: path}
+	}
+	return err
+}
+
+// StartReview runs `delamain review --pr pr --repo repo` as StartIssue runs an issue, writing to
+// <state_dir>/launch/<unix time>-review-<pr>.log, and waits for it to end.
+func (a *storeWatchActions) StartReview(repo string, pr int) error {
+	path, err := a.launch(fmt.Sprintf("review-%d", pr), func(exe string, log *os.File) *exec.Cmd {
+		return reviewCmd(exe, repo, pr, log)
+	})
+	if ee, ok := errors.AsType[*exec.ExitError](err); ok {
+		return startReviewExit{pr: pr, code: ee.ExitCode(), log: path}
+	}
+	return err
+}
+
+// launch starts the command build makes of the binary of this watch and a new log,
+// <state_dir>/launch/<unix time>-<name>.log, and waits for it to end: the path of the log, and
+// the *exec.ExitError of an exit code other than 0.
+func (a *storeWatchActions) launch(name string, build func(exe string, log *os.File) *exec.Cmd) (string, error) {
 	exe, err := a.executable()
 	if err != nil {
-		return err
+		return "", err
 	}
 	dir := filepath.Join(a.stop.cfg.Paths.StateDir, "launch")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
+		return "", err
 	}
-	path := filepath.Join(dir, fmt.Sprintf("%d-issue-%d.log", time.Now().Unix(), issue))
+	path := filepath.Join(dir, fmt.Sprintf("%d-%s.log", time.Now().Unix(), name))
 	log, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600) //nolint:gosec // inside the state dir
 	if err != nil {
-		return err
+		return "", err
 	}
-	cmd := launchCmd(exe, repo, issue, log)
+	cmd := build(exe, log)
 	err = cmd.Start()
 	_ = log.Close() // the run holds its own descriptor
 	if err != nil {
-		return err
+		return path, err
 	}
-	if err := cmd.Wait(); err != nil {
-		if ee, ok := errors.AsType[*exec.ExitError](err); ok {
-			return startIssueExit{issue: issue, code: ee.ExitCode(), log: path}
-		}
-		return err
-	}
-	return nil
+	return path, cmd.Wait()
 }
 
 // close releases what the stops opened: the notifier of the recover. Cancelling first ends an
@@ -713,11 +740,34 @@ func (e startIssueExit) Error() string {
 }
 
 // launchCmd is `exe run --issue issue --repo repo`, with no shell: the repo is one argument
-// whatever it holds. The run reads nothing, writes to log alone and starts a session of its own,
-// so the hangup of the terminal of the watch does not reach it.
+// whatever it holds.
 func launchCmd(exe, repo string, issue int, log *os.File) *exec.Cmd {
-	cmd := exec.Command(exe, "run", "--issue", strconv.Itoa(issue), "--repo", repo) //nolint:gosec // an argument list, no shell
+	return detachedCmd(exe, log, "run", "--issue", strconv.Itoa(issue), "--repo", repo)
+}
+
+// reviewCmd is `exe review --pr pr --repo repo`, with no shell, as launchCmd.
+func reviewCmd(exe, repo string, pr int, log *os.File) *exec.Cmd {
+	return detachedCmd(exe, log, "review", "--pr", strconv.Itoa(pr), "--repo", repo)
+}
+
+// detachedCmd is exe with args, an argument list with no shell. It reads nothing, writes to log
+// alone and starts a session of its own, so the hangup of the terminal of the watch does not
+// reach it.
+func detachedCmd(exe string, log *os.File, args ...string) *exec.Cmd {
+	cmd := exec.Command(exe, args...) //nolint:gosec // an argument list, no shell
 	cmd.Stdout, cmd.Stderr = log, log
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	return cmd
+}
+
+// startReviewExit is a review started by StartReview that exited with code: log is what it wrote.
+type startReviewExit struct {
+	pr, code int
+	log      string
+}
+
+// Error says the review failed, and where its log is: `delamain review` has no exit code with a
+// meaning of its own.
+func (e startReviewExit) Error() string {
+	return fmt.Sprintf("review of PR #%d failed: exit %d; see %s", e.pr, e.code, e.log)
 }

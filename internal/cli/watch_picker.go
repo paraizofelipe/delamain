@@ -16,30 +16,46 @@ import (
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/paraizo/delamain/internal/forge"
 	"github.com/paraizo/delamain/internal/gitx"
 )
 
-// pickStep is where the dialog of i stands: the repository, then the issue.
+// pickStep is where the dialog of i or r stands: the repository, then the issue or the PR.
 type pickStep int
 
 const (
 	pickRepo    pickStep = iota // the list of daemon.repos and other path…
 	pickPath                    // the path typed by hand
 	pickIssue                   // the number of the issue
-	pickConfirm                 // start the run?
+	pickConfirm                 // start the run, or the review?
+	pickPR                      // the open PRs of the repository
 )
 
-// issuePicker is the state of the dialog of i: which repository, then which issue.
+// issuePicker is the state of the dialog of i or r: which repository, then which issue or PR.
 type issuePicker struct {
 	step     pickStep
-	cursor   int       // the line of the list: a repo of daemon.repos, or other path…
-	input    lineInput // the path, then the issue
-	path     string    // the path typed, kept to go back to it
-	repo     string    // the absolute path of the repository picked
-	number   int       // the issue to start
-	err      string    // why the path or the issue was refused
-	checking bool      // the path is being checked: enter waits for it
-	checkID  uint64    // the check awaited: the answer of an earlier one is dropped
+	cursor   int              // the line of the list: a repo of daemon.repos, or other path…
+	input    lineInput        // the path, then the issue
+	path     string           // the path typed, kept to go back to it
+	repo     string           // the absolute path of the repository picked
+	number   int              // the issue to start, or the PR to review
+	err      string           // why the path or the issue was refused
+	checking bool             // the path is being checked: enter waits for it
+	checkID  uint64           // the check awaited: the answer of an earlier one is dropped
+	prs      []forge.PRDetail // the open PRs of repo, for r
+	prCursor int              // the line of the list of PRs
+	loading  bool             // the PRs are being listed
+	loadID   uint64           // the load awaited: the answer of an earlier one is dropped
+	top      string           // the main worktree of repo, where the runs of its PRs are recorded
+}
+
+// runRepo is the repository the runs of the PRs of repo are recorded under: the main worktree,
+// or repo itself while it is not resolved.
+func (p issuePicker) runRepo() string {
+	if p.top != "" {
+		return p.top
+	}
+	return p.repo
 }
 
 // pickerKeys are the keys of the dialog of i.
@@ -62,7 +78,8 @@ type watchRepoMsg struct {
 	err  error
 }
 
-// repoCheckSeq numbers the checks, across dialogs: a reopened one starts its picker from zero.
+// repoCheckSeq numbers the checks and the loads of PRs, across dialogs: a reopened one starts its
+// picker from zero.
 var repoCheckSeq atomic.Uint64
 
 // lineInput is a line typed at its end: the path or the issue. It needs no cursor that moves,
@@ -97,13 +114,14 @@ func (in lineInput) Update(msg tea.KeyMsg) lineInput {
 // View is the line and the cursor at its end.
 func (in lineInput) View() string { return string(in.value) + "█" }
 
-// openStartIssue opens the dialog of i on the list of daemon.repos, or on the path without one.
-func (m watchModel) openStartIssue() watchModel {
+// openPicker opens the dialog of i or r, by kind, on the list of daemon.repos, or on the path
+// without one.
+func (m watchModel) openPicker(kind dialogKind) watchModel {
 	p := issuePicker{}
 	if len(m.opts.repos) == 0 {
 		p.step, p.input = pickPath, newPickerInput("")
 	}
-	m.dialog = watchDialog{kind: dialogStartIssue, at: m.opts.now(), issue: p}
+	m.dialog = watchDialog{kind: kind, at: m.opts.now(), issue: p}
 	return m
 }
 
@@ -154,6 +172,8 @@ func (m watchModel) issueKey(msg tea.KeyMsg) (watchModel, tea.Cmd) {
 		return m, nil
 	case pickConfirm:
 		return m.confirmKey(msg)
+	case pickPR:
+		return m.prKey(msg)
 	}
 	switch {
 	case key.Matches(msg, pickerKeys.next):
@@ -176,8 +196,9 @@ func (m watchModel) issueKey(msg tea.KeyMsg) (watchModel, tea.Cmd) {
 	return m, nil
 }
 
-// confirmKey handles a key of the confirmation: enter or y starts the run, off Update, and closes
-// the dialog. The run is no stop, remove or recover of the store: it starts beside them.
+// confirmKey handles a key of the confirmation: enter or y starts the run or the review, off
+// Update, and closes the dialog. It is no stop, remove or recover of the store: it starts beside
+// them.
 func (m watchModel) confirmKey(msg tea.KeyMsg) (watchModel, tea.Cmd) {
 	switch {
 	case key.Matches(msg, pickerKeys.cancel):
@@ -186,11 +207,15 @@ func (m watchModel) confirmKey(msg tea.KeyMsg) (watchModel, tea.Cmd) {
 	case !key.Matches(msg, pickerKeys.start), m.opts.now().Sub(m.dialog.at) < confirmGrace:
 		return m, nil
 	}
-	repo, issue, acts := m.dialog.issue.repo, m.dialog.issue.number, m.opts.actions
+	repo, n, acts := m.dialog.issue.repo, m.dialog.issue.number, m.opts.actions
+	text, start := fmt.Sprintf("starting issue #%d in %s…", n, filepath.Base(repo)), acts.StartIssue
+	if m.dialog.kind == dialogStartReview {
+		text, start = fmt.Sprintf("starting review of PR #%d in %s…", n, filepath.Base(repo)), acts.StartReview
+	}
 	m.dialog = watchDialog{}
-	m, toast := m.showToast(m.st.warn, fmt.Sprintf("starting issue #%d in %s…", issue, filepath.Base(repo)))
+	m, toast := m.showToast(m.st.warn, text)
 	return m, tea.Batch(toast, func() tea.Msg {
-		if err := acts.StartIssue(repo, issue); err != nil {
+		if err := start(repo, n); err != nil {
 			return watchQuickMsg{err: err} // the code and the log of a run that failed
 		}
 		return nil
@@ -209,19 +234,26 @@ func (m *watchModel) checkRepo(path string) tea.Cmd {
 	}
 }
 
-// repoChecked moves on to the issue with the repository checked, or stays with why it was refused.
-func (m watchModel) repoChecked(msg watchRepoMsg) watchModel {
-	if m.dialog.kind != dialogStartIssue || !m.dialog.issue.checking || msg.id != m.dialog.issue.checkID {
-		return m // the dialog closed, or the check was replaced, while the path was checked
+// repoChecked moves on to the issue, or to the PRs it starts to load, with the repository checked,
+// or stays with why it was refused.
+func (m watchModel) repoChecked(msg watchRepoMsg) (watchModel, tea.Cmd) {
+	kind := m.dialog.kind
+	if kind != dialogStartIssue && kind != dialogStartReview || !m.dialog.issue.checking || msg.id != m.dialog.issue.checkID {
+		return m, nil // the dialog closed, or the check was replaced, while the path was checked
 	}
 	p := &m.dialog.issue
 	p.checking = false
 	if msg.err != nil {
 		p.err = clean(msg.err.Error())
-		return m
+		return m, nil
+	}
+	if kind == dialogStartReview {
+		p.step, p.repo, p.err = pickPR, msg.repo, ""
+		cmd := m.loadPRs() // before m is copied into the return: it sets loading
+		return m, cmd
 	}
 	p.step, p.repo, p.err, p.input = pickIssue, msg.repo, "", newPickerInput("")
-	return m
+	return m, nil
 }
 
 // checkRepoDir is the absolute path of path, ~ expanded, when it is a directory inside a git
@@ -268,7 +300,11 @@ func (m watchModel) pickerLines(d *dialogWriter) {
 	st, p := m.st, m.dialog.issue
 	switch p.step {
 	case pickRepo:
-		d.text(st.none.Bold(true), "Start an issue run in which repository?")
+		question := "Start an issue run in which repository?"
+		if m.dialog.kind == dialogStartReview {
+			question = "Review a PR in which repository?"
+		}
+		d.text(st.none.Bold(true), question)
 		d.blank()
 		for i, r := range append(append([]string{}, m.opts.repos...), "") {
 			mark, name := "  ", filepath.Base(r)
@@ -294,12 +330,18 @@ func (m watchModel) pickerLines(d *dialogWriter) {
 		}
 		d.buttons([2]string{"next", "enter"}, [2]string{back, "esc"})
 	case pickConfirm:
+		if m.dialog.kind == dialogStartReview {
+			m.reviewLines(d)
+			return
+		}
 		d.text(st.none.Bold(true), fmt.Sprintf("Start issue #%d in %s?", p.number, filepath.Base(p.repo)))
 		d.blank()
 		d.row("repo", paint(st.muted, p.repo))
 		d.row("run", fmt.Sprintf("delamain run --issue %d, in the background; its log goes to the state dir", p.number))
 		d.blank()
 		d.buttons([2]string{"start", "enter"}, [2]string{"cancel", "esc"})
+	case pickPR:
+		m.prLines(d)
 	default:
 		d.text(st.none.Bold(true), fmt.Sprintf("Which issue in %s?", filepath.Base(p.repo)))
 		d.blank()
