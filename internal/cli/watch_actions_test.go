@@ -48,6 +48,21 @@ type fakeWatchActions struct {
 	recoverErr error
 	started    []startCall
 	startErr   error
+	reviewed   []reviewCall
+	reviewErr  error
+}
+
+// reviewCall is one call of fakeWatchActions.StartReview.
+type reviewCall struct {
+	repo string
+	pr   int
+}
+
+func (f *fakeWatchActions) StartReview(repo string, pr int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.reviewed = append(f.reviewed, reviewCall{repo, pr})
+	return f.reviewErr
 }
 
 // startCall is one call of fakeWatchActions.StartIssue.
@@ -1590,6 +1605,71 @@ func TestStartIssueShouldReportTheExitCodeAndTheLogOfAFailedRun(t *testing.T) {
 	err := launchActions(filepath.Join(dir, "state"), missing).StartIssue(dir, 7)
 	if _, ok := errors.AsType[startIssueExit](err); err == nil || ok {
 		t.Fatalf("a run that cannot start is an error of its own: %v", err)
+	}
+}
+
+func TestStartReviewShouldLaunchDetachedReviewWithArgsList(t *testing.T) {
+	cmd := reviewCmd("/bin/delamain", "/src/a b; rm -rf ~", 12, os.Stderr)
+	if cmd.Path != "/bin/delamain" || !slices.Equal(cmd.Args, []string{"/bin/delamain", "review", "--pr", "12", "--repo", "/src/a b; rm -rf ~"}) {
+		t.Fatalf("the review is the binary with a list of arguments, no shell: %q %q", cmd.Path, cmd.Args)
+	}
+	if cmd.SysProcAttr == nil || !cmd.SysProcAttr.Setsid {
+		t.Fatal("the review starts a session of its own: the terminal of the watch does not end it")
+	}
+	if cmd.Stdin != nil || cmd.Stdout != os.Stderr || cmd.Stderr != os.Stderr {
+		t.Fatalf("the review reads nothing and writes to the log alone: %v %v %v", cmd.Stdin, cmd.Stdout, cmd.Stderr)
+	}
+
+	dir := t.TempDir()
+	state, args := filepath.Join(dir, "state"), filepath.Join(dir, "args")
+	repo := filepath.Join(dir, "a b; touch pwned")
+	exe := launchScript(t, dir, "printf '%s\\n' \"$@\" > '"+args+"'\necho to stdout\necho to stderr >&2\nread line || echo stdin is empty\n")
+	if err := launchActions(state, exe).StartReview(repo, 12); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := os.ReadFile(args); err != nil || string(b) != "review\n--pr\n12\n--repo\n"+repo+"\n" { //nolint:gosec // inside the test's temp dir
+		t.Fatalf("the review gets the PR and the repo as arguments: %q %v", b, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "pwned")); err == nil {
+		t.Fatal("the repo never goes through a shell")
+	}
+	logs := launchLogs(t, state)
+	if len(logs) != 1 || !strings.HasSuffix(logs[0], "-review-12.log") {
+		t.Fatalf("the review writes one log in launch/, named after the PR: %v", logs)
+	}
+	if b, err := os.ReadFile(logs[0]); err != nil || string(b) != "to stdout\nto stderr\nstdin is empty\n" {
+		t.Fatalf("stdout and stderr go to the log, stdin is empty: %q %v", b, err)
+	}
+	for path, want := range map[string]os.FileMode{filepath.Join(state, "launch"): 0o700, logs[0]: 0o600} {
+		if fi, err := os.Stat(path); err != nil || fi.Mode().Perm() != want {
+			t.Fatalf("%s is %v, want %v: %v", path, fi.Mode().Perm(), want, err)
+		}
+	}
+}
+
+func TestStartReviewShouldReportTheExitCodeAndLog(t *testing.T) {
+	for _, code := range []int{1, 2} {
+		dir := t.TempDir()
+		state := filepath.Join(dir, "state")
+		err := launchActions(state, launchScript(t, dir, "exit "+strconv.Itoa(code)+"\n")).StartReview(dir, 12)
+		exit, ok := errors.AsType[startReviewExit](err)
+		if !ok {
+			t.Fatalf("exit %d is a startReviewExit: %v", code, err)
+		}
+		logs := launchLogs(t, state)
+		if exit.code != code || len(logs) != 1 || exit.log != logs[0] {
+			t.Fatalf("exit %d carries its code and the log: %+v %v", code, exit, logs)
+		}
+		if got, want := err.Error(), fmt.Sprintf("review of PR #12 failed: exit %d; see %s", code, logs[0]); got != want {
+			t.Errorf("exit %d says %q, want %q", code, got, want)
+		}
+	}
+
+	dir := t.TempDir()
+	missing := func() (string, error) { return filepath.Join(dir, "missing"), nil }
+	err := launchActions(filepath.Join(dir, "state"), missing).StartReview(dir, 12)
+	if _, ok := errors.AsType[startReviewExit](err); err == nil || ok {
+		t.Fatalf("a review that cannot start is an error of its own: %v", err)
 	}
 }
 
