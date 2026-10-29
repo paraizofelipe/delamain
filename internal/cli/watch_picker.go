@@ -46,6 +46,16 @@ type issuePicker struct {
 	prCursor int              // the line of the list of PRs
 	loading  bool             // the PRs are being listed
 	loadID   uint64           // the load awaited: the answer of an earlier one is dropped
+	top      string           // the main worktree of repo, where the runs of its PRs are recorded
+}
+
+// runRepo is the repository the runs of the PRs of repo are recorded under: the main worktree,
+// or repo itself while it is not resolved.
+func (p issuePicker) runRepo() string {
+	if p.top != "" {
+		return p.top
+	}
+	return p.repo
 }
 
 // pickerKeys are the keys of the dialog of i.

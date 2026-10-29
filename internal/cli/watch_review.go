@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/paraizo/delamain/internal/forge"
+	"github.com/paraizo/delamain/internal/gitx"
 	"github.com/paraizo/delamain/internal/store"
 )
 
@@ -25,6 +26,7 @@ const prListMax = 50
 // watchPRsMsg is how the load of the open PRs ended: the PRs, or why there are none to show.
 type watchPRsMsg struct {
 	id  uint64 // the load it answers
+	top string // the main worktree of the repository, empty when git could not resolve it
 	prs []forge.PRDetail
 	err error
 }
@@ -38,15 +40,18 @@ func (m *watchModel) loadPRs() tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), prListFor)
 		defer cancel()
+		// delamain review records its run under the main worktree, whichever subdirectory or
+		// linked worktree was picked; the active runs are matched against that path.
+		top, _ := gitx.New().MainWorktree(ctx, repo)
 		f, err := open(ctx, repo)
 		switch {
 		case err != nil:
-			return watchPRsMsg{id: id, err: err}
+			return watchPRsMsg{id: id, top: top, err: err}
 		case f == nil: // as delamain review, a repository without origin has no PR to review
-			return watchPRsMsg{id: id, err: fmt.Errorf("%s has no GitHub or GitLab origin", repo)}
+			return watchPRsMsg{id: id, top: top, err: fmt.Errorf("%s has no GitHub or GitLab origin", repo)}
 		}
 		prs, err := f.ListOpenPRs(ctx, prListMax)
-		return watchPRsMsg{id: id, prs: prs, err: err}
+		return watchPRsMsg{id: id, top: top, prs: prs, err: err}
 	}
 }
 
@@ -56,7 +61,7 @@ func (m watchModel) prsLoaded(msg watchPRsMsg) watchModel {
 	if m.dialog.kind != dialogStartReview || !p.loading || msg.id != p.loadID {
 		return m // the dialog closed, or the repository was replaced, while the PRs loaded
 	}
-	p.loading, p.prs = false, msg.prs
+	p.loading, p.prs, p.top = false, msg.prs, msg.top
 	if msg.err != nil {
 		p.err = clean(msg.err.Error())
 	}
@@ -84,7 +89,7 @@ func (m watchModel) prKey(msg tea.KeyMsg) (watchModel, tea.Cmd) {
 		p.prCursor = last
 	case key.Matches(msg, pickerKeys.next) && len(p.prs) > 0:
 		n := p.prs[p.prCursor].Number
-		if m.activeRun(p.repo, n) {
+		if m.activeRun(p.runRepo(), n) {
 			return m.showToast(m.st.warn, fmt.Sprintf("a run is already active for PR %d", n))
 		}
 		p.step, p.number = pickConfirm, n
@@ -142,7 +147,7 @@ func (m watchModel) prLines(d *dialogWriter) {
 		if pr.Draft {
 			tail += " draft"
 		}
-		if m.activeRun(p.repo, pr.Number) {
+		if m.activeRun(p.runRepo(), pr.Number) {
 			tail += " active run"
 		}
 		room := max(d.inner-lipgloss.Width(mark+head+tail), 1)
