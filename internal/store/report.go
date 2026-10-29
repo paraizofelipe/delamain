@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"time"
 )
@@ -43,6 +44,55 @@ func (s *Store) RunSummaries(ctx context.Context, f ReportFilter) ([]RunSummary,
 		}
 		out = append(out, RunSummary{Run: r, Usage: u})
 	}
+	return out, rows.Err()
+}
+
+// DayCost is what a role cost on one local day; Day is that day's midnight in time.Local.
+type DayCost struct {
+	Day     time.Time
+	Role    string
+	CostUSD float64
+}
+
+// DailyCostByRole sums the cost of the ledger rows since f.Since per local day and role, ordered by day then role.
+func (s *Store) DailyCostByRole(ctx context.Context, f ReportFilter) ([]DayCost, error) {
+	where, args := reportWhere(f, "token_ledger.at")
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT token_ledger.at, token_ledger.role, token_ledger.cost_usd FROM token_ledger WHERE `+where, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	// The day is local, so it is computed here: SQLite's date() is UTC.
+	type key struct {
+		day  int64
+		role string
+	}
+	idx := map[key]int{}
+	var out []DayCost
+	for rows.Next() {
+		var at time.Time
+		var role string
+		var cost float64
+		if err := rows.Scan(&at, &role, &cost); err != nil {
+			return nil, err
+		}
+		local := at.In(time.Local)
+		day := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, time.Local)
+		k := key{day.Unix(), role}
+		if i, ok := idx[k]; ok {
+			out[i].CostUSD += cost
+			continue
+		}
+		idx[k] = len(out)
+		out = append(out, DayCost{Day: day, Role: role, CostUSD: cost})
+	}
+	slices.SortFunc(out, func(a, b DayCost) int {
+		if c := a.Day.Compare(b.Day); c != 0 {
+			return c
+		}
+		return strings.Compare(a.Role, b.Role)
+	})
 	return out, rows.Err()
 }
 

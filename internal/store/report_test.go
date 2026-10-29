@@ -99,3 +99,52 @@ func TestRunSummariesShouldFilterByPeriodRepoAndKind(t *testing.T) {
 		}
 	}
 }
+
+// useLocal makes loc the machine zone for the test; call it before openTest, the test must not be parallel.
+func useLocal(t *testing.T, loc *time.Location) {
+	t.Helper()
+	prev := time.Local
+	time.Local = loc
+	t.Cleanup(func() { time.Local = prev })
+}
+
+func TestDailyCostByRoleShouldGroupByLocalDay(t *testing.T) {
+	// At UTC-3, 23:30 and 00:30 local fall on the same UTC day but on different local days.
+	brt := time.FixedZone("UTC-3", -3*60*60)
+	useLocal(t, brt)
+	s := openTest(t)
+	ctx := context.Background()
+	var clock time.Time
+	s.now = func() time.Time { return clock.UTC() }
+	r, _ := s.CreateRun(ctx, "repo", "#1", "a", "omp", 3, 0, KindIssue)
+	record := func(at time.Time, role, file string, cost float64) {
+		t.Helper()
+		clock = at
+		if _, err := s.RecordUsage(ctx, r.ID, role, file, Usage{Input: 1, CostUSD: cost}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	record(time.Date(2026, 10, 19, 23, 0, 0, 0, brt), "planner", "/old.jsonl", 8)      // before Since
+	record(time.Date(2026, 10, 20, 22, 0, 0, 0, brt), "implementer", "/i.jsonl", 0.25) // 01:00 UTC on the 21st
+	record(time.Date(2026, 10, 20, 23, 30, 0, 0, brt), "planner", "/p1.jsonl", 0.5)    // 02:30 UTC on the 21st
+	record(time.Date(2026, 10, 21, 0, 30, 0, 0, brt), "planner", "/p2.jsonl", 1)       // 03:30 UTC on the 21st
+	record(time.Date(2026, 10, 21, 0, 45, 0, 0, brt), "planner", "/p3.jsonl", 0.25)
+
+	got, err := s.DailyCostByRole(ctx, ReportFilter{Since: time.Date(2026, 10, 20, 0, 0, 0, 0, brt)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []DayCost{
+		{Day: time.Date(2026, 10, 20, 0, 0, 0, 0, brt), Role: "implementer", CostUSD: 0.25},
+		{Day: time.Date(2026, 10, 20, 0, 0, 0, 0, brt), Role: "planner", CostUSD: 0.5},
+		{Day: time.Date(2026, 10, 21, 0, 0, 0, 0, brt), Role: "planner", CostUSD: 1.25},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %+v, want %+v", got, want)
+	}
+	for i := range want {
+		if !got[i].Day.Equal(want[i].Day) || got[i].Role != want[i].Role || got[i].CostUSD != want[i].CostUSD {
+			t.Fatalf("row %d: got %+v, want %+v (all: %+v)", i, got[i], want[i], got)
+		}
+	}
+}
