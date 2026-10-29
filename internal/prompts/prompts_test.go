@@ -868,22 +868,51 @@ func TestEmbeddedPlanStageShouldAskForMinimalReadingRefsWithoutPastedCode(t *tes
 	}
 }
 
+// languageLines returns the bullets starting with "Idioma" inside body's <rules> block.
+func languageLines(body string) []string {
+	_, rules, _ := strings.Cut(body, "<rules>")
+	rules, _, _ = strings.Cut(rules, "</rules>")
+	var lines []string
+	for _, line := range strings.Split(rules, "\n") {
+		text := strings.TrimLeft(strings.TrimPrefix(strings.TrimSpace(line), "- "), "*")
+		if strings.HasPrefix(text, "Idioma") {
+			lines = append(lines, line)
+		}
+	}
+	return lines
+}
+
 // ptBRRule returns the language rule inside body's <rules> block: a bullet starting with
 // "Idioma" that keeps human-facing text in pt-BR, code, commits and PR title in English and
 // literal quotes as in the original. Empty when body has no such rule.
 func ptBRRule(body string) string {
-	_, rules, _ := strings.Cut(body, "<rules>")
-	rules, _, _ = strings.Cut(rules, "</rules>")
-	for _, line := range strings.Split(rules, "\n") {
-		text := strings.TrimLeft(strings.TrimPrefix(strings.TrimSpace(line), "- "), "*")
-		if !strings.HasPrefix(text, "Idioma") {
-			continue
-		}
-		if strings.Contains(text, "pt-BR, sempre") && strings.Contains(text, "inglês") && strings.Contains(text, "original") {
+	for _, line := range languageLines(body) {
+		if strings.Contains(line, "pt-BR, sempre") && strings.Contains(line, "inglês") && strings.Contains(line, "original") {
 			return line
 		}
 	}
 	return ""
+}
+
+func TestMemorySkillShouldRequirePtBRNotes(t *testing.T) {
+	b, err := fs.ReadFile(embedded.FS, "skills/memory/SKILL.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := languageLines(string(b))
+	if len(lines) == 0 {
+		t.Fatal("the memory skill must carry an Idioma rule inside <rules>")
+	}
+	rule := strings.Join(lines, "\n")
+	// Memory pages are read back by the owner: same language as the rest of the human-facing text.
+	for _, want := range []string{
+		"pt-BR", "Hindsight", "`hindsight_ingest_document`", "`hindsight_capture_initiative`",
+		"notas, páginas e iniciativas", "ficam como estão",
+	} {
+		if !strings.Contains(rule, want) {
+			t.Errorf("the memory skill's Idioma rule must mention %q, got:\n%s", want, rule)
+		}
+	}
 }
 
 func TestRolesShouldRequirePtBRForHumanText(t *testing.T) {
