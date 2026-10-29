@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unicode"
 
@@ -38,6 +39,7 @@ type issuePicker struct {
 	number   int       // the issue to start
 	err      string    // why the path or the issue was refused
 	checking bool      // the path is being checked: enter waits for it
+	checkID  uint64    // the check awaited: the answer of an earlier one is dropped
 }
 
 // pickerKeys are the keys of the dialog of i.
@@ -55,9 +57,13 @@ const repoCheckFor = 5 * time.Second
 
 // watchRepoMsg is how the check of a path ended: the repository, or why it is refused.
 type watchRepoMsg struct {
+	id   uint64 // the check it answers
 	repo string
 	err  error
 }
+
+// repoCheckSeq numbers the checks, across dialogs: a reopened one starts its picker from zero.
+var repoCheckSeq atomic.Uint64
 
 // lineInput is a line typed at its end: the path or the issue. It needs no cursor that moves,
 // nor one that blinks and asks for a timer on every key.
@@ -193,19 +199,20 @@ func (m watchModel) confirmKey(msg tea.KeyMsg) (watchModel, tea.Cmd) {
 
 // checkRepo checks path off Update: it is answered by a watchRepoMsg.
 func (m *watchModel) checkRepo(path string) tea.Cmd {
-	m.dialog.issue.checking = true
+	id := repoCheckSeq.Add(1)
+	m.dialog.issue.checking, m.dialog.issue.checkID = true, id
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), repoCheckFor)
 		defer cancel()
 		repo, err := checkRepoDir(ctx, path)
-		return watchRepoMsg{repo: repo, err: err}
+		return watchRepoMsg{id: id, repo: repo, err: err}
 	}
 }
 
 // repoChecked moves on to the issue with the repository checked, or stays with why it was refused.
 func (m watchModel) repoChecked(msg watchRepoMsg) watchModel {
-	if m.dialog.kind != dialogStartIssue || !m.dialog.issue.checking {
-		return m // the dialog closed while the path was checked
+	if m.dialog.kind != dialogStartIssue || !m.dialog.issue.checking || msg.id != m.dialog.issue.checkID {
+		return m // the dialog closed, or the check was replaced, while the path was checked
 	}
 	p := &m.dialog.issue
 	p.checking = false
