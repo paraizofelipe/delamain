@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -21,9 +22,10 @@ import (
 type pickStep int
 
 const (
-	pickRepo  pickStep = iota // the list of daemon.repos and other path…
-	pickPath                  // the path typed by hand
-	pickIssue                 // the number of the issue
+	pickRepo    pickStep = iota // the list of daemon.repos and other path…
+	pickPath                    // the path typed by hand
+	pickIssue                   // the number of the issue
+	pickConfirm                 // start the run?
 )
 
 // issuePicker is the state of the dialog of i: which repository, then which issue.
@@ -33,16 +35,19 @@ type issuePicker struct {
 	input    lineInput // the path, then the issue
 	path     string    // the path typed, kept to go back to it
 	repo     string    // the absolute path of the repository picked
-	err      string    // why the path was refused
+	number   int       // the issue to start
+	err      string    // why the path or the issue was refused
 	checking bool      // the path is being checked: enter waits for it
 }
 
 // pickerKeys are the keys of the dialog of i.
 var pickerKeys = struct {
-	next, back key.Binding
+	next, back, start, cancel key.Binding
 }{
-	next: key.NewBinding(key.WithKeys("enter")),
-	back: key.NewBinding(key.WithKeys("esc")),
+	next:   key.NewBinding(key.WithKeys("enter")),
+	back:   key.NewBinding(key.WithKeys("esc")),
+	start:  key.NewBinding(key.WithKeys("enter", "y")),
+	cancel: key.NewBinding(key.WithKeys("esc", "n")),
 }
 
 // repoCheckFor is how long the check of a path may take: git on a dead network mount would hang.
@@ -127,7 +132,7 @@ func (m watchModel) issueKey(msg tea.KeyMsg) (watchModel, tea.Cmd) {
 			if len(m.opts.repos) == 0 {
 				m.dialog = watchDialog{}
 			} else {
-				p.step, p.err, p.path = pickRepo, "", p.input.Value()
+				p.step, p.err, p.path, p.checking = pickRepo, "", p.input.Value(), false
 			}
 			return m, nil
 		case key.Matches(msg, pickerKeys.next):
@@ -139,8 +144,20 @@ func (m watchModel) issueKey(msg tea.KeyMsg) (watchModel, tea.Cmd) {
 		}
 		p.input = p.input.Update(msg)
 		return m, nil
+	case pickConfirm:
+		return m.confirmKey(msg)
 	}
-	if key.Matches(msg, pickerKeys.back) {
+	switch {
+	case key.Matches(msg, pickerKeys.next):
+		n, err := strconv.Atoi(strings.TrimSpace(p.input.Value()))
+		if err != nil || n <= 0 {
+			p.err = "the issue is a number greater than 0"
+			return m, nil
+		}
+		p.step, p.number, p.err = pickConfirm, n, ""
+		m.dialog.at = m.opts.now() // the enter of the number, held, must not answer the confirmation
+		return m, nil
+	case key.Matches(msg, pickerKeys.back):
 		p.step, p.err = pickRepo, ""
 		if len(m.opts.repos) == 0 || p.cursor == len(m.opts.repos) {
 			p.step, p.input = pickPath, newPickerInput(p.path)
@@ -149,6 +166,25 @@ func (m watchModel) issueKey(msg tea.KeyMsg) (watchModel, tea.Cmd) {
 	}
 	p.input = p.input.Update(msg)
 	return m, nil
+}
+
+// confirmKey handles a key of the confirmation: enter or y starts the run, off Update, and closes
+// the dialog. The run is no stop, remove or recover of the store: it starts beside them.
+func (m watchModel) confirmKey(msg tea.KeyMsg) (watchModel, tea.Cmd) {
+	switch {
+	case key.Matches(msg, pickerKeys.cancel):
+		m.dialog = watchDialog{}
+		return m, nil
+	case !key.Matches(msg, pickerKeys.start), m.opts.now().Sub(m.dialog.at) < confirmGrace:
+		return m, nil
+	}
+	repo, issue, acts := m.dialog.issue.repo, m.dialog.issue.number, m.opts.actions
+	m.dialog = watchDialog{}
+	m, toast := m.showToast(m.st.warn, fmt.Sprintf("starting issue #%d in %s…", issue, filepath.Base(repo)))
+	return m, tea.Batch(toast, func() tea.Msg {
+		_ = acts.StartIssue(repo, issue)
+		return nil
+	})
 }
 
 // checkRepo checks path off Update: it is answered by a watchRepoMsg.
@@ -246,6 +282,13 @@ func (m watchModel) pickerLines(d *dialogWriter) {
 			back = "cancel"
 		}
 		d.buttons([2]string{"next", "enter"}, [2]string{back, "esc"})
+	case pickConfirm:
+		d.text(st.none.Bold(true), fmt.Sprintf("Start issue #%d in %s?", p.number, filepath.Base(p.repo)))
+		d.blank()
+		d.row("repo", paint(st.muted, p.repo))
+		d.row("run", fmt.Sprintf("delamain run --issue %d, in the background; its log goes to the state dir", p.number))
+		d.blank()
+		d.buttons([2]string{"start", "enter"}, [2]string{"cancel", "esc"})
 	default:
 		d.text(st.none.Bold(true), fmt.Sprintf("Which issue in %s?", filepath.Base(p.repo)))
 		d.blank()

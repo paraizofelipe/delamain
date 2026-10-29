@@ -1591,3 +1591,92 @@ func TestStartIssueShouldReportTheExitCodeAndTheLogOfAFailedRun(t *testing.T) {
 		t.Fatalf("a run that cannot start is an error of its own: %v", err)
 	}
 }
+
+// typeIssue opens the dialog of i on a repository of daemon.repos and types issue in it.
+func typeIssue(t *testing.T, acts *fakeWatchActions, now *time.Time, issue string) (tea.Model, string) {
+	t.Helper()
+	app := gitInit(t, filepath.Join(t.TempDir(), "app"))
+	m := send(t, send(t, startPicker(t, acts, []string{app}, now), keyPress("i")), keyPress("enter"))
+	if issue != "" {
+		m = send(t, m, keyPress(issue))
+	}
+	return send(t, m, keyPress("enter")), app
+}
+
+func TestWatchStartIssueShouldRejectNonPositiveIssueNumber(t *testing.T) {
+	for _, typed := range []string{"0", "-3", "abc", "", "1.5", "99999999999999999999"} {
+		now := watchNow
+		acts := &fakeWatchActions{}
+		m, _ := typeIssue(t, acts, &now, typed)
+		text := pickerText(m)
+		if !pickerHas(text, "the issue is a number greater than 0") || !pickerHas(text, "Which issue in app?") || !pickerHas(text, "issue "+typed+"█") {
+			t.Fatalf("%q is refused, and stays in the field:\n%s", typed, screen(m))
+		}
+		afterGrace(&now)
+		if m = send(t, m, keyPress("enter")); len(acts.started) != 0 {
+			t.Fatalf("%q starts nothing: %v", typed, acts.started)
+		}
+	}
+}
+
+func TestWatchStartIssueShouldCallStartIssueOnConfirm(t *testing.T) {
+	for _, confirm := range []string{"enter", "y"} {
+		now := watchNow
+		acts := &fakeWatchActions{}
+		m, app := typeIssue(t, acts, &now, "12")
+		text := pickerText(m)
+		for _, want := range []string{"Start issue #12 in app?", "repo " + app, "[ start enter ] [ cancel esc ]"} {
+			if !pickerHas(text, want) {
+				t.Fatalf("the confirmation says %q:\n%s", want, screen(m))
+			}
+		}
+		afterGrace(&now)
+		next, cmd := m.Update(keyPress(confirm))
+		if view := screen(next); strings.Contains(view, "delamain run") || footerText(next)[0] != "starting issue #12 in app…" {
+			t.Fatalf("%s closes the dialog and the footer says the run is starting:\n%s", confirm, view)
+		}
+		if len(acts.started) != 0 {
+			t.Fatal("the run starts in a tea.Cmd, off Update")
+		}
+		settle(t, next, cmd)
+		if len(acts.started) != 1 || acts.started[0] != (startCall{app, 12}) {
+			t.Fatalf("%s starts issue 12 in %s, once: %v", confirm, app, acts.started)
+		}
+		if len(acts.stops) != 0 || len(acts.removes) != 0 || len(acts.recovers) != 0 {
+			t.Fatalf("%s touches no run: %+v", confirm, acts)
+		}
+	}
+}
+
+func TestWatchStartIssueShouldNotStartOnCancel(t *testing.T) {
+	for _, cancel := range []string{"esc", "n"} {
+		now := watchNow
+		acts := &fakeWatchActions{}
+		m, _ := typeIssue(t, acts, &now, "12")
+		afterGrace(&now)
+		next, cmd := m.Update(keyPress(cancel))
+		if m = settle(t, next, cmd); strings.Contains(screen(m), "delamain run") {
+			t.Fatalf("%s closes the confirmation:\n%s", cancel, screen(m))
+		}
+		if len(acts.started) != 0 {
+			t.Fatalf("%s starts nothing: %v", cancel, acts.started)
+		}
+	}
+}
+
+func TestWatchStartIssueShouldIgnoreConfirmWithinGrace(t *testing.T) {
+	now := watchNow
+	acts := &fakeWatchActions{}
+	m, _ := typeIssue(t, acts, &now, "12")
+	// The enter that sent the number, held or tapped twice, must not answer the confirmation.
+	for _, k := range []string{"enter", "y"} {
+		next, cmd := m.Update(keyPress(k))
+		if m = settle(t, next, cmd); !pickerHas(pickerText(m), "Start issue #12 in app?") || len(acts.started) != 0 {
+			t.Fatalf("%s this soon is ignored: %v\n%s", k, acts.started, screen(m))
+		}
+	}
+	afterGrace(&now)
+	if send(t, m, keyPress("enter")); len(acts.started) != 1 {
+		t.Fatalf("after the grace enter starts the run: %v", acts.started)
+	}
+}
