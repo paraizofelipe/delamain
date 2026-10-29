@@ -229,7 +229,8 @@ func Commits(commits []string, limit int) (bool, string) {
 
 // PRTitle fails when the PR title the implementer proposes is not a commitlint title: a
 // Conventional Commits type, optional scope and '!', then ': ' and the description. Like Commits,
-// a rule decides this so the reviewer does not spend an iteration on it.
+// a rule decides this so the reviewer does not spend an iteration on it. limit counts characters
+// (0 = DefaultSubjectLimit).
 func PRTitle(title string, limit int) (bool, string) {
 	if strings.TrimSpace(title) == "" {
 		return false, "título do PR vazio"
@@ -237,6 +238,12 @@ func PRTitle(title string, limit int) (bool, string) {
 	var bad []string
 	if !prTitle.MatchString(title) {
 		bad = append(bad, "título do PR fora do formato Conventional Commits: "+title)
+	}
+	if limit <= 0 {
+		limit = DefaultSubjectLimit
+	}
+	if n := utf8.RuneCountInString(title); n > limit {
+		bad = append(bad, fmt.Sprintf("título do PR com %d caracteres (limite %d): %s", n, limit, title))
 	}
 	if len(bad) == 0 {
 		return true, ""

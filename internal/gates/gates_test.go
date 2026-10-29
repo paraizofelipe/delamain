@@ -570,3 +570,22 @@ func TestPRTitleShouldFailWhenEmpty(t *testing.T) {
 		}
 	}
 }
+
+func TestPRTitleShouldFailWhenLongerThanLimit(t *testing.T) {
+	// "feat: " is 6 characters, so 66 more make exactly 72.
+	if ok, detail := PRTitle("feat: "+strings.Repeat("a", 66), 0); !ok {
+		t.Fatalf("a 72-character title is within the default limit: %q", detail)
+	}
+	// 66 em dashes are 198 bytes: counting bytes would reject a 72-character title.
+	if ok, detail := PRTitle("feat: "+strings.Repeat("—", 66), 0); !ok {
+		t.Fatalf("the limit counts characters, not bytes: %q", detail)
+	}
+	ok, detail := PRTitle("feat: "+strings.Repeat("a", 67), 0)
+	if ok || !strings.Contains(detail, "título do PR com 73 caracteres (limite 72)") {
+		t.Fatalf("73 characters must break the default limit of 72: ok=%v detail=%q", ok, detail)
+	}
+	ok, detail = PRTitle("feat: "+strings.Repeat("a", 64), 69)
+	if ok || !strings.Contains(detail, "título do PR com 70 caracteres (limite 69)") {
+		t.Fatalf("an explicit limit must win over the default: ok=%v detail=%q", ok, detail)
+	}
+}
