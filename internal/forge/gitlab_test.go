@@ -560,3 +560,30 @@ func TestGitLabBlockersShouldPropagateAPIErrors(t *testing.T) {
 	bs, err := f.Blockers(context.Background(), 7)
 	wantForbidden(t, bs, err)
 }
+
+func TestGitLabListOpenPRsShouldReturnOpenMRsWithoutLabelFilter(t *testing.T) {
+	f, api := gitlabAt(t, map[string]func(http.ResponseWriter, *http.Request){
+		"GET " + glProject + "/merge_requests": reply(200, `[
+			{"iid":9,"web_url":"https://gitlab.com/grp/api/-/merge_requests/9","title":"nine","description":"b9","author":{"username":"bob"},
+				"draft":true,"state":"opened","sha":"h9","source_branch":"patch-9","target_branch":"main","source_project_id":20,"target_project_id":10},
+			{"iid":5,"web_url":"https://gitlab.com/grp/api/-/merge_requests/5","title":"five","author":{"username":"ana"},
+				"state":"opened","sha":"h5","source_branch":"feat/five","target_branch":"main","source_project_id":10,"target_project_id":10}]`),
+	})
+	prs, err := f.ListOpenPRs(context.Background(), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []PRDetail{
+		{Number: 9, URL: "https://gitlab.com/grp/api/-/merge_requests/9", Title: "nine", Body: "b9", Author: "bob", Draft: true, Open: true, Fork: true,
+			BaseRef: "main", HeadRef: "patch-9", HeadSHA: "h9"},
+		{Number: 5, URL: "https://gitlab.com/grp/api/-/merge_requests/5", Title: "five", Author: "ana", Open: true,
+			BaseRef: "main", HeadRef: "feat/five", HeadSHA: "h5"},
+	}
+	if !reflect.DeepEqual(prs, want) {
+		t.Fatalf("want every open MR newest first, as the forge sorts them:\n got %+v\nwant %+v", prs, want)
+	}
+	q, _ := url.ParseQuery(api.find(t, "GET", glProject+"/merge_requests").query)
+	if q.Get("state") != "opened" || q.Get("order_by") != "created_at" || q.Get("sort") != "desc" || q.Get("per_page") != "10" || q.Has("labels") {
+		t.Fatalf("must list open MRs newest first, with no label filter: %v", q)
+	}
+}

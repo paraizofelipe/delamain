@@ -218,13 +218,19 @@ func (g *githubClient) PRView(ctx context.Context, n int) (PRDetail, error) {
 	if err != nil {
 		return PRDetail{}, err
 	}
+	return fromGitHubPR(v), nil
+}
+
+// fromGitHubPR maps a PR payload, which carries the same fields in the single PR and the
+// listing endpoints.
+func fromGitHubPR(v *gogithub.PullRequest) PRDetail {
 	head, base := v.GetHead(), v.GetBase()
 	return PRDetail{
 		Number: v.GetNumber(), URL: v.GetHTMLURL(), Title: v.GetTitle(), Body: v.GetBody(), Author: v.GetUser().GetLogin(),
 		Draft: v.GetDraft(), Open: v.GetState() == "open",
 		Fork:    head.GetRepo() == nil || head.GetRepo().GetFullName() != base.GetRepo().GetFullName(),
 		BaseRef: base.GetRef(), HeadRef: head.GetRef(), BaseSHA: base.GetSHA(), HeadSHA: head.GetSHA(), StartSHA: base.GetSHA(),
-	}, nil
+	}
 }
 
 // ListPRs filters by label on the issues endpoint, since the pulls one cannot, and reads each
@@ -252,6 +258,25 @@ func (g *githubClient) ListPRs(ctx context.Context, label string) ([]PRDetail, e
 		prs = append(prs, pr)
 	}
 	return oldestPRsFirst(prs), nil
+}
+
+// ListOpenPRs keeps the forge's order: newest first.
+func (g *githubClient) ListOpenPRs(ctx context.Context, limit int) ([]PRDetail, error) {
+	var vs []*gogithub.PullRequest
+	err := g.do(ctx, "list open prs", func() (resp *gogithub.Response, err error) {
+		vs, resp, err = g.api.PullRequests.List(ctx, g.owner, g.name, &gogithub.PullRequestListOptions{
+			State: "open", Sort: "created", Direction: "desc", ListOptions: gogithub.ListOptions{PerPage: limit},
+		})
+		return resp, err
+	})
+	if err != nil {
+		return nil, err
+	}
+	prs := make([]PRDetail, 0, len(vs))
+	for _, v := range vs {
+		prs = append(prs, fromGitHubPR(v))
+	}
+	return prs, nil
 }
 
 const closingIssuesQuery = `query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){closingIssuesReferences(first:5){nodes{number repository{nameWithOwner}}}}}}`

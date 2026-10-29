@@ -605,8 +605,9 @@ func (f *fakeForge) PRView(_ context.Context, n int) (forge.PRDetail, error) {
 	}
 	return f.pr, nil
 }
-func (f *fakeForge) ListPRs(context.Context, string) ([]forge.PRDetail, error) { return nil, nil }
-func (f *fakeForge) LinkedIssues(context.Context, int) ([]forge.Issue, error)  { return f.linked, nil }
+func (f *fakeForge) ListPRs(context.Context, string) ([]forge.PRDetail, error)  { return nil, nil }
+func (f *fakeForge) ListOpenPRs(context.Context, int) ([]forge.PRDetail, error) { return nil, nil }
+func (f *fakeForge) LinkedIssues(context.Context, int) ([]forge.Issue, error)   { return f.linked, nil }
 func (f *fakeForge) Threads(context.Context, int) ([]forge.Thread, error) {
 	return f.threads, f.threadsErr
 }

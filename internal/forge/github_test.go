@@ -646,3 +646,30 @@ func TestGitHubBlockersShouldPropagateAPIErrors(t *testing.T) {
 		})
 	}
 }
+
+func TestGitHubListOpenPRsShouldReturnOpenPRsWithoutLabelFilter(t *testing.T) {
+	f, api := githubAt(t, map[string]func(http.ResponseWriter, *http.Request){
+		"GET /repos/acme/api/pulls": reply(200, `[
+			{"number":9,"html_url":"https://github.com/acme/api/pull/9","title":"nine","body":"b9","user":{"login":"bob"},"draft":true,"state":"open",
+				"base":{"ref":"main","sha":"b9","repo":{"full_name":"acme/api"}},"head":{"ref":"patch-9","sha":"h9","repo":{"full_name":"bob/api"}}},
+			{"number":5,"html_url":"https://github.com/acme/api/pull/5","title":"five","user":{"login":"ana"},"state":"open",
+				"base":{"ref":"main","sha":"b5","repo":{"full_name":"acme/api"}},"head":{"ref":"feat/five","sha":"h5","repo":{"full_name":"acme/api"}}}]`),
+	})
+	prs, err := f.ListOpenPRs(context.Background(), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []PRDetail{
+		{Number: 9, URL: "https://github.com/acme/api/pull/9", Title: "nine", Body: "b9", Author: "bob", Draft: true, Open: true, Fork: true,
+			BaseRef: "main", HeadRef: "patch-9", BaseSHA: "b9", HeadSHA: "h9", StartSHA: "b9"},
+		{Number: 5, URL: "https://github.com/acme/api/pull/5", Title: "five", Author: "ana", Open: true,
+			BaseRef: "main", HeadRef: "feat/five", BaseSHA: "b5", HeadSHA: "h5", StartSHA: "b5"},
+	}
+	if !reflect.DeepEqual(prs, want) {
+		t.Fatalf("want every open PR newest first, as the forge sorts them:\n got %+v\nwant %+v", prs, want)
+	}
+	q, _ := url.ParseQuery(api.find(t, "GET", "/repos/acme/api/pulls").query)
+	if q.Get("state") != "open" || q.Get("sort") != "created" || q.Get("direction") != "desc" || q.Get("per_page") != "10" || q.Has("labels") {
+		t.Fatalf("must list open PRs newest first, with no label filter: %v", q)
+	}
+}

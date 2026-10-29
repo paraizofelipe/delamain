@@ -134,6 +134,9 @@ type Forge interface {
 	PRView(ctx context.Context, number int) (PRDetail, error)
 	// ListPRs returns open PRs/MRs carrying label, oldest (lowest number) first.
 	ListPRs(ctx context.Context, label string) ([]PRDetail, error)
+	// ListOpenPRs returns every open PR/MR, whatever its labels, newest first, up to limit
+	// (50 when limit <= 0).
+	ListOpenPRs(ctx context.Context, limit int) ([]PRDetail, error)
 	// LinkedIssues returns up to 5 issues the PR/MR closes.
 	LinkedIssues(ctx context.Context, number int) ([]Issue, error)
 	// Threads returns the review threads and PR-level comments, by their first comment.

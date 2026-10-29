@@ -247,6 +247,29 @@ func (g *gitlabClient) ListPRs(ctx context.Context, label string) ([]PRDetail, e
 	return oldestPRsFirst(prs), nil
 }
 
+// ListOpenPRs keeps the forge's order: newest first. As in ListPRs, BaseSHA/StartSHA stay
+// empty.
+func (g *gitlabClient) ListOpenPRs(ctx context.Context, limit int) ([]PRDetail, error) {
+	var mrs []*gogitlab.BasicMergeRequest
+	state, orderBy, sort := opened, "created_at", "desc"
+	err := g.do(ctx, "list open prs", func() (resp *gogitlab.Response, err error) {
+		mrs, resp, err = g.api.MergeRequests.ListProjectMergeRequests(g.repo.Path, &gogitlab.ListProjectMergeRequestsOptions{
+			State: &state, OrderBy: &orderBy, Sort: &sort, ListOptions: gogitlab.ListOptions{PerPage: int64(limit)},
+		}, gogitlab.WithContext(ctx))
+		return resp, err
+	})
+	if err != nil {
+		return nil, err
+	}
+	prs := make([]PRDetail, 0, len(mrs))
+	for _, v := range mrs {
+		pr := fromGitLabMR(v)
+		pr.HeadSHA = v.SHA
+		prs = append(prs, pr)
+	}
+	return prs, nil
+}
+
 // LinkedIssues falls back to the closing keywords of the description when GitLab knows none.
 func (g *gitlabClient) LinkedIssues(ctx context.Context, n int) ([]Issue, error) {
 	var vs []*gogitlab.Issue
