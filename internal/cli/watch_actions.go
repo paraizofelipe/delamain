@@ -165,6 +165,21 @@ func (m watchModel) copyID() (watchModel, tea.Cmd) {
 	}
 }
 
+// openRecover opens the recover dialog on the selected run when its owner died, and says why
+// not otherwise: a finished run has nothing to recover, and a live owner is stopped with s.
+func (m watchModel) openRecover() (watchModel, tea.Cmd) {
+	v, ok := m.selected()
+	switch {
+	case !ok:
+		return m, nil
+	case v.terminal:
+		return m.showToast(m.st.muted, fmt.Sprintf("run %d already finished", v.ID))
+	case v.Owner.Alive:
+		return m.showToast(m.st.warn, fmt.Sprintf("run %d is still running (pid %d): stop it with s", v.ID, v.Owner.PID))
+	}
+	return m.openDialog(dialogRecover), nil
+}
+
 // openDialog opens a dialog of kind on the selected run.
 func (m watchModel) openDialog(kind dialogKind) watchModel {
 	if v, ok := m.selected(); ok {

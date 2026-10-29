@@ -525,6 +525,42 @@ func TestWatchRecoverShouldNotCallRecoverOnCancel(t *testing.T) {
 	}
 }
 
+func TestWatchRecoverShouldToastWhenOwnerIsAlive(t *testing.T) {
+	now := watchNow
+	acts := &fakeWatchActions{}
+	src := &fakeWatchSource{active: []RunView{owned(14, "#55", "a", 51230, true)}}
+	m := send(t, startActions(t, src, acts, 160, 40, &now), keyPress("c"))
+	if dialogText(screen(m), "delamain recover") != "" {
+		t.Fatalf("a run whose owner is alive is not orphaned: no dialog\n%s", screen(m))
+	}
+	if got := footerText(m)[0]; got != "run 14 is still running (pid 51230): stop it with s" {
+		t.Fatalf("the toast says why: %q", got)
+	}
+	afterGrace(&now)
+	send(t, m, keyPress("c"))
+	if len(acts.recovers) != 0 {
+		t.Fatalf("a run whose owner is alive is never recovered: %v", acts.recovers)
+	}
+}
+
+func TestWatchRecoverShouldToastWhenRunAlreadyFinished(t *testing.T) {
+	now := watchNow
+	acts := &fakeWatchActions{}
+	src := &fakeWatchSource{done: []RunView{finished(12, "#49", "approved: merged", "a")}}
+	m := send(t, startActions(t, src, acts, 160, 40, &now), keyPress("c"))
+	if dialogText(screen(m), "delamain recover") != "" {
+		t.Fatalf("a finished run has nothing to recover: no dialog\n%s", screen(m))
+	}
+	if got := footerText(m)[0]; got != "run 12 already finished" {
+		t.Fatalf("the toast says why: %q", got)
+	}
+	afterGrace(&now)
+	send(t, m, keyPress("enter"))
+	if len(acts.recovers) != 0 {
+		t.Fatalf("a finished run is never recovered: %v", acts.recovers)
+	}
+}
+
 func TestWatchActionsShouldRecoverOnlyTheGivenOrphanedRun(t *testing.T) {
 	n := &fakeNotifier{}
 	useFakeNotifier(t, n, nil)
@@ -1144,19 +1180,22 @@ func TestWatchActionsShouldDoNothingWithNoRunSelectedOrWhileOneRuns(t *testing.T
 	now := watchNow
 	acts := &fakeWatchActions{}
 	m := startActions(t, &fakeWatchSource{}, acts, 160, 40, &now)
-	for _, k := range []string{"s", "d", "o", "y"} {
+	for _, k := range []string{"s", "d", "c", "o", "y"} {
 		next, cmd := m.Update(keyPress(k))
 		if cmd != nil {
 			t.Fatalf("%s acts on no run when the list is empty", k)
 		}
-		for _, open := range []string{"delamain stop", "delamain rm"} {
+		if got := footerText(next)[0]; strings.HasPrefix(got, "run ") {
+			t.Fatalf("%s has no run to toast about: %q", k, got)
+		}
+		for _, open := range []string{"delamain stop", "delamain rm", "delamain recover"} {
 			if dialogText(screen(next), open) != "" {
 				t.Fatalf("%s opens no dialog without a run:\n%s", k, screen(next))
 			}
 		}
 		m = settle(t, next, cmd)
 	}
-	if len(acts.stops) != 0 || len(acts.removes) != 0 || len(acts.opened) != 0 || len(acts.copied) != 0 {
+	if len(acts.stops) != 0 || len(acts.removes) != 0 || len(acts.recovers) != 0 || len(acts.opened) != 0 || len(acts.copied) != 0 {
 		t.Fatalf("an empty list has nothing to act on: %+v", acts)
 	}
 

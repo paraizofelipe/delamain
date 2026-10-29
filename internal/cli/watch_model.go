@@ -188,7 +188,7 @@ func (m watchModel) key(msg tea.KeyMsg) (watchModel, tea.Cmd) {
 	case key.Matches(msg, watchKeys.remove):
 		return m.openDialog(dialogRemove), nil
 	case key.Matches(msg, watchKeys.recover):
-		return m.openDialog(dialogRecover), nil
+		return m.openRecover()
 	case key.Matches(msg, watchKeys.open):
 		return m.openPR()
 	case key.Matches(msg, watchKeys.copyID):
