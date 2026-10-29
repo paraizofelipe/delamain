@@ -13,30 +13,31 @@ import (
 )
 
 var watchKeys = struct {
-	quit, up, down, first, last, source, pageUp, pageDown, follow, focus, zoom, details, back, expand, prevTab, nextTab, stop, remove, recover, open, copyID, help key.Binding
+	quit, up, down, first, last, source, pageUp, pageDown, follow, focus, zoom, details, back, expand, prevTab, nextTab, stop, remove, recover, startIssue, open, copyID, help key.Binding
 }{
-	quit:     key.NewBinding(key.WithKeys("q", "ctrl+c")),
-	stop:     key.NewBinding(key.WithKeys("s")),
-	remove:   key.NewBinding(key.WithKeys("d")),
-	recover:  key.NewBinding(key.WithKeys("c")),
-	open:     key.NewBinding(key.WithKeys("o")),
-	copyID:   key.NewBinding(key.WithKeys("y")),
-	help:     key.NewBinding(key.WithKeys("?")),
-	details:  key.NewBinding(key.WithKeys("enter")),
-	expand:   key.NewBinding(key.WithKeys("e")),
-	prevTab:  key.NewBinding(key.WithKeys("left", "h")),
-	nextTab:  key.NewBinding(key.WithKeys("right", "l")),
-	back:     key.NewBinding(key.WithKeys("esc")),
-	source:   key.NewBinding(key.WithKeys("1", "2", "3", "4", "5", "6")),
-	pageUp:   key.NewBinding(key.WithKeys("pgup", "ctrl+u")),
-	pageDown: key.NewBinding(key.WithKeys("pgdown", "ctrl+d")),
-	follow:   key.NewBinding(key.WithKeys("f")),
-	focus:    key.NewBinding(key.WithKeys("tab")),
-	zoom:     key.NewBinding(key.WithKeys("z")),
-	up:       key.NewBinding(key.WithKeys("up", "k")),
-	down:     key.NewBinding(key.WithKeys("down", "j")),
-	first:    key.NewBinding(key.WithKeys("g", "home")),
-	last:     key.NewBinding(key.WithKeys("G", "end")),
+	quit:       key.NewBinding(key.WithKeys("q", "ctrl+c")),
+	stop:       key.NewBinding(key.WithKeys("s")),
+	remove:     key.NewBinding(key.WithKeys("d")),
+	recover:    key.NewBinding(key.WithKeys("c")),
+	startIssue: key.NewBinding(key.WithKeys("i")),
+	open:       key.NewBinding(key.WithKeys("o")),
+	copyID:     key.NewBinding(key.WithKeys("y")),
+	help:       key.NewBinding(key.WithKeys("?")),
+	details:    key.NewBinding(key.WithKeys("enter")),
+	expand:     key.NewBinding(key.WithKeys("e")),
+	prevTab:    key.NewBinding(key.WithKeys("left", "h")),
+	nextTab:    key.NewBinding(key.WithKeys("right", "l")),
+	back:       key.NewBinding(key.WithKeys("esc")),
+	source:     key.NewBinding(key.WithKeys("1", "2", "3", "4", "5", "6")),
+	pageUp:     key.NewBinding(key.WithKeys("pgup", "ctrl+u")),
+	pageDown:   key.NewBinding(key.WithKeys("pgdown", "ctrl+d")),
+	follow:     key.NewBinding(key.WithKeys("f")),
+	focus:      key.NewBinding(key.WithKeys("tab")),
+	zoom:       key.NewBinding(key.WithKeys("z")),
+	up:         key.NewBinding(key.WithKeys("up", "k")),
+	down:       key.NewBinding(key.WithKeys("down", "j")),
+	first:      key.NewBinding(key.WithKeys("g", "home")),
+	last:       key.NewBinding(key.WithKeys("G", "end")),
 }
 
 // watchData is one reload of everything the screen shows.
@@ -163,6 +164,8 @@ func (m watchModel) update(msg tea.Msg) (watchModel, tea.Cmd) {
 		return m.actionDone(msg)
 	case watchQuickMsg:
 		return m.result(watchActionMsg(msg))
+	case watchRepoMsg:
+		m = m.repoChecked(msg)
 	case watchToastMsg:
 		m = m.expireToast(msg.seq)
 	case tea.KeyMsg:
@@ -189,6 +192,8 @@ func (m watchModel) key(msg tea.KeyMsg) (watchModel, tea.Cmd) {
 		return m.openDialog(dialogRemove), nil
 	case key.Matches(msg, watchKeys.recover):
 		return m.openRecover()
+	case key.Matches(msg, watchKeys.startIssue):
+		return m.openStartIssue(), nil
 	case key.Matches(msg, watchKeys.open):
 		return m.openPR()
 	case key.Matches(msg, watchKeys.copyID):

@@ -65,20 +65,22 @@ var dialogKeys = struct {
 type dialogKind int
 
 const (
-	dialogNone    dialogKind = iota
-	dialogStop               // stop the run
-	dialogRemove             // remove the run
-	dialogRecover            // recover the run whose owner died
-	dialogHelp               // the keys
+	dialogNone       dialogKind = iota
+	dialogStop                  // stop the run
+	dialogRemove                // remove the run
+	dialogRecover               // recover the run whose owner died
+	dialogHelp                  // the keys
+	dialogStartIssue            // start a run of an issue
 )
 
 // watchDialog is the open dialog and the run it acts on, as it was when it opened.
 type watchDialog struct {
 	kind   dialogKind
 	run    RunView
-	dirty  string    // why rm refused the worktree: F removes it anyway
-	scroll int       // lines of a dialog taller than the screen scrolled past
-	at     time.Time // when it opened: it is only answered confirmGrace later
+	dirty  string      // why rm refused the worktree: F removes it anyway
+	scroll int         // lines of a dialog taller than the screen scrolled past
+	at     time.Time   // when it opened: it is only answered confirmGrace later
+	issue  issuePicker // the repository and the issue of a run to start
 }
 
 // confirmGrace is how long a dialog ignores the key that opened it: s opens the stop and s
@@ -197,6 +199,8 @@ func (m watchModel) openDialog(kind dialogKind) watchModel {
 // dialogKey handles a key while a dialog is open.
 func (m watchModel) dialogKey(msg tea.KeyMsg) (watchModel, tea.Cmd) {
 	switch {
+	case m.dialog.kind == dialogStartIssue:
+		return m.issueKey(msg)
 	case key.Matches(msg, watchKeys.up):
 		m.dialog.scroll = max(min(m.dialog.scroll, m.maxScroll())-1, 0)
 		return m, nil
@@ -363,6 +367,9 @@ func (m watchModel) dialogLines() (string, lipgloss.Style, dialogWriter) {
 	case m.dialog.kind == dialogRecover:
 		title = "delamain recover"
 		m.recoverLines(&d)
+	case m.dialog.kind == dialogStartIssue:
+		title, look = "delamain run", st.info
+		m.pickerLines(&d)
 	case v.terminal:
 		d.text(st.none.Bold(true), fmt.Sprintf("run %d already finished", v.ID))
 		d.scroll()

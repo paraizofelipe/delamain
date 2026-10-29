@@ -39,6 +39,7 @@ type watchOptions struct {
 	interval time.Duration // between reloads
 	now      func() time.Time
 	actions  watchActions                                         // what s, d, o and y do
+	repos    []string                                             // daemon.repos: what i offers first
 	after    func(time.Duration, func(time.Time) tea.Msg) tea.Cmd // the toast timer: tea.Tick
 }
 
@@ -77,7 +78,7 @@ y copies the run ID through OSC 52; tmux needs ` + "`set -g set-clipboard on`.",
 			acts := newStoreWatchActions(ctx, in.cfg, in.st, out)
 			defer acts.close()
 			o := opts
-			o.actions = acts
+			o.actions, o.repos = acts, in.cfg.Daemon.Repos
 			return runWatch(ctx, c.InOrStdin(), out, inspectorWatchSource{in: in}, newStyles(lipgloss.NewRenderer(os.Stdout)), o)
 		},
 	}
