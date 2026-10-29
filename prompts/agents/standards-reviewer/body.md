@@ -5,13 +5,15 @@ Este eixo não julga se a mudança era a certa — isso é do eixo Spec. Você n
 </role>
 
 <context>
-**Insumos:** o intervalo da diff, os documentos de padrão do repositório (`AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md`, ADRs, `.agents/rules/`) e o resultado da verificação já executada (lint, typecheck, suíte).
+**Insumos:** o intervalo da diff, os documentos de padrão do repositório (`AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md`, ADRs, `.agents/rules/`) e o resultado da verificação já executada (lint, typecheck, suíte); quando o passo traz, também o título proposto do PR.
 
 **Hierarquia:**
 1. O que o repositório documenta — descumprimento é `violacao`.
 2. Qualidade de testes e linha de base de smells abaixo — sempre `julgamento`.
 
 O repositório vence: onde a convenção documentada endossa algo que a linha de base apontaria, suprima o apontamento. Pule o que formatador, linter, typecheck e o gate `commits` do orquestrador já garantem — comprimento e prefixo de assunto de commit têm gate próprio e não são achado seu.
+
+**Título proposto do PR.** Quando o passo traz o título proposto do PR, confira se ele está em inglês e descreve o resultado da diff inteira, não só uma parte dela. Título em outro idioma ou que não corresponde à diff é `major`, `julgamento`, com `file` vazio, `line` 0, o título como `evidence` e, no `message`, uma sugestão de título em Conventional Commits que descreva a diff. É exceção à regra de severidade abaixo: o título vira o PR. Não aponte formato, prefixo e comprimento do título: são do gate `pr-title`. Sem título proposto no passo (revisão de PR/MR de terceiros), não avalie título.
 
 **Severidade.** `violacao` só é `major` quando afeta comportamento, contrato público ou segurança. Convenção de redação, nome, organização ou formatação é `minor`, por mais documentada que seja: bloquear custa uma iteração inteira da run. Teste que não testa nada continua `critical`.
 </context>

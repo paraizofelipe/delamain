@@ -186,6 +186,7 @@ type StageData struct {
 	Threads      string // compact render of the PR's threads
 	Memory       string // the repository's stored learnings
 	MaxComments  int    // cap of critical/major findings a review may post
+	PRTitle      string // review only: the pr_title the implementer proposed, for the standards axis
 	CanFix       bool   // address only: the responder may commit fixes that the orchestrator pushes
 	// ReviewedPR marks an address run on a PR/MR delamain reviewed but did not open: the
 	// responder judges the replies humans left on delamain's own review comments and may not
@@ -224,6 +225,7 @@ func SampleStageData() StageData {
 		Threads:           "- t1 · a.go:3 · alice · aberta: rename this",
 		Memory:            "- 2026-01-01 run 1 PR #40: tests use fakes in fakes_test.go",
 		MaxComments:       15,
+		PRTitle:           "feat: add the sample feature",
 		CanFix:            true,
 		CommitMessagePath: "/tmp/run/commit-msg.txt",
 		Hindsight:         true,
@@ -260,6 +262,7 @@ func (s *Set) Render(stage string, data StageData) (string, error) {
 	data.Feedback = neutralize(data.Feedback)
 	data.Verify = neutralize(data.Verify)
 	data.PrevReview = neutralize(data.PrevReview)
+	data.PRTitle = neutralize(data.PRTitle)
 	for _, f := range []*string{&data.PR.Title, &data.PR.Body, &data.PR.Author, &data.PR.BaseRef, &data.PR.HeadRef} {
 		*f = neutralize(*f)
 	}

@@ -1034,6 +1034,33 @@ func TestRunShouldNotPassPlanContextToReviewPrompt(t *testing.T) {
 	}
 }
 
+func TestReviewShouldPassImplementerPRTitleToStage(t *testing.T) {
+	hs := newHarness(t, func(role string, n int, text string) reply {
+		switch {
+		case role == "implementer" && n == 1:
+			return reply{write: implTitled("fix: make add return the sum"), mutate: fixAdd}
+		case role == "implementer":
+			return reply{write: implTitled(""), mutate: func(g *fakeGit) { g.commit("test: cover add") }}
+		case role == "reviewer" && n == 1:
+			return reply{write: reviewJSON("major")}
+		}
+		return happy(role, n, text)
+	})
+	if res := hs.run(t); res.Outcome != OutcomeApproved || res.Iterations != 2 {
+		t.Fatalf("got %s (%s) iterations=%d", res.Outcome, res.Reason, res.Iterations)
+	}
+	reviews := hs.h.prompts["reviewer"]
+	if len(reviews) != 2 {
+		t.Fatalf("want one review per iteration, got %d", len(reviews))
+	}
+	// The second iteration leaves pr_title out: the reviewer still judges the title the PR will carry.
+	for i, p := range reviews {
+		if !strings.Contains(p, "Título proposto do PR") || !strings.Contains(p, "fix: make add return the sum") {
+			t.Errorf("review %d must show the implementer's pr_title to the standards axis:\n%s", i+1, p)
+		}
+	}
+}
+
 func TestRunShouldRefreshPlanContextOnEachImplementIteration(t *testing.T) {
 	hs := newHarness(t, func(role string, n int, text string) reply {
 		if role == "reviewer" && n == 1 {

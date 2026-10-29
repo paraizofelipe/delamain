@@ -873,7 +873,7 @@ func (r *Runner) review(ctx context.Context, ru *run, iter int, artifact string,
 		return artifacts.Review{}, err
 	}
 	data := r.stageData(ru, iter, artifact, "")
-	data.Verify, data.PrevReview = verifySummary(checks), prev
+	data.Verify, data.PrevReview, data.PRTitle = verifySummary(checks), prev, ru.prTitle
 	review, err := stepArtifact[artifacts.Review](ctx, r, ru, "reviewer", "review", data)
 	if err != nil {
 		return review, err
