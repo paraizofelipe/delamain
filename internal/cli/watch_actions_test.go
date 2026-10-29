@@ -1614,7 +1614,7 @@ func TestWatchStartIssueShouldRejectNonPositiveIssueNumber(t *testing.T) {
 			t.Fatalf("%q is refused, and stays in the field:\n%s", typed, screen(m))
 		}
 		afterGrace(&now)
-		if m = send(t, m, keyPress("enter")); len(acts.started) != 0 {
+		if send(t, m, keyPress("enter")); len(acts.started) != 0 {
 			t.Fatalf("%q starts nothing: %v", typed, acts.started)
 		}
 	}
