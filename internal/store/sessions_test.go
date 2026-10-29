@@ -236,3 +236,20 @@ func TestFailRunningSessionsShouldOnlyTouchRunningOnes(t *testing.T) {
 		t.Fatalf("another run's session keeps running: %+v", a)
 	}
 }
+
+func TestDeleteRunShouldKeepTheAgentSessions(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	r, _ := s.CreateRun(ctx, "repo", "#1", "a", "omp", 3, 0, KindIssue)
+	id, _ := s.StartSession(ctx, AgentSession{RunID: r.ID, Role: "implementer", Iteration: 1, Model: "opus"})
+	_ = s.EndSession(ctx, id, AgentDone)
+
+	if err := s.DeleteRun(ctx, r.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.Sessions(ctx, []int64{r.ID})
+	if err != nil || len(got[r.ID]) != 1 || got[r.ID][0].ID != id || got[r.ID][0].Model != "opus" {
+		t.Fatalf("the sessions outlive their run, like the ledger: %+v %v", got, err)
+	}
+}

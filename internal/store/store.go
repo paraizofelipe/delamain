@@ -530,6 +530,7 @@ func (s *Store) StopRequested(ctx context.Context, id int64) (bool, error) {
 
 // DeleteRun removes run id with its agents and token snapshots, in one transaction. Its
 // token_ledger rows stay: the daily budget sums them, and deleting a run gives no budget back.
+// Its agent_sessions stay with them, as the history of what the ledger billed.
 func (s *Store) DeleteRun(ctx context.Context, id int64) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
