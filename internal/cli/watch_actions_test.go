@@ -920,6 +920,7 @@ var helpRows = [][2]string{
 	{"e", "expand the finished runs (compact)"},
 	{"← →", "switch the tab (mini)"},
 	{"s · d", "stop the run (delamain stop) · remove it (delamain rm)"},
+	{"c", "recover a run whose owner died (delamain recover)"},
 	{"o · y", "open the PR in the browser · copy the run ID"},
 	{"q · ctrl+c", "quit; the runs go on in the daemon"},
 }
@@ -951,6 +952,23 @@ func TestWatchHelpShouldListEveryKeyAndCloseWithEscOrQ(t *testing.T) {
 	m = send(t, m, keyPress("?"))
 	if _, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC}); !quits(cmd) {
 		t.Fatal("ctrl+c still quits with the help open")
+	}
+}
+
+func TestWatchHelpShouldListRecoverKey(t *testing.T) {
+	now := watchNow
+	src := &fakeWatchSource{active: []RunView{owned(14, "#55", "a", 999999, false)}}
+	m := send(t, startActions(t, src, &fakeWatchActions{}, 160, 40, &now), keyPress("?"))
+	text := dialogText(screen(m), "help")
+	want := "c recover a run whose owner died (delamain recover)"
+	if !strings.Contains(text, want) {
+		t.Fatalf("the help lists %q:\n%s", want, screen(m))
+	}
+	if i, j := strings.Index(text, "s · d "), strings.Index(text, want); i < 0 || j < i {
+		t.Fatalf("c comes after s · d:\n%s", text)
+	}
+	if long := newWatchCmd(nil).Long; !strings.Contains(words(long), "c recovers it as delamain recover does when its owner died") {
+		t.Fatalf("the help of watch tells c:\n%s", long)
 	}
 }
 
@@ -1027,6 +1045,10 @@ func dialogCases() []dialogCase {
 		{"rm dirty", "delamain rm", []string{"G", "d", "d"}, &fakeWatchActions{removeErr: []error{dirty}}, []string{
 			"Remove run 12?", dirty.Error(),
 		}, "[ remove anyway F ] [ cancel esc ]"},
+		{"recover", "delamain recover", []string{"j", "c"}, &fakeWatchActions{}, []string{
+			"Recover run 15?", "#56 watch: actions", "pid 999999 (dead)",
+			"draft of what was already committed; empty work is removed", "halted: the run was interrupted",
+		}, "[ recover c ] [ cancel esc ]"},
 		{"help", "help", []string{"?"}, &fakeWatchActions{}, []string{
 			"the list and the logs reload on their own every 1ms", "quit; the runs go on in the daemon",
 		}, ""},

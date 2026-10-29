@@ -49,9 +49,10 @@ func newWatchCmd(load func() (config.Config, error)) *cobra.Command {
 		Short: "Follow runs, the daemon and the day's spend in a terminal UI",
 		Long: `Open a terminal UI that lists the active runs and the latest finished ones, shows the status
 of the selected run, the queue (delamain queue) below it, whether the daemon is running and the
-day's spend, and reloads everything every --interval. s stops the selected run as delamain stop --no-wait does and d removes it as
-delamain rm does, each after a confirmation; o opens its PR/MR, y copies its ID and ? lists every
-key. Quitting (q or ctrl+c) leaves every run as it is.
+day's spend, and reloads everything every --interval. s stops the selected run as delamain stop --no-wait does, d removes it as
+delamain rm does and c recovers it as delamain recover does when its owner died, each after a
+confirmation; o opens its PR/MR, y copies its ID and ? lists every key. Quitting (q or ctrl+c)
+leaves every run as it is.
 
 In tmux, open it in a floating popup:
 

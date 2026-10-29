@@ -183,7 +183,8 @@ func TestWatchQueueShouldScrollWithTheFocus(t *testing.T) {
 }
 
 func TestWatchCompactShouldKeepTheRunsAheadOfTheQueue(t *testing.T) {
-	view := stripANSI(queueWatch(t, 80, 18, 3).View())
+	// 19 lines: at 80 columns the footer of the compact layout takes two of them.
+	view := stripANSI(queueWatch(t, 80, 19, 3).View())
 	runs := panelText(view, "runs")
 	for _, want := range []string{"#1", "#2", "#3"} {
 		if !strings.Contains(runs, want) {
@@ -193,7 +194,7 @@ func TestWatchCompactShouldKeepTheRunsAheadOfTheQueue(t *testing.T) {
 	if strings.Contains(view, "queue · ") {
 		t.Fatalf("with no room left for its three rows the queue is left out:\n%s", view)
 	}
-	if m := send(t, queueWatch(t, 80, 18, 3), keyPress("tab")); m.(watchModel).focusQueue {
+	if m := send(t, queueWatch(t, 80, 19, 3), keyPress("tab")); m.(watchModel).focusQueue {
 		t.Fatal("tab skips a queue the layout left out")
 	}
 	if m := send(t, queueWatch(t, 160, 40, 3), keyPress("tab")); m.(watchModel).focusQueue || !m.(watchModel).focusLogs {
