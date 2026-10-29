@@ -1,6 +1,7 @@
 package board
 
 import (
+	"errors"
 	"net/url"
 	"strconv"
 	"time"
@@ -87,12 +88,22 @@ type ReportRole struct {
 	Tokens   int64   `json:"tokens"`
 }
 
-// ParseReportQuery reads the query string of GET /api/report.
+// ParseReportQuery reads the query string of GET /api/report; its errors do not echo the value received.
 func ParseReportQuery(v url.Values) (ReportQuery, error) {
 	q := ReportQuery{Period: v.Get("period"), Repo: v.Get("repo"), Kind: v.Get("kind")}
-	if q.Period == "" {
+	switch q.Period {
+	case "":
 		q.Period = "30d"
+	case "7d", "30d", "90d", "all":
+	default:
+		return ReportQuery{}, errors.New("period inválido: use 7d, 30d, 90d ou all")
 	}
-	q.Offset, _ = strconv.Atoi(v.Get("offset"))
+	if s := v.Get("offset"); s != "" {
+		n, err := strconv.Atoi(s)
+		if err != nil || n < 0 {
+			return ReportQuery{}, errors.New("offset inválido: use um inteiro maior ou igual a 0")
+		}
+		q.Offset = n
+	}
 	return q, nil
 }

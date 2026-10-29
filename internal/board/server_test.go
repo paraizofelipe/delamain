@@ -184,6 +184,25 @@ func TestReportRouteShouldAnswer500WhenTheSourceFails(t *testing.T) {
 	}
 }
 
+func TestReportRouteShouldAnswer400ToABadQuery(t *testing.T) {
+	src := &fakeSource{}
+	ts := newTestServer(t, src, true)
+	for _, query := range []string{"period=1y", "offset=-1", "offset=abc"} {
+		res, body := get(t, ts.URL+"/api/report?"+query)
+		if res.StatusCode != http.StatusBadRequest || !strings.Contains(body, "inválido") {
+			t.Errorf("%s: %d %q", query, res.StatusCode, body)
+		}
+		if ct := res.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/plain") {
+			t.Errorf("%s: Content-Type = %q", query, ct)
+		}
+	}
+	src.mu.Lock()
+	defer src.mu.Unlock()
+	if src.query != (ReportQuery{}) {
+		t.Errorf("the source was asked for %+v", src.query)
+	}
+}
+
 func TestReportRouteShouldRefuseAForeignHost(t *testing.T) {
 	src := &fakeSource{}
 	ts := newTestServer(t, src, true)
