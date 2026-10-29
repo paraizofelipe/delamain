@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -128,6 +129,97 @@ func TestRefusesAForeignHost(t *testing.T) {
 	res.Body.Close()
 	if res.StatusCode != http.StatusForbidden {
 		t.Fatalf("foreign host: %d", res.StatusCode)
+	}
+}
+
+func TestReportRouteShouldServeTheSourceReport(t *testing.T) {
+	src := &fakeSource{report: Report{
+		Period:      "30d",
+		Repos:       []string{"/r/app"},
+		KPIs:        ReportKPIs{Runs: 3, CostUSD: 4.5},
+		Daily:       []ReportDay{},
+		TopRuns:     []ReportRun{{ID: 7, Ref: "#12", Title: "Login", CostUSD: 2.25}},
+		TopRoles:    []ReportRole{},
+		TopSessions: []ReportSession{},
+		History:     []ReportRun{},
+	}}
+	ts := newTestServer(t, src, true)
+
+	res, body := get(t, ts.URL+"/api/report")
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("report: %d %q", res.StatusCode, body)
+	}
+	for _, want := range []string{
+		`"period":"30d"`, `"repos":["/r/app"]`, `"kpis":{"runs":3,"cost_usd":4.5,`,
+		`"top_runs":[{"id":7,"ref":"#12","title":"Login",`, `"cost_usd":2.25`, `"history":[]`, `"next_offset":null`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("no %s in %s", want, body)
+		}
+	}
+	if ct := res.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Errorf("Content-Type = %q", ct)
+	}
+	if csp := res.Header.Get("Content-Security-Policy"); !strings.Contains(csp, "default-src 'self'") {
+		t.Errorf("CSP = %q", csp)
+	}
+	if res.Header.Get("X-Content-Type-Options") != "nosniff" {
+		t.Error("no nosniff")
+	}
+	if res.Header.Get("Cache-Control") != "no-store" {
+		t.Error("the report is cacheable")
+	}
+	src.mu.Lock()
+	defer src.mu.Unlock()
+	if src.query != (ReportQuery{Period: "30d"}) {
+		t.Errorf("the source got %+v", src.query)
+	}
+}
+
+func TestReportRouteShouldAnswer500WhenTheSourceFails(t *testing.T) {
+	ts := newTestServer(t, &fakeSource{err: errors.New("database is locked")}, true)
+	res, body := get(t, ts.URL+"/api/report")
+	if res.StatusCode != http.StatusInternalServerError || !strings.Contains(body, "database is locked") {
+		t.Fatalf("report: %d %q", res.StatusCode, body)
+	}
+}
+
+func TestReportRouteShouldAnswer400ToABadQuery(t *testing.T) {
+	src := &fakeSource{}
+	ts := newTestServer(t, src, true)
+	for _, query := range []string{"period=1y", "offset=-1", "offset=abc"} {
+		res, body := get(t, ts.URL+"/api/report?"+query)
+		if res.StatusCode != http.StatusBadRequest || !strings.Contains(body, "inválido") {
+			t.Errorf("%s: %d %q", query, res.StatusCode, body)
+		}
+		if ct := res.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/plain") {
+			t.Errorf("%s: Content-Type = %q", query, ct)
+		}
+	}
+	src.mu.Lock()
+	defer src.mu.Unlock()
+	if src.query != (ReportQuery{}) {
+		t.Errorf("the source was asked for %+v", src.query)
+	}
+}
+
+func TestReportRouteShouldRefuseAForeignHost(t *testing.T) {
+	src := &fakeSource{}
+	ts := newTestServer(t, src, true)
+	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/api/report", nil) //nolint:noctx // test
+	req.Host = "evil.example:7777"
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusForbidden {
+		t.Fatalf("foreign host: %d", res.StatusCode)
+	}
+	src.mu.Lock()
+	defer src.mu.Unlock()
+	if src.query != (ReportQuery{}) {
+		t.Errorf("the source was asked for %+v", src.query)
 	}
 }
 

@@ -25,6 +25,8 @@ type Source interface {
 	// Queue lists the queue in execution order.
 	Queue(ctx context.Context) ([]QueueItem, error)
 	Status(ctx context.Context) (Status, error)
+	// Report returns the Relatório page for q, already parsed by ParseReportQuery.
+	Report(ctx context.Context, q ReportQuery) (Report, error)
 }
 
 // Run is a run as the board needs it.
