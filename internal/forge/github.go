@@ -261,7 +261,8 @@ func (g *githubClient) ListPRs(ctx context.Context, label string) ([]PRDetail, e
 }
 
 // ListOpenPRs keeps the forge's order, newest first, and reads pages only until it has limit
-// PRs: a repository with thousands of them must not be read whole.
+// PRs or a page comes back empty: a repository with thousands of them, or a server that
+// always announces a next page, must not keep the listing going.
 func (g *githubClient) ListOpenPRs(ctx context.Context, limit int) ([]PRDetail, error) {
 	if limit <= 0 {
 		limit = defaultOpenPRsLimit
@@ -286,7 +287,7 @@ func (g *githubClient) ListOpenPRs(ctx context.Context, limit int) ([]PRDetail, 
 		for _, v := range page {
 			prs = append(prs, fromGitHubPR(v))
 		}
-		if next == 0 {
+		if next == 0 || len(page) == 0 {
 			break
 		}
 		opts.Page = next

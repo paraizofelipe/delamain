@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -741,5 +742,26 @@ func TestGitHubListOpenPRsShouldStopAtLimit(t *testing.T) {
 		if q, _ := url.ParseQuery(rq.query); q.Get("page") == "2" {
 			t.Fatalf("no page past the limit may be requested: %+v", api.requests())
 		}
+	}
+}
+
+func TestGitHubListOpenPRsShouldStopOnAnEmptyPage(t *testing.T) {
+	// A server that answers every page empty but always announces a next one must not keep the
+	// listing going; past 3 pages the fake stops announcing, so a failure ends instead of hanging.
+	var pages atomic.Int32
+	f, _ := githubAt(t, map[string]func(http.ResponseWriter, *http.Request){
+		"GET /repos/acme/api/pulls": func(w http.ResponseWriter, r *http.Request) {
+			if pages.Add(1) <= 3 {
+				w.Header().Set("Link", `<http://`+r.Host+r.URL.Path+`?page=2>; rel="next"`)
+			}
+			reply(200, `[]`)(w, r)
+		},
+	})
+	prs, err := f.ListOpenPRs(context.Background(), 10)
+	if err != nil || len(prs) != 0 {
+		t.Fatalf("prs = %+v, err = %v", prs, err)
+	}
+	if n := pages.Load(); n != 1 {
+		t.Fatalf("an empty page must end the listing, got %d pages", n)
 	}
 }
