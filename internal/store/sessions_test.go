@@ -191,3 +191,48 @@ func TestSessionsShouldKeepUsageRecordedAfterTheSessionEnded(t *testing.T) {
 		t.Fatalf("another role keeps none of it: %+v", ss[1].Usage)
 	}
 }
+
+func TestFailRunningSessionsShouldOnlyTouchRunningOnes(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	clock := time.Date(2026, 10, 29, 9, 0, 0, 0, time.UTC)
+	s.now = func() time.Time { return clock }
+	r, _ := s.CreateRun(ctx, "repo", "#1", "a", "omp", 3, 0, KindIssue)
+	other, _ := s.CreateRun(ctx, "repo", "#2", "b", "omp", 3, 0, KindIssue)
+	done, _ := s.StartSession(ctx, AgentSession{RunID: r.ID, Role: "planner"})
+	_ = s.EndSession(ctx, done, AgentDone)
+	failed, _ := s.StartSession(ctx, AgentSession{RunID: r.ID, Role: "implementer", Iteration: 1})
+	_ = s.EndSession(ctx, failed, AgentFailed)
+	running, _ := s.StartSession(ctx, AgentSession{RunID: r.ID, Role: "implementer", Iteration: 2})
+	reviewer, _ := s.StartSession(ctx, AgentSession{RunID: r.ID, Role: "reviewer", Iteration: 2})
+	elsewhere, _ := s.StartSession(ctx, AgentSession{RunID: other.ID, Role: "implementer", Iteration: 1})
+	clock = clock.Add(time.Hour)
+
+	n, err := s.FailRunningSessions(ctx, r.ID)
+	if err != nil || n != 2 {
+		t.Fatalf("failed %d sessions, want 2: %v", n, err)
+	}
+
+	got, _ := s.Sessions(ctx, []int64{r.ID, other.ID})
+	byID := map[int64]AgentSession{}
+	for _, ss := range got {
+		for _, a := range ss {
+			byID[a.ID] = a
+		}
+	}
+	start := time.Date(2026, 10, 29, 9, 0, 0, 0, time.UTC)
+	if a := byID[done]; a.State != AgentDone || !a.EndedAt.Equal(start) {
+		t.Fatalf("a done session stays done: %+v", a)
+	}
+	if a := byID[failed]; a.State != AgentFailed || !a.EndedAt.Equal(start) {
+		t.Fatalf("a failed session keeps its end: %+v", a)
+	}
+	for _, id := range []int64{running, reviewer} {
+		if a := byID[id]; a.State != AgentFailed || !a.EndedAt.Equal(clock) {
+			t.Fatalf("a running session fails now: %+v", a)
+		}
+	}
+	if a := byID[elsewhere]; a.State != AgentRunning || !a.EndedAt.IsZero() {
+		t.Fatalf("another run's session keeps running: %+v", a)
+	}
+}

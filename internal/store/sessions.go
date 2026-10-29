@@ -42,6 +42,15 @@ func (s *Store) EndSession(ctx context.Context, id int64, state AgentState) erro
 	return nil
 }
 
+// FailRunningSessions marks the run's sessions still running as failed: their owner died with them.
+func (s *Store) FailRunningSessions(ctx context.Context, runID int64) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `UPDATE agent_sessions SET state=?, ended_at=? WHERE run_id=? AND state=?`, AgentFailed, s.now(), runID, AgentRunning)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 // Sessions lists the sessions of runIDs in start order, keyed by run. Runs without sessions are absent.
 // A session's Usage is the ledger of its role from its start to the start of the role's next
 // session, the last one keeping the rest: the meter bills a session after it ends.
