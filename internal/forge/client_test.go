@@ -284,6 +284,7 @@ func TestForgeShouldNeverCallMergeEndpoints(t *testing.T) {
 		_, _ = f.PRView(ctx, 1)
 		_, _ = f.ListPRs(ctx, "review")
 		_, _ = f.ListOpenPRs(ctx, 10)
+		_, _ = f.ListOpenIssues(ctx, 10)
 		_, _ = f.LinkedIssues(ctx, 1)
 		_, _ = f.Threads(ctx, 1)
 		_ = f.PostReview(ctx, 1, ReviewOptions{HeadSHA: "h", Summary: "s", Comments: []InlineComment{{Path: "a.go", Line: 1, Body: "c"}}})
@@ -292,7 +293,7 @@ func TestForgeShouldNeverCallMergeEndpoints(t *testing.T) {
 		_ = f.Reply(ctx, 1, "issue-comment:1", "c")
 		_ = f.ResolveThread(ctx, 1, "RT_1")
 		_ = f.RelabelPR(ctx, 1, []string{"a"}, []string{"b"})
-		if len(paths) < 18 {
+		if len(paths) < 19 {
 			t.Fatalf("%s: only %d requests reached the fake: %v", repo.Kind, len(paths), paths)
 		}
 		for _, p := range paths {
@@ -358,11 +359,12 @@ func TestReadMethodsShouldNeverWriteToTheForge(t *testing.T) {
 			}
 			ctx := context.Background()
 			reads := map[string]func() error{
-				"PRView":       func() error { _, err := f.PRView(ctx, 1); return err },
-				"ListPRs":      func() error { _, err := f.ListPRs(ctx, "review"); return err },
-				"ListOpenPRs":  func() error { _, err := f.ListOpenPRs(ctx, 10); return err },
-				"LinkedIssues": func() error { _, err := f.LinkedIssues(ctx, 1); return err },
-				"Threads":      func() error { _, err := f.Threads(ctx, 1); return err },
+				"PRView":         func() error { _, err := f.PRView(ctx, 1); return err },
+				"ListPRs":        func() error { _, err := f.ListPRs(ctx, "review"); return err },
+				"ListOpenPRs":    func() error { _, err := f.ListOpenPRs(ctx, 10); return err },
+				"ListOpenIssues": func() error { _, err := f.ListOpenIssues(ctx, 10); return err },
+				"LinkedIssues":   func() error { _, err := f.LinkedIssues(ctx, 1); return err },
+				"Threads":        func() error { _, err := f.Threads(ctx, 1); return err },
 			}
 			for name, read := range reads {
 				before := len(requests())
@@ -511,6 +513,34 @@ func TestListOpenPRsShouldReturnEmptyWhenNoneOpen(t *testing.T) {
 			prs, err := f.ListOpenPRs(context.Background(), 0)
 			if err != nil || len(prs) != 0 {
 				t.Fatalf("prs = %+v, err = %v", prs, err)
+			}
+			api.find(t, "GET", tc.list)
+		})
+	}
+}
+
+type openIssuesCase struct {
+	name string
+	at   func(*testing.T, map[string]func(http.ResponseWriter, *http.Request), ...Option) (Forge, *fakeAPI)
+	list string                     // the listing endpoint
+	item func(n int) string         // one open issue of the listing
+	more func(*http.Request) string // the header and value announcing a next page
+}
+
+var openIssuesCases = []openIssuesCase{
+	{"github", githubAt, "/repos/acme/api/issues", ghOpenIssue, func(r *http.Request) string {
+		return `Link: <http://` + r.Host + r.URL.Path + `?page=2>; rel="next"`
+	}},
+	{"gitlab", gitlabAt, glProject + "/issues", glOpenIssue, func(*http.Request) string { return "X-Next-Page: 2" }},
+}
+
+func TestListOpenIssuesShouldReturnEmptyWhenNoneOpen(t *testing.T) {
+	for _, tc := range openIssuesCases {
+		t.Run(tc.name, func(t *testing.T) {
+			f, api := tc.at(t, map[string]func(http.ResponseWriter, *http.Request){"GET " + tc.list: reply(200, `[]`)})
+			is, err := f.ListOpenIssues(context.Background(), 0)
+			if err != nil || len(is) != 0 {
+				t.Fatalf("issues = %+v, err = %v", is, err)
 			}
 			api.find(t, "GET", tc.list)
 		})

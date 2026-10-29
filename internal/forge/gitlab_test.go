@@ -671,3 +671,31 @@ func TestGitLabListOpenPRsShouldStopOnAnEmptyPage(t *testing.T) {
 		t.Fatalf("an empty page must end the listing, got %d pages", n)
 	}
 }
+
+func TestGitLabListOpenIssuesShouldReturnOpenIssuesWithoutLabelFilter(t *testing.T) {
+	f, api := gitlabAt(t, map[string]func(http.ResponseWriter, *http.Request){
+		"GET " + glProject + "/issues": reply(200, `[
+			{"iid":9,"web_url":"https://gitlab.com/grp/api/-/issues/9","title":"nine","description":"b9","state":"opened","labels":["bug"],"confidential":true},
+			{"iid":5,"web_url":"https://gitlab.com/grp/api/-/issues/5","title":"five","state":"opened"}]`),
+	})
+	is, err := f.ListOpenIssues(context.Background(), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Issue{
+		{Number: 9, URL: "https://gitlab.com/grp/api/-/issues/9", Title: "nine", Body: "b9", Labels: []string{"bug"}, Open: true, Confidential: true},
+		{Number: 5, URL: "https://gitlab.com/grp/api/-/issues/5", Title: "five", Open: true},
+	}
+	if !reflect.DeepEqual(is, want) {
+		t.Fatalf("want every open issue newest first, as the forge sorts them:\n got %+v\nwant %+v", is, want)
+	}
+	q, _ := url.ParseQuery(api.find(t, "GET", glProject+"/issues").query)
+	if q.Get("state") != "opened" || q.Get("order_by") != "created_at" || q.Get("sort") != "desc" || q.Get("per_page") != "10" || q.Has("labels") {
+		t.Fatalf("must list opened issues newest first, with no label filter: %v", q)
+	}
+}
+
+// glOpenIssue is a minimal open issue of the /issues listing.
+func glOpenIssue(n int) string {
+	return fmt.Sprintf(`{"iid":%d,"state":"opened"}`, n)
+}

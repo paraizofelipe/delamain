@@ -765,3 +765,39 @@ func TestGitHubListOpenPRsShouldStopOnAnEmptyPage(t *testing.T) {
 		t.Fatalf("an empty page must end the listing, got %d pages", n)
 	}
 }
+
+func TestGitHubListOpenIssuesShouldReturnOpenIssuesWithoutLabelFilter(t *testing.T) {
+	f, api := githubAt(t, map[string]func(http.ResponseWriter, *http.Request){
+		"GET /repos/acme/api/issues": reply(200, `[
+			{"number":9,"html_url":"https://github.com/acme/api/issues/9","title":"nine","body":"b9","state":"open","labels":[{"name":"bug"}]},
+			{"number":5,"html_url":"https://github.com/acme/api/issues/5","title":"five","state":"open"}]`),
+	})
+	is, err := f.ListOpenIssues(context.Background(), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Issue{
+		{Number: 9, URL: "https://github.com/acme/api/issues/9", Title: "nine", Body: "b9", Labels: []string{"bug"}, Open: true},
+		{Number: 5, URL: "https://github.com/acme/api/issues/5", Title: "five", Open: true},
+	}
+	if !reflect.DeepEqual(is, want) {
+		t.Fatalf("want every open issue newest first, as the forge sorts them:\n got %+v\nwant %+v", is, want)
+	}
+	q, _ := url.ParseQuery(api.find(t, "GET", "/repos/acme/api/issues").query)
+	if q.Get("state") != "open" || q.Get("sort") != "created" || q.Get("direction") != "desc" || q.Get("per_page") != "10" || q.Has("labels") {
+		t.Fatalf("must list open issues newest first, with no label filter: %v", q)
+	}
+}
+
+// ghOpenIssue is a minimal open issue of the /issues listing.
+func ghOpenIssue(n int) string {
+	return fmt.Sprintf(`{"number":%d,"state":"open"}`, n)
+}
+
+func issueNumbers(is []Issue) []int {
+	ns := make([]int, 0, len(is))
+	for _, i := range is {
+		ns = append(ns, i.Number)
+	}
+	return ns
+}

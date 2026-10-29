@@ -295,6 +295,24 @@ func (g *githubClient) ListOpenPRs(ctx context.Context, limit int) ([]PRDetail, 
 	return prs[:min(len(prs), limit)], nil
 }
 
+func (g *githubClient) ListOpenIssues(ctx context.Context, limit int) ([]Issue, error) {
+	var vs []*gogithub.Issue
+	err := g.do(ctx, "list open issues", func() (resp *gogithub.Response, err error) {
+		vs, resp, err = g.api.Issues.ListByRepo(ctx, g.owner, g.name, &gogithub.IssueListByRepoOptions{
+			State: "open", Sort: "created", Direction: "desc", ListOptions: gogithub.ListOptions{PerPage: limit},
+		})
+		return resp, err
+	})
+	if err != nil {
+		return nil, err
+	}
+	is := make([]Issue, 0, len(vs))
+	for _, v := range vs {
+		is = append(is, fromGitHub(v))
+	}
+	return is, nil
+}
+
 const closingIssuesQuery = `query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){closingIssuesReferences(first:5){nodes{number repository{nameWithOwner}}}}}}`
 
 // LinkedIssues asks GraphQL, the only API that knows which issues a PR closes, and falls back

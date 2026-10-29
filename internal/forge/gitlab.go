@@ -286,6 +286,25 @@ func (g *gitlabClient) ListOpenPRs(ctx context.Context, limit int) ([]PRDetail, 
 	return prs[:min(len(prs), limit)], nil
 }
 
+func (g *gitlabClient) ListOpenIssues(ctx context.Context, limit int) ([]Issue, error) {
+	var vs []*gogitlab.Issue
+	state, orderBy, sort := opened, "created_at", "desc"
+	err := g.do(ctx, "list open issues", func() (resp *gogitlab.Response, err error) {
+		vs, resp, err = g.api.Issues.ListProjectIssues(g.repo.Path, &gogitlab.ListProjectIssuesOptions{
+			State: &state, OrderBy: &orderBy, Sort: &sort, ListOptions: gogitlab.ListOptions{PerPage: int64(limit)},
+		}, gogitlab.WithContext(ctx))
+		return resp, err
+	})
+	if err != nil {
+		return nil, err
+	}
+	is := make([]Issue, 0, len(vs))
+	for _, v := range vs {
+		is = append(is, fromGitLab(v))
+	}
+	return is, nil
+}
+
 // LinkedIssues falls back to the closing keywords of the description when GitLab knows none.
 func (g *gitlabClient) LinkedIssues(ctx context.Context, n int) ([]Issue, error) {
 	var vs []*gogitlab.Issue
