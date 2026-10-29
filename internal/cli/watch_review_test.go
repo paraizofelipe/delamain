@@ -340,3 +340,71 @@ func TestWatchStartReviewShouldToastTheExitOfTheReview(t *testing.T) {
 		}
 	}
 }
+
+// runOn is an active run of kind on repo, for issue ("pr:9", "addr:9" or "#9").
+func runOn(id int64, kind, repo, issue string) RunView {
+	v := owned(id, issue, "a", 51230+int(id), true)
+	v.Kind, v.Repo = kind, repo
+	return v
+}
+
+func TestWatchStartReviewShouldBlockPRWithActiveRun(t *testing.T) {
+	now := watchNow
+	app := gitInit(t, filepath.Join(t.TempDir(), "app"))
+	other := filepath.Join(filepath.Dir(app), "other")
+	src := &fakeWatchSource{active: []RunView{
+		owned(14, "#55", "a", 51230, true),
+		runOn(20, "review", app+"/", "pr:12"), // the same repository, written otherwise
+		runOn(21, "address", app, "addr:9"),
+		runOn(22, "review", other, "pr:7"), // another repository
+		runOn(23, "issue", app, "#8"),      // an issue run, not a PR
+	}}
+	f := &fakePRForge{prs: []forge.PRDetail{
+		{Number: 12, Title: "fix the parser", Author: "ana"},
+		{Number: 9, Title: "wip: watch", Author: "bo"},
+		{Number: 8, Title: "eight", Author: "cy"},
+		{Number: 7, Title: "seven", Author: "di"},
+	}}
+	var asked []string
+	acts := &fakeWatchActions{}
+	m := send(t, send(t, startReviewTUI(t, acts, src, []string{app}, &now, prForgeOf(f, &asked)), keyPress("r")), keyPress("enter"))
+	text := reviewText(m)
+	for _, want := range []string{"#12 fix the parser @ana active run", "#9 wip: watch @bo active run", "#8 eight @cy", "#7 seven @di"} {
+		if !pickerHas(text, want) {
+			t.Fatalf("the list marks the PRs with an active run, %q:\n%s", want, screen(m))
+		}
+	}
+	if pickerHas(text, "#8 eight @cy active run") || pickerHas(text, "#7 seven @di active run") {
+		t.Fatalf("an issue run, or a review of another repository, marks no PR:\n%s", screen(m))
+	}
+
+	afterGrace(&now)
+	for _, k := range []string{"", "j"} { // #12 has a review, #9 an address
+		if k != "" {
+			m = send(t, m, keyPress(k))
+		}
+		m = send(t, m, keyPress("enter"))
+		pr := map[string]string{"": "12", "j": "9"}[k]
+		if got := footerText(m)[0]; got != "a run is already active for PR "+pr {
+			t.Fatalf("enter on PR %s says a run is active: %q", pr, got)
+		}
+		if text := reviewText(m); !pickerHas(text, "Which PR in app?") || pickerHas(text, "Review PR #") {
+			t.Fatalf("the list stays, with no confirmation:\n%s", screen(m))
+		}
+	}
+
+	// A review started after the list loaded is seen at the next reload.
+	src.active = append(src.active, runOn(24, "review", app, "pr:8"))
+	m = send(t, reload(t, m), keyPress("j"))
+	if m = send(t, m, keyPress("enter")); footerText(m)[0] != "a run is already active for PR 8" {
+		t.Fatalf("enter checks the runs of the last reload:\n%s", screen(m))
+	}
+	m = send(t, send(t, m, keyPress("j")), keyPress("enter"))
+	if !pickerHas(reviewText(m), "Review PR #7 (seven) in app?") {
+		t.Fatalf("a PR without an active run of this repository can be reviewed:\n%s", screen(m))
+	}
+	afterGrace(&now)
+	if send(t, m, keyPress("enter")); len(acts.reviewed) != 1 || acts.reviewed[0] != (reviewCall{app, 7}) {
+		t.Fatalf("only PR 7 is reviewed: %v", acts.reviewed)
+	}
+}

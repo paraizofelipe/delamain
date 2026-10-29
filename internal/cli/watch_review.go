@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -12,6 +13,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/paraizo/delamain/internal/forge"
+	"github.com/paraizo/delamain/internal/store"
 )
 
 // prListFor is how long the list of the open PRs may take: a forge on a dead network would hang.
@@ -81,10 +83,28 @@ func (m watchModel) prKey(msg tea.KeyMsg) (watchModel, tea.Cmd) {
 	case key.Matches(msg, watchKeys.last):
 		p.prCursor = last
 	case key.Matches(msg, pickerKeys.next) && len(p.prs) > 0:
-		p.step, p.number = pickConfirm, p.prs[p.prCursor].Number
+		n := p.prs[p.prCursor].Number
+		if m.activeRun(p.repo, n) {
+			return m.showToast(m.st.warn, fmt.Sprintf("a run is already active for PR %d", n))
+		}
+		p.step, p.number = pickConfirm, n
 		m.dialog.at = m.opts.now() // the enter of the list, held, must not answer the confirmation
 	}
 	return m, nil
+}
+
+// activeRun reports whether the last reload holds an active review or address of PR n in repo:
+// a second one would be refused by the store.
+func (m watchModel) activeRun(repo string, n int) bool {
+	for _, v := range m.data.active {
+		if filepath.Clean(v.Repo) != filepath.Clean(repo) {
+			continue
+		}
+		if v.Kind == string(store.KindReview) && v.Issue == "pr:"+strconv.Itoa(n) || v.Kind == string(store.KindAddress) && v.Issue == "addr:"+strconv.Itoa(n) {
+			return true
+		}
+	}
+	return false
 }
 
 // reviewLines are the confirmation of the dialog of r.
@@ -121,6 +141,9 @@ func (m watchModel) prLines(d *dialogWriter) {
 		tail := " @" + clean(pr.Author)
 		if pr.Draft {
 			tail += " draft"
+		}
+		if m.activeRun(p.repo, pr.Number) {
+			tail += " active run"
 		}
 		room := max(d.inner-lipgloss.Width(mark+head+tail), 1)
 		d.styled(mark + paint(st.info, head) + ansi.Truncate(clean(pr.Title), room, "…") + paint(st.muted, tail))
