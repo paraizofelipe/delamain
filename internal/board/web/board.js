@@ -1,24 +1,5 @@
 'use strict'
 
-// Every piece of data reaches the page through textContent or an attribute: nothing a run or an
-// agent wrote is ever parsed as HTML.
-function el(tag, props, ...children) {
-  const node = document.createElement(tag)
-  for (const [k, v] of Object.entries(props || {})) {
-    if (v === undefined || v === null || v === false) continue
-    if (k === 'class') node.className = v
-    else if (k === 'text') node.textContent = v
-    else if (k.startsWith('on')) node.addEventListener(k.slice(2), v)
-    else node.setAttribute(k, v === true ? '' : String(v))
-  }
-  for (const c of children.flat()) {
-    if (c === undefined || c === null || c === false) continue
-    node.append(c instanceof Node ? c : document.createTextNode(String(c)))
-  }
-  return node
-}
-
-const $ = (id) => document.getElementById(id)
 const FLOW = new Set(['queue', 'setup', 'plan', 'implement', 'verify', 'review'])
 const KIND_LABEL = { issue: 'issue', review: 'PR review', address: 'address', queued: 'fila' }
 
@@ -422,11 +403,9 @@ function responsesSection(d) {
 }
 
 function agentsSection(agents) {
-  const fmt = (n) => (n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(1) + 'K' : String(n))
-  const dur = (a) => {
+  const seconds = (a) => {
     const end = a.ended_at ? new Date(a.ended_at) : new Date()
-    const s = Math.max(0, Math.round((end - new Date(a.started_at)) / 1000))
-    return s >= 60 ? `${Math.floor(s / 60)}m${String(s % 60).padStart(2, '0')}s` : `${s}s`
+    return Math.max(0, Math.round((end - new Date(a.started_at)) / 1000))
   }
   const tone = { running: 'warn', done: 'good', failed: 'stop' }
   return block('agents', 'Agentes', null,
@@ -435,9 +414,9 @@ function agentsSection(agents) {
       el('tbody', {}, agents.map((a) => el('tr', {},
         el('td', { text: a.role }),
         el('td', {}, badge(a.state, tone[a.state] || 'warn')),
-        el('td', { text: dur(a) }),
-        el('td', { text: fmt(a.tokens) }),
-        el('td', { text: `US$ ${a.cost_usd.toFixed(2)}` }))))))
+        el('td', { text: fmtDuration(seconds(a)) }),
+        el('td', { text: fmtTokens(a.tokens) }),
+        el('td', { text: fmtUSD(a.cost_usd) }))))))
 }
 
 // --- wiring ----------------------------------------------------------------

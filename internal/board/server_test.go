@@ -118,6 +118,27 @@ func TestServesTheWaitingLookOfAQueuedCard(t *testing.T) {
 	}
 }
 
+func TestBoardPageLinksToTheReport(t *testing.T) {
+	ts := newTestServer(t, &fakeSource{}, true)
+
+	res, page := get(t, ts.URL+"/")
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("page: %d", res.StatusCode)
+	}
+	for _, want := range []string{`<nav class="tabs"`, `href="report.html"`, `aria-current="page"`} {
+		if !strings.Contains(page, want) {
+			t.Errorf("the board has no %s", want)
+		}
+	}
+	common, board := strings.Index(page, `src="common.js"`), strings.Index(page, `src="board.js"`)
+	if common < 0 || board < 0 || common > board {
+		t.Errorf("common.js must load before board.js: common at %d, board at %d", common, board)
+	}
+	if res, _ := get(t, ts.URL+"/common.js"); res.StatusCode != http.StatusOK {
+		t.Fatalf("common.js: %d", res.StatusCode)
+	}
+}
+
 func TestRefusesAForeignHost(t *testing.T) {
 	ts := newTestServer(t, &fakeSource{}, true)
 	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/api/snapshot", nil) //nolint:noctx // test
