@@ -806,3 +806,41 @@ func TestAgentsShouldRequirePtBRForHumanText(t *testing.T) {
 		}
 	}
 }
+
+func TestPromptsShouldNotFollowInputLanguage(t *testing.T) {
+	forbidden := []string{"no idioma do PR", "no idioma do comentário", "no idioma do título"}
+	err := fs.WalkDir(embedded.FS, ".", func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		b, err := fs.ReadFile(embedded.FS, p)
+		if err != nil {
+			return err
+		}
+		for _, phrase := range forbidden {
+			if strings.Contains(string(b), phrase) {
+				t.Errorf("%s must not follow the input language (%q): human-facing text is always pt-BR", p, phrase)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	s := mustLoad(t, embedded.FS)
+	for _, tc := range []struct {
+		stage  string
+		canFix bool
+	}{{"review-pr", false}, {"address", true}, {"address", false}} {
+		d := SampleStageData()
+		d.CanFix = tc.canFix
+		out, err := s.Render(tc.stage, d)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(out, "em pt-BR") {
+			t.Errorf("the %s stage (CanFix=%v) must ask for its human-facing text em pt-BR:\n%s", tc.stage, tc.canFix, out)
+		}
+	}
+}
