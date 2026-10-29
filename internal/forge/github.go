@@ -295,6 +295,43 @@ func (g *githubClient) ListOpenPRs(ctx context.Context, limit int) ([]PRDetail, 
 	return prs[:min(len(prs), limit)], nil
 }
 
+// ListOpenIssues keeps the forge's order, newest first, and reads pages only until it has limit
+// issues, a page comes back empty or the forge announces no next page. It drops pull requests,
+// which GitHub's issues endpoint returns too, without counting them for the limit.
+func (g *githubClient) ListOpenIssues(ctx context.Context, limit int) ([]Issue, error) {
+	if limit <= 0 {
+		limit = defaultOpenIssuesLimit
+	}
+	opts := &gogithub.IssueListByRepoOptions{
+		State: "open", Sort: "created", Direction: "desc", ListOptions: gogithub.ListOptions{PerPage: min(limit, 100)},
+	}
+	var is []Issue
+	for len(is) < limit {
+		var page []*gogithub.Issue
+		var next int
+		err := g.do(ctx, "list open issues", func() (resp *gogithub.Response, err error) {
+			page, resp, err = g.api.Issues.ListByRepo(ctx, g.owner, g.name, opts)
+			if resp != nil {
+				next = resp.NextPage
+			}
+			return resp, err
+		})
+		if err != nil {
+			return nil, err
+		}
+		for _, v := range page {
+			if !v.IsPullRequest() {
+				is = append(is, fromGitHub(v))
+			}
+		}
+		if next == 0 || len(page) == 0 {
+			break
+		}
+		opts.ListOptions.Page = next
+	}
+	return is[:min(len(is), limit)], nil
+}
+
 const closingIssuesQuery = `query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){closingIssuesReferences(first:5){nodes{number repository{nameWithOwner}}}}}}`
 
 // LinkedIssues asks GraphQL, the only API that knows which issues a PR closes, and falls back

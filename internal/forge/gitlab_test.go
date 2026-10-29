@@ -671,3 +671,87 @@ func TestGitLabListOpenPRsShouldStopOnAnEmptyPage(t *testing.T) {
 		t.Fatalf("an empty page must end the listing, got %d pages", n)
 	}
 }
+
+func TestGitLabListOpenIssuesShouldReturnOpenIssuesWithoutLabelFilter(t *testing.T) {
+	f, api := gitlabAt(t, map[string]func(http.ResponseWriter, *http.Request){
+		"GET " + glProject + "/issues": reply(200, `[
+			{"iid":9,"web_url":"https://gitlab.com/grp/api/-/issues/9","title":"nine","description":"b9","state":"opened","labels":["bug"],"confidential":true},
+			{"iid":5,"web_url":"https://gitlab.com/grp/api/-/issues/5","title":"five","state":"opened"}]`),
+	})
+	is, err := f.ListOpenIssues(context.Background(), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Issue{
+		{Number: 9, URL: "https://gitlab.com/grp/api/-/issues/9", Title: "nine", Body: "b9", Labels: []string{"bug"}, Open: true, Confidential: true},
+		{Number: 5, URL: "https://gitlab.com/grp/api/-/issues/5", Title: "five", Open: true},
+	}
+	if !reflect.DeepEqual(is, want) {
+		t.Fatalf("want every open issue newest first, as the forge sorts them:\n got %+v\nwant %+v", is, want)
+	}
+	q, _ := url.ParseQuery(api.find(t, "GET", glProject+"/issues").query)
+	if q.Get("state") != "opened" || q.Get("order_by") != "created_at" || q.Get("sort") != "desc" || q.Get("per_page") != "10" || q.Has("labels") {
+		t.Fatalf("must list opened issues newest first, with no label filter: %v", q)
+	}
+}
+
+// glOpenIssue is a minimal open issue of the /issues listing.
+func glOpenIssue(n int) string {
+	return fmt.Sprintf(`{"iid":%d,"state":"opened"}`, n)
+}
+
+func TestGitLabListOpenIssuesShouldPaginate(t *testing.T) {
+	f, api := gitlabAt(t, map[string]func(http.ResponseWriter, *http.Request){
+		"GET " + glProject + "/issues": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			if r.URL.Query().Get("page") == "2" {
+				io.WriteString(w, `[`+glOpenIssue(7)+`]`)
+				return
+			}
+			w.Header().Set("X-Next-Page", "2")
+			io.WriteString(w, `[`+glOpenIssue(9)+`,`+glOpenIssue(8)+`]`)
+		},
+	})
+	is, err := f.ListOpenIssues(context.Background(), 150)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := issueNumbers(is); !reflect.DeepEqual(got, []int{9, 8, 7}) {
+		t.Fatalf("both pages' issues must come back in order: %v", got)
+	}
+	var calls int
+	for _, rq := range api.requests() {
+		if rq.method == http.MethodGet && rq.path == glProject+"/issues" {
+			calls++
+			if q, _ := url.ParseQuery(rq.query); q.Get("per_page") != "100" {
+				t.Fatalf("a page holds at most 100 issues: %v", q)
+			}
+		}
+	}
+	if calls != 2 {
+		t.Fatalf("the second page must be fetched exactly once, got %d calls", calls)
+	}
+}
+
+func TestGitLabListOpenIssuesShouldStopAtLimit(t *testing.T) {
+	// A server that ignores per_page and always has a next page must not keep the listing going.
+	f, api := gitlabAt(t, map[string]func(http.ResponseWriter, *http.Request){
+		"GET " + glProject + "/issues": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("X-Next-Page", "2")
+			io.WriteString(w, `[`+glOpenIssue(9)+`,`+glOpenIssue(8)+`,`+glOpenIssue(7)+`]`)
+		},
+	})
+	is, err := f.ListOpenIssues(context.Background(), 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := issueNumbers(is); !reflect.DeepEqual(got, []int{9, 8}) {
+		t.Fatalf("want the 2 newest issues only: %v", got)
+	}
+	for _, rq := range api.requests() {
+		if q, _ := url.ParseQuery(rq.query); q.Get("page") == "2" {
+			t.Fatalf("no page past the limit may be requested: %+v", api.requests())
+		}
+	}
+}

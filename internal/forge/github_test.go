@@ -765,3 +765,119 @@ func TestGitHubListOpenPRsShouldStopOnAnEmptyPage(t *testing.T) {
 		t.Fatalf("an empty page must end the listing, got %d pages", n)
 	}
 }
+
+func TestGitHubListOpenIssuesShouldReturnOpenIssuesWithoutLabelFilter(t *testing.T) {
+	f, api := githubAt(t, map[string]func(http.ResponseWriter, *http.Request){
+		"GET /repos/acme/api/issues": reply(200, `[
+			{"number":9,"html_url":"https://github.com/acme/api/issues/9","title":"nine","body":"b9","state":"open","labels":[{"name":"bug"}]},
+			{"number":5,"html_url":"https://github.com/acme/api/issues/5","title":"five","state":"open"}]`),
+	})
+	is, err := f.ListOpenIssues(context.Background(), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Issue{
+		{Number: 9, URL: "https://github.com/acme/api/issues/9", Title: "nine", Body: "b9", Labels: []string{"bug"}, Open: true},
+		{Number: 5, URL: "https://github.com/acme/api/issues/5", Title: "five", Open: true},
+	}
+	if !reflect.DeepEqual(is, want) {
+		t.Fatalf("want every open issue newest first, as the forge sorts them:\n got %+v\nwant %+v", is, want)
+	}
+	q, _ := url.ParseQuery(api.find(t, "GET", "/repos/acme/api/issues").query)
+	if q.Get("state") != "open" || q.Get("sort") != "created" || q.Get("direction") != "desc" || q.Get("per_page") != "10" || q.Has("labels") {
+		t.Fatalf("must list open issues newest first, with no label filter: %v", q)
+	}
+}
+
+// ghOpenIssue is a minimal open issue of the /issues listing.
+func ghOpenIssue(n int) string {
+	return fmt.Sprintf(`{"number":%d,"state":"open"}`, n)
+}
+
+func issueNumbers(is []Issue) []int {
+	ns := make([]int, 0, len(is))
+	for _, i := range is {
+		ns = append(ns, i.Number)
+	}
+	return ns
+}
+
+func TestGitHubListOpenIssuesShouldSkipPullRequests(t *testing.T) {
+	// GitHub's issues endpoint returns PRs too: they are dropped and do not count for the limit.
+	f, _ := githubAt(t, map[string]func(http.ResponseWriter, *http.Request){
+		"GET /repos/acme/api/issues": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			if r.URL.Query().Get("page") == "2" {
+				io.WriteString(w, `[`+ghOpenIssue(7)+`,`+ghOpenIssue(6)+`]`)
+				return
+			}
+			w.Header().Set("Link", `<http://`+r.Host+r.URL.Path+`?page=2&per_page=2>; rel="next"`)
+			io.WriteString(w, `[`+ghOpenIssue(9)+`,{"number":8,"state":"open","pull_request":{"url":"https://api.github.com/repos/acme/api/pulls/8"}}]`)
+		},
+	})
+	is, err := f.ListOpenIssues(context.Background(), 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := issueNumbers(is); !reflect.DeepEqual(got, []int{9, 7}) {
+		t.Fatalf("want the 2 newest issues, without the PR: %v", got)
+	}
+}
+
+func TestGitHubListOpenIssuesShouldPaginateUntilLimit(t *testing.T) {
+	f, api := githubAt(t, map[string]func(http.ResponseWriter, *http.Request){
+		"GET /repos/acme/api/issues": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			if r.URL.Query().Get("page") == "2" {
+				io.WriteString(w, `[`+ghOpenIssue(7)+`]`)
+				return
+			}
+			w.Header().Set("Link", `<http://`+r.Host+r.URL.Path+`?page=2&per_page=100>; rel="next"`)
+			io.WriteString(w, `[`+ghOpenIssue(9)+`,`+ghOpenIssue(8)+`]`)
+		},
+	})
+	is, err := f.ListOpenIssues(context.Background(), 150)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := issueNumbers(is); !reflect.DeepEqual(got, []int{9, 8, 7}) {
+		t.Fatalf("both pages' issues must come back in order: %v", got)
+	}
+	var calls int
+	for _, rq := range api.requests() {
+		if rq.method == http.MethodGet && rq.path == "/repos/acme/api/issues" {
+			calls++
+			if q, _ := url.ParseQuery(rq.query); q.Get("per_page") != "100" {
+				t.Fatalf("a page holds at most 100 issues: %v", q)
+			}
+		}
+	}
+	if calls != 2 {
+		t.Fatalf("the second page must be fetched exactly once, got %d calls", calls)
+	}
+}
+
+func TestGitHubListOpenIssuesShouldReachAnIssueBehindManyPagesOfPullRequests(t *testing.T) {
+	// PRs do not count for the limit: ten pages of PRs must not hide the issue on page 11, and the
+	// listing ends when the server stops announcing a next page.
+	f, _ := githubAt(t, map[string]func(http.ResponseWriter, *http.Request){
+		"GET /repos/acme/api/issues": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			page := 1
+			fmt.Sscanf(r.URL.Query().Get("page"), "%d", &page)
+			if page > 10 {
+				io.WriteString(w, `[`+ghOpenIssue(3)+`]`)
+				return
+			}
+			w.Header().Set("Link", fmt.Sprintf(`<http://%s%s?page=%d&per_page=1>; rel="next"`, r.Host, r.URL.Path, page+1))
+			io.WriteString(w, `[{"number":8,"state":"open","pull_request":{"url":"https://api.github.com/repos/acme/api/pulls/8"}}]`)
+		},
+	})
+	is, err := f.ListOpenIssues(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := issueNumbers(is); !reflect.DeepEqual(got, []int{3}) {
+		t.Fatalf("want the issue behind the PR pages: %v", got)
+	}
+}

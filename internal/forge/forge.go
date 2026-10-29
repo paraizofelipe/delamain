@@ -137,6 +137,9 @@ type Forge interface {
 	// ListOpenPRs returns every open PR/MR, whatever its labels, newest first, up to limit
 	// (50 when limit <= 0).
 	ListOpenPRs(ctx context.Context, limit int) ([]PRDetail, error)
+	// ListOpenIssues returns every open issue, whatever its labels, newest first, up to limit
+	// (50 when limit <= 0).
+	ListOpenIssues(ctx context.Context, limit int) ([]Issue, error)
 	// LinkedIssues returns up to 5 issues the PR/MR closes.
 	LinkedIssues(ctx context.Context, number int) ([]Issue, error)
 	// Threads returns the review threads and PR-level comments, by their first comment.
@@ -265,6 +268,9 @@ func byFirstComment(ts []Thread) []Thread {
 
 // defaultOpenPRsLimit is how many PRs/MRs ListOpenPRs returns when it is given no limit.
 const defaultOpenPRsLimit = 50
+
+// defaultOpenIssuesLimit is how many issues ListOpenIssues returns when it is given no limit.
+const defaultOpenIssuesLimit = 50
 
 func oldestPRsFirst(prs []PRDetail) []PRDetail {
 	slices.SortFunc(prs, func(a, b PRDetail) int { return a.Number - b.Number })

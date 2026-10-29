@@ -284,6 +284,7 @@ func TestForgeShouldNeverCallMergeEndpoints(t *testing.T) {
 		_, _ = f.PRView(ctx, 1)
 		_, _ = f.ListPRs(ctx, "review")
 		_, _ = f.ListOpenPRs(ctx, 10)
+		_, _ = f.ListOpenIssues(ctx, 10)
 		_, _ = f.LinkedIssues(ctx, 1)
 		_, _ = f.Threads(ctx, 1)
 		_ = f.PostReview(ctx, 1, ReviewOptions{HeadSHA: "h", Summary: "s", Comments: []InlineComment{{Path: "a.go", Line: 1, Body: "c"}}})
@@ -292,7 +293,7 @@ func TestForgeShouldNeverCallMergeEndpoints(t *testing.T) {
 		_ = f.Reply(ctx, 1, "issue-comment:1", "c")
 		_ = f.ResolveThread(ctx, 1, "RT_1")
 		_ = f.RelabelPR(ctx, 1, []string{"a"}, []string{"b"})
-		if len(paths) < 18 {
+		if len(paths) < 19 {
 			t.Fatalf("%s: only %d requests reached the fake: %v", repo.Kind, len(paths), paths)
 		}
 		for _, p := range paths {
@@ -358,11 +359,12 @@ func TestReadMethodsShouldNeverWriteToTheForge(t *testing.T) {
 			}
 			ctx := context.Background()
 			reads := map[string]func() error{
-				"PRView":       func() error { _, err := f.PRView(ctx, 1); return err },
-				"ListPRs":      func() error { _, err := f.ListPRs(ctx, "review"); return err },
-				"ListOpenPRs":  func() error { _, err := f.ListOpenPRs(ctx, 10); return err },
-				"LinkedIssues": func() error { _, err := f.LinkedIssues(ctx, 1); return err },
-				"Threads":      func() error { _, err := f.Threads(ctx, 1); return err },
+				"PRView":         func() error { _, err := f.PRView(ctx, 1); return err },
+				"ListPRs":        func() error { _, err := f.ListPRs(ctx, "review"); return err },
+				"ListOpenPRs":    func() error { _, err := f.ListOpenPRs(ctx, 10); return err },
+				"ListOpenIssues": func() error { _, err := f.ListOpenIssues(ctx, 10); return err },
+				"LinkedIssues":   func() error { _, err := f.LinkedIssues(ctx, 1); return err },
+				"Threads":        func() error { _, err := f.Threads(ctx, 1); return err },
 			}
 			for name, read := range reads {
 				before := len(requests())
@@ -511,6 +513,96 @@ func TestListOpenPRsShouldReturnEmptyWhenNoneOpen(t *testing.T) {
 			prs, err := f.ListOpenPRs(context.Background(), 0)
 			if err != nil || len(prs) != 0 {
 				t.Fatalf("prs = %+v, err = %v", prs, err)
+			}
+			api.find(t, "GET", tc.list)
+		})
+	}
+}
+
+type openIssuesCase struct {
+	name string
+	at   func(*testing.T, map[string]func(http.ResponseWriter, *http.Request), ...Option) (Forge, *fakeAPI)
+	list string                     // the listing endpoint
+	item func(n int) string         // one open issue of the listing
+	more func(*http.Request) string // the header and value announcing a next page
+}
+
+var openIssuesCases = []openIssuesCase{
+	{"github", githubAt, "/repos/acme/api/issues", ghOpenIssue, func(r *http.Request) string {
+		return `Link: <http://` + r.Host + r.URL.Path + `?page=2>; rel="next"`
+	}},
+	{"gitlab", gitlabAt, glProject + "/issues", glOpenIssue, func(*http.Request) string { return "X-Next-Page: 2" }},
+}
+
+func TestListOpenIssuesShouldUseDefaultLimitWhenZero(t *testing.T) {
+	for _, tc := range openIssuesCases {
+		for _, limit := range []int{0, -1} {
+			t.Run(fmt.Sprintf("%s/%d", tc.name, limit), func(t *testing.T) {
+				// the server ignores per_page and has more pages: only the limit stops the listing
+				f, api := tc.at(t, map[string]func(http.ResponseWriter, *http.Request){
+					"GET " + tc.list: func(w http.ResponseWriter, r *http.Request) {
+						k, v, _ := strings.Cut(tc.more(r), ": ")
+						w.Header().Set(k, v)
+						items := make([]string, 0, 60)
+						for n := 60; n > 0; n-- {
+							items = append(items, tc.item(n))
+						}
+						reply(200, "["+strings.Join(items, ",")+"]")(w, r)
+					},
+				})
+				is, err := f.ListOpenIssues(context.Background(), limit)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(is) != 50 || is[0].Number != 60 || is[49].Number != 11 {
+					t.Fatalf("want the 50 newest issues, got %v", issueNumbers(is))
+				}
+				reqs := api.requests()
+				if len(reqs) != 1 {
+					t.Fatalf("no page past the default limit may be requested: %+v", reqs)
+				}
+				if q, _ := url.ParseQuery(reqs[0].query); q.Get("per_page") != "50" {
+					t.Fatalf("a page must ask for the default 50: %v", q)
+				}
+			})
+		}
+	}
+}
+
+func TestListOpenIssuesShouldStopOnAnEmptyPage(t *testing.T) {
+	for _, tc := range openIssuesCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// A server that answers every page empty but always announces a next one must not keep
+			// the listing going; past 3 pages the fake stops announcing, so a failure ends instead
+			// of hanging.
+			var pages atomic.Int32
+			f, _ := tc.at(t, map[string]func(http.ResponseWriter, *http.Request){
+				"GET " + tc.list: func(w http.ResponseWriter, r *http.Request) {
+					if pages.Add(1) <= 3 {
+						k, v, _ := strings.Cut(tc.more(r), ": ")
+						w.Header().Set(k, v)
+					}
+					reply(200, `[]`)(w, r)
+				},
+			})
+			is, err := f.ListOpenIssues(context.Background(), 10)
+			if err != nil || len(is) != 0 {
+				t.Fatalf("issues = %+v, err = %v", is, err)
+			}
+			if n := pages.Load(); n != 1 {
+				t.Fatalf("an empty page must end the listing, got %d pages", n)
+			}
+		})
+	}
+}
+
+func TestListOpenIssuesShouldReturnEmptyWhenNoneOpen(t *testing.T) {
+	for _, tc := range openIssuesCases {
+		t.Run(tc.name, func(t *testing.T) {
+			f, api := tc.at(t, map[string]func(http.ResponseWriter, *http.Request){"GET " + tc.list: reply(200, `[]`)})
+			is, err := f.ListOpenIssues(context.Background(), 0)
+			if err != nil || len(is) != 0 {
+				t.Fatalf("issues = %+v, err = %v", is, err)
 			}
 			api.find(t, "GET", tc.list)
 		})

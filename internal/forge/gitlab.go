@@ -286,6 +286,41 @@ func (g *gitlabClient) ListOpenPRs(ctx context.Context, limit int) ([]PRDetail, 
 	return prs[:min(len(prs), limit)], nil
 }
 
+// ListOpenIssues keeps the forge's order, newest first, and reads pages only until it has limit
+// issues or a page comes back empty, as ListOpenPRs does.
+func (g *gitlabClient) ListOpenIssues(ctx context.Context, limit int) ([]Issue, error) {
+	if limit <= 0 {
+		limit = defaultOpenIssuesLimit
+	}
+	state, orderBy, sort := opened, "created_at", "desc"
+	opts := &gogitlab.ListProjectIssuesOptions{
+		State: &state, OrderBy: &orderBy, Sort: &sort, ListOptions: gogitlab.ListOptions{PerPage: int64(min(limit, 100))},
+	}
+	var is []Issue
+	for len(is) < limit {
+		var page []*gogitlab.Issue
+		var next int64
+		err := g.do(ctx, "list open issues", func() (resp *gogitlab.Response, err error) {
+			page, resp, err = g.api.Issues.ListProjectIssues(g.repo.Path, opts, gogitlab.WithContext(ctx))
+			if resp != nil {
+				next = int64(resp.NextPage)
+			}
+			return resp, err
+		})
+		if err != nil {
+			return nil, err
+		}
+		for _, v := range page {
+			is = append(is, fromGitLab(v))
+		}
+		if next == 0 || len(page) == 0 {
+			break
+		}
+		opts.Page = next
+	}
+	return is[:min(len(is), limit)], nil
+}
+
 // LinkedIssues falls back to the closing keywords of the description when GitLab knows none.
 func (g *gitlabClient) LinkedIssues(ctx context.Context, n int) ([]Issue, error) {
 	var vs []*gogitlab.Issue
