@@ -801,3 +801,58 @@ func issueNumbers(is []Issue) []int {
 	}
 	return ns
 }
+
+func TestGitHubListOpenIssuesShouldSkipPullRequests(t *testing.T) {
+	// GitHub's issues endpoint returns PRs too: they are dropped and do not count for the limit.
+	f, _ := githubAt(t, map[string]func(http.ResponseWriter, *http.Request){
+		"GET /repos/acme/api/issues": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			if r.URL.Query().Get("page") == "2" {
+				io.WriteString(w, `[`+ghOpenIssue(7)+`,`+ghOpenIssue(6)+`]`)
+				return
+			}
+			w.Header().Set("Link", `<http://`+r.Host+r.URL.Path+`?page=2&per_page=2>; rel="next"`)
+			io.WriteString(w, `[`+ghOpenIssue(9)+`,{"number":8,"state":"open","pull_request":{"url":"https://api.github.com/repos/acme/api/pulls/8"}}]`)
+		},
+	})
+	is, err := f.ListOpenIssues(context.Background(), 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := issueNumbers(is); !reflect.DeepEqual(got, []int{9, 7}) {
+		t.Fatalf("want the 2 newest issues, without the PR: %v", got)
+	}
+}
+
+func TestGitHubListOpenIssuesShouldPaginateUntilLimit(t *testing.T) {
+	f, api := githubAt(t, map[string]func(http.ResponseWriter, *http.Request){
+		"GET /repos/acme/api/issues": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			if r.URL.Query().Get("page") == "2" {
+				io.WriteString(w, `[`+ghOpenIssue(7)+`]`)
+				return
+			}
+			w.Header().Set("Link", `<http://`+r.Host+r.URL.Path+`?page=2&per_page=100>; rel="next"`)
+			io.WriteString(w, `[`+ghOpenIssue(9)+`,`+ghOpenIssue(8)+`]`)
+		},
+	})
+	is, err := f.ListOpenIssues(context.Background(), 150)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := issueNumbers(is); !reflect.DeepEqual(got, []int{9, 8, 7}) {
+		t.Fatalf("both pages' issues must come back in order: %v", got)
+	}
+	var calls int
+	for _, rq := range api.requests() {
+		if rq.method == http.MethodGet && rq.path == "/repos/acme/api/issues" {
+			calls++
+			if q, _ := url.ParseQuery(rq.query); q.Get("per_page") != "100" {
+				t.Fatalf("a page holds at most 100 issues: %v", q)
+			}
+		}
+	}
+	if calls != 2 {
+		t.Fatalf("the second page must be fetched exactly once, got %d calls", calls)
+	}
+}

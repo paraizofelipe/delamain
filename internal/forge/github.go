@@ -295,22 +295,37 @@ func (g *githubClient) ListOpenPRs(ctx context.Context, limit int) ([]PRDetail, 
 	return prs[:min(len(prs), limit)], nil
 }
 
+// ListOpenIssues drops pull requests, which GitHub's issues endpoint returns too, without
+// counting them for the limit.
 func (g *githubClient) ListOpenIssues(ctx context.Context, limit int) ([]Issue, error) {
-	var vs []*gogithub.Issue
-	err := g.do(ctx, "list open issues", func() (resp *gogithub.Response, err error) {
-		vs, resp, err = g.api.Issues.ListByRepo(ctx, g.owner, g.name, &gogithub.IssueListByRepoOptions{
-			State: "open", Sort: "created", Direction: "desc", ListOptions: gogithub.ListOptions{PerPage: limit},
+	opts := &gogithub.IssueListByRepoOptions{
+		State: "open", Sort: "created", Direction: "desc", ListOptions: gogithub.ListOptions{PerPage: min(limit, 100)},
+	}
+	var is []Issue
+	for {
+		var page []*gogithub.Issue
+		var next int
+		err := g.do(ctx, "list open issues", func() (resp *gogithub.Response, err error) {
+			page, resp, err = g.api.Issues.ListByRepo(ctx, g.owner, g.name, opts)
+			if resp != nil {
+				next = resp.NextPage
+			}
+			return resp, err
 		})
-		return resp, err
-	})
-	if err != nil {
-		return nil, err
+		if err != nil {
+			return nil, err
+		}
+		for _, v := range page {
+			if !v.IsPullRequest() {
+				is = append(is, fromGitHub(v))
+			}
+		}
+		if len(is) >= limit || next == 0 || len(page) == 0 {
+			break
+		}
+		opts.ListOptions.Page = next
 	}
-	is := make([]Issue, 0, len(vs))
-	for _, v := range vs {
-		is = append(is, fromGitHub(v))
-	}
-	return is, nil
+	return is[:min(len(is), limit)], nil
 }
 
 const closingIssuesQuery = `query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){closingIssuesReferences(first:5){nodes{number repository{nameWithOwner}}}}}}`
