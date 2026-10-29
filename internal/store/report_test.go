@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"maps"
 	"slices"
 	"testing"
 	"time"
@@ -189,5 +190,58 @@ func TestDailyCostByRoleShouldKeepDeletedRunsOnlyWithoutFilter(t *testing.T) {
 				break
 			}
 		}
+	}
+}
+
+func TestCostByRoleShouldMatchTheDailySum(t *testing.T) {
+	useLocal(t, time.UTC)
+	s := openTest(t)
+	ctx := context.Background()
+	day1 := time.Date(2026, 10, 22, 0, 0, 0, 0, time.UTC)
+	clock := day1.Add(-12 * time.Hour)
+	s.now = func() time.Time { return clock }
+	a, _ := s.CreateRun(ctx, "acme/a", "#1", "a", "omp", 3, 0, KindIssue)
+	b, _ := s.CreateRun(ctx, "acme/a", "#2", "b", "omp", 3, 0, KindReview)
+	c, _ := s.CreateRun(ctx, "acme/b", "#3", "c", "omp", 3, 0, KindIssue)
+	_, _ = s.RecordUsage(ctx, a.ID, "planner", "/a0.jsonl", Usage{Input: 1, CostUSD: 8}) // before Since
+	clock = day1.Add(10 * time.Hour)
+	_, _ = s.RecordUsage(ctx, a.ID, "planner", "/a1.jsonl", Usage{Input: 10, Output: 2, CostUSD: 0.5})
+	_, _ = s.RecordUsage(ctx, a.ID, "implementer", "/a2.jsonl", Usage{Input: 3, CostUSD: 0.25})
+	_, _ = s.RecordUsage(ctx, b.ID, "reviewer", "/b.jsonl", Usage{CostUSD: 1}) // other kind
+	_, _ = s.RecordUsage(ctx, c.ID, "planner", "/c.jsonl", Usage{CostUSD: 2})  // other repo
+	clock = day1.Add(34 * time.Hour)
+	_, _ = s.RecordUsage(ctx, a.ID, "planner", "/a3.jsonl", Usage{Input: 5, CacheRead: 4, CostUSD: 0.25})
+
+	f := ReportFilter{Since: day1, Repo: "acme/a", Kind: string(KindIssue)}
+	got, err := s.CostByRole(ctx, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]Usage{
+		"planner":     {Input: 15, Output: 2, CacheRead: 4, CostUSD: 0.75},
+		"implementer": {Input: 3, CostUSD: 0.25},
+	}
+	if !maps.Equal(got, want) {
+		t.Fatalf("cost per role = %+v, want %+v", got, want)
+	}
+	days, err := s.DailyCostByRole(ctx, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	daily := map[string]float64{}
+	for _, d := range days {
+		daily[d.Role] += d.CostUSD
+	}
+	for role, u := range got {
+		if u.CostUSD != daily[role] {
+			t.Fatalf("%s: CostByRole %v differs from the daily sum %v (%+v)", role, u.CostUSD, daily[role], days)
+		}
+	}
+	if len(daily) != len(got) {
+		t.Fatalf("the same roles on both sides: %+v vs %+v", got, daily)
+	}
+
+	if empty, err := s.CostByRole(ctx, ReportFilter{Repo: "acme/none"}); err != nil || empty == nil || len(empty) != 0 {
+		t.Fatalf("an empty cut is an empty map: %#v %v", empty, err)
 	}
 }

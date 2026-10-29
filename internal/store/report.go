@@ -95,6 +95,28 @@ func (s *Store) DailyCostByRole(ctx context.Context, f ReportFilter) ([]DayCost,
 	return out, rows.Err()
 }
 
+// CostByRole sums, per role, the same ledger rows DailyCostByRole does.
+func (s *Store) CostByRole(ctx context.Context, f ReportFilter) (map[string]Usage, error) {
+	from, args := ledgerFrom(f)
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT token_ledger.role, SUM(token_ledger.input), SUM(token_ledger.output), SUM(token_ledger.cache_read), SUM(token_ledger.cache_write), SUM(token_ledger.cost_usd)
+		 FROM `+from+` GROUP BY token_ledger.role`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]Usage{}
+	for rows.Next() {
+		var role string
+		var u Usage
+		if err := rows.Scan(&role, &u.Input, &u.Output, &u.CacheRead, &u.CacheWrite, &u.CostUSD); err != nil {
+			return nil, err
+		}
+		out[role] = u
+	}
+	return out, rows.Err()
+}
+
 // ledgerFrom is the FROM and WHERE of the ledger rows f selects, with their arguments. Only a repo or
 // kind filter joins with runs: without one, the rows of deleted runs count, as in the daily budget.
 func ledgerFrom(f ReportFilter) (string, []any) {
