@@ -35,6 +35,8 @@ type watchActions interface {
 	Stop(id int64) (string, error)
 	// Remove is `delamain rm id`, with --force when force is set: what it prints, or why it failed.
 	Remove(id int64, force bool) (string, error)
+	// Recover is `delamain recover` for run id alone: what it prints, or why it failed.
+	Recover(id int64) (string, error)
 	// OpenURL opens url in the browser, waiting only long enough to report an opener that failed.
 	OpenURL(url string) error
 	// Copy puts text in the clipboard of the terminal.
@@ -43,11 +45,12 @@ type watchActions interface {
 
 // dialogKeys are the keys of the open dialog: nothing else acts while it is open.
 var dialogKeys = struct {
-	stop, remove, force, cancel, closeHelp key.Binding
+	stop, remove, recover, force, cancel, closeHelp key.Binding
 }{
 	closeHelp: key.NewBinding(key.WithKeys("esc", "?", "q")),
 	stop:      key.NewBinding(key.WithKeys("s", "enter")),
 	remove:    key.NewBinding(key.WithKeys("d", "enter")),
+	recover:   key.NewBinding(key.WithKeys("c", "enter")),
 	force:     key.NewBinding(key.WithKeys("F")),
 	cancel:    key.NewBinding(key.WithKeys("esc", "n")),
 }
@@ -56,10 +59,11 @@ var dialogKeys = struct {
 type dialogKind int
 
 const (
-	dialogNone   dialogKind = iota
-	dialogStop              // stop the run
-	dialogRemove            // remove the run
-	dialogHelp              // the keys
+	dialogNone    dialogKind = iota
+	dialogStop               // stop the run
+	dialogRemove             // remove the run
+	dialogRecover            // recover the run whose owner died
+	dialogHelp               // the keys
 )
 
 // watchDialog is the open dialog and the run it acts on, as it was when it opened.
@@ -191,6 +195,9 @@ func (m watchModel) dialogKey(msg tea.KeyMsg) (watchModel, tea.Cmd) {
 	if m.dialog.kind == dialogRemove {
 		return m.removeKey(msg)
 	}
+	if m.dialog.kind == dialogRecover {
+		return m.recoverKey(msg)
+	}
 	switch {
 	case key.Matches(msg, dialogKeys.stop):
 		if m.acting { // the action that runs reads and writes the same store: one at a time
@@ -215,6 +222,23 @@ func (m watchModel) dialogKey(msg tea.KeyMsg) (watchModel, tea.Cmd) {
 		}
 	}
 	return m, nil
+}
+
+// recoverKey handles a key of the recover dialog. As the stop, it closes the dialog while the
+// recover runs.
+func (m watchModel) recoverKey(msg tea.KeyMsg) (watchModel, tea.Cmd) {
+	if !key.Matches(msg, dialogKeys.recover) {
+		return m, nil
+	}
+	id, acts := m.dialog.run.ID, m.opts.actions
+	m.dialog, m.acting = watchDialog{}, true
+	m.toasts++
+	m.actingToast = watchToast{text: fmt.Sprintf("recovering run %d…", id), look: m.st.warn, seq: m.toasts}
+	m.toast = m.actingToast
+	return m, func() tea.Msg {
+		out, err := acts.Recover(id)
+		return watchActionMsg{out: out, err: err}
+	}
 }
 
 // removeKey handles a key of the rm dialog: rm only deletes finished runs, and F forces it after
@@ -312,6 +336,9 @@ func (m watchModel) dialogLines() (string, lipgloss.Style, dialogWriter) {
 	case m.dialog.kind == dialogRemove:
 		title, look = "delamain rm", st.bad
 		m.removeLines(&d)
+	case m.dialog.kind == dialogRecover:
+		title = "delamain recover"
+		m.recoverLines(&d)
 	case v.terminal:
 		d.text(st.none.Bold(true), fmt.Sprintf("run %d already finished", v.ID))
 		d.scroll()
@@ -396,6 +423,25 @@ func (m watchModel) removeLines(d *dialogWriter) {
 		return
 	}
 	d.buttons([2]string{"remove", "d"}, [2]string{"cancel", "esc"})
+}
+
+// recoverLines are the recover dialog: what `delamain recover` does to the run.
+func (m watchModel) recoverLines(d *dialogWriter) {
+	st, v := m.st, m.dialog.run
+	owner := fmt.Sprintf("pid %d (dead)", v.Owner.PID)
+	if v.Owner.PID == 0 {
+		owner = "unknown pid"
+	}
+	d.text(st.none.Bold(true), fmt.Sprintf("Recover run %d?", v.ID))
+	d.scroll()
+	d.styled(paint(st.info, v.Issue) + " " + v.Title)
+	d.blank()
+	d.row("owner", paint(st.bad, owner))
+	d.row("agents", "stopped")
+	d.row("delivery", "draft of what was already committed; empty work is removed")
+	d.row("result", "halted: the run was interrupted")
+	d.blank()
+	d.buttons([2]string{"recover", "c"}, [2]string{"cancel", "esc"})
 }
 
 // dialogWriter writes the lines of a dialog inner columns wide, wrapping every text.
@@ -519,6 +565,15 @@ func (a *storeWatchActions) Remove(id int64, force bool) (string, error) {
 	defer a.mu.Unlock()
 	var out strings.Builder
 	err := removeRun(a.ctx, &out, a.stop.cfg, a.stop.st, id, force)
+	return out.String(), err
+}
+
+// Recover is `delamain recover` for run id alone.
+func (a *storeWatchActions) Recover(id int64) (string, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	var out strings.Builder
+	err := a.stop.recoverOne(a.ctx, &out, id)
 	return out.String(), err
 }
 
