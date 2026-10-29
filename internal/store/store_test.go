@@ -649,3 +649,47 @@ func TestMigrationShouldKeepExistingLedgerRows(t *testing.T) {
 		t.Fatalf("its ledger outlives it: %+v %v", u, err)
 	}
 }
+
+func TestMigrationShouldAddAgentSessionsToAnExistingDatabase(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "d.db")
+	ctx := context.Background()
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 10, 28, 8, 0, 0, 0, time.UTC)
+	qs := append([]string{}, migrations[:11]...)
+	qs = append(qs, "PRAGMA user_version = 11",
+		`INSERT INTO runs (repo, issue_ref, title, state, created_at, updated_at) VALUES ('repo', '#7', 'old run', 'recorded', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`)
+	for _, q := range qs {
+		if _, err := db.ExecContext(ctx, q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO token_ledger (run_id, role, at, input, output, cache_read, cache_write, cost_usd) VALUES (1, 'implementer', ?, 700, 0, 0, 0, 1.5)`, at); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	s, err := Open(ctx, path)
+	if err != nil {
+		t.Fatalf("v11 must migrate: %v", err)
+	}
+	defer s.Close()
+	if r, err := s.GetRun(ctx, 1); err != nil || r.Title != "old run" {
+		t.Fatalf("the run from before the upgrade is kept: %+v %v", r, err)
+	}
+	if u, err := s.RunUsage(ctx, 1); err != nil || u.Input != 700 || u.CostUSD != 1.5 {
+		t.Fatalf("the ledger from before the upgrade is kept: %+v %v", u, err)
+	}
+	s.now = func() time.Time { return at.Add(-time.Minute) }
+	id, err := s.StartSession(ctx, AgentSession{RunID: 1, Role: "implementer", Iteration: 1, Model: "opus"})
+	if err != nil {
+		t.Fatalf("the upgraded database takes sessions: %v", err)
+	}
+	got, err := s.Sessions(ctx, []int64{1})
+	if err != nil || len(got[1]) != 1 || got[1][0].ID != id || got[1][0].Usage.Input != 700 {
+		t.Fatalf("the new session bills the old ledger: %+v %v", got, err)
+	}
+}
