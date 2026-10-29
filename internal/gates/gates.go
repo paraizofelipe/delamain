@@ -251,6 +251,9 @@ func PRTitle(title string, limit int) (bool, string) {
 	if strings.HasSuffix(title, ".") {
 		bad = append(bad, "título do PR termina com ponto: "+title)
 	}
+	if strings.IndexFunc(title, func(r rune) bool { return r > unicode.MaxASCII && unicode.IsLetter(r) }) >= 0 {
+		bad = append(bad, "título do PR com letra não ASCII: "+title)
+	}
 	if len(bad) == 0 {
 		return true, ""
 	}

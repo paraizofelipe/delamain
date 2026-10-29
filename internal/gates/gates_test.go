@@ -612,3 +612,14 @@ func TestPRTitleShouldFailWithTrailingPeriod(t *testing.T) {
 		t.Fatalf("a period inside the description is fine: %q", detail)
 	}
 }
+
+func TestPRTitleShouldFailWithNonASCIILetters(t *testing.T) {
+	title := "feat: injetar trechos no prompt do implementação"
+	ok, detail := PRTitle(title, 0)
+	if ok || !strings.Contains(detail, "título do PR com letra não ASCII: "+title) {
+		t.Fatalf("an accented letter means the title is not in English: ok=%v detail=%q", ok, detail)
+	}
+	if ok, detail := PRTitle("feat: inject plan refs — per slice", 0); !ok {
+		t.Fatalf("a non-ASCII symbol is not a letter and does not make the title non-English: %q", detail)
+	}
+}
