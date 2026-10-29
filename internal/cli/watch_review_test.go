@@ -126,10 +126,10 @@ func TestWatchStartReviewShouldStripControlSequencesFromPRTitles(t *testing.T) {
 }
 
 // pickApp opens the dialog of r on app, the only repository of daemon.repos, and picks it.
-func pickApp(t *testing.T, acts *fakeWatchActions, src *fakeWatchSource, now *time.Time, prForge func(context.Context, string) (forge.Forge, error)) (tea.Model, string) {
+func pickApp(t *testing.T, acts *fakeWatchActions, now *time.Time, prForge func(context.Context, string) (forge.Forge, error)) (tea.Model, string) {
 	t.Helper()
 	app := gitInit(t, filepath.Join(t.TempDir(), "app"))
-	m := send(t, send(t, startReviewTUI(t, acts, src, []string{app}, now, prForge), keyPress("r")), keyPress("enter"))
+	m := send(t, send(t, startReviewTUI(t, acts, nil, []string{app}, now, prForge), keyPress("r")), keyPress("enter"))
 	return m, app
 }
 
@@ -144,7 +144,7 @@ func stillWatching(t *testing.T, m tea.Model) {
 func TestWatchStartReviewShouldShowEmptyStateWhenNoPRsOpen(t *testing.T) {
 	now := watchNow
 	var asked []string
-	m, _ := pickApp(t, &fakeWatchActions{}, nil, &now, prForgeOf(&fakePRForge{}, &asked))
+	m, _ := pickApp(t, &fakeWatchActions{}, &now, prForgeOf(&fakePRForge{}, &asked))
 	text := reviewText(m)
 	for _, want := range []string{"Which PR in app?", "no open PRs in app", "[ review enter ] [ back esc ]"} {
 		if !pickerHas(text, want) {
@@ -161,7 +161,7 @@ func TestWatchStartReviewShouldShowForgeErrorInDialog(t *testing.T) {
 	now := watchNow
 	var asked []string
 	f := &fakePRForge{err: errors.New("github: GET /pulls: 502 bad gateway\x1b]52;c;ZXZpbA==\x07")}
-	m, _ := pickApp(t, &fakeWatchActions{}, nil, &now, prForgeOf(f, &asked))
+	m, _ := pickApp(t, &fakeWatchActions{}, &now, prForgeOf(f, &asked))
 	text := reviewText(m)
 	if !pickerHas(text, "github: GET /pulls: 502 bad gateway]52;c;ZXZpbA==") || pickerHas(text, "no open PRs") || pickerHas(text, "loading PRs…") {
 		t.Fatalf("the error of the forge is shown in the dialog, not an empty list:\n%s", screen(m))
@@ -174,7 +174,7 @@ func TestWatchStartReviewShouldShowForgeErrorInDialog(t *testing.T) {
 	token := func(context.Context, string) (forge.Forge, error) {
 		return nil, errors.New("no token for github.com: set GH_TOKEN")
 	}
-	m, _ = pickApp(t, &fakeWatchActions{}, nil, &now, token)
+	m, _ = pickApp(t, &fakeWatchActions{}, &now, token)
 	if text := reviewText(m); !pickerHas(text, "no token for github.com: set GH_TOKEN") {
 		t.Fatalf("a forge that cannot be opened says why:\n%s", screen(m))
 	}
@@ -184,7 +184,7 @@ func TestWatchStartReviewShouldShowForgeErrorInDialog(t *testing.T) {
 func TestWatchStartReviewShouldShowErrorWhenRepoHasNoForge(t *testing.T) {
 	now := watchNow
 	none := func(context.Context, string) (forge.Forge, error) { return nil, nil }
-	m, app := pickApp(t, &fakeWatchActions{}, nil, &now, none)
+	m, app := pickApp(t, &fakeWatchActions{}, &now, none)
 	if text := reviewText(m); !pickerHas(text, app+" has no GitHub or GitLab origin") || pickerHas(text, "no open PRs") {
 		t.Fatalf("a repository without origin has no PR to review:\n%s", screen(m))
 	}
@@ -204,7 +204,7 @@ func TestWatchStartReviewShouldCallStartReviewOnConfirm(t *testing.T) {
 		now := watchNow
 		acts := &fakeWatchActions{}
 		var asked []string
-		m, app := pickApp(t, acts, nil, &now, prForgeOf(twoPRs(), &asked))
+		m, app := pickApp(t, acts, &now, prForgeOf(twoPRs(), &asked))
 		m = send(t, send(t, send(t, m, keyPress("G")), keyPress("j")), keyPress("g"))
 		if !pickerHas(reviewText(m), "› #12") {
 			t.Fatalf("g goes back to the first PR:\n%s", screen(m))
@@ -241,7 +241,7 @@ func TestWatchStartReviewShouldCallStartReviewOnConfirm(t *testing.T) {
 		now := watchNow
 		acts := &fakeWatchActions{}
 		var asked []string
-		m, _ := pickApp(t, acts, nil, &now, prForgeOf(twoPRs(), &asked))
+		m, _ := pickApp(t, acts, &now, prForgeOf(twoPRs(), &asked))
 		afterGrace(&now)
 		if m = send(t, send(t, m, keyPress("enter")), keyPress(cancel)); strings.Contains(screen(m), "delamain review") || len(acts.reviewed) != 0 {
 			t.Fatalf("%s closes the confirmation and reviews nothing: %v\n%s", cancel, acts.reviewed, screen(m))
@@ -251,7 +251,7 @@ func TestWatchStartReviewShouldCallStartReviewOnConfirm(t *testing.T) {
 	now := watchNow
 	acts := &fakeWatchActions{}
 	var asked []string
-	m, _ := pickApp(t, acts, nil, &now, prForgeOf(&fakePRForge{}, &asked))
+	m, _ := pickApp(t, acts, &now, prForgeOf(&fakePRForge{}, &asked))
 	afterGrace(&now)
 	if m = send(t, send(t, m, keyPress("enter")), keyPress("enter")); !pickerHas(reviewText(m), "no open PRs in app") || len(acts.reviewed) != 0 {
 		t.Fatalf("without a PR enter picks nothing: %v\n%s", acts.reviewed, screen(m))
@@ -328,7 +328,7 @@ func TestWatchStartReviewShouldToastTheExitOfTheReview(t *testing.T) {
 		now := watchNow
 		acts := &fakeWatchActions{reviewErr: c.err}
 		var asked []string
-		m, _ := pickApp(t, acts, nil, &now, prForgeOf(twoPRs(), &asked))
+		m, _ := pickApp(t, acts, &now, prForgeOf(twoPRs(), &asked))
 		m = send(t, m, keyPress("enter"))
 		afterGrace(&now)
 		m = send(t, m, keyPress("enter"))
