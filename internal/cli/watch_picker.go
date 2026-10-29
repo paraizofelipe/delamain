@@ -123,7 +123,8 @@ func (m watchModel) issueKey(msg tea.KeyMsg) (watchModel, tea.Cmd) {
 				p.step, p.err, p.input = pickPath, "", newPickerInput(p.path)
 				return m, nil
 			}
-			return m, m.checkRepo(m.opts.repos[p.cursor])
+			cmd := m.checkRepo(m.opts.repos[p.cursor]) // before m is copied into the return: it sets checking
+			return m, cmd
 		}
 		return m, nil
 	case pickPath:
@@ -140,7 +141,8 @@ func (m watchModel) issueKey(msg tea.KeyMsg) (watchModel, tea.Cmd) {
 				return m, nil
 			}
 			p.path = p.input.Value()
-			return m, m.checkRepo(p.path)
+			cmd := m.checkRepo(p.path) // before m is copied into the return: it sets checking
+			return m, cmd
 		}
 		p.input = p.input.Update(msg)
 		return m, nil
