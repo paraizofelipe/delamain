@@ -154,6 +154,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /", http.FileServerFS(assets))
 	mux.HandleFunc("GET /api/snapshot", s.handleSnapshot)
 	mux.HandleFunc("GET /api/runs/{id}", s.handleRun)
+	mux.HandleFunc("GET /api/report", s.handleReport)
 	mux.HandleFunc("GET /events", s.handleEvents)
 	return s.guard(mux)
 }
@@ -246,6 +247,20 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		}
 		flusher.Flush()
 	}
+}
+
+func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
+	q, err := ParseReportQuery(r.URL.Query())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	rep, err := s.b.src.Report(r.Context(), q)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, rep)
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

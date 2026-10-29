@@ -187,3 +187,22 @@ func TestBoardQueueShouldExposeWhatAnItemWaitsFor(t *testing.T) {
 		t.Fatal("serveBoard did not stop with its context")
 	}
 }
+
+func TestBoardSourceReportShouldAnswerEmptyListsNotNull(t *testing.T) {
+	r, err := boardSource{}.Report(context.Background(), board.ReportQuery{Period: "90d"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`"period":"90d"`, `"repos":[]`, `"daily":[]`, `"top_runs":[]`, `"top_roles":[]`, `"top_sessions":[]`,
+		`"history":[]`, `"next_offset":null`,
+	} {
+		if !strings.Contains(string(body), want) {
+			t.Errorf("no %s in %s", want, body)
+		}
+	}
+}

@@ -20,6 +20,8 @@ type fakeSource struct {
 	runs   []Run
 	queue  []QueueItem
 	status Status
+	report Report
+	query  ReportQuery // the last one Report received
 	err    error
 }
 
@@ -50,6 +52,13 @@ func (f *fakeSource) Status(context.Context) (Status, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.status, nil
+}
+
+func (f *fakeSource) Report(_ context.Context, q ReportQuery) (Report, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.query = q
+	return f.report, f.err
 }
 
 func (f *fakeSource) set(fn func(*fakeSource)) {
