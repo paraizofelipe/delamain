@@ -21,7 +21,6 @@ type RunSummary struct {
 
 // RunSummaries lists the runs created since f.Since that match f, newest first, each with its ledger total.
 func (s *Store) RunSummaries(ctx context.Context, f ReportFilter) ([]RunSummary, error) {
-	where, args := reportWhere(f, "runs.created_at")
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT `+runCols+`, COALESCE(sum_input,0), COALESCE(sum_output,0), COALESCE(sum_cache_read,0), COALESCE(sum_cache_write,0), COALESCE(sum_cost_usd,0)
 		 FROM runs LEFT JOIN (
@@ -29,8 +28,8 @@ func (s *Store) RunSummaries(ctx context.Context, f ReportFilter) ([]RunSummary,
 		     SUM(cache_write) AS sum_cache_write, SUM(cost_usd) AS sum_cost_usd
 		   FROM token_ledger GROUP BY run_id
 		 ) ON run_id = id
-		 WHERE `+where+`
-		 ORDER BY created_at DESC, id DESC`, args...)
+		 WHERE (?1 IS NULL OR runs.created_at >= ?1) AND `+repoKindFilter+`
+		 ORDER BY created_at DESC, id DESC`, f.args()...)
 	if err != nil {
 		return nil, err
 	}
@@ -56,8 +55,7 @@ type DayCost struct {
 
 // DailyCostByRole sums the cost of the ledger rows since f.Since per local day and role, ordered by day then role.
 func (s *Store) DailyCostByRole(ctx context.Context, f ReportFilter) ([]DayCost, error) {
-	from, args := ledgerFrom(f)
-	rows, err := s.db.QueryContext(ctx, `SELECT token_ledger.at, token_ledger.role, token_ledger.cost_usd FROM `+from, args...)
+	rows, err := s.db.QueryContext(ctx, `SELECT token_ledger.at, token_ledger.role, token_ledger.cost_usd FROM `+ledgerCut, f.args()...)
 	if err != nil {
 		return nil, err
 	}
@@ -97,10 +95,9 @@ func (s *Store) DailyCostByRole(ctx context.Context, f ReportFilter) ([]DayCost,
 
 // CostByRole sums, per role, the same ledger rows DailyCostByRole does.
 func (s *Store) CostByRole(ctx context.Context, f ReportFilter) (map[string]Usage, error) {
-	from, args := ledgerFrom(f)
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT token_ledger.role, SUM(token_ledger.input), SUM(token_ledger.output), SUM(token_ledger.cache_read), SUM(token_ledger.cache_write), SUM(token_ledger.cost_usd)
-		 FROM `+from+` GROUP BY token_ledger.role`, args...)
+		 FROM `+ledgerCut+` GROUP BY token_ledger.role`, f.args()...)
 	if err != nil {
 		return nil, err
 	}
@@ -117,30 +114,22 @@ func (s *Store) CostByRole(ctx context.Context, f ReportFilter) (map[string]Usag
 	return out, rows.Err()
 }
 
-// ledgerFrom is the FROM and WHERE of the ledger rows f selects, with their arguments. Only a repo or
-// kind filter joins with runs: without one, the rows of deleted runs count, as in the daily budget.
-func ledgerFrom(f ReportFilter) (string, []any) {
-	where, args := reportWhere(f, "token_ledger.at")
-	if f.Repo == "" && f.Kind == "" {
-		return `token_ledger WHERE ` + where, args
-	}
-	return `token_ledger JOIN runs ON runs.id = token_ledger.run_id WHERE ` + where, args
-}
+// repoKindFilter keeps the rows of runs in the filter's repo (?2) and kind (?3); an empty one keeps all.
+const repoKindFilter = `(?2 = '' OR runs.repo = ?2) AND (?3 = '' OR runs.kind = ?3)`
 
-// reportWhere is the WHERE clause of f, with at as its period column, and its arguments.
-// Since goes in UTC, as the store writes it: SQLite compares the timestamps as text.
-func reportWhere(f ReportFilter, at string) (string, []any) {
-	conds, args := []string{"1"}, []any{}
+// ledgerCut is the FROM and WHERE of the ledger rows a ReportFilter selects. The rows of a deleted run
+// have no runs columns: a repo or kind filter drops them, and without one they count, as in the daily budget.
+const ledgerCut = `token_ledger LEFT JOIN runs ON runs.id = token_ledger.run_id
+	WHERE (?1 IS NULL OR token_ledger.at >= ?1) AND ` + repoKindFilter
+
+// args binds f to ?1 (Since, NULL when zero), ?2 (Repo) and ?3 (Kind). Since goes in UTC, as the
+// store writes it: SQLite compares the timestamps as text.
+func (f ReportFilter) args() []any {
+	var since any
 	if !f.Since.IsZero() {
-		conds, args = append(conds, at+" >= ?"), append(args, f.Since.UTC())
+		since = f.Since.UTC()
 	}
-	if f.Repo != "" {
-		conds, args = append(conds, "runs.repo = ?"), append(args, f.Repo)
-	}
-	if f.Kind != "" {
-		conds, args = append(conds, "runs.kind = ?"), append(args, f.Kind)
-	}
-	return strings.Join(conds, " AND "), args
+	return []any{since, f.Repo, f.Kind}
 }
 
 // withUsage scans a run row followed by the five ledger sums into u, so scanRun reads the run columns.
