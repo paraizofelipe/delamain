@@ -17,6 +17,7 @@ import (
 
 	"github.com/paraizo/delamain/internal/budget"
 	"github.com/paraizo/delamain/internal/config"
+	"github.com/paraizo/delamain/internal/forge"
 	"github.com/paraizo/delamain/internal/pipeline"
 	"github.com/paraizo/delamain/internal/store"
 )
@@ -39,8 +40,10 @@ type watchOptions struct {
 	interval time.Duration // between reloads
 	now      func() time.Time
 	actions  watchActions                                         // what s, d, o and y do
-	repos    []string                                             // daemon.repos: what i offers first
+	repos    []string                                             // daemon.repos: what i and r offer first
 	after    func(time.Duration, func(time.Time) tea.Msg) tea.Cmd // the toast timer: tea.Tick
+	// prForge is the forge of repo, whose open PRs r lists: nil without an origin.
+	prForge func(ctx context.Context, repo string) (forge.Forge, error)
 }
 
 func newWatchCmd(load func() (config.Config, error)) *cobra.Command {
@@ -80,6 +83,7 @@ y copies the run ID through OSC 52; tmux needs ` + "`set -g set-clipboard on`.",
 			defer acts.close()
 			o := opts
 			o.actions, o.repos = acts, in.cfg.Daemon.Repos
+			o.prForge = func(ctx context.Context, repo string) (forge.Forge, error) { return forgeFor(ctx, in.cfg, repo) }
 			return runWatch(ctx, c.InOrStdin(), out, inspectorWatchSource{in: in}, newStyles(lipgloss.NewRenderer(os.Stdout)), o)
 		},
 	}

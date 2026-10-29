@@ -65,12 +65,13 @@ var dialogKeys = struct {
 type dialogKind int
 
 const (
-	dialogNone       dialogKind = iota
-	dialogStop                  // stop the run
-	dialogRemove                // remove the run
-	dialogRecover               // recover the run whose owner died
-	dialogHelp                  // the keys
-	dialogStartIssue            // start a run of an issue
+	dialogNone        dialogKind = iota
+	dialogStop                   // stop the run
+	dialogRemove                 // remove the run
+	dialogRecover                // recover the run whose owner died
+	dialogHelp                   // the keys
+	dialogStartIssue             // start a run of an issue
+	dialogStartReview            // start a review of a PR
 )
 
 // watchDialog is the open dialog and the run it acts on, as it was when it opened.
@@ -80,7 +81,7 @@ type watchDialog struct {
 	dirty  string      // why rm refused the worktree: F removes it anyway
 	scroll int         // lines of a dialog taller than the screen scrolled past
 	at     time.Time   // when it opened: it is only answered confirmGrace later
-	issue  issuePicker // the repository and the issue of a run to start
+	issue  issuePicker // the repository and the issue or the PR of a run to start
 }
 
 // confirmGrace is how long a dialog ignores the key that opened it: s opens the stop and s
@@ -199,7 +200,7 @@ func (m watchModel) openDialog(kind dialogKind) watchModel {
 // dialogKey handles a key while a dialog is open.
 func (m watchModel) dialogKey(msg tea.KeyMsg) (watchModel, tea.Cmd) {
 	switch {
-	case m.dialog.kind == dialogStartIssue:
+	case m.dialog.kind == dialogStartIssue, m.dialog.kind == dialogStartReview:
 		return m.issueKey(msg)
 	case key.Matches(msg, watchKeys.up):
 		m.dialog.scroll = max(min(m.dialog.scroll, m.maxScroll())-1, 0)
@@ -369,6 +370,9 @@ func (m watchModel) dialogLines() (string, lipgloss.Style, dialogWriter) {
 		m.recoverLines(&d)
 	case m.dialog.kind == dialogStartIssue:
 		title, look = "delamain run", st.info
+		m.pickerLines(&d)
+	case m.dialog.kind == dialogStartReview:
+		title, look = "delamain review", st.info
 		m.pickerLines(&d)
 	case v.terminal:
 		d.text(st.none.Bold(true), fmt.Sprintf("run %d already finished", v.ID))
