@@ -39,6 +39,7 @@ type watchOptions struct {
 	interval time.Duration // between reloads
 	now      func() time.Time
 	actions  watchActions                                         // what s, d, o and y do
+	repos    []string                                             // daemon.repos: what i offers first
 	after    func(time.Duration, func(time.Time) tea.Msg) tea.Cmd // the toast timer: tea.Tick
 }
 
@@ -51,8 +52,9 @@ func newWatchCmd(load func() (config.Config, error)) *cobra.Command {
 of the selected run, the queue (delamain queue) below it, whether the daemon is running and the
 day's spend, and reloads everything every --interval. s stops the selected run as delamain stop --no-wait does, d removes it as
 delamain rm does and c recovers it as delamain recover does when its owner died, each after a
-confirmation; o opens its PR/MR, y copies its ID and ? lists every key. Quitting (q or ctrl+c)
-leaves every run as it is.
+confirmation; i starts delamain run --issue in a repository of daemon.repos or any other one,
+also after a confirmation, and the run goes on after quitting; o opens its PR/MR, y copies its
+ID and ? lists every key. Quitting (q or ctrl+c) leaves every run as it is.
 
 In tmux, open it in a floating popup:
 
@@ -77,7 +79,7 @@ y copies the run ID through OSC 52; tmux needs ` + "`set -g set-clipboard on`.",
 			acts := newStoreWatchActions(ctx, in.cfg, in.st, out)
 			defer acts.close()
 			o := opts
-			o.actions = acts
+			o.actions, o.repos = acts, in.cfg.Daemon.Repos
 			return runWatch(ctx, c.InOrStdin(), out, inspectorWatchSource{in: in}, newStyles(lipgloss.NewRenderer(os.Stdout)), o)
 		},
 	}
