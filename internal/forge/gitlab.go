@@ -251,6 +251,9 @@ func (g *gitlabClient) ListPRs(ctx context.Context, label string) ([]PRDetail, e
 // MRs: a project with thousands of them must not be read whole. As in ListPRs, BaseSHA and
 // StartSHA stay empty.
 func (g *gitlabClient) ListOpenPRs(ctx context.Context, limit int) ([]PRDetail, error) {
+	if limit <= 0 {
+		limit = defaultOpenPRsLimit
+	}
 	state, orderBy, sort := opened, "created_at", "desc"
 	opts := &gogitlab.ListProjectMergeRequestsOptions{
 		State: &state, OrderBy: &orderBy, Sort: &sort, ListOptions: gogitlab.ListOptions{PerPage: int64(min(limit, 100))},

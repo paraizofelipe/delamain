@@ -454,6 +454,69 @@ func TestListPRsShouldReturnEmptyWhenNoPRHasTheLabel(t *testing.T) {
 	}
 }
 
+type openPRsCase struct {
+	name string
+	at   func(*testing.T, map[string]func(http.ResponseWriter, *http.Request), ...Option) (Forge, *fakeAPI)
+	list string                     // the listing endpoint
+	item func(n int) string         // one open PR/MR of the listing
+	more func(*http.Request) string // the header and value announcing a next page
+}
+
+var openPRsCases = []openPRsCase{
+	{"github", githubAt, "/repos/acme/api/pulls", ghOpenPR, func(r *http.Request) string {
+		return `Link: <http://` + r.Host + r.URL.Path + `?page=2>; rel="next"`
+	}},
+	{"gitlab", gitlabAt, glProject + "/merge_requests", glOpenMR, func(*http.Request) string { return "X-Next-Page: 2" }},
+}
+
+func TestListOpenPRsShouldUseDefaultLimitWhenZero(t *testing.T) {
+	for _, tc := range openPRsCases {
+		for _, limit := range []int{0, -1} {
+			t.Run(fmt.Sprintf("%s/%d", tc.name, limit), func(t *testing.T) {
+				// the server ignores per_page and has more pages: only the limit stops the listing
+				f, api := tc.at(t, map[string]func(http.ResponseWriter, *http.Request){
+					"GET " + tc.list: func(w http.ResponseWriter, r *http.Request) {
+						k, v, _ := strings.Cut(tc.more(r), ": ")
+						w.Header().Set(k, v)
+						items := make([]string, 0, 60)
+						for n := 60; n > 0; n-- {
+							items = append(items, tc.item(n))
+						}
+						reply(200, "["+strings.Join(items, ",")+"]")(w, r)
+					},
+				})
+				prs, err := f.ListOpenPRs(context.Background(), limit)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(prs) != 50 || prs[0].Number != 60 || prs[49].Number != 11 {
+					t.Fatalf("want the 50 newest PRs, got %v", numbers(prs))
+				}
+				reqs := api.requests()
+				if len(reqs) != 1 {
+					t.Fatalf("no page past the default limit may be requested: %+v", reqs)
+				}
+				if q, _ := url.ParseQuery(reqs[0].query); q.Get("per_page") != "50" {
+					t.Fatalf("a page must ask for the default 50: %v", q)
+				}
+			})
+		}
+	}
+}
+
+func TestListOpenPRsShouldReturnEmptyWhenNoneOpen(t *testing.T) {
+	for _, tc := range openPRsCases {
+		t.Run(tc.name, func(t *testing.T) {
+			f, api := tc.at(t, map[string]func(http.ResponseWriter, *http.Request){"GET " + tc.list: reply(200, `[]`)})
+			prs, err := f.ListOpenPRs(context.Background(), 0)
+			if err != nil || len(prs) != 0 {
+				t.Fatalf("prs = %+v, err = %v", prs, err)
+			}
+			api.find(t, "GET", tc.list)
+		})
+	}
+}
+
 func TestLinkedIssuesShouldUseForgeReferences(t *testing.T) {
 	for _, tc := range []struct {
 		name   string

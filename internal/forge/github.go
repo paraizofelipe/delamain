@@ -263,6 +263,9 @@ func (g *githubClient) ListPRs(ctx context.Context, label string) ([]PRDetail, e
 // ListOpenPRs keeps the forge's order, newest first, and reads pages only until it has limit
 // PRs: a repository with thousands of them must not be read whole.
 func (g *githubClient) ListOpenPRs(ctx context.Context, limit int) ([]PRDetail, error) {
+	if limit <= 0 {
+		limit = defaultOpenPRsLimit
+	}
 	opts := &gogithub.PullRequestListOptions{
 		State: "open", Sort: "created", Direction: "desc", ListOptions: gogithub.ListOptions{PerPage: min(limit, 100)},
 	}
