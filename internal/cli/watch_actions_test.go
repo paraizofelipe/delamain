@@ -1680,3 +1680,37 @@ func TestWatchStartIssueShouldIgnoreConfirmWithinGrace(t *testing.T) {
 		t.Fatalf("after the grace enter starts the run: %v", acts.started)
 	}
 }
+
+func TestWatchStartIssueShouldToastExitCodeMeaning(t *testing.T) {
+	log := "/s/launch/1767225600-issue-12.log"
+	for _, c := range []struct {
+		err  error
+		want string
+	}{
+		{startIssueExit{issue: 12, code: 5, log: log}, "issue #12 not started: maximum parallelism reached; see " + log},
+		{startIssueExit{issue: 12, code: 4, log: log}, "issue #12 needs more information (exit 4); see " + log},
+		{startIssueExit{issue: 12, code: 1, log: log}, "issue #12 failed: exit 1; see " + log},
+		{errors.New("fork/exec /opt/delamain: no such file or directory"), "fork/exec /opt/delamain: no such file or directory"},
+		// The log is under the state dir, which could hold anything: it reaches no terminal raw.
+		{startIssueExit{issue: 12, code: 1, log: "/s/\x1b]52;c;ZXZpbA==\x07x.log"}, "issue #12 failed: exit 1; see /s/]52;c;ZXZpbA==x.log"},
+	} {
+		now := watchNow
+		acts := &fakeWatchActions{startErr: c.err}
+		m, _ := typeIssue(t, acts, &now, "12")
+		afterGrace(&now)
+		m = send(t, m, keyPress("enter"))
+		if got := strings.Join(footerText(m)[:len(footerText(m))-1], " "); got != c.want {
+			t.Errorf("%v is the toast %q, want %q", c.err, got, c.want)
+		}
+		if strings.Contains(m.View(), "\x1b]52") {
+			t.Errorf("the toast of %q writes no escape of its own", c.err)
+		}
+	}
+
+	now := watchNow
+	m, _ := typeIssue(t, &fakeWatchActions{}, &now, "12")
+	afterGrace(&now)
+	if got := footerText(send(t, m, keyPress("enter")))[0]; got != "starting issue #12 in app…" {
+		t.Fatalf("a run that went to the end leaves the toast of its start: %q", got)
+	}
+}

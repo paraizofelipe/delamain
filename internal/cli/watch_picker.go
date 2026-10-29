@@ -182,7 +182,9 @@ func (m watchModel) confirmKey(msg tea.KeyMsg) (watchModel, tea.Cmd) {
 	m.dialog = watchDialog{}
 	m, toast := m.showToast(m.st.warn, fmt.Sprintf("starting issue #%d in %s…", issue, filepath.Base(repo)))
 	return m, tea.Batch(toast, func() tea.Msg {
-		_ = acts.StartIssue(repo, issue)
+		if err := acts.StartIssue(repo, issue); err != nil {
+			return watchQuickMsg{err: err} // the code and the log of a run that failed
+		}
 		return nil
 	})
 }
