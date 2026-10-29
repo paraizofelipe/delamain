@@ -941,6 +941,23 @@ func TestAgentsShouldRequirePtBRForHumanText(t *testing.T) {
 	}
 }
 
+func TestImplementerShouldFollowRepositoryLanguageForDocs(t *testing.T) {
+	body, err := mustLoad(t, embedded.FS).Role("implementer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rule := ptBRRule(body)
+	// Repository docs belong to the project, not to the run: its convention wins over pt-BR.
+	for _, want := range []string{
+		"README", "`docs/`", "ADRs", "`AGENTS.md`", "`CONTRIBUTING.md`",
+		"idioma já usado no arquivo", "arquivo novo sem convenção sai em pt-BR",
+	} {
+		if !strings.Contains(rule, want) {
+			t.Errorf("the implementer's Idioma rule must mention %q, got:\n%s", want, rule)
+		}
+	}
+}
+
 func TestStandardsReviewerShouldCheckPRTitleLanguage(t *testing.T) {
 	file, err := mustLoad(t, embedded.FS).Agent("standards-reviewer")
 	if err != nil {
