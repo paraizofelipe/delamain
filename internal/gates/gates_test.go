@@ -495,6 +495,45 @@ func TestCommitsShouldUseTheRepoConfiguredLimitOverTheDefault(t *testing.T) {
 	}
 }
 
+func TestPRTitleShouldPassConventionalEnglishTitle(t *testing.T) {
+	if ok, detail := PRTitle("feat: add a pr title to the impl artifact", 0); !ok {
+		t.Fatalf("a commitlint title in English within the limit must pass: %q", detail)
+	}
+}
+
+func TestPRTitleShouldPassScopedAndBreakingTitles(t *testing.T) {
+	for _, title := range []string{
+		"fix(pipeline): inject the plan refs",
+		"feat!: drop the legacy dependency reader",
+		"refactor(gates.v2)!: split the commit gate",
+		"revert: restore the previous behavior",
+	} {
+		if ok, detail := PRTitle(title, 0); !ok {
+			t.Fatalf("scope and breaking marker are valid commitlint: %q -> %q", title, detail)
+		}
+	}
+}
+
+func TestPRTitleShouldFailWithoutConventionalType(t *testing.T) {
+	for name, title := range map[string]string{
+		"unknown type":         "pipeline: inject refs",
+		"capitalized type":     "Feature: x",
+		"no space after colon": "feat:x",
+		"unicode space":        "feat: \u00a0x",
+		"em space":             "feat: \u2003x",
+	} {
+		t.Run(name, func(t *testing.T) {
+			ok, detail := PRTitle(title, 0)
+			if ok {
+				t.Fatalf("%q is not Conventional Commits and must fail", title)
+			}
+			if !strings.Contains(detail, "fora do formato Conventional Commits") || !strings.Contains(detail, title) {
+				t.Fatalf("detail must name the format rule and the title: %q", detail)
+			}
+		})
+	}
+}
+
 func TestLoadRepoConfigShouldReadTheSubjectLimit(t *testing.T) {
 	dir := t.TempDir()
 	write(t, dir, map[string]string{RepoConfigFile: "gates:\n  subject_limit: 69\n"})
@@ -520,5 +559,75 @@ func TestParseRepoConfigShouldReadTheAgentOverrides(t *testing.T) {
 	}
 	if _, err := ParseRepoConfig([]byte("claud:\n  binary: mia\n")); err == nil {
 		t.Fatal("unknown keys must still be rejected")
+	}
+}
+
+func TestPRTitleShouldFailWhenEmpty(t *testing.T) {
+	for _, title := range []string{"", "   "} {
+		ok, detail := PRTitle(title, 0)
+		if ok {
+			t.Fatalf("an empty title %q must fail: the PR needs a title", title)
+		}
+		if detail != "título do PR vazio" {
+			t.Fatalf("an empty title fails alone, with the empty reason only: %q", detail)
+		}
+	}
+}
+
+func TestPRTitleShouldFailWhenLongerThanLimit(t *testing.T) {
+	// "feat: " is 6 characters, so 66 more make exactly 72.
+	if ok, detail := PRTitle("feat: "+strings.Repeat("a", 66), 0); !ok {
+		t.Fatalf("a 72-character title is within the default limit: %q", detail)
+	}
+	// 66 em dashes are 198 bytes: counting bytes would reject a 72-character title.
+	if ok, detail := PRTitle("feat: "+strings.Repeat("—", 66), 0); !ok {
+		t.Fatalf("the limit counts characters, not bytes: %q", detail)
+	}
+	ok, detail := PRTitle("feat: "+strings.Repeat("a", 67), 0)
+	if ok || !strings.Contains(detail, "título do PR com 73 caracteres (limite 72)") {
+		t.Fatalf("73 characters must break the default limit of 72: ok=%v detail=%q", ok, detail)
+	}
+	ok, detail = PRTitle("feat: "+strings.Repeat("a", 64), 69)
+	if ok || !strings.Contains(detail, "título do PR com 70 caracteres (limite 69)") {
+		t.Fatalf("an explicit limit must win over the default: ok=%v detail=%q", ok, detail)
+	}
+}
+
+func TestPRTitleShouldFailWhenDescriptionStartsUppercase(t *testing.T) {
+	for _, title := range []string{"feat: Add a pr title", "fix(gates)!: Reject long titles"} {
+		ok, detail := PRTitle(title, 0)
+		if ok || !strings.Contains(detail, "título do PR com descrição em maiúscula: "+title) {
+			t.Fatalf("commitlint wants a lowercase description: %q -> ok=%v detail=%q", title, ok, detail)
+		}
+	}
+	title := "Feature: Add a title"
+	ok, detail := PRTitle(title, 0)
+	if ok || !strings.Contains(detail, "fora do formato Conventional Commits") || !strings.Contains(detail, "descrição em maiúscula") {
+		t.Fatalf("a wrong type must not hide the uppercase description: %q -> ok=%v detail=%q", title, ok, detail)
+	}
+	if ok, detail := PRTitle("feat: add PR title to impl", 0); !ok {
+		t.Fatalf("only the first letter of the description matters, not acronyms later on: %q", detail)
+	}
+}
+
+func TestPRTitleShouldFailWithTrailingPeriod(t *testing.T) {
+	title := "feat: add a pr title to the impl artifact."
+	ok, detail := PRTitle(title, 0)
+	if ok || !strings.Contains(detail, "título do PR termina com ponto: "+title) {
+		t.Fatalf("commitlint forbids a trailing period: ok=%v detail=%q", ok, detail)
+	}
+	if ok, detail := PRTitle("fix: read v1.2 configs", 0); !ok {
+		t.Fatalf("a period inside the description is fine: %q", detail)
+	}
+}
+
+func TestPRTitleShouldFailWithNonASCIILetters(t *testing.T) {
+	title := "feat: injetar trechos no prompt do implementação"
+	ok, detail := PRTitle(title, 0)
+	if ok || !strings.Contains(detail, "título do PR com letra não ASCII: "+title) {
+		t.Fatalf("an accented letter means the title is not in English: ok=%v detail=%q", ok, detail)
+	}
+	if ok, detail := PRTitle("feat: inject plan refs — per slice", 0); !ok {
+		t.Fatalf("a non-ASCII symbol is not a letter and does not make the title non-English: %q", detail)
 	}
 }

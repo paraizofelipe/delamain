@@ -104,6 +104,28 @@ func TestReadImplShouldAcceptPendingSliceWithoutEvidence(t *testing.T) {
 	}
 }
 
+func TestImplShouldDecodePRTitle(t *testing.T) {
+	im, err := Read[Impl](write(t, `{"slices":[{"id":"S1","status":"pending","red":{},"green":{},"commits":[]}],
+"feedback_addressed":[],"full_suite":{},"lint":{},"typecheck":{},"pending":[],"pr_title":"feat: add a pr title to the impl artifact"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if im.PRTitle != "feat: add a pr title to the impl artifact" {
+		t.Fatalf("pr_title must reach Impl.PRTitle, got %q", im.PRTitle)
+	}
+}
+
+func TestImplValidateShouldAcceptMissingPRTitle(t *testing.T) {
+	im, err := Read[Impl](write(t, `{"slices":[{"id":"S1","status":"pending","red":{},"green":{},"commits":[]}],
+"feedback_addressed":[],"full_suite":{},"lint":{},"typecheck":{},"pending":[]}`))
+	if err != nil {
+		t.Fatalf("an impl.json from before pr_title existed must still be valid: %v", err)
+	}
+	if im.PRTitle != "" {
+		t.Fatalf("a missing pr_title decodes empty, got %q", im.PRTitle)
+	}
+}
+
 func TestReadMinorImplShouldAcceptAPassThatDeclinesEveryItem(t *testing.T) {
 	_, err := Read[MinorImpl](write(t, `{"slices":[],
 "feedback_addressed":[{"item":"log impreciso","resolution":"não aplicado: o log já cita o id"}],

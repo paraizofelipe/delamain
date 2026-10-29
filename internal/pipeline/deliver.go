@@ -238,7 +238,7 @@ func (r *Runner) issueUpdate(ctx context.Context, t Task, res *Result, add, remo
 	return relabeled
 }
 
-var conventional = regexp.MustCompile(`^(feat|fix|chore|docs|refactor|test|ci|perf|build|style)(\([^)]+\))?!?: `)
+var conventional = regexp.MustCompile(`^(feat|fix|chore|docs|refactor|test|ci|perf|build|style|revert)(\([^)]+\))?!?: `)
 
 // prTitle makes a Conventional Commits title, keeping one the issue already has.
 func prTitle(kind, title string) string {

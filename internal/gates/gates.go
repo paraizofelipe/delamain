@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"go.yaml.in/yaml/v3"
@@ -183,6 +184,7 @@ func ValidRedProof(p string) error {
 var (
 	testName = regexp.MustCompile(`(^|/)(test_[^/]+\.py|[^/]+_test\.(go|py)|[^/]+\.(test|spec)\.[jt]sx?|[^/]+_spec\.rb)$`)
 	testDir  = regexp.MustCompile(`(^|/)(__tests__|tests?|spec)/`)
+	prTitle  = regexp.MustCompile(`^(feat|fix|chore|docs|refactor|test|ci|perf|build|style|revert)(\([a-z0-9._-]+\))?!?: \S`)
 	codeExt  = map[string]bool{
 		".go": true, ".py": true, ".js": true, ".jsx": true, ".ts": true, ".tsx": true, ".mjs": true, ".cjs": true,
 		".rb": true, ".java": true, ".kt": true, ".rs": true, ".cs": true, ".php": true, ".swift": true, ".scala": true,
@@ -224,6 +226,49 @@ func Commits(commits []string, limit int) (bool, string) {
 		return true, ""
 	}
 	return false, strings.Join(long, "\n")
+}
+
+// PRTitle fails when the PR title the implementer proposes is not a commitlint title: a
+// Conventional Commits type, optional scope and '!', then ': ' and the description. Like Commits,
+// a rule decides this so the reviewer does not spend an iteration on it. limit counts characters
+// (0 = DefaultSubjectLimit); a non-ASCII letter is the heuristic for a title not in English. Every
+// violation is reported, one per line, so the implementer fixes them all in one iteration.
+func PRTitle(title string, limit int) (bool, string) {
+	if strings.TrimSpace(title) == "" {
+		return false, "título do PR vazio"
+	}
+	var bad []string
+	// \S in the pattern only rules out ASCII whitespace, so a description that opens with a
+	// Unicode space is checked apart. The case of the description is checked even when the
+	// type is wrong, so both get fixed in the same iteration.
+	_, desc, hasDesc := strings.Cut(title, ": ")
+	if !prTitle.MatchString(title) || unicode.IsSpace(firstRune(desc)) {
+		bad = append(bad, "título do PR fora do formato Conventional Commits: "+title)
+	}
+	if hasDesc && unicode.IsUpper(firstRune(desc)) {
+		bad = append(bad, "título do PR com descrição em maiúscula: "+title)
+	}
+	if limit <= 0 {
+		limit = DefaultSubjectLimit
+	}
+	if n := utf8.RuneCountInString(title); n > limit {
+		bad = append(bad, fmt.Sprintf("título do PR com %d caracteres (limite %d): %s", n, limit, title))
+	}
+	if strings.HasSuffix(title, ".") {
+		bad = append(bad, "título do PR termina com ponto: "+title)
+	}
+	if strings.IndexFunc(title, func(r rune) bool { return r > unicode.MaxASCII && unicode.IsLetter(r) }) >= 0 {
+		bad = append(bad, "título do PR com letra não ASCII: "+title)
+	}
+	if len(bad) == 0 {
+		return true, ""
+	}
+	return false, strings.Join(bad, "\n")
+}
+
+func firstRune(s string) rune {
+	r, _ := utf8.DecodeRuneInString(s)
+	return r
 }
 
 // TestsTouched fails when production code changed but no test file did.
