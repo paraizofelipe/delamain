@@ -518,6 +518,8 @@ func TestPRTitleShouldFailWithoutConventionalType(t *testing.T) {
 		"unknown type":         "pipeline: inject refs",
 		"capitalized type":     "Feature: x",
 		"no space after colon": "feat:x",
+		"unicode space":        "feat: \u00a0x",
+		"em space":             "feat: \u2003x",
 	} {
 		t.Run(name, func(t *testing.T) {
 			ok, detail := PRTitle(title, 0)
@@ -596,6 +598,11 @@ func TestPRTitleShouldFailWhenDescriptionStartsUppercase(t *testing.T) {
 		if ok || !strings.Contains(detail, "título do PR com descrição em maiúscula: "+title) {
 			t.Fatalf("commitlint wants a lowercase description: %q -> ok=%v detail=%q", title, ok, detail)
 		}
+	}
+	title := "Feature: Add a title"
+	ok, detail := PRTitle(title, 0)
+	if ok || !strings.Contains(detail, "fora do formato Conventional Commits") || !strings.Contains(detail, "descrição em maiúscula") {
+		t.Fatalf("a wrong type must not hide the uppercase description: %q -> ok=%v detail=%q", title, ok, detail)
 	}
 	if ok, detail := PRTitle("feat: add PR title to impl", 0); !ok {
 		t.Fatalf("only the first letter of the description matters, not acronyms later on: %q", detail)

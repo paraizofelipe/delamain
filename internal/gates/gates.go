@@ -238,9 +238,14 @@ func PRTitle(title string, limit int) (bool, string) {
 		return false, "título do PR vazio"
 	}
 	var bad []string
-	if !prTitle.MatchString(title) {
+	// \S in the pattern only rules out ASCII whitespace, so a description that opens with a
+	// Unicode space is checked apart. The case of the description is checked even when the
+	// type is wrong, so both get fixed in the same iteration.
+	_, desc, hasDesc := strings.Cut(title, ": ")
+	if !prTitle.MatchString(title) || unicode.IsSpace(firstRune(desc)) {
 		bad = append(bad, "título do PR fora do formato Conventional Commits: "+title)
-	} else if _, desc, _ := strings.Cut(title, ": "); unicode.IsUpper(firstRune(desc)) {
+	}
+	if hasDesc && unicode.IsUpper(firstRune(desc)) {
 		bad = append(bad, "título do PR com descrição em maiúscula: "+title)
 	}
 	if limit <= 0 {
