@@ -231,7 +231,8 @@ func Commits(commits []string, limit int) (bool, string) {
 // PRTitle fails when the PR title the implementer proposes is not a commitlint title: a
 // Conventional Commits type, optional scope and '!', then ': ' and the description. Like Commits,
 // a rule decides this so the reviewer does not spend an iteration on it. limit counts characters
-// (0 = DefaultSubjectLimit).
+// (0 = DefaultSubjectLimit); a non-ASCII letter is the heuristic for a title not in English. Every
+// violation is reported, one per line, so the implementer fixes them all in one iteration.
 func PRTitle(title string, limit int) (bool, string) {
 	if strings.TrimSpace(title) == "" {
 		return false, "título do PR vazio"
