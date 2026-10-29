@@ -857,24 +857,27 @@ func TestGitHubListOpenIssuesShouldPaginateUntilLimit(t *testing.T) {
 	}
 }
 
-func TestGitHubListOpenIssuesShouldStopAfterMaxPagesOfPullRequests(t *testing.T) {
-	// PRs do not count for the limit: a server that answers every page with PRs only and always
-	// announces a next one must not keep the listing going. Past twice the cap the fake stops
-	// announcing, so a failure ends instead of hanging.
-	var pages atomic.Int32
+func TestGitHubListOpenIssuesShouldReachAnIssueBehindManyPagesOfPullRequests(t *testing.T) {
+	// PRs do not count for the limit: ten pages of PRs must not hide the issue on page 11, and the
+	// listing ends when the server stops announcing a next page.
 	f, _ := githubAt(t, map[string]func(http.ResponseWriter, *http.Request){
 		"GET /repos/acme/api/issues": func(w http.ResponseWriter, r *http.Request) {
-			if pages.Add(1) <= 2*maxOpenIssuesPages {
-				w.Header().Set("Link", `<http://`+r.Host+r.URL.Path+`?page=2>; rel="next"`)
+			w.Header().Set("Content-Type", "application/json")
+			page := 1
+			fmt.Sscanf(r.URL.Query().Get("page"), "%d", &page)
+			if page > 10 {
+				io.WriteString(w, `[`+ghOpenIssue(3)+`]`)
+				return
 			}
-			reply(200, `[{"number":8,"state":"open","pull_request":{"url":"https://api.github.com/repos/acme/api/pulls/8"}}]`)(w, r)
+			w.Header().Set("Link", fmt.Sprintf(`<http://%s%s?page=%d&per_page=1>; rel="next"`, r.Host, r.URL.Path, page+1))
+			io.WriteString(w, `[{"number":8,"state":"open","pull_request":{"url":"https://api.github.com/repos/acme/api/pulls/8"}}]`)
 		},
 	})
-	is, err := f.ListOpenIssues(context.Background(), 10)
-	if err != nil || len(is) != 0 {
-		t.Fatalf("issues = %+v, err = %v", is, err)
+	is, err := f.ListOpenIssues(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if n := pages.Load(); n != maxOpenIssuesPages {
-		t.Fatalf("the listing must stop after %d pages, got %d", maxOpenIssuesPages, n)
+	if got := issueNumbers(is); !reflect.DeepEqual(got, []int{3}) {
+		t.Fatalf("want the issue behind the PR pages: %v", got)
 	}
 }
