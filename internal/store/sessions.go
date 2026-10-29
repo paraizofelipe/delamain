@@ -30,6 +30,18 @@ func (s *Store) StartSession(ctx context.Context, a AgentSession) (int64, error)
 	return res.LastInsertId()
 }
 
+// EndSession marks session id as finished with state.
+func (s *Store) EndSession(ctx context.Context, id int64, state AgentState) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE agent_sessions SET state=?, ended_at=? WHERE id=?`, state, s.now(), id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // Sessions lists the sessions of runIDs in start order, keyed by run. Runs without sessions are absent.
 func (s *Store) Sessions(ctx context.Context, runIDs []int64) (map[int64][]AgentSession, error) {
 	out := map[int64][]AgentSession{}
