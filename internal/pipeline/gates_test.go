@@ -31,7 +31,7 @@ func TestVerifyShouldRunEveryGateOnTheHappyPath(t *testing.T) {
 	for _, c := range res.History[0].Checks {
 		names = append(names, c.Name)
 	}
-	want := []string{"worktree-limpa", "tem-commits", "commits", "testes-tocados", "matriz-criterios", "lint", "test", "prova-vermelho", "segredos"}
+	want := []string{"worktree-limpa", "tem-commits", "commits", "pr-title", "testes-tocados", "matriz-criterios", "lint", "test", "prova-vermelho", "segredos"}
 	if !slices.Equal(names, want) {
 		t.Fatalf("gates = %v, want %v", names, want)
 	}
@@ -414,5 +414,47 @@ func TestOpenBlockersShouldSkipNativeBlockersForLocalTasks(t *testing.T) {
 	got, err := OpenBlockers(context.Background(), f, Task{Ref: "task:x", Body: "- depends_on: #3"})
 	if err != nil || !slices.Equal(got, []string{"#3 (corpo)"}) {
 		t.Fatalf("a local task has no native relations, only its body: %q, %v", got, err)
+	}
+}
+
+func TestVerifyShouldFailPRTitleCheckForPortugueseTitle(t *testing.T) {
+	hs := newHarness(t, func(role string, n int, text string) reply {
+		if role == "implementer" && n == 1 {
+			return reply{write: implTitled("feat: adiciona exportação"), mutate: fixAdd}
+		}
+		return happy(role, n, text)
+	})
+	res := hs.run(t)
+
+	c, ok := checkNamed(res.History[0], "pr-title")
+	if !ok || c.Passed() {
+		t.Fatalf("pr-title gate = %+v, want a failure", c)
+	}
+	if !strings.Contains(c.Tail, "não ASCII") {
+		t.Fatalf("the detail must say why the title was rejected: %q", c.Tail)
+	}
+	// Only the second iteration, with a valid title, reaches the reviewer.
+	if len(hs.h.prompts["reviewer"]) != 1 || res.Outcome != OutcomeApproved {
+		t.Fatalf("a PR title must be fixed before the reviewer is paid: reviews=%d %s (%s)", len(hs.h.prompts["reviewer"]), res.Outcome, res.Reason)
+	}
+	if p := hs.h.prompts["implementer"][1]; !strings.Contains(p, "pr-title") || !strings.Contains(p, "não ASCII") {
+		t.Fatalf("the implementer must be told which gate rejected the title and why:\n%s", p)
+	}
+}
+
+func TestVerifyShouldRespectRepositorySubjectLimitForPRTitle(t *testing.T) {
+	hs := newHarness(t, happy)
+	hs.g.onWorktree = func(path string) {
+		_ = os.WriteFile(filepath.Join(path, ".delamain.yaml"), []byte("gates:\n  subject_limit: 20\n"), 0o600)
+	}
+	res := hs.run(t)
+
+	// The commits gate also fails with this limit, so only pr-title is asserted.
+	c, ok := checkNamed(res.History[0], "pr-title")
+	if !ok || c.Passed() {
+		t.Fatalf("pr-title gate = %+v, want a failure", c)
+	}
+	if !strings.Contains(c.Tail, "limite 20") {
+		t.Fatalf("the repository limit must apply to the PR title: %q", c.Tail)
 	}
 }

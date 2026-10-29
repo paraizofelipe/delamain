@@ -58,6 +58,8 @@ func (r *Runner) verify(ctx context.Context, ru *run, iterDir string) ([]CheckRe
 	results = append(results, gitCheck("tem-commits", len(commits) > 0, "nenhum commit em "+ru.repo.Base+"..HEAD"))
 	subjectsOK, subjectDetail := gates.Commits(commits, ru.repoCfg.Gates.SubjectLimit)
 	results = append(results, gitCheck("commits", subjectsOK, subjectDetail))
+	titleOK, titleDetail := gates.PRTitle(ru.prTitle, ru.repoCfg.Gates.SubjectLimit)
+	results = append(results, gitCheck("pr-title", titleOK, titleDetail))
 	r.detectNewStack(ru)
 
 	changed, err := r.Git.ChangedFiles(ctx, wt, ru.repo.Base)
