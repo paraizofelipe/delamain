@@ -418,6 +418,7 @@ var helpKeys = [][2]string{
 	{"s · d", "stop the run (delamain stop) · remove it (delamain rm)"},
 	{"c", "recover a run whose owner died (delamain recover)"},
 	{"i", "start an issue run (delamain run --issue)"},
+	{"r", "review an open PR (delamain review --pr)"},
 	{"o · y", "open the PR in the browser · copy the run ID"},
 	{"q · ctrl+c", "quit; the runs go on in the daemon"},
 }

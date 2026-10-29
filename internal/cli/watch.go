@@ -56,8 +56,9 @@ of the selected run, the queue (delamain queue) below it, whether the daemon is 
 day's spend, and reloads everything every --interval. s stops the selected run as delamain stop --no-wait does, d removes it as
 delamain rm does and c recovers it as delamain recover does when its owner died, each after a
 confirmation; i starts delamain run --issue in a repository of daemon.repos or any other one,
-also after a confirmation, and the run goes on after quitting; o opens its PR/MR, y copies its
-ID and ? lists every key. Quitting (q or ctrl+c) leaves every run as it is.
+also after a confirmation, and the run goes on after quitting; r lists the open PRs/MRs of such
+a repository and starts delamain review --pr on the one picked, the same way; o opens its PR/MR,
+y copies its ID and ? lists every key. Quitting (q or ctrl+c) leaves every run as it is.
 
 In tmux, open it in a floating popup:
 

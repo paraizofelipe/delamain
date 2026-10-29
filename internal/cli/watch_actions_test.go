@@ -1812,3 +1812,20 @@ func TestWatchHelpShouldListStartIssueKey(t *testing.T) {
 		t.Fatalf("the help of watch tells i:\n%s", long)
 	}
 }
+
+func TestWatchHelpShouldListStartReviewKey(t *testing.T) {
+	now := watchNow
+	src := &fakeWatchSource{active: []RunView{owned(14, "#55", "a", 51230, true)}}
+	m := send(t, startActions(t, src, &fakeWatchActions{}, 160, 40, &now), keyPress("?"))
+	text := dialogText(screen(m), "help")
+	want := "r review an open PR (delamain review --pr)"
+	if !strings.Contains(text, want) {
+		t.Fatalf("the help lists %q:\n%s", want, screen(m))
+	}
+	if i, j := strings.Index(text, "i start an issue run"), strings.Index(text, want); i < 0 || j < i {
+		t.Fatalf("r comes after i:\n%s", text)
+	}
+	if long := words(newWatchCmd(nil).Long); !strings.Contains(long, "r lists the open PRs/MRs of such a repository and starts delamain review --pr on the one picked") {
+		t.Fatalf("the help of watch tells r:\n%s", long)
+	}
+}
