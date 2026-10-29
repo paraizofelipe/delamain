@@ -231,6 +231,9 @@ func Commits(commits []string, limit int) (bool, string) {
 // Conventional Commits type, optional scope and '!', then ': ' and the description. Like Commits,
 // a rule decides this so the reviewer does not spend an iteration on it.
 func PRTitle(title string, limit int) (bool, string) {
+	if strings.TrimSpace(title) == "" {
+		return false, "título do PR vazio"
+	}
 	var bad []string
 	if !prTitle.MatchString(title) {
 		bad = append(bad, "título do PR fora do formato Conventional Commits: "+title)

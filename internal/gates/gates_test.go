@@ -558,3 +558,15 @@ func TestParseRepoConfigShouldReadTheAgentOverrides(t *testing.T) {
 		t.Fatal("unknown keys must still be rejected")
 	}
 }
+
+func TestPRTitleShouldFailWhenEmpty(t *testing.T) {
+	for _, title := range []string{"", "   "} {
+		ok, detail := PRTitle(title, 0)
+		if ok {
+			t.Fatalf("an empty title %q must fail: the PR needs a title", title)
+		}
+		if detail != "título do PR vazio" {
+			t.Fatalf("an empty title fails alone, with the empty reason only: %q", detail)
+		}
+	}
+}
