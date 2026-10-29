@@ -56,9 +56,8 @@ type DayCost struct {
 
 // DailyCostByRole sums the cost of the ledger rows since f.Since per local day and role, ordered by day then role.
 func (s *Store) DailyCostByRole(ctx context.Context, f ReportFilter) ([]DayCost, error) {
-	where, args := reportWhere(f, "token_ledger.at")
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT token_ledger.at, token_ledger.role, token_ledger.cost_usd FROM token_ledger WHERE `+where, args...)
+	from, args := ledgerFrom(f)
+	rows, err := s.db.QueryContext(ctx, `SELECT token_ledger.at, token_ledger.role, token_ledger.cost_usd FROM `+from, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -94,6 +93,16 @@ func (s *Store) DailyCostByRole(ctx context.Context, f ReportFilter) ([]DayCost,
 		return strings.Compare(a.Role, b.Role)
 	})
 	return out, rows.Err()
+}
+
+// ledgerFrom is the FROM and WHERE of the ledger rows f selects, with their arguments. Only a repo or
+// kind filter joins with runs: without one, the rows of deleted runs count, as in the daily budget.
+func ledgerFrom(f ReportFilter) (string, []any) {
+	where, args := reportWhere(f, "token_ledger.at")
+	if f.Repo == "" && f.Kind == "" {
+		return `token_ledger WHERE ` + where, args
+	}
+	return `token_ledger JOIN runs ON runs.id = token_ledger.run_id WHERE ` + where, args
 }
 
 // reportWhere is the WHERE clause of f, with at as its period column, and its arguments.

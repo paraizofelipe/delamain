@@ -148,3 +148,46 @@ func TestDailyCostByRoleShouldGroupByLocalDay(t *testing.T) {
 		}
 	}
 }
+
+func TestDailyCostByRoleShouldKeepDeletedRunsOnlyWithoutFilter(t *testing.T) {
+	useLocal(t, time.UTC)
+	s := openTest(t)
+	ctx := context.Background()
+	day := time.Date(2026, 10, 22, 0, 0, 0, 0, time.UTC)
+	s.now = func() time.Time { return day.Add(12 * time.Hour) }
+	gone, _ := s.CreateRun(ctx, "acme/a", "#1", "a", "omp", 3, 0, KindIssue)
+	kept, _ := s.CreateRun(ctx, "acme/a", "#2", "b", "omp", 3, 0, KindIssue)
+	other, _ := s.CreateRun(ctx, "acme/b", "#3", "c", "omp", 3, 0, KindReview)
+	_, _ = s.RecordUsage(ctx, gone.ID, "planner", "/g.jsonl", Usage{CostUSD: 0.5})
+	_, _ = s.RecordUsage(ctx, kept.ID, "planner", "/k.jsonl", Usage{CostUSD: 0.25})
+	_, _ = s.RecordUsage(ctx, other.ID, "reviewer", "/o.jsonl", Usage{CostUSD: 1})
+	if err := s.DeleteRun(ctx, gone.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		f    ReportFilter
+		want []DayCost
+	}{
+		{"no filter keeps the deleted run's cost", ReportFilter{}, []DayCost{{day, "planner", 0.75}, {day, "reviewer", 1}}},
+		{"repo drops it", ReportFilter{Repo: "acme/a"}, []DayCost{{day, "planner", 0.25}}},
+		{"kind drops it", ReportFilter{Kind: string(KindIssue)}, []DayCost{{day, "planner", 0.25}}},
+		{"kind filters the other runs", ReportFilter{Kind: string(KindReview)}, []DayCost{{day, "reviewer", 1}}},
+	} {
+		got, err := s.DailyCostByRole(ctx, tc.f)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if len(got) != len(tc.want) {
+			t.Errorf("%s: got %+v, want %+v", tc.name, got, tc.want)
+			continue
+		}
+		for i := range tc.want {
+			if !got[i].Day.Equal(tc.want[i].Day) || got[i].Role != tc.want[i].Role || got[i].CostUSD != tc.want[i].CostUSD {
+				t.Errorf("%s: got %+v, want %+v", tc.name, got, tc.want)
+				break
+			}
+		}
+	}
+}
