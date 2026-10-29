@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -351,13 +352,15 @@ type pickerItem struct {
 	title  string // cleaned of its control characters, as author
 	author string // the author of a PR, empty for an issue
 	draft  bool
+	typed  bool // the number typed, which no line of the forge holds
 }
 
 // filter is the text typed on the list of issues or PRs, without the spaces around it.
 func (p issuePicker) filter() string { return strings.TrimSpace(p.input.Value()) }
 
 // listItems are the lines of the list of the dialog, the issues for i and the PRs for r, that the
-// filter matches, in the order of the forge.
+// filter matches, in the order of the forge. A filter that is a number greater than 0, of no line,
+// is a line of its own on top: an issue or a PR past the list, or a number that starts others.
 func (m watchModel) listItems() []pickerItem {
 	p := m.dialog.issue
 	var all []pickerItem
@@ -372,6 +375,10 @@ func (m watchModel) listItems() []pickerItem {
 	}
 	filter := strings.ToLower(p.filter())
 	var items []pickerItem
+	typed, err := strconv.Atoi(filter)
+	if err == nil && typed > 0 && !slices.ContainsFunc(all, func(it pickerItem) bool { return it.number == typed }) {
+		items = append(items, pickerItem{number: typed, typed: true})
+	}
 	for _, it := range all {
 		if it.matches(filter) {
 			items = append(items, it)
@@ -463,6 +470,9 @@ func (m watchModel) pickListLines(d *dialogWriter) {
 			mark = paint(st.info.Bold(true), "› ")
 		}
 		head, tail := fmt.Sprintf("#%d ", it.number), ""
+		if it.typed {
+			tail += "not listed"
+		}
 		if it.author != "" {
 			tail += " @" + it.author
 		}

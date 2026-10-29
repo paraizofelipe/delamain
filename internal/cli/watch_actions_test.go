@@ -1686,18 +1686,13 @@ func typeIssue(t *testing.T, acts *fakeWatchActions, now *time.Time, issue strin
 }
 
 func TestWatchStartIssueShouldRejectNonPositiveIssueNumber(t *testing.T) {
-	for _, typed := range []string{"0", "-3", "abc", "", "1.5", "99999999999999999999"} {
+	for _, typed := range []string{"0", "-3", "abc", "1.5", "99999999999999999999"} {
 		now := watchNow
 		acts := &fakeWatchActions{}
-		var asked []string
-		m, _ := pickIssueRepo(t, acts, &now, prForgeOf(&fakePRForge{}, &asked))
-		if typed != "" {
-			m = send(t, m, keyPress(typed))
-		}
-		m = send(t, m, keyPress("enter"))
+		m, _ := typeIssue(t, acts, &now, typed)
 		text := pickerText(m)
-		if !pickerHas(text, "Which issue in app?") || pickerHas(text, "Start issue") || pickerHas(text, "the issue is a number greater than 0") {
-			t.Fatalf("%q picks no issue, and the list stays:\n%s", typed, screen(m))
+		if !pickerHas(text, "Which issue in app?") || !pickerHas(text, "filter "+typed+"█") || !pickerHas(text, "no match") || pickerHas(text, "not listed") || pickerHas(text, "Start issue") {
+			t.Fatalf("%q is no issue: no line to pick, and the list stays:\n%s", typed, screen(m))
 		}
 		afterGrace(&now)
 		if send(t, m, keyPress("enter")); len(acts.started) != 0 {

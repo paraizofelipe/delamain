@@ -110,7 +110,11 @@ func (m watchModel) activeRun(repo string, n int) bool {
 // reviewLines are the confirmation of the dialog of r.
 func (m watchModel) reviewLines(d *dialogWriter) {
 	st, p := m.st, m.dialog.issue
-	d.text(st.none.Bold(true), fmt.Sprintf("Review PR #%d (%s) in %s?", p.number, p.title, filepath.Base(p.repo)))
+	question := fmt.Sprintf("Review PR #%d (%s) in %s?", p.number, p.title, filepath.Base(p.repo))
+	if p.title == "" { // a PR typed, past the list: its title is unknown
+		question = fmt.Sprintf("Review PR #%d in %s?", p.number, filepath.Base(p.repo))
+	}
+	d.text(st.none.Bold(true), question)
 	d.blank()
 	d.row("repo", paint(st.muted, p.repo))
 	d.row("review", fmt.Sprintf("delamain review --pr %d, in the background; its log goes to the state dir", p.number))

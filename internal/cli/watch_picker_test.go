@@ -218,9 +218,9 @@ func TestWatchPickerListShouldFilterByNumberPrefix(t *testing.T) {
 	m, _ := issueList(t, &fakeWatchActions{}, &now, fourIssues...)
 	m = typeKeys(t, m, "down", "1")
 	text := pickerText(m)
-	for _, want := range []string{"filter 1█", "› #120 parse dates", "#12 fix the parser"} {
+	for _, want := range []string{"filter 1█", "› #1 not listed", "#120 parse dates", "#12 fix the parser"} {
 		if !pickerHas(text, want) {
-			t.Fatalf("1 keeps the issues whose number starts with it, the cursor on the first, %q:\n%s", want, screen(m))
+			t.Fatalf("1 keeps the issues whose number starts with it, the cursor back on top, %q:\n%s", want, screen(m))
 		}
 	}
 	if pickerHas(text, "#9 ") || pickerHas(text, "#31") {
@@ -304,5 +304,78 @@ func TestWatchPickerListEscShouldClearFilterThenGoBack(t *testing.T) {
 	m = typeKeys(t, m, "a", "n", "a", "esc", "esc")
 	if text := reviewText(m); !pickerHas(text, "Path of the repository") || !pickerHas(text, "path "+app) {
 		t.Fatalf("on r too, esc clears the filter, then goes back to the path typed:\n%s", screen(m))
+	}
+}
+
+func TestWatchPickerListShouldStartTypedNumberMissingFromList(t *testing.T) {
+	now := watchNow
+	acts := &fakeWatchActions{}
+	m, app := issueList(t, acts, &now, forge.Issue{Number: 50, Title: "fifty"}, forge.Issue{Number: 51, Title: "fifty one"}, forge.Issue{Number: 12, Title: "fix the parser"})
+	m = typeKeys(t, m, "5")
+	text := pickerText(m)
+	for _, want := range []string{"› #5 not listed", "#50 fifty", "#51 fifty one"} {
+		if !pickerHas(text, want) {
+			t.Fatalf("5, the start of #50 and #51, is also a number of its own, on top, %q:\n%s", want, screen(m))
+		}
+	}
+	if strings.Index(text, "#5not") > strings.Index(text, "#50") || pickerHas(text, "no match") {
+		t.Fatalf("the number typed comes first:\n%s", screen(m))
+	}
+	if m = send(t, m, keyPress("enter")); !pickerHas(pickerText(m), "Start issue #5 in app?") {
+		t.Fatalf("enter on the number typed asks to start it:\n%s", screen(m))
+	}
+	afterGrace(&now)
+	if send(t, m, keyPress("enter")); len(acts.started) != 1 || acts.started[0] != (startCall{app, 5}) {
+		t.Fatalf("the issue typed is started: %v", acts.started)
+	}
+
+	m, _ = issueList(t, &fakeWatchActions{}, &now, forge.Issue{Number: 12, Title: "fix the parser"})
+	if text := pickerText(typeKeys(t, m, "1", "2")); pickerHas(text, "not listed") || !pickerHas(text, "› #12 fix the parser") {
+		t.Fatalf("a number of the list is not added again:\n%s", screen(m))
+	}
+	if text := pickerText(typeKeys(t, m, "7")); !pickerHas(text, "› #7 not listed") || pickerHas(text, "no match") {
+		t.Fatalf("a number matching no line is still offered:\n%s", screen(m))
+	}
+	m, _ = issueList(t, &fakeWatchActions{}, &now)
+	if text := pickerText(typeKeys(t, m, "7")); !pickerHas(text, "› #7 not listed") || pickerHas(text, "no match") || pickerHas(text, "no open issues") {
+		t.Fatalf("a number is offered on a repository without open issues:\n%s", screen(m))
+	}
+
+	reviews := &fakeWatchActions{}
+	var asked []string
+	m, _ = pickApp(t, reviews, &now, prForgeOf(twoPRs(), &asked))
+	m = typeKeys(t, m, "7", "7", "enter")
+	if text := reviewText(m); !pickerHas(text, "Review PR #77 in app?") || pickerHas(text, "#77 (") {
+		t.Fatalf("a PR typed has no title to show:\n%s", screen(m))
+	}
+	afterGrace(&now)
+	if send(t, m, keyPress("enter")); len(reviews.reviewed) != 1 || reviews.reviewed[0].pr != 77 {
+		t.Fatalf("the PR typed is reviewed: %v", reviews.reviewed)
+	}
+}
+
+func TestWatchPickerListShouldBlockTypedNumberWithActiveRun(t *testing.T) {
+	now := watchNow
+	app := gitInit(t, filepath.Join(t.TempDir(), "app"))
+	src := &fakeWatchSource{active: []RunView{owned(14, "#55", "a", 51230, true), runOn(20, "issue", app, "#5"), runOn(21, "review", app, "pr:6")}}
+	acts := &fakeWatchActions{}
+	var asked []string
+	m := send(t, send(t, startReviewTUI(t, acts, src, []string{app}, &now, prForgeOf(twoIssues(), &asked)), keyPress("i")), keyPress("enter"))
+	afterGrace(&now)
+	m = typeKeys(t, m, "5")
+	if !pickerHas(pickerText(m), "› #5 not listed active run") {
+		t.Fatalf("the number typed shows its active run:\n%s", screen(m))
+	}
+	if m = send(t, m, keyPress("enter")); footerText(m)[0] != "a run is already active for issue 5" || pickerHas(pickerText(m), "Start issue") {
+		t.Fatalf("a number typed with an active run is refused:\n%s", screen(m))
+	}
+
+	m = send(t, send(t, startReviewTUI(t, acts, src, []string{app}, &now, prForgeOf(twoPRs(), &asked)), keyPress("r")), keyPress("enter"))
+	afterGrace(&now)
+	if m = typeKeys(t, m, "6", "enter"); footerText(m)[0] != "a run is already active for PR 6" || pickerHas(reviewText(m), "Review PR") {
+		t.Fatalf("a PR typed with an active review is refused:\n%s", screen(m))
+	}
+	if len(acts.started) != 0 || len(acts.reviewed) != 0 {
+		t.Fatalf("nothing starts: %v %v", acts.started, acts.reviewed)
 	}
 }
