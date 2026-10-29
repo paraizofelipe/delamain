@@ -958,6 +958,30 @@ func TestImplementerShouldFollowRepositoryLanguageForDocs(t *testing.T) {
 	}
 }
 
+func TestEveryRoleAndAgentShouldKeepJSONKeysAndEnumsUntranslated(t *testing.T) {
+	const want = "Chaves JSON e valores de enum nunca são traduzidos."
+	s := mustLoad(t, embedded.FS)
+	// The orchestrator decodes the artifacts: a translated key or enum value breaks the run.
+	for _, name := range s.Manifest.Roles {
+		body, err := s.Role(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(ptBRRule(body), want) {
+			t.Errorf("role %s must say %q in its Idioma rule", name, want)
+		}
+	}
+	for _, name := range s.Manifest.Agents {
+		file, err := s.Agent(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(ptBRRule(string(file)), want) {
+			t.Errorf("agent %s must say %q in its Idioma rule", name, want)
+		}
+	}
+}
+
 func TestStandardsReviewerShouldCheckPRTitleLanguage(t *testing.T) {
 	file, err := mustLoad(t, embedded.FS).Agent("standards-reviewer")
 	if err != nil {
