@@ -85,7 +85,7 @@ func TestBoardPagesKeepToTheCSP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"index.html", "common.js", "board.js", "report.html", "report.js"} {
+	for _, want := range []string{"index.html", "common.js", "board.js", "report.html", "report.js", "report-daily.js", "report-top.js", "report-history.js"} {
 		if !seen[want] {
 			t.Errorf("%s was not checked: it is not in the embedded page", want)
 		}
@@ -123,5 +123,31 @@ func TestReportPageKeepsItsFiltersAndAsksTheAPI(t *testing.T) {
 		if strings.LastIndex(before, "try {") <= strings.LastIndex(before, "} catch") {
 			t.Errorf("report.js touches localStorage outside a try: ...%s", js[max(0, at[0]-60):at[1]])
 		}
+	}
+}
+
+// Each section of the report is its own file, so the issues that fill them do not touch report.js.
+func TestReportPageHandsEachSectionItsContainer(t *testing.T) {
+	js := readAsset(t, "report.js")
+	for _, want := range []string{"window.reportSections", "page: (offset) => fetchReport(offset)"} {
+		if !strings.Contains(js, want) {
+			t.Errorf("report.js has no %s", want)
+		}
+	}
+	for _, s := range []struct{ name, container string }{
+		{"daily", "$('daily')"}, {"top", "document.querySelector('.report-top')"}, {"history", "$('history')"},
+	} {
+		call := regexp.MustCompile(`\['` + s.name + `',\s*` + regexp.QuoteMeta(s.container))
+		if !call.MatchString(js) {
+			t.Errorf("report.js does not hand the %s section its container %s", s.name, s.container)
+		}
+		section := readAsset(t, "report-"+s.name+".js")
+		if !strings.Contains(section, "window.reportSections."+s.name+" = ") || !strings.Contains(section, "em construção") {
+			t.Errorf("report-%s.js does not register its placeholder:\n%s", s.name, section)
+		}
+	}
+	top := readAsset(t, "report-top.js")
+	if !strings.Contains(top, "'#top-runs'") || !strings.Contains(top, "'#top-agents'") {
+		t.Error("report-top.js leaves #top-runs or #top-agents empty")
 	}
 }

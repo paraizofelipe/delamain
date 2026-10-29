@@ -52,6 +52,23 @@ function render(rep) {
   }
   renderRepoFilter(rep.repos || [])
   renderKPIs(rep.kpis)
+  renderSections(rep)
+}
+
+// Each section lives in its own report-*.js and registers itself in window.reportSections.
+const SECTIONS = [
+  ['daily', $('daily')],
+  ['top', document.querySelector('.report-top')],
+  ['history', $('history')],
+]
+
+function renderSections(rep) {
+  // page(offset) fetches another page of the history under the current filters.
+  const api = { page: (offset) => fetchReport(offset) }
+  const sections = window.reportSections || {}
+  for (const [name, container] of SECTIONS) {
+    if (typeof sections[name] === 'function') sections[name](container, rep, api)
+  }
 }
 
 function renderRepoFilter(repos) {
