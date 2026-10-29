@@ -1689,7 +1689,7 @@ func TestWatchStartIssueShouldRejectNonPositiveIssueNumber(t *testing.T) {
 		now := watchNow
 		acts := &fakeWatchActions{}
 		var asked []string
-		m, _ := pickIssueRepo(t, acts, nil, &now, prForgeOf(&fakePRForge{}, &asked))
+		m, _ := pickIssueRepo(t, acts, &now, prForgeOf(&fakePRForge{}, &asked))
 		if typed != "" {
 			m = send(t, m, keyPress(typed))
 		}

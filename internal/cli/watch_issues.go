@@ -75,7 +75,11 @@ func (m watchModel) issueListKey(msg tea.KeyMsg) (watchModel, tea.Cmd) {
 	case key.Matches(msg, watchKeys.last):
 		p.listCursor = last
 	case key.Matches(msg, pickerKeys.next) && len(p.issues) > 0:
-		p.step, p.number = pickConfirm, p.issues[p.listCursor].Number
+		n := p.issues[p.listCursor].Number
+		if m.activeRun(p.runRepo(), n) {
+			return m.showToast(m.st.warn, fmt.Sprintf("a run is already active for issue %d", n))
+		}
+		p.step, p.number = pickConfirm, n
 		m.dialog.at = m.opts.now() // the enter of the list, held, must not answer the confirmation
 	}
 	return m, nil
@@ -99,9 +103,12 @@ func (m watchModel) issueLines(d *dialogWriter) {
 		if i == p.listCursor {
 			mark = paint(st.info.Bold(true), "› ")
 		}
-		head := fmt.Sprintf("#%d ", issue.Number)
-		room := max(d.inner-lipgloss.Width(mark+head), 1)
-		d.styled(mark + paint(st.info, head) + ansi.Truncate(clean(issue.Title), room, "…"))
+		head, tail := fmt.Sprintf("#%d ", issue.Number), ""
+		if m.activeRun(p.runRepo(), issue.Number) {
+			tail = " active run"
+		}
+		room := max(d.inner-lipgloss.Width(mark+head+tail), 1)
+		d.styled(mark + paint(st.info, head) + ansi.Truncate(clean(issue.Title), room, "…") + paint(st.muted, tail))
 	}
 	m.pickerError(d)
 	d.buttons([2]string{"next", "enter"}, [2]string{"back", "esc"})

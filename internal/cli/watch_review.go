@@ -116,14 +116,22 @@ func (m *watchModel) backToRepo() {
 	}
 }
 
-// activeRun reports whether the last reload holds an active review or address of PR n in repo:
-// a second one would be refused by the store.
+// activeRun reports whether the last reload holds an active run of issue n in repo, for the
+// dialog of i, or an active review or address of PR n, for the dialog of r: a second one would be
+// refused by the store.
 func (m watchModel) activeRun(repo string, n int) bool {
+	num := strconv.Itoa(n)
 	for _, v := range m.data.active {
 		if filepath.Clean(v.Repo) != filepath.Clean(repo) {
 			continue
 		}
-		if v.Kind == string(store.KindReview) && v.Issue == "pr:"+strconv.Itoa(n) || v.Kind == string(store.KindAddress) && v.Issue == "addr:"+strconv.Itoa(n) {
+		if m.dialog.kind == dialogStartIssue {
+			if v.Kind == string(store.KindIssue) && v.Issue == "#"+num {
+				return true
+			}
+			continue
+		}
+		if v.Kind == string(store.KindReview) && v.Issue == "pr:"+num || v.Kind == string(store.KindAddress) && v.Issue == "addr:"+num {
 			return true
 		}
 	}
