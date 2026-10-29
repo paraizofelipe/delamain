@@ -296,7 +296,8 @@ func (g *githubClient) ListOpenPRs(ctx context.Context, limit int) ([]PRDetail, 
 }
 
 // maxOpenIssuesPages bounds the pages ListOpenIssues reads on GitHub, where PRs do not count for
-// the limit: pages holding PRs only would otherwise never end the listing.
+// the limit: pages holding PRs only would otherwise never end the listing. The pages count raw
+// items, PRs included, so a repository with many recent PRs may yield fewer than limit issues.
 const maxOpenIssuesPages = 10
 
 // ListOpenIssues keeps the forge's order, newest first, and reads pages only until it has limit
