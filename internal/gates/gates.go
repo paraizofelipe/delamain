@@ -183,6 +183,7 @@ func ValidRedProof(p string) error {
 var (
 	testName = regexp.MustCompile(`(^|/)(test_[^/]+\.py|[^/]+_test\.(go|py)|[^/]+\.(test|spec)\.[jt]sx?|[^/]+_spec\.rb)$`)
 	testDir  = regexp.MustCompile(`(^|/)(__tests__|tests?|spec)/`)
+	prTitle  = regexp.MustCompile(`^(feat|fix|chore|docs|refactor|test|ci|perf|build|style)(\([a-z0-9._-]+\))?!?: \S`)
 	codeExt  = map[string]bool{
 		".go": true, ".py": true, ".js": true, ".jsx": true, ".ts": true, ".tsx": true, ".mjs": true, ".cjs": true,
 		".rb": true, ".java": true, ".kt": true, ".rs": true, ".cs": true, ".php": true, ".swift": true, ".scala": true,
@@ -224,6 +225,20 @@ func Commits(commits []string, limit int) (bool, string) {
 		return true, ""
 	}
 	return false, strings.Join(long, "\n")
+}
+
+// PRTitle fails when the PR title the implementer proposes is not a commitlint title: a
+// Conventional Commits type, optional scope and '!', then ': ' and the description. Like Commits,
+// a rule decides this so the reviewer does not spend an iteration on it.
+func PRTitle(title string, limit int) (bool, string) {
+	var bad []string
+	if !prTitle.MatchString(title) {
+		bad = append(bad, "título do PR fora do formato Conventional Commits: "+title)
+	}
+	if len(bad) == 0 {
+		return true, ""
+	}
+	return false, strings.Join(bad, "\n")
 }
 
 // TestsTouched fails when production code changed but no test file did.

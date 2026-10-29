@@ -495,6 +495,42 @@ func TestCommitsShouldUseTheRepoConfiguredLimitOverTheDefault(t *testing.T) {
 	}
 }
 
+func TestPRTitleShouldPassConventionalEnglishTitle(t *testing.T) {
+	if ok, detail := PRTitle("feat: add a pr title to the impl artifact", 0); !ok {
+		t.Fatalf("a commitlint title in English within the limit must pass: %q", detail)
+	}
+}
+
+func TestPRTitleShouldPassScopedAndBreakingTitles(t *testing.T) {
+	for _, title := range []string{
+		"fix(pipeline): inject the plan refs",
+		"feat!: drop the legacy dependency reader",
+		"refactor(gates.v2)!: split the commit gate",
+	} {
+		if ok, detail := PRTitle(title, 0); !ok {
+			t.Fatalf("scope and breaking marker are valid commitlint: %q -> %q", title, detail)
+		}
+	}
+}
+
+func TestPRTitleShouldFailWithoutConventionalType(t *testing.T) {
+	for name, title := range map[string]string{
+		"unknown type":         "pipeline: inject refs",
+		"capitalized type":     "Feature: x",
+		"no space after colon": "feat:x",
+	} {
+		t.Run(name, func(t *testing.T) {
+			ok, detail := PRTitle(title, 0)
+			if ok {
+				t.Fatalf("%q is not Conventional Commits and must fail", title)
+			}
+			if !strings.Contains(detail, "fora do formato Conventional Commits") || !strings.Contains(detail, title) {
+				t.Fatalf("detail must name the format rule and the title: %q", detail)
+			}
+		})
+	}
+}
+
 func TestLoadRepoConfigShouldReadTheSubjectLimit(t *testing.T) {
 	dir := t.TempDir()
 	write(t, dir, map[string]string{RepoConfigFile: "gates:\n  subject_limit: 69\n"})
