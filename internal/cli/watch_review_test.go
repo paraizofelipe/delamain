@@ -190,3 +190,153 @@ func TestWatchStartReviewShouldShowErrorWhenRepoHasNoForge(t *testing.T) {
 	}
 	stillWatching(t, m)
 }
+
+// twoPRs is a forge with two open PRs, newest first.
+func twoPRs() *fakePRForge {
+	return &fakePRForge{prs: []forge.PRDetail{
+		{Number: 12, Title: "fix the parser", Author: "ana"},
+		{Number: 9, Title: "wip: watch", Author: "bo", Draft: true},
+	}}
+}
+
+func TestWatchStartReviewShouldCallStartReviewOnConfirm(t *testing.T) {
+	for _, confirm := range []string{"enter", "y"} {
+		now := watchNow
+		acts := &fakeWatchActions{}
+		var asked []string
+		m, app := pickApp(t, acts, nil, &now, prForgeOf(twoPRs(), &asked))
+		m = send(t, send(t, send(t, m, keyPress("G")), keyPress("j")), keyPress("g"))
+		if !pickerHas(reviewText(m), "› #12") {
+			t.Fatalf("g goes back to the first PR:\n%s", screen(m))
+		}
+		m = send(t, send(t, m, keyPress("down")), keyPress("enter"))
+		text := reviewText(m)
+		for _, want := range []string{"Review PR #9 (wip: watch) in app?", "repo " + app, "[ review enter ] [ cancel esc ]"} {
+			if !pickerHas(text, want) {
+				t.Fatalf("the confirmation says %q:\n%s", want, screen(m))
+			}
+		}
+		// The enter that picked the PR, held or tapped twice, must not answer the confirmation.
+		if m = send(t, m, keyPress(confirm)); len(acts.reviewed) != 0 || !pickerHas(reviewText(m), "Review PR #9") {
+			t.Fatalf("%s this soon is ignored: %v", confirm, acts.reviewed)
+		}
+		afterGrace(&now)
+		next, cmd := m.Update(keyPress(confirm))
+		if view := screen(next); strings.Contains(view, "delamain review") || footerText(next)[0] != "starting review of PR #9 in app…" {
+			t.Fatalf("%s closes the dialog and the footer says the review is starting:\n%s", confirm, view)
+		}
+		if len(acts.reviewed) != 0 {
+			t.Fatal("the review starts in a tea.Cmd, off Update")
+		}
+		settle(t, next, cmd)
+		if len(acts.reviewed) != 1 || acts.reviewed[0] != (reviewCall{app, 9}) {
+			t.Fatalf("%s starts the review of PR 9 in %s, once: %v", confirm, app, acts.reviewed)
+		}
+		if len(acts.started) != 0 || len(acts.stops) != 0 || len(acts.removes) != 0 || len(acts.recovers) != 0 {
+			t.Fatalf("%s starts no issue and touches no run: %+v", confirm, acts)
+		}
+	}
+
+	for _, cancel := range []string{"esc", "n"} {
+		now := watchNow
+		acts := &fakeWatchActions{}
+		var asked []string
+		m, _ := pickApp(t, acts, nil, &now, prForgeOf(twoPRs(), &asked))
+		afterGrace(&now)
+		if m = send(t, send(t, m, keyPress("enter")), keyPress(cancel)); strings.Contains(screen(m), "delamain review") || len(acts.reviewed) != 0 {
+			t.Fatalf("%s closes the confirmation and reviews nothing: %v\n%s", cancel, acts.reviewed, screen(m))
+		}
+	}
+
+	now := watchNow
+	acts := &fakeWatchActions{}
+	var asked []string
+	m, _ := pickApp(t, acts, nil, &now, prForgeOf(&fakePRForge{}, &asked))
+	afterGrace(&now)
+	if m = send(t, send(t, m, keyPress("enter")), keyPress("enter")); !pickerHas(reviewText(m), "no open PRs in app") || len(acts.reviewed) != 0 {
+		t.Fatalf("without a PR enter picks nothing: %v\n%s", acts.reviewed, screen(m))
+	}
+}
+
+func TestWatchStartReviewShouldGoBackToPickerOnEsc(t *testing.T) {
+	now := watchNow
+	dir := t.TempDir()
+	app, web := gitInit(t, filepath.Join(dir, "app")), gitInit(t, filepath.Join(dir, "web"))
+	var asked []string
+	m := send(t, startReviewTUI(t, &fakeWatchActions{}, nil, []string{app, web}, &now, prForgeOf(twoPRs(), &asked)), keyPress("r"))
+	m = send(t, send(t, send(t, m, keyPress("j")), keyPress("enter")), keyPress("esc"))
+	if text := reviewText(m); !pickerHas(text, "Review a PR in which repository?") || !pickerHas(text, "› web "+web) {
+		t.Fatalf("esc on the PRs goes back to the list of repositories, where it was:\n%s", screen(m))
+	}
+	m = send(t, m, keyPress("esc"))
+	if strings.Contains(screen(m), "delamain review") {
+		t.Fatalf("esc on the list closes the dialog:\n%s", screen(m))
+	}
+
+	m = typePath(t, send(t, startReviewTUI(t, &fakeWatchActions{}, nil, nil, &now, prForgeOf(twoPRs(), &asked)), keyPress("r")), app)
+	if !pickerHas(reviewText(m), "#12 fix the parser") {
+		t.Fatalf("a path typed lists its PRs:\n%s", screen(m))
+	}
+	m = send(t, m, keyPress("esc"))
+	if text := reviewText(m); !pickerHas(text, "Path of the repository") || !pickerHas(text, "path "+app) {
+		t.Fatalf("without daemon.repos esc goes back to the path typed:\n%s", screen(m))
+	}
+}
+
+func TestWatchStartReviewShouldDropTheListOfAReplacedRepo(t *testing.T) {
+	now := watchNow
+	dir := t.TempDir()
+	app, web := gitInit(t, filepath.Join(dir, "app")), gitInit(t, filepath.Join(dir, "web"))
+	forges := map[string]*fakePRForge{
+		app: {prs: []forge.PRDetail{{Number: 3, Title: "old app pr", Author: "ana"}}},
+		web: {prs: []forge.PRDetail{{Number: 8, Title: "web pr", Author: "bo"}}},
+	}
+	byRepo := func(_ context.Context, repo string) (forge.Forge, error) { return forges[repo], nil }
+	m := send(t, startReviewTUI(t, &fakeWatchActions{}, nil, []string{app, web}, &now, byRepo), keyPress("r"))
+	m, check := m.Update(keyPress("enter"))
+	m, load := m.Update(check())
+	if load == nil {
+		t.Fatalf("the PRs of app load:\n%s", screen(m))
+	}
+	late := load() // the PRs of app, answered after the user moved on
+
+	m = send(t, send(t, send(t, m, keyPress("esc")), keyPress("j")), keyPress("enter"))
+	m = send(t, m, late)
+	if text := reviewText(m); !pickerHas(text, "Which PR in web?") || !pickerHas(text, "#8 web pr") || pickerHas(text, "#3") {
+		t.Fatalf("the PRs of app, loaded late, do not replace those of web:\n%s", screen(m))
+	}
+
+	m = send(t, m, keyPress("esc"))
+	m, check = m.Update(keyPress("enter")) // app again, then the dialog closes before its PRs come
+	m, load = m.Update(check())
+	m = send(t, send(t, m, keyPress("esc")), keyPress("esc"))
+	if m = send(t, m, load()); strings.Contains(screen(m), "delamain review") {
+		t.Fatalf("the PRs of a closed dialog open nothing:\n%s", screen(m))
+	}
+}
+
+func TestWatchStartReviewShouldToastTheExitOfTheReview(t *testing.T) {
+	for _, c := range []struct {
+		err  error
+		want string
+	}{
+		{startReviewExit{pr: 12, code: 1, log: "/s/launch/1767225600-review-12.log"}, "review of PR #12 failed: exit 1; see /s/launch/1767225600-review-12.log"},
+		{errors.New("fork/exec /opt/delamain: no such file or directory"), "fork/exec /opt/delamain: no such file or directory"},
+		// The log is under the state dir, which could hold anything: it reaches no terminal raw.
+		{startReviewExit{pr: 12, code: 1, log: "/s/\x1b]52;c;ZXZpbA==\x07x.log"}, "review of PR #12 failed: exit 1; see /s/]52;c;ZXZpbA==x.log"},
+	} {
+		now := watchNow
+		acts := &fakeWatchActions{reviewErr: c.err}
+		var asked []string
+		m, _ := pickApp(t, acts, nil, &now, prForgeOf(twoPRs(), &asked))
+		m = send(t, m, keyPress("enter"))
+		afterGrace(&now)
+		m = send(t, m, keyPress("enter"))
+		if got := strings.Join(footerText(m)[:len(footerText(m))-1], " "); got != c.want {
+			t.Errorf("%v is the toast %q, want %q", c.err, got, c.want)
+		}
+		if strings.Contains(m.View(), "\x1b]52") {
+			t.Errorf("the toast of %q writes no escape of its own", c.err)
+		}
+	}
+}

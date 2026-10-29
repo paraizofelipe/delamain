@@ -27,7 +27,7 @@ const (
 	pickRepo    pickStep = iota // the list of daemon.repos and other path…
 	pickPath                    // the path typed by hand
 	pickIssue                   // the number of the issue
-	pickConfirm                 // start the run?
+	pickConfirm                 // start the run, or the review?
 	pickPR                      // the open PRs of the repository
 )
 
@@ -38,7 +38,7 @@ type issuePicker struct {
 	input    lineInput        // the path, then the issue
 	path     string           // the path typed, kept to go back to it
 	repo     string           // the absolute path of the repository picked
-	number   int              // the issue to start
+	number   int              // the issue to start, or the PR to review
 	err      string           // why the path or the issue was refused
 	checking bool             // the path is being checked: enter waits for it
 	checkID  uint64           // the check awaited: the answer of an earlier one is dropped
@@ -162,6 +162,8 @@ func (m watchModel) issueKey(msg tea.KeyMsg) (watchModel, tea.Cmd) {
 		return m, nil
 	case pickConfirm:
 		return m.confirmKey(msg)
+	case pickPR:
+		return m.prKey(msg)
 	}
 	switch {
 	case key.Matches(msg, pickerKeys.next):
@@ -184,8 +186,9 @@ func (m watchModel) issueKey(msg tea.KeyMsg) (watchModel, tea.Cmd) {
 	return m, nil
 }
 
-// confirmKey handles a key of the confirmation: enter or y starts the run, off Update, and closes
-// the dialog. The run is no stop, remove or recover of the store: it starts beside them.
+// confirmKey handles a key of the confirmation: enter or y starts the run or the review, off
+// Update, and closes the dialog. It is no stop, remove or recover of the store: it starts beside
+// them.
 func (m watchModel) confirmKey(msg tea.KeyMsg) (watchModel, tea.Cmd) {
 	switch {
 	case key.Matches(msg, pickerKeys.cancel):
@@ -194,11 +197,15 @@ func (m watchModel) confirmKey(msg tea.KeyMsg) (watchModel, tea.Cmd) {
 	case !key.Matches(msg, pickerKeys.start), m.opts.now().Sub(m.dialog.at) < confirmGrace:
 		return m, nil
 	}
-	repo, issue, acts := m.dialog.issue.repo, m.dialog.issue.number, m.opts.actions
+	repo, n, acts := m.dialog.issue.repo, m.dialog.issue.number, m.opts.actions
+	text, start := fmt.Sprintf("starting issue #%d in %s…", n, filepath.Base(repo)), acts.StartIssue
+	if m.dialog.kind == dialogStartReview {
+		text, start = fmt.Sprintf("starting review of PR #%d in %s…", n, filepath.Base(repo)), acts.StartReview
+	}
 	m.dialog = watchDialog{}
-	m, toast := m.showToast(m.st.warn, fmt.Sprintf("starting issue #%d in %s…", issue, filepath.Base(repo)))
+	m, toast := m.showToast(m.st.warn, text)
 	return m, tea.Batch(toast, func() tea.Msg {
-		if err := acts.StartIssue(repo, issue); err != nil {
+		if err := start(repo, n); err != nil {
 			return watchQuickMsg{err: err} // the code and the log of a run that failed
 		}
 		return nil
@@ -313,6 +320,10 @@ func (m watchModel) pickerLines(d *dialogWriter) {
 		}
 		d.buttons([2]string{"next", "enter"}, [2]string{back, "esc"})
 	case pickConfirm:
+		if m.dialog.kind == dialogStartReview {
+			m.reviewLines(d)
+			return
+		}
 		d.text(st.none.Bold(true), fmt.Sprintf("Start issue #%d in %s?", p.number, filepath.Base(p.repo)))
 		d.blank()
 		d.row("repo", paint(st.muted, p.repo))

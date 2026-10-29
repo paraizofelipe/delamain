@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
@@ -58,6 +59,44 @@ func (m watchModel) prsLoaded(msg watchPRsMsg) watchModel {
 		p.err = clean(msg.err.Error())
 	}
 	return m
+}
+
+// prKey handles a key of the list of PRs: enter picks the PR under the cursor, esc goes back to
+// the repository.
+func (m watchModel) prKey(msg tea.KeyMsg) (watchModel, tea.Cmd) {
+	p := &m.dialog.issue
+	last := max(len(p.prs)-1, 0)
+	switch {
+	case key.Matches(msg, pickerKeys.back):
+		p.step, p.err, p.loading, p.prs = pickRepo, "", false, nil
+		if len(m.opts.repos) == 0 || p.cursor == len(m.opts.repos) {
+			p.step, p.input = pickPath, newPickerInput(p.path)
+		}
+	case key.Matches(msg, watchKeys.up):
+		p.prCursor = max(p.prCursor-1, 0)
+	case key.Matches(msg, watchKeys.down):
+		p.prCursor = min(p.prCursor+1, last)
+	case key.Matches(msg, watchKeys.first):
+		p.prCursor = 0
+	case key.Matches(msg, watchKeys.last):
+		p.prCursor = last
+	case key.Matches(msg, pickerKeys.next) && len(p.prs) > 0:
+		p.step, p.number = pickConfirm, p.prs[p.prCursor].Number
+		m.dialog.at = m.opts.now() // the enter of the list, held, must not answer the confirmation
+	}
+	return m, nil
+}
+
+// reviewLines are the confirmation of the dialog of r.
+func (m watchModel) reviewLines(d *dialogWriter) {
+	st, p := m.st, m.dialog.issue
+	title := clean(p.prs[p.prCursor].Title)
+	d.text(st.none.Bold(true), fmt.Sprintf("Review PR #%d (%s) in %s?", p.number, title, filepath.Base(p.repo)))
+	d.blank()
+	d.row("repo", paint(st.muted, p.repo))
+	d.row("review", fmt.Sprintf("delamain review --pr %d, in the background; its log goes to the state dir", p.number))
+	d.blank()
+	d.buttons([2]string{"review", "enter"}, [2]string{"cancel", "esc"})
 }
 
 // prLines are the step of the dialog of r that lists the open PRs.
