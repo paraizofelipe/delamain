@@ -41,7 +41,7 @@ func TestDeliverShouldPushAndOpenReadyPRWhenApproved(t *testing.T) {
 		t.Fatalf("exactly one PR, got %d", len(f.created))
 	}
 	pr := f.created[0]
-	if pr.Head != "fix/7-fix-add" || pr.Base != "main" || pr.Draft || pr.Title != "fix: fix add" {
+	if pr.Head != "fix/7-fix-add" || pr.Base != "main" || pr.Draft || pr.Title != "fix: correct the add operation" {
 		t.Fatalf("pr options = %+v", pr)
 	}
 	for _, want := range []string{"Closes #7", "fix add", "Add(2,3)=5", "calc_test.go::TestAdd", "após 1 iteração."} {
@@ -51,6 +51,56 @@ func TestDeliverShouldPushAndOpenReadyPRWhenApproved(t *testing.T) {
 	}
 	if rec := hs.finalRun(t, res.RunID); rec.MRURL != res.PRURL {
 		t.Fatalf("store must keep the PR URL, got %q", rec.MRURL)
+	}
+}
+
+// implTitled is implJSON with another pr_title; "" leaves the field out.
+func implTitled(title string) string {
+	field := `,"pr_title":"fix: correct the add operation"`
+	if title == "" {
+		return strings.Replace(implJSON, field, "", 1)
+	}
+	return strings.Replace(implJSON, field, `,"pr_title":"`+title+`"`, 1)
+}
+
+func TestRunShouldOpenPRWithImplementerTitle(t *testing.T) {
+	hs := newHarness(t, func(role string, n int, text string) reply {
+		if role == "implementer" {
+			return reply{write: implTitled("fix: make add return the sum"), mutate: fixAdd}
+		}
+		return happy(role, n, text)
+	})
+	f := withForge(hs)
+	res := hs.run(t)
+
+	if res.Outcome != OutcomeApproved || len(f.created) != 1 {
+		t.Fatalf("got %s (%s) created=%+v", res.Outcome, res.Reason, f.created)
+	}
+	if got := f.created[0].Title; got != "fix: make add return the sum" {
+		t.Fatalf("a valid pr_title must title the PR, got %q", got)
+	}
+}
+
+func TestRunShouldKeepPreviousPRTitleWhenIterationLeavesItEmpty(t *testing.T) {
+	hs := newHarness(t, func(role string, n int, text string) reply {
+		switch {
+		case role == "implementer" && n == 1:
+			return reply{write: implTitled("fix: make add return the sum"), mutate: fixAdd}
+		case role == "implementer":
+			return reply{write: implTitled(""), mutate: func(g *fakeGit) { g.commit("test: cover add") }}
+		case role == "reviewer" && n == 1:
+			return reply{write: reviewJSON("major")}
+		}
+		return happy(role, n, text)
+	})
+	f := withForge(hs)
+	res := hs.run(t)
+
+	if res.Outcome != OutcomeApproved || res.Iterations != 2 || len(f.created) != 1 {
+		t.Fatalf("got %s (%s) iterations=%d created=%+v", res.Outcome, res.Reason, res.Iterations, f.created)
+	}
+	if got := f.created[0].Title; got != "fix: make add return the sum" {
+		t.Fatalf("an iteration without pr_title keeps the previous one, got %q", got)
 	}
 }
 

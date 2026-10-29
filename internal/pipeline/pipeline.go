@@ -202,6 +202,8 @@ type run struct {
 	// memoryOn gives the agents the Hindsight memory, from bank memoryBank; issue runs on claude only.
 	memoryOn   bool
 	memoryBank string
+	// prTitle is the last non-empty pr_title the implementer proposed.
+	prTitle string
 }
 
 // Run executes the task end to end. A non-nil error means the run could not even be recorded;
@@ -395,8 +397,12 @@ func (r *Runner) execute(ctx context.Context, ru *run, repo string, t Task) erro
 		}
 		data := r.stageData(ru, iter, filepath.Join(iterDir, "impl.json"), feedback)
 		data.Context = planContext(ru.repo.Worktree, ru.plan)
-		if _, err := stepArtifact[artifacts.Impl](ctx, r, ru, "implementer", "implement", data); err != nil {
+		impl, err := stepArtifact[artifacts.Impl](ctx, r, ru, "implementer", "implement", data)
+		if err != nil {
 			return err
+		}
+		if title := strings.TrimSpace(impl.PRTitle); title != "" {
+			ru.prTitle = title
 		}
 
 		if err := r.setState(ctx, ru, store.StateVerify); err != nil {

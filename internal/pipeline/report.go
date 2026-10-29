@@ -6,6 +6,7 @@ import (
 
 	"github.com/paraizo/delamain/internal/artifacts"
 	"github.com/paraizo/delamain/internal/forge"
+	"github.com/paraizo/delamain/internal/gates"
 	"github.com/paraizo/delamain/internal/prompts"
 )
 
@@ -195,9 +196,13 @@ func renderReviewReport(res Result, p *prRun) string {
 }
 
 func forgePROptions(ru *run, draft bool) forge.PROptions {
+	title := ru.prTitle
+	if ok, _ := gates.PRTitle(title, ru.repoCfg.Gates.SubjectLimit); !ok {
+		title = prTitle(ru.task.Kind, ru.task.Title)
+	}
 	return forge.PROptions{
 		Head: ru.repo.Branch, Base: strings.TrimPrefix(ru.repo.Base, "origin/"),
-		Title: prTitle(ru.task.Kind, ru.task.Title), Body: prBody(ru, draft), Draft: draft,
+		Title: title, Body: prBody(ru, draft), Draft: draft,
 	}
 }
 
