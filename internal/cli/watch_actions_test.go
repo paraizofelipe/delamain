@@ -1673,7 +1673,8 @@ func TestStartReviewShouldReportTheExitCodeAndLog(t *testing.T) {
 	}
 }
 
-// typeIssue opens the dialog of i on a repository of daemon.repos and types issue in it.
+// typeIssue opens the dialog of i on a repository of daemon.repos, whose open issues are those of
+// twoIssues, types issue in the filter of the list and presses enter.
 func typeIssue(t *testing.T, acts *fakeWatchActions, now *time.Time, issue string) (tea.Model, string) {
 	t.Helper()
 	app := gitInit(t, filepath.Join(t.TempDir(), "app"))
@@ -1685,13 +1686,13 @@ func typeIssue(t *testing.T, acts *fakeWatchActions, now *time.Time, issue strin
 }
 
 func TestWatchStartIssueShouldRejectNonPositiveIssueNumber(t *testing.T) {
-	for _, typed := range []string{"0", "-3", "abc", "", "1.5", "99999999999999999999"} {
+	for _, typed := range []string{"0", "-3", "abc", "1.5", "99999999999999999999"} {
 		now := watchNow
 		acts := &fakeWatchActions{}
 		m, _ := typeIssue(t, acts, &now, typed)
 		text := pickerText(m)
-		if !pickerHas(text, "the issue is a number greater than 0") || !pickerHas(text, "Which issue in app?") || !pickerHas(text, "issue "+typed+"█") {
-			t.Fatalf("%q is refused, and stays in the field:\n%s", typed, screen(m))
+		if !pickerHas(text, "Which issue in app?") || !pickerHas(text, "filter "+typed+"█") || !pickerHas(text, "no match") || pickerHas(text, "not listed") || pickerHas(text, "Start issue") {
+			t.Fatalf("%q is no issue: no line to pick, and the list stays:\n%s", typed, screen(m))
 		}
 		afterGrace(&now)
 		if send(t, m, keyPress("enter")); len(acts.started) != 0 {

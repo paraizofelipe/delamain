@@ -42,7 +42,8 @@ type watchOptions struct {
 	actions  watchActions                                         // what s, d, o and y do
 	repos    []string                                             // daemon.repos: what i and r offer first
 	after    func(time.Duration, func(time.Time) tea.Msg) tea.Cmd // the toast timer: tea.Tick
-	// prForge is the forge of repo, whose open PRs r lists: nil without an origin.
+	// prForge is the forge of repo, whose open issues i lists and whose open PRs r lists: nil
+	// without an origin.
 	prForge func(ctx context.Context, repo string) (forge.Forge, error)
 }
 

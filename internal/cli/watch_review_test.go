@@ -14,13 +14,23 @@ import (
 	"github.com/paraizo/delamain/internal/forge"
 )
 
-// fakePRForge is the forge of the repository picked in the dialog of r: it only lists PRs.
+// fakePRForge is the forge of the repository picked in the dialog of i or r: it only lists the
+// open issues and PRs.
 type fakePRForge struct {
 	forge.Forge
-	mu     sync.Mutex
-	prs    []forge.PRDetail
-	err    error
-	limits []int // the limit of every ListOpenPRs
+	mu          sync.Mutex
+	prs         []forge.PRDetail
+	issues      []forge.Issue
+	err         error
+	limits      []int // the limit of every ListOpenPRs
+	issueLimits []int // the limit of every ListOpenIssues
+}
+
+func (f *fakePRForge) ListOpenIssues(_ context.Context, limit int) ([]forge.Issue, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.issueLimits = append(f.issueLimits, limit)
+	return f.issues, f.err
 }
 
 func (f *fakePRForge) ListOpenPRs(_ context.Context, limit int) ([]forge.PRDetail, error) {
@@ -205,9 +215,9 @@ func TestWatchStartReviewShouldCallStartReviewOnConfirm(t *testing.T) {
 		acts := &fakeWatchActions{}
 		var asked []string
 		m, app := pickApp(t, acts, &now, prForgeOf(twoPRs(), &asked))
-		m = send(t, send(t, send(t, m, keyPress("G")), keyPress("j")), keyPress("g"))
+		m = send(t, send(t, send(t, m, keyPress("end")), keyPress("down")), keyPress("home"))
 		if !pickerHas(reviewText(m), "› #12") {
-			t.Fatalf("g goes back to the first PR:\n%s", screen(m))
+			t.Fatalf("home goes back to the first PR:\n%s", screen(m))
 		}
 		m = send(t, send(t, m, keyPress("down")), keyPress("enter"))
 		text := reviewText(m)
@@ -379,12 +389,12 @@ func TestWatchStartReviewShouldBlockPRWithActiveRun(t *testing.T) {
 	}
 
 	afterGrace(&now)
-	for _, k := range []string{"", "j"} { // #12 has a review, #9 an address
+	for _, k := range []string{"", "down"} { // #12 has a review, #9 an address
 		if k != "" {
 			m = send(t, m, keyPress(k))
 		}
 		m = send(t, m, keyPress("enter"))
-		pr := map[string]string{"": "12", "j": "9"}[k]
+		pr := map[string]string{"": "12", "down": "9"}[k]
 		if got := footerText(m)[0]; got != "a run is already active for PR "+pr {
 			t.Fatalf("enter on PR %s says a run is active: %q", pr, got)
 		}
@@ -395,16 +405,35 @@ func TestWatchStartReviewShouldBlockPRWithActiveRun(t *testing.T) {
 
 	// A review started after the list loaded is seen at the next reload.
 	src.active = append(src.active, runOn(24, "review", app, "pr:8"))
-	m = send(t, reload(t, m), keyPress("j"))
+	m = send(t, reload(t, m), keyPress("down"))
 	if m = send(t, m, keyPress("enter")); footerText(m)[0] != "a run is already active for PR 8" {
 		t.Fatalf("enter checks the runs of the last reload:\n%s", screen(m))
 	}
-	m = send(t, send(t, m, keyPress("j")), keyPress("enter"))
+	m = send(t, send(t, m, keyPress("down")), keyPress("enter"))
 	if !pickerHas(reviewText(m), "Review PR #7 (seven) in app?") {
 		t.Fatalf("a PR without an active run of this repository can be reviewed:\n%s", screen(m))
 	}
 	afterGrace(&now)
 	if send(t, m, keyPress("enter")); len(acts.reviewed) != 1 || acts.reviewed[0] != (reviewCall{app, 7}) {
 		t.Fatalf("only PR 7 is reviewed: %v", acts.reviewed)
+	}
+}
+
+func TestWatchPRListShouldFilterByAuthor(t *testing.T) {
+	now := watchNow
+	acts := &fakeWatchActions{}
+	var asked []string
+	m, app := pickApp(t, acts, &now, prForgeOf(twoPRs(), &asked))
+	m = typeKeys(t, m, "B", "o")
+	text := reviewText(m)
+	if !pickerHas(text, "filter Bo█") || !pickerHas(text, "› #9 wip: watch @bo draft") || pickerHas(text, "#12") {
+		t.Fatalf("Bo keeps the PRs of bo, whatever the case:\n%s", screen(m))
+	}
+	if m = send(t, m, keyPress("enter")); !pickerHas(reviewText(m), "Review PR #9 (wip: watch) in app?") {
+		t.Fatalf("the confirmation names the PR picked from the list filtered:\n%s", screen(m))
+	}
+	afterGrace(&now)
+	if send(t, m, keyPress("enter")); len(acts.reviewed) != 1 || acts.reviewed[0] != (reviewCall{app, 9}) {
+		t.Fatalf("the PR picked is reviewed: %v", acts.reviewed)
 	}
 }
