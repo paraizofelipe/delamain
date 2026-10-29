@@ -43,6 +43,8 @@ func (s *Store) EndSession(ctx context.Context, id int64, state AgentState) erro
 }
 
 // Sessions lists the sessions of runIDs in start order, keyed by run. Runs without sessions are absent.
+// A session's Usage is the ledger of its role from its start to the start of the role's next
+// session, the last one keeping the rest: the meter bills a session after it ends.
 func (s *Store) Sessions(ctx context.Context, runIDs []int64) (map[int64][]AgentSession, error) {
 	out := map[int64][]AgentSession{}
 	for _, id := range runIDs {
@@ -50,11 +52,41 @@ func (s *Store) Sessions(ctx context.Context, runIDs []int64) (map[int64][]Agent
 		if err != nil {
 			return nil, err
 		}
-		if len(ss) > 0 {
-			out[id] = ss
+		if len(ss) == 0 {
+			continue
 		}
+		if err := s.splitLedger(ctx, id, ss); err != nil {
+			return nil, err
+		}
+		out[id] = ss
 	}
 	return out, nil
+}
+
+// splitLedger adds each ledger row of run to the last session of its role started by then.
+// The window is compared on time.Time, not on the text the driver stores.
+func (s *Store) splitLedger(ctx context.Context, runID int64, ss []AgentSession) error {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT role, at, input, output, cache_read, cache_write, cost_usd FROM token_ledger WHERE run_id = ?`, runID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var role string
+		var at time.Time
+		var u Usage
+		if err := rows.Scan(&role, &at, &u.Input, &u.Output, &u.CacheRead, &u.CacheWrite, &u.CostUSD); err != nil {
+			return err
+		}
+		for i := len(ss) - 1; i >= 0; i-- {
+			if ss[i].Role == role && !ss[i].StartedAt.After(at) {
+				ss[i].Usage = ss[i].Usage.Add(u)
+				break
+			}
+		}
+	}
+	return rows.Err()
 }
 
 func (s *Store) runSessions(ctx context.Context, runID int64) ([]AgentSession, error) {
