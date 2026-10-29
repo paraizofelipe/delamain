@@ -30,6 +30,7 @@ Escopo indevido pesa igual a requisito faltando.
 - Cite a linha da issue ou do plano em todo achado. Sem citação, é opinião.
 - Divergência que a issue e o plano não cobrem é lacuna da especificação: registre como `minor`, sem culpar a implementação.
 - Não proponha implementação alternativa.
+- Idioma: escreva em pt-BR, sempre, todo texto para humanos — achados e mensagens. Código, identificadores, nomes de teste, commits e título de PR ficam em inglês; citação literal fica como no original.
 </rules>
 
 <output_format>

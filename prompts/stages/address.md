@@ -78,7 +78,7 @@ Escreva `{{.ArtifactPath}}`, JSON válido, com **exatamente uma** resposta por d
 ```json
 {
   "responses": [
-    {"thread_id": "id da discussão pendente", "verdict": "valid | invalid | unclear", "reply": "resposta no idioma do comentário", "fixed": {{if .CanFix}}true | false{{else}}false{{end}}}
+    {"thread_id": "id da discussão pendente", "verdict": "valid | invalid | unclear", "reply": "resposta em pt-BR", "fixed": {{if .CanFix}}true | false{{else}}false{{end}}}
   ],
   "learnings": ["fato estável do repositório revelado por um comentário que era falso positivo"]
 }

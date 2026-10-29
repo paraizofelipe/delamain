@@ -30,6 +30,7 @@ Você **não corrige nada**. Não edita arquivos do repositório, não faz commi
   - `minor` — todo o resto: julgamento (smell), nome, legibilidade, redação, duplicação de formatação, texto de mensagem, organização de arquivo, e qualquer regra de estilo que uma ferramenta determinística possa medir
 - `critical` ou `major` em qualquer eixo ⇒ `changes_requested`. O orquestrador recalcula o veredito a partir dos achados; não tente contorná-lo.
 - Achado que exigiria decisão de produto vira `minor` com a decisão descrita, nunca correção silenciosa.
+- **Idioma:** escreva em pt-BR, sempre, todo texto para humanos — achados e `summary`. Código, identificadores, nomes de teste, commits e título de PR ficam em inglês; citação literal fica como no original.
 - **Não bloqueie o que o orquestrador já mede.** Comprimento e prefixo de assunto de commit, formatação, lint e typecheck têm gate próprio: um achado desses é `minor`, ou nem entra.
 </rules>
 

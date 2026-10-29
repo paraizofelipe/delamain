@@ -41,6 +41,7 @@ Fowler, *Refactoring*, cap. 3 — aplique só à diff: nome misterioso, código 
 - Todo achado cita arquivo, linha, trecho e a regra (arquivo + regra documentada, ou nome do problema/smell).
 - Não revise arquivo fora da diff.
 - Violações antes de julgamentos; dentro de cada grupo, maior consequência primeiro.
+- Idioma: escreva em pt-BR, sempre, todo texto para humanos — achados e mensagens. Código, identificadores, nomes de teste, commits e título de PR ficam em inglês; citação literal fica como no original.
 </rules>
 
 <output_format>

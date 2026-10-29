@@ -54,7 +54,7 @@ Escreva `{{.ArtifactPath}}`, JSON válido, agregando a saída dos eixos **depois
 {
   "verdict": "comment | concerns",
   "adherence": "matches | partial | diverges",
-  "summary": "2 a 4 frases no idioma do PR: o que o PR faz e o que mais importa corrigir",
+  "summary": "2 a 4 frases em pt-BR: o que o PR faz e o que mais importa corrigir",
   "axes": [
     {"axis": "spec", "executed": true, "findings": []},
     {"axis": "standards", "executed": true, "findings": []},
