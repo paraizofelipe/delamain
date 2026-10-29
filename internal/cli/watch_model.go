@@ -13,11 +13,12 @@ import (
 )
 
 var watchKeys = struct {
-	quit, up, down, first, last, source, pageUp, pageDown, follow, focus, zoom, details, back, expand, prevTab, nextTab, stop, remove, open, copyID, help key.Binding
+	quit, up, down, first, last, source, pageUp, pageDown, follow, focus, zoom, details, back, expand, prevTab, nextTab, stop, remove, recover, open, copyID, help key.Binding
 }{
 	quit:     key.NewBinding(key.WithKeys("q", "ctrl+c")),
 	stop:     key.NewBinding(key.WithKeys("s")),
 	remove:   key.NewBinding(key.WithKeys("d")),
+	recover:  key.NewBinding(key.WithKeys("c")),
 	open:     key.NewBinding(key.WithKeys("o")),
 	copyID:   key.NewBinding(key.WithKeys("y")),
 	help:     key.NewBinding(key.WithKeys("?")),
@@ -87,7 +88,7 @@ type watchModel struct {
 	toast         watchToast  // on the first line of the footer
 	actingToast   watchToast  // the toast of the running action: it comes back after a quick one
 	toasts        int         // toasts shown so far: the seq of the last one
-	acting        bool        // a stop or a remove is running
+	acting        bool        // a stop, a remove or a recover is running
 }
 
 // miniTab is the panel the mini layout shows.
@@ -186,6 +187,8 @@ func (m watchModel) key(msg tea.KeyMsg) (watchModel, tea.Cmd) {
 		return m.openDialog(dialogStop), nil
 	case key.Matches(msg, watchKeys.remove):
 		return m.openDialog(dialogRemove), nil
+	case key.Matches(msg, watchKeys.recover):
+		return m.openRecover()
 	case key.Matches(msg, watchKeys.open):
 		return m.openPR()
 	case key.Matches(msg, watchKeys.copyID):

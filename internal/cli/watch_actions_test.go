@@ -32,17 +32,20 @@ type removeCall struct {
 
 // fakeWatchActions records what the TUI asks of a run and answers what each test sets.
 type fakeWatchActions struct {
-	mu        sync.Mutex
-	stops     []int64
-	removes   []removeCall
-	opened    []string
-	copied    []string
-	stopOut   string
-	stopErr   error
-	removeOut string
-	removeErr []error // one per call, nil once used up
-	openErr   error
-	copyErr   error
+	mu         sync.Mutex
+	stops      []int64
+	removes    []removeCall
+	opened     []string
+	copied     []string
+	stopOut    string
+	stopErr    error
+	removeOut  string
+	removeErr  []error // one per call, nil once used up
+	openErr    error
+	copyErr    error
+	recovers   []int64
+	recoverOut string
+	recoverErr error
 }
 
 func (f *fakeWatchActions) Stop(id int64) (string, error) {
@@ -64,6 +67,13 @@ func (f *fakeWatchActions) Remove(id int64, force bool) (string, error) {
 		return "", err
 	}
 	return f.removeOut, nil
+}
+
+func (f *fakeWatchActions) Recover(id int64) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.recovers = append(f.recovers, id)
+	return f.recoverOut, f.recoverErr
 }
 
 func (f *fakeWatchActions) OpenURL(url string) error {
@@ -420,6 +430,195 @@ func TestWatchActionsShouldRecoverARunWhoseOwnerDied(t *testing.T) {
 	}
 }
 
+func TestWatchRecoverShouldOpenDialogForOrphanedRun(t *testing.T) {
+	now := watchNow
+	src := &fakeWatchSource{active: []RunView{owned(14, "#55", "artifacts: accept test_file", 999999, false)}}
+	acts := &fakeWatchActions{}
+	m := send(t, startActions(t, src, acts, 160, 40, &now), keyPress("c"))
+	text := dialogText(screen(m), "delamain recover")
+	for _, want := range []string{
+		"Recover run 14?", "#55 artifacts: accept test_file",
+		"owner pid 999999 (dead)",
+		"agents stopped",
+		"delivery draft of what was already committed; empty work is removed",
+		"result halted: the run was interrupted",
+		"[ recover c ] [ cancel esc ]",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("the recover dialog says %q:\n%s", want, screen(m))
+		}
+	}
+	if len(acts.recovers) != 0 {
+		t.Fatalf("opening the dialog recovers nothing: %v", acts.recovers)
+	}
+}
+
+func TestWatchRecoverShouldCallRecoverOnConfirm(t *testing.T) {
+	src := &fakeWatchSource{active: []RunView{
+		owned(14, "#55", "a", 999998, false),
+		owned(15, "#56", "b", 999999, false),
+	}}
+	for _, confirm := range []string{"c", "enter"} {
+		now := watchNow
+		acts := &fakeWatchActions{recoverOut: "run 15 recovered:\n❌ halted — halted: run interrompida\n   report:     /r/report.md\n"}
+		m := send(t, send(t, startActions(t, src, acts, 160, 40, &now), keyPress("j")), keyPress("c"))
+		afterGrace(&now)
+		next, cmd := m.Update(keyPress(confirm))
+		if view := screen(next); dialogText(view, "delamain recover") != "" || footerText(next)[0] != "recovering run 15…" {
+			t.Fatalf("%s closes the dialog and the footer says the recover is running:\n%s", confirm, view)
+		}
+		if len(acts.recovers) != 0 {
+			t.Fatal("the recover runs in a tea.Cmd, off Update")
+		}
+		m = settle(t, next, cmd)
+		if len(acts.recovers) != 1 || acts.recovers[0] != 15 {
+			t.Fatalf("%s recovers only the selected run, once: %v", confirm, acts.recovers)
+		}
+		if len(acts.stops) != 0 || len(acts.removes) != 0 {
+			t.Fatalf("%s neither stops nor removes: %+v", confirm, acts)
+		}
+		if got := footerText(m)[0]; got != "run 15 recovered: · ❌ halted — halted: run interrompida · report: /r/report.md" {
+			t.Fatalf("what recover prints is the toast: %q", got)
+		}
+	}
+}
+
+func TestWatchRecoverShouldIgnoreConfirmWithinGrace(t *testing.T) {
+	now := watchNow
+	acts := &fakeWatchActions{recoverOut: "run 14 recovered:\n"}
+	src := &fakeWatchSource{active: []RunView{owned(14, "#55", "a", 999999, false)}}
+	m := send(t, startActions(t, src, acts, 160, 40, &now), keyPress("c"))
+	for _, k := range []string{"c", "enter"} {
+		next, cmd := m.Update(keyPress(k))
+		if cmd != nil || len(acts.recovers) != 0 {
+			t.Fatalf("%s right after the dialog opened is a double tap, not a choice", k)
+		}
+		if m = settle(t, next, cmd); dialogText(screen(m), "delamain recover") == "" {
+			t.Fatalf("%s leaves the dialog open to be read:\n%s", k, screen(m))
+		}
+	}
+	now = now.Add(confirmGrace - time.Millisecond)
+	if m = send(t, m, keyPress("enter")); len(acts.recovers) != 0 {
+		t.Fatalf("the grace is %s, not less", confirmGrace)
+	}
+	afterGrace(&now)
+	send(t, m, keyPress("enter"))
+	if len(acts.recovers) != 1 {
+		t.Fatalf("enter recovers once the dialog could be read: %v", acts.recovers)
+	}
+}
+
+func TestWatchRecoverShouldNotCallRecoverOnCancel(t *testing.T) {
+	now := watchNow
+	acts := &fakeWatchActions{}
+	src := &fakeWatchSource{active: []RunView{owned(14, "#55", "a", 999999, false)}}
+	m := startActions(t, src, acts, 160, 40, &now)
+	for _, cancel := range []string{"esc", "n"} {
+		m = send(t, m, keyPress("c"))
+		afterGrace(&now)
+		if m = send(t, m, keyPress(cancel)); dialogText(screen(m), "delamain recover") != "" {
+			t.Fatalf("%s closes the dialog:\n%s", cancel, screen(m))
+		}
+	}
+	if len(acts.recovers) != 0 {
+		t.Fatalf("cancelling recovers nothing: %v", acts.recovers)
+	}
+}
+
+func TestWatchRecoverShouldToastWhenOwnerIsAlive(t *testing.T) {
+	now := watchNow
+	acts := &fakeWatchActions{}
+	src := &fakeWatchSource{active: []RunView{owned(14, "#55", "a", 51230, true)}}
+	m := send(t, startActions(t, src, acts, 160, 40, &now), keyPress("c"))
+	if dialogText(screen(m), "delamain recover") != "" {
+		t.Fatalf("a run whose owner is alive is not orphaned: no dialog\n%s", screen(m))
+	}
+	if got := footerText(m)[0]; got != "run 14 is still running (pid 51230): stop it with s" {
+		t.Fatalf("the toast says why: %q", got)
+	}
+	afterGrace(&now)
+	send(t, m, keyPress("c"))
+	if len(acts.recovers) != 0 {
+		t.Fatalf("a run whose owner is alive is never recovered: %v", acts.recovers)
+	}
+}
+
+func TestWatchRecoverShouldToastWhenRunAlreadyFinished(t *testing.T) {
+	now := watchNow
+	acts := &fakeWatchActions{}
+	src := &fakeWatchSource{done: []RunView{finished(12, "#49", "approved: merged", "a")}}
+	m := send(t, startActions(t, src, acts, 160, 40, &now), keyPress("c"))
+	if dialogText(screen(m), "delamain recover") != "" {
+		t.Fatalf("a finished run has nothing to recover: no dialog\n%s", screen(m))
+	}
+	if got := footerText(m)[0]; got != "run 12 already finished" {
+		t.Fatalf("the toast says why: %q", got)
+	}
+	afterGrace(&now)
+	send(t, m, keyPress("enter"))
+	if len(acts.recovers) != 0 {
+		t.Fatalf("a finished run is never recovered: %v", acts.recovers)
+	}
+}
+
+func TestWatchRecoverShouldShowErrorToastWhenRecoverFails(t *testing.T) {
+	now := watchNow
+	st := lineStyles(termenv.ANSI)
+	src := &fakeWatchSource{active: []RunView{owned(14, "#55", "a", 999999, false)}}
+	acts := &fakeWatchActions{recoverErr: errors.New("run 14: the run is not orphaned: its owner is alive")}
+	opts := watchOptions{limit: 20, interval: time.Millisecond, now: func() time.Time { return now }, actions: acts, after: noTimers}
+	m := tea.Model(newWatchModel(src, st, opts))
+	m = send(t, m, tea.WindowSizeMsg{Width: 160, Height: 40})
+	m = send(t, settle(t, m, m.Init()), keyPress("c"))
+	if got := border(m.View(), "delamain recover"); got != sgrOf(st.warn) {
+		t.Fatalf("the recover dialog is a warning, as the stop: SGR %q", got)
+	}
+	afterGrace(&now)
+	m = send(t, m, keyPress("c"))
+	if len(acts.recovers) != 1 {
+		t.Fatalf("the confirmation asks for the recover: %v", acts.recovers)
+	}
+	if got := footerText(m)[0]; got != "run 14: the run is not orphaned: its owner is alive" {
+		t.Fatalf("a failed recover is the toast, not the running one: %q", got)
+	}
+	if got := sgrBefore(m.(watchModel).footer()[0], "run 14: the run is not orphaned"); got != sgrOf(st.bad) {
+		t.Fatalf("a failed recover is a bad toast: SGR %q", got)
+	}
+}
+
+func TestWatchActionsShouldRecoverOnlyTheGivenOrphanedRun(t *testing.T) {
+	n := &fakeNotifier{}
+	useFakeNotifier(t, n, nil)
+	f := newFixture(t)
+	ctx := context.Background()
+	rec := f.run(t, "#1", "fix/1-a", store.StateImplement)
+	other := f.run(t, "#2", "fix/2-b", store.StateImplement)
+	for _, id := range []int64{rec.ID, other.ID} {
+		if ok, err := f.st.ClaimRun(ctx, id, os.Getpid(), deadPID); err != nil || !ok {
+			t.Fatal("seed a run whose process died", err)
+		}
+	}
+	acts := f.actions(t, ctx, &bytes.Buffer{})
+
+	out, err := acts.Recover(rec.ID)
+	if err != nil || !strings.HasPrefix(out, "run 1 recovered:\n") || !strings.Contains(out, "halted") {
+		t.Fatalf("Recover prints the result as recover does: %q %v", out, err)
+	}
+	got, err := f.st.GetRun(ctx, rec.ID)
+	if err != nil || got.State != store.StateRecorded || !strings.HasPrefix(got.Reason, "halted: run interrompida") {
+		t.Fatalf("the orphan is finalized as recover would: %+v %v", got, err)
+	}
+	if got, _ := f.st.GetRun(ctx, other.ID); got.State != store.StateImplement {
+		t.Fatalf("only the given run is recovered: %+v", got)
+	}
+	if ev := n.events(); len(ev) != 1 || ev[0] != notify.EventRecover {
+		t.Fatalf("the recover toast is sent as recover sends it: %v", ev)
+	}
+	if _, err := acts.Recover(rec.ID); err == nil || !strings.Contains(err.Error(), "already finished") {
+		t.Fatalf("a run already recovered is refused: %v", err)
+	}
+}
+
 func TestWatchRmShouldRefuseActiveRuns(t *testing.T) {
 	now := watchNow
 	src := &fakeWatchSource{active: []RunView{owned(14, "#55", "a", 51230, true)}}
@@ -721,6 +920,7 @@ var helpRows = [][2]string{
 	{"e", "expand the finished runs (compact)"},
 	{"← →", "switch the tab (mini)"},
 	{"s · d", "stop the run (delamain stop) · remove it (delamain rm)"},
+	{"c", "recover a run whose owner died (delamain recover)"},
 	{"o · y", "open the PR in the browser · copy the run ID"},
 	{"q · ctrl+c", "quit; the runs go on in the daemon"},
 }
@@ -752,6 +952,23 @@ func TestWatchHelpShouldListEveryKeyAndCloseWithEscOrQ(t *testing.T) {
 	m = send(t, m, keyPress("?"))
 	if _, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC}); !quits(cmd) {
 		t.Fatal("ctrl+c still quits with the help open")
+	}
+}
+
+func TestWatchHelpShouldListRecoverKey(t *testing.T) {
+	now := watchNow
+	src := &fakeWatchSource{active: []RunView{owned(14, "#55", "a", 999999, false)}}
+	m := send(t, startActions(t, src, &fakeWatchActions{}, 160, 40, &now), keyPress("?"))
+	text := dialogText(screen(m), "help")
+	want := "c recover a run whose owner died (delamain recover)"
+	if !strings.Contains(text, want) {
+		t.Fatalf("the help lists %q:\n%s", want, screen(m))
+	}
+	if i, j := strings.Index(text, "s · d "), strings.Index(text, want); i < 0 || j < i {
+		t.Fatalf("c comes after s · d:\n%s", text)
+	}
+	if long := newWatchCmd(nil).Long; !strings.Contains(words(long), "c recovers it as delamain recover does when its owner died") {
+		t.Fatalf("the help of watch tells c:\n%s", long)
 	}
 }
 
@@ -828,6 +1045,10 @@ func dialogCases() []dialogCase {
 		{"rm dirty", "delamain rm", []string{"G", "d", "d"}, &fakeWatchActions{removeErr: []error{dirty}}, []string{
 			"Remove run 12?", dirty.Error(),
 		}, "[ remove anyway F ] [ cancel esc ]"},
+		{"recover", "delamain recover", []string{"j", "c"}, &fakeWatchActions{}, []string{
+			"Recover run 15?", "#56 watch: actions", "pid 999999 (dead)",
+			"draft of what was already committed; empty work is removed", "halted: the run was interrupted",
+		}, "[ recover c ] [ cancel esc ]"},
 		{"help", "help", []string{"?"}, &fakeWatchActions{}, []string{
 			"the list and the logs reload on their own every 1ms", "quit; the runs go on in the daemon",
 		}, ""},
@@ -897,12 +1118,14 @@ func TestWatchDialogsShouldFitEveryLayout(t *testing.T) {
 func TestWatchDialogsShouldStripControlCharactersFromRunData(t *testing.T) {
 	evil := "evil\x1b]52;c;ZXZpbA==\x07\x1b[2J\u009b6n\x00"
 	v := owned(14, "#55"+evil, "title "+evil, 51230, true)
+	orphan := owned(15, "#56"+evil, "title "+evil, 999999, false)
 	done := finished(12, "#49"+evil, "approved: "+evil, "title "+evil)
 	done.Branch = "feat/" + evil
-	src := &fakeWatchSource{active: []RunView{v}, done: []RunView{done}}
+	src := &fakeWatchSource{active: []RunView{v, orphan}, done: []RunView{done}}
 	acts := &fakeWatchActions{
-		stopErr:   errors.New("stop " + evil),
-		removeErr: []error{fmt.Errorf("worktree /wt/%s %w", evil, errDirtyWorktree)},
+		stopErr:    errors.New("stop " + evil),
+		removeErr:  []error{fmt.Errorf("worktree /wt/%s %w", evil, errDirtyWorktree)},
+		recoverErr: errors.New("recover " + evil),
 	}
 	now := watchNow
 	m := startActions(t, src, acts, 160, 40, &now)
@@ -916,6 +1139,14 @@ func TestWatchDialogsShouldStripControlCharactersFromRunData(t *testing.T) {
 	}
 	acts.removeErr = []error{errors.New("rm " + evil)}
 	views["rm other error"] = send(t, send(t, send(t, m, keyPress("G")), keyPress("d")), keyPress("d")).View()
+	recovering := send(t, send(t, m, keyPress("j")), keyPress("c"))
+	views["recover"] = recovering.View()
+	afterGrace(&now)
+	failed := send(t, recovering, keyPress("c"))
+	if len(acts.recovers) != 1 || !strings.Contains(footerText(failed)[0], "recover evil") {
+		t.Fatalf("the recover failed with the error of the run: %v %q", acts.recovers, footerText(failed))
+	}
+	views["recover failed"] = failed.View()
 	for name, view := range views {
 		if i := strings.IndexFunc(view, func(r rune) bool { return r != '\n' && (r < 0x20 || (r >= 0x7f && r <= 0x9f)) }); i >= 0 {
 			t.Fatalf("%s: control character %q reached the terminal:\n%q", name, view[i], view)
@@ -961,6 +1192,12 @@ func TestWatchDialogsShouldIgnoreTheKeyThatOpenedThemUntilTheyCanBeRead(t *testi
 			acts:  &fakeWatchActions{stopOut: "stop requested for run 14 (owner pid 51230)\n"},
 			acted: func(f *fakeWatchActions) int { return len(f.stops) },
 		},
+		{
+			name: "recover", key: "c", title: "delamain recover", toast: "run 15 recovered:",
+			src:   &fakeWatchSource{active: []RunView{owned(15, "#56", "a", 999999, false)}},
+			acts:  &fakeWatchActions{recoverOut: "run 15 recovered:\n"},
+			acted: func(f *fakeWatchActions) int { return len(f.recovers) },
+		},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			now := watchNow
@@ -1000,19 +1237,22 @@ func TestWatchActionsShouldDoNothingWithNoRunSelectedOrWhileOneRuns(t *testing.T
 	now := watchNow
 	acts := &fakeWatchActions{}
 	m := startActions(t, &fakeWatchSource{}, acts, 160, 40, &now)
-	for _, k := range []string{"s", "d", "o", "y"} {
+	for _, k := range []string{"s", "d", "c", "o", "y"} {
 		next, cmd := m.Update(keyPress(k))
 		if cmd != nil {
 			t.Fatalf("%s acts on no run when the list is empty", k)
 		}
-		for _, open := range []string{"delamain stop", "delamain rm"} {
+		if got := footerText(next)[0]; strings.HasPrefix(got, "run ") {
+			t.Fatalf("%s has no run to toast about: %q", k, got)
+		}
+		for _, open := range []string{"delamain stop", "delamain rm", "delamain recover"} {
 			if dialogText(screen(next), open) != "" {
 				t.Fatalf("%s opens no dialog without a run:\n%s", k, screen(next))
 			}
 		}
 		m = settle(t, next, cmd)
 	}
-	if len(acts.stops) != 0 || len(acts.removes) != 0 || len(acts.opened) != 0 || len(acts.copied) != 0 {
+	if len(acts.stops) != 0 || len(acts.removes) != 0 || len(acts.recovers) != 0 || len(acts.opened) != 0 || len(acts.copied) != 0 {
 		t.Fatalf("an empty list has nothing to act on: %+v", acts)
 	}
 
@@ -1028,6 +1268,18 @@ func TestWatchActionsShouldDoNothingWithNoRunSelectedOrWhileOneRuns(t *testing.T
 	}
 	if _, cmd := next.Update(keyPress("F")); cmd != nil {
 		t.Fatal("F waits for the running remove too")
+	}
+
+	// A recover waits for the running stop: both write the same store.
+	src = &fakeWatchSource{active: []RunView{owned(14, "#55", "a", 51230, true), owned(15, "#56", "b", 999999, false)}}
+	m = startActions(t, src, acts, 160, 40, &now)
+	m = send(t, m, keyPress("s"))
+	afterGrace(&now)
+	next, _ = m.Update(keyPress("s")) // the Cmd is not run: the stop is still going
+	next = send(t, send(t, next, keyPress("j")), keyPress("c"))
+	afterGrace(&now)
+	if _, cmd := next.Update(keyPress("c")); cmd != nil {
+		t.Fatal("a recover waits for the running stop to end")
 	}
 }
 
