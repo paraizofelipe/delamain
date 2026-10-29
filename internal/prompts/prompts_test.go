@@ -762,3 +762,34 @@ func TestEmbeddedPlanStageShouldAskForMinimalReadingRefsWithoutPastedCode(t *tes
 		}
 	}
 }
+
+// ptBRRule returns the language rule inside body's <rules> block: a bullet starting with
+// "Idioma" that keeps human-facing text in pt-BR, code, commits and PR title in English and
+// literal quotes as in the original. Empty when body has no such rule.
+func ptBRRule(body string) string {
+	_, rules, _ := strings.Cut(body, "<rules>")
+	rules, _, _ = strings.Cut(rules, "</rules>")
+	for _, line := range strings.Split(rules, "\n") {
+		text := strings.TrimLeft(strings.TrimPrefix(strings.TrimSpace(line), "- "), "*")
+		if !strings.HasPrefix(text, "Idioma") {
+			continue
+		}
+		if strings.Contains(text, "pt-BR, sempre") && strings.Contains(text, "inglês") && strings.Contains(text, "original") {
+			return line
+		}
+	}
+	return ""
+}
+
+func TestRolesShouldRequirePtBRForHumanText(t *testing.T) {
+	s := mustLoad(t, embedded.FS)
+	for _, name := range s.Manifest.Roles {
+		body, err := s.Role(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ptBRRule(body) == "" {
+			t.Errorf("role %s must require pt-BR for human-facing text inside <rules>, with code, commits and PR title in English", name)
+		}
+	}
+}
