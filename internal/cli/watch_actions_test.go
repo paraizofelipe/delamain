@@ -483,6 +483,48 @@ func TestWatchRecoverShouldCallRecoverOnConfirm(t *testing.T) {
 	}
 }
 
+func TestWatchRecoverShouldIgnoreConfirmWithinGrace(t *testing.T) {
+	now := watchNow
+	acts := &fakeWatchActions{recoverOut: "run 14 recovered:\n"}
+	src := &fakeWatchSource{active: []RunView{owned(14, "#55", "a", 999999, false)}}
+	m := send(t, startActions(t, src, acts, 160, 40, &now), keyPress("c"))
+	for _, k := range []string{"c", "enter"} {
+		next, cmd := m.Update(keyPress(k))
+		if cmd != nil || len(acts.recovers) != 0 {
+			t.Fatalf("%s right after the dialog opened is a double tap, not a choice", k)
+		}
+		if m = settle(t, next, cmd); dialogText(screen(m), "delamain recover") == "" {
+			t.Fatalf("%s leaves the dialog open to be read:\n%s", k, screen(m))
+		}
+	}
+	now = now.Add(confirmGrace - time.Millisecond)
+	if m = send(t, m, keyPress("enter")); len(acts.recovers) != 0 {
+		t.Fatalf("the grace is %s, not less", confirmGrace)
+	}
+	afterGrace(&now)
+	send(t, m, keyPress("enter"))
+	if len(acts.recovers) != 1 {
+		t.Fatalf("enter recovers once the dialog could be read: %v", acts.recovers)
+	}
+}
+
+func TestWatchRecoverShouldNotCallRecoverOnCancel(t *testing.T) {
+	now := watchNow
+	acts := &fakeWatchActions{}
+	src := &fakeWatchSource{active: []RunView{owned(14, "#55", "a", 999999, false)}}
+	m := startActions(t, src, acts, 160, 40, &now)
+	for _, cancel := range []string{"esc", "n"} {
+		m = send(t, m, keyPress("c"))
+		afterGrace(&now)
+		if m = send(t, m, keyPress(cancel)); dialogText(screen(m), "delamain recover") != "" {
+			t.Fatalf("%s closes the dialog:\n%s", cancel, screen(m))
+		}
+	}
+	if len(acts.recovers) != 0 {
+		t.Fatalf("cancelling recovers nothing: %v", acts.recovers)
+	}
+}
+
 func TestWatchActionsShouldRecoverOnlyTheGivenOrphanedRun(t *testing.T) {
 	n := &fakeNotifier{}
 	useFakeNotifier(t, n, nil)
@@ -1057,6 +1099,12 @@ func TestWatchDialogsShouldIgnoreTheKeyThatOpenedThemUntilTheyCanBeRead(t *testi
 			acts:  &fakeWatchActions{stopOut: "stop requested for run 14 (owner pid 51230)\n"},
 			acted: func(f *fakeWatchActions) int { return len(f.stops) },
 		},
+		{
+			name: "recover", key: "c", title: "delamain recover", toast: "run 15 recovered:",
+			src:   &fakeWatchSource{active: []RunView{owned(15, "#56", "a", 999999, false)}},
+			acts:  &fakeWatchActions{recoverOut: "run 15 recovered:\n"},
+			acted: func(f *fakeWatchActions) int { return len(f.recovers) },
+		},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			now := watchNow
@@ -1124,6 +1172,18 @@ func TestWatchActionsShouldDoNothingWithNoRunSelectedOrWhileOneRuns(t *testing.T
 	}
 	if _, cmd := next.Update(keyPress("F")); cmd != nil {
 		t.Fatal("F waits for the running remove too")
+	}
+
+	// A recover waits for the running stop: both write the same store.
+	src = &fakeWatchSource{active: []RunView{owned(14, "#55", "a", 51230, true), owned(15, "#56", "b", 999999, false)}}
+	m = startActions(t, src, acts, 160, 40, &now)
+	m = send(t, m, keyPress("s"))
+	afterGrace(&now)
+	next, _ = m.Update(keyPress("s")) // the Cmd is not run: the stop is still going
+	next = send(t, send(t, next, keyPress("j")), keyPress("c"))
+	afterGrace(&now)
+	if _, cmd := next.Update(keyPress("c")); cmd != nil {
+		t.Fatal("a recover waits for the running stop to end")
 	}
 }
 

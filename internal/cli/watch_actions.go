@@ -76,9 +76,9 @@ type watchDialog struct {
 }
 
 // confirmGrace is how long a dialog ignores the key that opened it: s opens the stop and s
-// confirms it, d opens the rm and d confirms it, so a double tap or the autorepeat of a held key
-// would answer before the dialog could be read — losing the run's work, or its directory. F is
-// another key and needs no grace.
+// confirms it, d opens the rm and d confirms it, c opens the recover and c confirms it, so a
+// double tap or the autorepeat of a held key would answer before the dialog could be read —
+// losing the run's work, or its directory. F is another key and needs no grace.
 const confirmGrace = 300 * time.Millisecond
 
 // toastFor is how long a toast stays on the footer.
@@ -227,8 +227,11 @@ func (m watchModel) dialogKey(msg tea.KeyMsg) (watchModel, tea.Cmd) {
 // recoverKey handles a key of the recover dialog. As the stop, it closes the dialog while the
 // recover runs.
 func (m watchModel) recoverKey(msg tea.KeyMsg) (watchModel, tea.Cmd) {
-	if !key.Matches(msg, dialogKeys.recover) {
+	switch {
+	case m.acting || !key.Matches(msg, dialogKeys.recover):
 		return m, nil
+	case m.opts.now().Sub(m.dialog.at) < confirmGrace:
+		return m, nil // c opened this dialog: a second c this soon is a double tap, not a choice
 	}
 	id, acts := m.dialog.run.ID, m.opts.actions
 	m.dialog, m.acting = watchDialog{}, true
