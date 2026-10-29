@@ -169,6 +169,8 @@ func (m watchModel) update(msg tea.Msg) (watchModel, tea.Cmd) {
 		return m.repoChecked(msg)
 	case watchPRsMsg:
 		m = m.prsLoaded(msg)
+	case watchIssuesMsg:
+		m = m.issuesLoaded(msg)
 	case watchToastMsg:
 		m = m.expireToast(msg.seq)
 	case tea.KeyMsg:

@@ -9,6 +9,8 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/paraizo/delamain/internal/forge"
 )
 
 // gitInit makes path a git repository with one commit.
@@ -26,13 +28,19 @@ func gitInit(t *testing.T, path string) string {
 }
 
 // startPicker is the TUI with repos as daemon.repos, after its first window size and reload.
+// Every repository has the open issues of twoIssues.
 func startPicker(t *testing.T, acts *fakeWatchActions, repos []string, now *time.Time) tea.Model {
 	t.Helper()
-	opts := watchOptions{limit: 20, interval: time.Millisecond, now: func() time.Time { return *now }, actions: acts, after: noTimers, repos: repos}
-	src := &fakeWatchSource{active: []RunView{owned(14, "#55", "a", 51230, true)}}
-	m := tea.Model(newWatchModel(src, noColors(), opts))
-	m = send(t, m, tea.WindowSizeMsg{Width: 160, Height: 40})
-	return settle(t, m, m.Init())
+	var asked []string
+	return startReviewTUI(t, acts, nil, repos, now, prForgeOf(twoIssues(), &asked))
+}
+
+// twoIssues is a forge with two open issues, newest first.
+func twoIssues() *fakePRForge {
+	return &fakePRForge{issues: []forge.Issue{
+		{Number: 12, Title: "fix the parser"},
+		{Number: 9, Title: "wip: watch"},
+	}}
 }
 
 // pickerText is the text of the dialog of i, without spaces: a long path wraps anywhere.

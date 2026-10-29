@@ -14,13 +14,23 @@ import (
 	"github.com/paraizo/delamain/internal/forge"
 )
 
-// fakePRForge is the forge of the repository picked in the dialog of r: it only lists PRs.
+// fakePRForge is the forge of the repository picked in the dialog of i or r: it only lists the
+// open issues and PRs.
 type fakePRForge struct {
 	forge.Forge
-	mu     sync.Mutex
-	prs    []forge.PRDetail
-	err    error
-	limits []int // the limit of every ListOpenPRs
+	mu          sync.Mutex
+	prs         []forge.PRDetail
+	issues      []forge.Issue
+	err         error
+	limits      []int // the limit of every ListOpenPRs
+	issueLimits []int // the limit of every ListOpenIssues
+}
+
+func (f *fakePRForge) ListOpenIssues(_ context.Context, limit int) ([]forge.Issue, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.issueLimits = append(f.issueLimits, limit)
+	return f.issues, f.err
 }
 
 func (f *fakePRForge) ListOpenPRs(_ context.Context, limit int) ([]forge.PRDetail, error) {

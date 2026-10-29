@@ -35,24 +35,34 @@ type watchPRsMsg struct {
 func (m *watchModel) loadPRs() tea.Cmd {
 	id := repoCheckSeq.Add(1)
 	p := &m.dialog.issue
-	p.loading, p.loadID, p.prs, p.prCursor = true, id, nil, 0
+	p.loading, p.loadID, p.prs, p.listCursor = true, id, nil, 0
 	repo, open := p.repo, m.opts.prForge
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), prListFor)
 		defer cancel()
-		// delamain review records its run under the main worktree, whichever subdirectory or
-		// linked worktree was picked; the active runs are matched against that path.
-		top, _ := gitx.New().MainWorktree(ctx, repo)
-		f, err := open(ctx, repo)
-		switch {
-		case err != nil:
+		top, f, err := pickedForge(ctx, open, repo)
+		if err != nil {
 			return watchPRsMsg{id: id, top: top, err: err}
-		case f == nil: // as delamain review, a repository without origin has no PR to review
-			return watchPRsMsg{id: id, top: top, err: fmt.Errorf("%s has no GitHub or GitLab origin", repo)}
 		}
 		prs, err := f.ListOpenPRs(ctx, prListMax)
 		return watchPRsMsg{id: id, top: top, prs: prs, err: err}
 	}
+}
+
+// pickedForge is the forge of repo, opened by open, and its main worktree: delamain run and
+// delamain review record their runs under the main worktree, whichever subdirectory or linked
+// worktree was picked, and the active runs are matched against that path. top is empty when git
+// could not resolve it.
+func pickedForge(ctx context.Context, open func(context.Context, string) (forge.Forge, error), repo string) (top string, f forge.Forge, err error) {
+	top, _ = gitx.New().MainWorktree(ctx, repo)
+	f, err = open(ctx, repo)
+	switch {
+	case err != nil:
+		return top, nil, err
+	case f == nil: // as delamain run and review, a repository without origin has nothing to list
+		return top, nil, fmt.Errorf("%s has no GitHub or GitLab origin", repo)
+	}
+	return top, f, nil
 }
 
 // prsLoaded shows the open PRs of the load awaited, or why there are none.
@@ -75,20 +85,18 @@ func (m watchModel) prKey(msg tea.KeyMsg) (watchModel, tea.Cmd) {
 	last := max(len(p.prs)-1, 0)
 	switch {
 	case key.Matches(msg, pickerKeys.back):
-		p.step, p.err, p.loading, p.prs = pickRepo, "", false, nil
-		if len(m.opts.repos) == 0 || p.cursor == len(m.opts.repos) {
-			p.step, p.input = pickPath, newPickerInput(p.path)
-		}
+		p.prs = nil
+		m.backToRepo()
 	case key.Matches(msg, watchKeys.up):
-		p.prCursor = max(p.prCursor-1, 0)
+		p.listCursor = max(p.listCursor-1, 0)
 	case key.Matches(msg, watchKeys.down):
-		p.prCursor = min(p.prCursor+1, last)
+		p.listCursor = min(p.listCursor+1, last)
 	case key.Matches(msg, watchKeys.first):
-		p.prCursor = 0
+		p.listCursor = 0
 	case key.Matches(msg, watchKeys.last):
-		p.prCursor = last
+		p.listCursor = last
 	case key.Matches(msg, pickerKeys.next) && len(p.prs) > 0:
-		n := p.prs[p.prCursor].Number
+		n := p.prs[p.listCursor].Number
 		if m.activeRun(p.runRepo(), n) {
 			return m.showToast(m.st.warn, fmt.Sprintf("a run is already active for PR %d", n))
 		}
@@ -96,6 +104,16 @@ func (m watchModel) prKey(msg tea.KeyMsg) (watchModel, tea.Cmd) {
 		m.dialog.at = m.opts.now() // the enter of the list, held, must not answer the confirmation
 	}
 	return m, nil
+}
+
+// backToRepo leaves the list of issues or PRs for the repository it came from: the list of
+// daemon.repos, or the path typed.
+func (m *watchModel) backToRepo() {
+	p := &m.dialog.issue
+	p.step, p.err, p.loading = pickRepo, "", false
+	if len(m.opts.repos) == 0 || p.cursor == len(m.opts.repos) {
+		p.step, p.input = pickPath, newPickerInput(p.path)
+	}
 }
 
 // activeRun reports whether the last reload holds an active review or address of PR n in repo:
@@ -115,7 +133,7 @@ func (m watchModel) activeRun(repo string, n int) bool {
 // reviewLines are the confirmation of the dialog of r.
 func (m watchModel) reviewLines(d *dialogWriter) {
 	st, p := m.st, m.dialog.issue
-	title := clean(p.prs[p.prCursor].Title)
+	title := clean(p.prs[p.listCursor].Title)
 	d.text(st.none.Bold(true), fmt.Sprintf("Review PR #%d (%s) in %s?", p.number, title, filepath.Base(p.repo)))
 	d.blank()
 	d.row("repo", paint(st.muted, p.repo))
@@ -139,7 +157,7 @@ func (m watchModel) prLines(d *dialogWriter) {
 	}
 	for i, pr := range p.prs {
 		mark := "  "
-		if i == p.prCursor {
+		if i == p.listCursor {
 			mark = paint(st.info.Bold(true), "› ")
 		}
 		head := fmt.Sprintf("#%d ", pr.Number)

@@ -1688,10 +1688,15 @@ func TestWatchStartIssueShouldRejectNonPositiveIssueNumber(t *testing.T) {
 	for _, typed := range []string{"0", "-3", "abc", "", "1.5", "99999999999999999999"} {
 		now := watchNow
 		acts := &fakeWatchActions{}
-		m, _ := typeIssue(t, acts, &now, typed)
+		var asked []string
+		m, _ := pickIssueRepo(t, acts, nil, &now, prForgeOf(&fakePRForge{}, &asked))
+		if typed != "" {
+			m = send(t, m, keyPress(typed))
+		}
+		m = send(t, m, keyPress("enter"))
 		text := pickerText(m)
-		if !pickerHas(text, "the issue is a number greater than 0") || !pickerHas(text, "Which issue in app?") || !pickerHas(text, "issue "+typed+"█") {
-			t.Fatalf("%q is refused, and stays in the field:\n%s", typed, screen(m))
+		if !pickerHas(text, "Which issue in app?") || pickerHas(text, "Start issue") || pickerHas(text, "the issue is a number greater than 0") {
+			t.Fatalf("%q picks no issue, and the list stays:\n%s", typed, screen(m))
 		}
 		afterGrace(&now)
 		if send(t, m, keyPress("enter")); len(acts.started) != 0 {
