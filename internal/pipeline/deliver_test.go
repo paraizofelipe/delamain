@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/paraizo/delamain/internal/forge"
 	"github.com/paraizo/delamain/internal/gitx"
@@ -101,6 +102,27 @@ func TestRunShouldKeepPreviousPRTitleWhenIterationLeavesItEmpty(t *testing.T) {
 	}
 	if got := f.created[0].Title; got != "fix: make add return the sum" {
 		t.Fatalf("an iteration without pr_title keeps the previous one, got %q", got)
+	}
+}
+
+func TestRunShouldFallBackToIssueTitleWhenPRTitleIsInvalid(t *testing.T) {
+	hs := newHarness(t, func(role string, n int, text string) reply {
+		if role == "implementer" {
+			return reply{write: implTitled("feat: adiciona exportação"), mutate: fixAdd}
+		}
+		return happy(role, n, text)
+	})
+	f := withForge(hs)
+	hs.task.Title = "Corrigir a validação da exportação quando a configuração não tem o campo de destino"
+	res := hs.run(t)
+
+	if res.Outcome != OutcomeExhausted || len(f.created) != 1 || !f.created[0].Draft {
+		t.Fatalf("an invalid pr_title on every iteration ends in a draft: %s (%s) created=%+v", res.Outcome, res.Reason, f.created)
+	}
+	// Cut at 72 runes, not bytes, and the trailing space after the cut is dropped.
+	const want = "fix: corrigir a validação da exportação quando a configuração não tem o"
+	if got := f.created[0].Title; got != want || utf8.RuneCountInString(got) > 72 {
+		t.Fatalf("fallback title = %q (%d runes), want %q", got, utf8.RuneCountInString(got), want)
 	}
 }
 

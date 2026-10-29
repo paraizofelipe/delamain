@@ -3,6 +3,7 @@ package pipeline
 import (
 	"fmt"
 	"strings"
+	"unicode"
 
 	"github.com/paraizo/delamain/internal/artifacts"
 	"github.com/paraizo/delamain/internal/forge"
@@ -196,14 +197,26 @@ func renderReviewReport(res Result, p *prRun) string {
 }
 
 func forgePROptions(ru *run, draft bool) forge.PROptions {
+	limit := ru.repoCfg.Gates.SubjectLimit
 	title := ru.prTitle
-	if ok, _ := gates.PRTitle(title, ru.repoCfg.Gates.SubjectLimit); !ok {
-		title = prTitle(ru.task.Kind, ru.task.Title)
+	if ok, _ := gates.PRTitle(title, limit); !ok {
+		title = clipRunes(prTitle(ru.task.Kind, ru.task.Title), limit)
 	}
 	return forge.PROptions{
 		Head: ru.repo.Branch, Base: strings.TrimPrefix(ru.repo.Base, "origin/"),
 		Title: title, Body: prBody(ru, draft), Draft: draft,
 	}
+}
+
+// clipRunes cuts s to limit characters (0 = gates.DefaultSubjectLimit), never inside a rune.
+func clipRunes(s string, limit int) string {
+	if limit <= 0 {
+		limit = gates.DefaultSubjectLimit
+	}
+	if r := []rune(s); len(r) > limit {
+		s = strings.TrimRightFunc(string(r[:limit]), unicode.IsSpace)
+	}
+	return s
 }
 
 // prBody is what the human reviewer reads: why the change exists, how it was proven, and,
