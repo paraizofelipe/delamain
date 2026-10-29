@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"slices"
 	"testing"
 	"time"
 )
@@ -55,5 +56,46 @@ func TestRunSummariesShouldKeepARunWithoutUsage(t *testing.T) {
 	}
 	if got[1].Run.ID != used.ID || got[1].Usage != (Usage{Input: 10, CostUSD: 0.5}) {
 		t.Fatalf("the other run keeps its usage: %+v", got[1])
+	}
+}
+
+func TestRunSummariesShouldFilterByPeriodRepoAndKind(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	day1 := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	day2 := day1.AddDate(0, 0, 1)
+	clock := day1
+	s.now = func() time.Time { return clock }
+	old, _ := s.CreateRun(ctx, "acme/a", "#1", "a", "omp", 3, 0, KindIssue)
+	clock = day2
+	review, _ := s.CreateRun(ctx, "acme/a", "#2", "b", "omp", 3, 0, KindReview)
+	clock = day2.Add(time.Minute)
+	other, _ := s.CreateRun(ctx, "acme/b", "#3", "c", "omp", 3, 0, KindIssue)
+
+	// Since is honoured whatever its zone: 15:00 at UTC+3 is day2 at 12:00 UTC.
+	since := day2.In(time.FixedZone("UTC+3", 3*60*60))
+	for _, tc := range []struct {
+		name string
+		f    ReportFilter
+		want []int64
+	}{
+		{"no filter keeps every run", ReportFilter{}, []int64{other.ID, review.ID, old.ID}},
+		{"since", ReportFilter{Since: since}, []int64{other.ID, review.ID}},
+		{"repo", ReportFilter{Repo: "acme/a"}, []int64{review.ID, old.ID}},
+		{"kind", ReportFilter{Kind: string(KindReview)}, []int64{review.ID}},
+		{"all together", ReportFilter{Since: since, Repo: "acme/b", Kind: string(KindIssue)}, []int64{other.ID}},
+		{"no match", ReportFilter{Since: since, Repo: "acme/a", Kind: string(KindIssue)}, nil},
+	} {
+		got, err := s.RunSummaries(ctx, tc.f)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		var ids []int64
+		for _, r := range got {
+			ids = append(ids, r.Run.ID)
+		}
+		if !slices.Equal(ids, tc.want) {
+			t.Errorf("%s: got runs %v, want %v", tc.name, ids, tc.want)
+		}
 	}
 }
