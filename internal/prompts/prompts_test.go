@@ -868,22 +868,51 @@ func TestEmbeddedPlanStageShouldAskForMinimalReadingRefsWithoutPastedCode(t *tes
 	}
 }
 
+// languageLines returns the bullets starting with "Idioma" inside body's <rules> block.
+func languageLines(body string) []string {
+	_, rules, _ := strings.Cut(body, "<rules>")
+	rules, _, _ = strings.Cut(rules, "</rules>")
+	var lines []string
+	for _, line := range strings.Split(rules, "\n") {
+		text := strings.TrimLeft(strings.TrimPrefix(strings.TrimSpace(line), "- "), "*")
+		if strings.HasPrefix(text, "Idioma") {
+			lines = append(lines, line)
+		}
+	}
+	return lines
+}
+
 // ptBRRule returns the language rule inside body's <rules> block: a bullet starting with
 // "Idioma" that keeps human-facing text in pt-BR, code, commits and PR title in English and
 // literal quotes as in the original. Empty when body has no such rule.
 func ptBRRule(body string) string {
-	_, rules, _ := strings.Cut(body, "<rules>")
-	rules, _, _ = strings.Cut(rules, "</rules>")
-	for _, line := range strings.Split(rules, "\n") {
-		text := strings.TrimLeft(strings.TrimPrefix(strings.TrimSpace(line), "- "), "*")
-		if !strings.HasPrefix(text, "Idioma") {
-			continue
-		}
-		if strings.Contains(text, "pt-BR, sempre") && strings.Contains(text, "inglês") && strings.Contains(text, "original") {
+	for _, line := range languageLines(body) {
+		if strings.Contains(line, "pt-BR, sempre") && strings.Contains(line, "inglês") && strings.Contains(line, "original") {
 			return line
 		}
 	}
 	return ""
+}
+
+func TestMemorySkillShouldRequirePtBRNotes(t *testing.T) {
+	b, err := fs.ReadFile(embedded.FS, "skills/memory/SKILL.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := languageLines(string(b))
+	if len(lines) == 0 {
+		t.Fatal("the memory skill must carry an Idioma rule inside <rules>")
+	}
+	rule := strings.Join(lines, "\n")
+	// Memory pages are read back by the owner: same language as the rest of the human-facing text.
+	for _, want := range []string{
+		"pt-BR", "Hindsight", "`hindsight_ingest_document`", "`hindsight_capture_initiative`",
+		"notas, páginas e iniciativas", "ficam como estão",
+	} {
+		if !strings.Contains(rule, want) {
+			t.Errorf("the memory skill's Idioma rule must mention %q, got:\n%s", want, rule)
+		}
+	}
 }
 
 func TestRolesShouldRequirePtBRForHumanText(t *testing.T) {
@@ -908,6 +937,47 @@ func TestAgentsShouldRequirePtBRForHumanText(t *testing.T) {
 		}
 		if ptBRRule(string(file)) == "" {
 			t.Errorf("agent %s must require pt-BR for findings and reports inside <rules>, with code, commits and PR title in English", name)
+		}
+	}
+}
+
+func TestImplementerShouldFollowRepositoryLanguageForDocs(t *testing.T) {
+	body, err := mustLoad(t, embedded.FS).Role("implementer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rule := ptBRRule(body)
+	// Repository docs belong to the project, not to the run: its convention wins over pt-BR.
+	for _, want := range []string{
+		"README", "`docs/`", "ADRs", "`AGENTS.md`", "`CONTRIBUTING.md`",
+		"idioma já usado no arquivo", "arquivo novo sem convenção sai em pt-BR",
+	} {
+		if !strings.Contains(rule, want) {
+			t.Errorf("the implementer's Idioma rule must mention %q, got:\n%s", want, rule)
+		}
+	}
+}
+
+func TestEveryRoleAndAgentShouldKeepJSONKeysAndEnumsUntranslated(t *testing.T) {
+	const want = "Chaves JSON e valores de enum nunca são traduzidos."
+	s := mustLoad(t, embedded.FS)
+	// The orchestrator decodes the artifacts: a translated key or enum value breaks the run.
+	for _, name := range s.Manifest.Roles {
+		body, err := s.Role(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(ptBRRule(body), want) {
+			t.Errorf("role %s must say %q in its Idioma rule", name, want)
+		}
+	}
+	for _, name := range s.Manifest.Agents {
+		file, err := s.Agent(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(ptBRRule(string(file)), want) {
+			t.Errorf("agent %s must say %q in its Idioma rule", name, want)
 		}
 	}
 }

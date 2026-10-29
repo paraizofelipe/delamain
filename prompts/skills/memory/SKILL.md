@@ -35,6 +35,8 @@ Sem as ferramentas `mcp__hindsight__*` na sessão, **ignore esta skill em silên
 
 Grave só o que a tabela do seu papel prevê, com o conteúdo da coluna, em poucas frases. Gravar no Hindsight não altera arquivo do repositório.
 
+- **Idioma:** escreva em pt-BR as notas, páginas e iniciativas que você grava no Hindsight (`hindsight_ingest_document`, `hindsight_capture_initiative`), inclusive título e conteúdo. Código, identificadores, nomes de arquivo e citações literais ficam como estão.
+
 ### Proibido gravar
 Nunca grave:
 - segredos, tokens, chaves, credenciais ou variáveis de ambiente;

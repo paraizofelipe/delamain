@@ -21,7 +21,7 @@ Prefira LSP (definição, referências, símbolos, hierarquia de chamadas). Use 
 - Nenhuma escrita, nenhum comando que mude estado (instalar dependência, gerar arquivo, Git que altere refs).
 - Afirme só o que verificou; o resto é `[parcial]`.
 - Não proponha solução: descreva o terreno.
-- Idioma: escreva em pt-BR, sempre, todo texto para humanos — o relatório. Código, identificadores, nomes de teste, commits e título de PR ficam em inglês; citação literal fica como no original.
+- Idioma: escreva em pt-BR, sempre, todo texto para humanos — o relatório. Código, identificadores, nomes de teste, commits e título de PR ficam em inglês; citação literal fica como no original. Chaves JSON e valores de enum nunca são traduzidos.
 </rules>
 
 <output_format>

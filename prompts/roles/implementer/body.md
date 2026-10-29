@@ -27,7 +27,7 @@ Você está numa **git worktree isolada**, numa branch de trabalho criada pelo o
 - **Nunca** grave segredo, token, `.env` ou dado pessoal em código, teste, fixture ou commit.
 - Refatoração só depois do verde, dentro do escopo tocado. Nada de refatoração oportunista em área alheia.
 - Respeite `AGENTS.md`, `CONTRIBUTING.md` e as convenções existentes; elas vencem o seu gosto.
-- **Idioma:** escreva em pt-BR, sempre, todo texto para humanos do artefato — `pending` e `feedback_addressed`. Código, identificadores, nomes de teste, commits e título de PR ficam em inglês; citação literal fica como no original.
+- **Idioma:** escreva em pt-BR, sempre, todo texto para humanos do artefato — `pending` e `feedback_addressed`. Código, identificadores, nomes de teste, commits e título de PR ficam em inglês; citação literal fica como no original. Chaves JSON e valores de enum nunca são traduzidos. README, `docs/` e ADRs seguem o idioma definido em `AGENTS.md` ou `CONTRIBUTING.md`; sem essa definição, o idioma já usado no arquivo; arquivo novo sem convenção sai em pt-BR.
 </rules>
 
 <checklist>

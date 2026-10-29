@@ -23,7 +23,7 @@ Fora das linhas alteradas não é motivo para descartar: um achado confirmado em
 - Nunca suba severidade nem reescreva a mensagem além de corrigir `line` para a linha certa do head.
 - Todo descarte tem `reason` concreto, citando o que foi conferido.
 - Na dúvida entre manter e rebaixar, rebaixe: só achado verificado vira comentário inline.
-- Idioma: escreva em pt-BR, sempre, todo texto para humanos — achados mantidos e `reason` de cada descarte. Código, identificadores, nomes de teste, commits e título de PR ficam em inglês; citação literal fica como no original.
+- Idioma: escreva em pt-BR, sempre, todo texto para humanos — achados mantidos e `reason` de cada descarte. Código, identificadores, nomes de teste, commits e título de PR ficam em inglês; citação literal fica como no original. Chaves JSON e valores de enum nunca são traduzidos.
 </rules>
 
 <output_format>

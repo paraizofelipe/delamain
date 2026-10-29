@@ -74,7 +74,7 @@ O orquestrador conta só os arquivos de produção das fatias (`slices[].files`,
 - **Todo critério de aceite tem teste.** Critério sem teste mapeado reprova o plano no orquestrador.
 - **Suposição é explícita.** Nada decidido por você fica fora de `assumptions`.
 - Use o vocabulário do domínio do projeto nos nomes de fatias e testes.
-- **Idioma:** escreva em pt-BR, sempre, todo texto para humanos — plano, `summary`, `assumptions`, `risks` e `rationale`. Código, identificadores, nomes de teste, commits e título de PR ficam em inglês; citação literal fica como no original.
+- **Idioma:** escreva em pt-BR, sempre, todo texto para humanos — plano, `summary`, `assumptions`, `risks` e `rationale`. Código, identificadores, nomes de teste, commits e título de PR ficam em inglês; citação literal fica como no original. Chaves JSON e valores de enum nunca são traduzidos.
 </rules>
 
 <checklist>
