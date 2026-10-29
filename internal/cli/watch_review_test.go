@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -122,4 +123,70 @@ func TestWatchStartReviewShouldStripControlSequencesFromPRTitles(t *testing.T) {
 	if text := reviewText(m); !pickerHas(text, "#7 evil]52;c;ZXZpbA==[2J[31mforged6n @mallory[5m") {
 		t.Fatalf("the title and the author are shown without their control characters:\n%s", screen(m))
 	}
+}
+
+// pickApp opens the dialog of r on app, the only repository of daemon.repos, and picks it.
+func pickApp(t *testing.T, acts *fakeWatchActions, src *fakeWatchSource, now *time.Time, prForge func(context.Context, string) (forge.Forge, error)) (tea.Model, string) {
+	t.Helper()
+	app := gitInit(t, filepath.Join(t.TempDir(), "app"))
+	m := send(t, send(t, startReviewTUI(t, acts, src, []string{app}, now, prForge), keyPress("r")), keyPress("enter"))
+	return m, app
+}
+
+// stillWatching fails unless m still lists its run and answers the keys of the dialog of r.
+func stillWatching(t *testing.T, m tea.Model) {
+	t.Helper()
+	if view := screen(m); !strings.Contains(view, "#55") || !strings.Contains(view, "delamain review") {
+		t.Fatalf("the watch goes on, with the dialog open:\n%s", view)
+	}
+}
+
+func TestWatchStartReviewShouldShowEmptyStateWhenNoPRsOpen(t *testing.T) {
+	now := watchNow
+	var asked []string
+	m, _ := pickApp(t, &fakeWatchActions{}, nil, &now, prForgeOf(&fakePRForge{}, &asked))
+	text := reviewText(m)
+	for _, want := range []string{"Which PR in app?", "no open PRs in app", "[ review enter ] [ back esc ]"} {
+		if !pickerHas(text, want) {
+			t.Fatalf("a repository without open PRs says so, %q:\n%s", want, screen(m))
+		}
+	}
+	if pickerHas(text, "loading PRs…") {
+		t.Fatalf("the load ended:\n%s", screen(m))
+	}
+	stillWatching(t, m)
+}
+
+func TestWatchStartReviewShouldShowForgeErrorInDialog(t *testing.T) {
+	now := watchNow
+	var asked []string
+	f := &fakePRForge{err: errors.New("github: GET /pulls: 502 bad gateway\x1b]52;c;ZXZpbA==\x07")}
+	m, _ := pickApp(t, &fakeWatchActions{}, nil, &now, prForgeOf(f, &asked))
+	text := reviewText(m)
+	if !pickerHas(text, "github: GET /pulls: 502 bad gateway]52;c;ZXZpbA==") || pickerHas(text, "no open PRs") || pickerHas(text, "loading PRs…") {
+		t.Fatalf("the error of the forge is shown in the dialog, not an empty list:\n%s", screen(m))
+	}
+	if strings.ContainsAny(m.View(), "\x1b\x07") {
+		t.Fatalf("the error reaches the screen without its control characters: %q", m.View())
+	}
+	stillWatching(t, m)
+
+	token := func(context.Context, string) (forge.Forge, error) {
+		return nil, errors.New("no token for github.com: set GH_TOKEN")
+	}
+	m, _ = pickApp(t, &fakeWatchActions{}, nil, &now, token)
+	if text := reviewText(m); !pickerHas(text, "no token for github.com: set GH_TOKEN") {
+		t.Fatalf("a forge that cannot be opened says why:\n%s", screen(m))
+	}
+	stillWatching(t, m)
+}
+
+func TestWatchStartReviewShouldShowErrorWhenRepoHasNoForge(t *testing.T) {
+	now := watchNow
+	none := func(context.Context, string) (forge.Forge, error) { return nil, nil }
+	m, app := pickApp(t, &fakeWatchActions{}, nil, &now, none)
+	if text := reviewText(m); !pickerHas(text, app+" has no GitHub or GitLab origin") || pickerHas(text, "no open PRs") {
+		t.Fatalf("a repository without origin has no PR to review:\n%s", screen(m))
+	}
+	stillWatching(t, m)
 }

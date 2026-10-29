@@ -36,21 +36,27 @@ func (m *watchModel) loadPRs() tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), prListFor)
 		defer cancel()
 		f, err := open(ctx, repo)
-		if err != nil {
+		switch {
+		case err != nil:
 			return watchPRsMsg{id: id, err: err}
+		case f == nil: // as delamain review, a repository without origin has no PR to review
+			return watchPRsMsg{id: id, err: fmt.Errorf("%s has no GitHub or GitLab origin", repo)}
 		}
 		prs, err := f.ListOpenPRs(ctx, prListMax)
 		return watchPRsMsg{id: id, prs: prs, err: err}
 	}
 }
 
-// prsLoaded shows the open PRs of the load awaited.
+// prsLoaded shows the open PRs of the load awaited, or why there are none.
 func (m watchModel) prsLoaded(msg watchPRsMsg) watchModel {
 	p := &m.dialog.issue
 	if m.dialog.kind != dialogStartReview || !p.loading || msg.id != p.loadID {
 		return m // the dialog closed, or the repository was replaced, while the PRs loaded
 	}
 	p.loading, p.prs = false, msg.prs
+	if msg.err != nil {
+		p.err = clean(msg.err.Error())
+	}
 	return m
 }
 
@@ -61,8 +67,11 @@ func (m watchModel) prLines(d *dialogWriter) {
 	d.blank()
 	d.row("repo", paint(st.muted, p.repo))
 	d.blank()
-	if p.loading {
+	switch {
+	case p.loading:
 		d.text(st.muted, "loading PRs…")
+	case len(p.prs) == 0 && p.err == "":
+		d.text(st.muted, "no open PRs in "+filepath.Base(p.repo))
 	}
 	for i, pr := range p.prs {
 		mark := "  "
