@@ -452,6 +452,35 @@ func TestImplementPromptShouldUseMinorPassBlockOnlyWhenMinorPass(t *testing.T) {
 	}
 }
 
+func TestRenderImplementShouldAskForPRTitle(t *testing.T) {
+	s := mustLoad(t, embedded.FS)
+	out, err := s.Render("implement", SampleStageData())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The field, the rule it must follow and the gate that enforces it.
+	for _, want := range []string{`"pr_title"`, "Conventional Commits", "inglês", "72 caracteres", "`pr-title`"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the implement stage must mention %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestCommitGateSkillShouldApplyMessageRuleToPRTitle(t *testing.T) {
+	b, err := fs.ReadFile(embedded.FS, "skills/commit-gate/SKILL.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, section, ok := strings.Cut(string(b), "### 3. Mensagem")
+	if !ok {
+		t.Fatal("the commit-gate skill must keep its message section")
+	}
+	section, _, _ = strings.Cut(section, "</workflow>")
+	if !strings.Contains(section, "`pr_title`") {
+		t.Fatalf("the message rule must also cover pr_title:\n%s", section)
+	}
+}
+
 func TestRenderImplementShouldOmitContextSectionWhenEmpty(t *testing.T) {
 	s := mustLoad(t, embedded.FS)
 	d := SampleStageData()

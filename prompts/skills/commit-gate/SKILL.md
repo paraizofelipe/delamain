@@ -57,4 +57,6 @@ Conventional Commits, assunto em inglês, minúsculo, abaixo de 70 caracteres, i
 
 Corpo opcional, para o **porquê**. Inclua a referência da issue em uma linha (`Refs: #<n>`). Um commit por ideia: se a mensagem precisa de "e", são dois commits.
 
+A mesma regra vale para o `pr_title` do artefato de implementação: ele resume a mudança inteira, como o assunto de um commit que a contivesse toda.
+
 </workflow>
