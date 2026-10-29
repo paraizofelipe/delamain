@@ -495,6 +495,43 @@ func TestCommitsShouldUseTheRepoConfiguredLimitOverTheDefault(t *testing.T) {
 	}
 }
 
+func TestPRTitleShouldPassConventionalEnglishTitle(t *testing.T) {
+	if ok, detail := PRTitle("feat: add a pr title to the impl artifact", 0); !ok {
+		t.Fatalf("a conventional English title must pass: %q", detail)
+	}
+}
+
+func TestPRTitleShouldPassScopedAndBreakingTitles(t *testing.T) {
+	for _, title := range []string{"feat(watch): poll the board", "feat!: drop the legacy flag", "fix(gates.pr-title_v2)!: count runes"} {
+		if ok, detail := PRTitle(title, 0); !ok {
+			t.Fatalf("%q is a valid commitlint header: %q", title, detail)
+		}
+	}
+}
+
+func TestPRTitleShouldFailWhenEmpty(t *testing.T) {
+	for _, title := range []string{"", "   "} {
+		ok, detail := PRTitle(title, 0)
+		if ok || detail != "título do PR vazio" {
+			t.Fatalf("an empty title has nothing else to check: ok=%v detail=%q", ok, detail)
+		}
+	}
+}
+
+func TestPRTitleShouldFailWithoutConventionalType(t *testing.T) {
+	for _, title := range []string{"pipeline: inject refs", "Feature: x", "feat:x"} {
+		t.Run(title, func(t *testing.T) {
+			ok, detail := PRTitle(title, 0)
+			if ok {
+				t.Fatal("a title without a conventional type must fail")
+			}
+			if !strings.Contains(detail, "fora do Conventional Commits") || !strings.Contains(detail, title) {
+				t.Fatalf("detail must name the format rule and the title: %q", detail)
+			}
+		})
+	}
+}
+
 func TestLoadRepoConfigShouldReadTheSubjectLimit(t *testing.T) {
 	dir := t.TempDir()
 	write(t, dir, map[string]string{RepoConfigFile: "gates:\n  subject_limit: 69\n"})

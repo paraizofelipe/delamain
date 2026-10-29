@@ -226,6 +226,26 @@ func Commits(commits []string, limit int) (bool, string) {
 	return false, strings.Join(long, "\n")
 }
 
+// prTitleHeader is the commitlint header shape: a known type, an optional lowercase scope, an
+// optional "!" and a description after ": ".
+var prTitleHeader = regexp.MustCompile(`^(feat|fix|chore|docs|refactor|test|ci|perf|build|style)(\([a-z0-9._-]+\))?!?: \S`)
+
+// PRTitle checks the PR/MR title the implementer proposes (Impl.PRTitle) against commitlint in
+// English, so a malformed title fails here instead of costing a review iteration.
+func PRTitle(title string, limit int) (bool, string) {
+	if strings.TrimSpace(title) == "" {
+		return false, "título do PR vazio"
+	}
+	var bad []string
+	if !prTitleHeader.MatchString(title) {
+		bad = append(bad, "título do PR fora do Conventional Commits (tipo(escopo)!: descrição): "+title)
+	}
+	if len(bad) == 0 {
+		return true, ""
+	}
+	return false, strings.Join(bad, "\n")
+}
+
 // TestsTouched fails when production code changed but no test file did.
 func TestsTouched(changed []string) (bool, string) {
 	var prod []string
