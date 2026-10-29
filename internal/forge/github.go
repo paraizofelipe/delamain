@@ -295,9 +295,13 @@ func (g *githubClient) ListOpenPRs(ctx context.Context, limit int) ([]PRDetail, 
 	return prs[:min(len(prs), limit)], nil
 }
 
+// maxOpenIssuesPages bounds the pages ListOpenIssues reads on GitHub, where PRs do not count for
+// the limit: pages holding PRs only would otherwise never end the listing.
+const maxOpenIssuesPages = 10
+
 // ListOpenIssues keeps the forge's order, newest first, and reads pages only until it has limit
-// issues or a page comes back empty, as ListOpenPRs does. It drops pull requests, which GitHub's
-// issues endpoint returns too, without counting them for the limit.
+// issues, a page comes back empty or it has read maxOpenIssuesPages pages. It drops pull
+// requests, which GitHub's issues endpoint returns too, without counting them for the limit.
 func (g *githubClient) ListOpenIssues(ctx context.Context, limit int) ([]Issue, error) {
 	if limit <= 0 {
 		limit = defaultOpenIssuesLimit
@@ -306,7 +310,7 @@ func (g *githubClient) ListOpenIssues(ctx context.Context, limit int) ([]Issue, 
 		State: "open", Sort: "created", Direction: "desc", ListOptions: gogithub.ListOptions{PerPage: min(limit, 100)},
 	}
 	var is []Issue
-	for len(is) < limit {
+	for pages := 0; len(is) < limit && pages < maxOpenIssuesPages; pages++ {
 		var page []*gogithub.Issue
 		var next int
 		err := g.do(ctx, "list open issues", func() (resp *gogithub.Response, err error) {

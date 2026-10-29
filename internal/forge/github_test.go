@@ -856,3 +856,25 @@ func TestGitHubListOpenIssuesShouldPaginateUntilLimit(t *testing.T) {
 		t.Fatalf("the second page must be fetched exactly once, got %d calls", calls)
 	}
 }
+
+func TestGitHubListOpenIssuesShouldStopAfterMaxPagesOfPullRequests(t *testing.T) {
+	// PRs do not count for the limit: a server that answers every page with PRs only and always
+	// announces a next one must not keep the listing going. Past twice the cap the fake stops
+	// announcing, so a failure ends instead of hanging.
+	var pages atomic.Int32
+	f, _ := githubAt(t, map[string]func(http.ResponseWriter, *http.Request){
+		"GET /repos/acme/api/issues": func(w http.ResponseWriter, r *http.Request) {
+			if pages.Add(1) <= 2*maxOpenIssuesPages {
+				w.Header().Set("Link", `<http://`+r.Host+r.URL.Path+`?page=2>; rel="next"`)
+			}
+			reply(200, `[{"number":8,"state":"open","pull_request":{"url":"https://api.github.com/repos/acme/api/pulls/8"}}]`)(w, r)
+		},
+	})
+	is, err := f.ListOpenIssues(context.Background(), 10)
+	if err != nil || len(is) != 0 {
+		t.Fatalf("issues = %+v, err = %v", is, err)
+	}
+	if n := pages.Load(); n != maxOpenIssuesPages {
+		t.Fatalf("the listing must stop after %d pages, got %d", maxOpenIssuesPages, n)
+	}
+}
