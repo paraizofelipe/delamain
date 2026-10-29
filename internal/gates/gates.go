@@ -184,7 +184,7 @@ func ValidRedProof(p string) error {
 var (
 	testName = regexp.MustCompile(`(^|/)(test_[^/]+\.py|[^/]+_test\.(go|py)|[^/]+\.(test|spec)\.[jt]sx?|[^/]+_spec\.rb)$`)
 	testDir  = regexp.MustCompile(`(^|/)(__tests__|tests?|spec)/`)
-	prTitle  = regexp.MustCompile(`^(feat|fix|chore|docs|refactor|test|ci|perf|build|style)(\([a-z0-9._-]+\))?!?: \S`)
+	prTitle  = regexp.MustCompile(`^(feat|fix|chore|docs|refactor|test|ci|perf|build|style|revert)(\([a-z0-9._-]+\))?!?: \S`)
 	codeExt  = map[string]bool{
 		".go": true, ".py": true, ".js": true, ".jsx": true, ".ts": true, ".tsx": true, ".mjs": true, ".cjs": true,
 		".rb": true, ".java": true, ".kt": true, ".rs": true, ".cs": true, ".php": true, ".swift": true, ".scala": true,

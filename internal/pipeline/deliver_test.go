@@ -262,6 +262,7 @@ func TestPRTitleShouldBeConventional(t *testing.T) {
 		{"feature", "Add CSV export", "feat: add CSV export"},
 		{"feature", "feat(api): add login", "feat(api): add login"},
 		{"bug", "fix: Login breaks", "fix: Login breaks"},
+		{"bug", "revert: restore the old parser", "revert: restore the old parser"},
 	}
 	for _, c := range cases {
 		if got := prTitle(c.kind, c.title); got != c.want {

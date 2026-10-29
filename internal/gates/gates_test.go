@@ -506,6 +506,7 @@ func TestPRTitleShouldPassScopedAndBreakingTitles(t *testing.T) {
 		"fix(pipeline): inject the plan refs",
 		"feat!: drop the legacy dependency reader",
 		"refactor(gates.v2)!: split the commit gate",
+		"revert: restore the previous behavior",
 	} {
 		if ok, detail := PRTitle(title, 0); !ok {
 			t.Fatalf("scope and breaking marker are valid commitlint: %q -> %q", title, detail)
