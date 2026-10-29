@@ -55,10 +55,13 @@ Ao terminar, escreva `{{.ArtifactPath}}`, JSON válido neste formato:
   "full_suite": {"command": "", "passed": 0, "failed": 0, "skipped": 0},
   "lint": {"command": "", "ok": true},
   "typecheck": {"command": "", "ok": true},
-  "pending": ["lacuna, suposição ou discordância registrada, com evidência"]
+  "pending": ["lacuna, suposição ou discordância registrada, com evidência"],
+  "pr_title": "feat: o que o PR entrega"
 }
 ```
 
-O orquestrador vai conferir tudo isso por conta própria. Relate o que de fato aconteceu, inclusive falhas. Ele também roda os gates `testes-tocados`, `matriz-criterios`, `prova-vermelho` (em bug, os seus testes aplicados sobre o base precisam falhar) e `segredos`: um teste que passa sem a correção reprova a iteração.
+`pr_title` é o título do PR: Conventional Commits, em inglês, minúsculo, imperativo, até 72 caracteres, sem ponto final. Descreve a mudança inteira, não a última fatia. Sem ele, o PR usa o título da issue.
+
+O orquestrador vai conferir tudo isso por conta própria. Relate o que de fato aconteceu, inclusive falhas. Ele também roda os gates `pr-title`, `testes-tocados`, `matriz-criterios`, `prova-vermelho` (em bug, os seus testes aplicados sobre o base precisam falhar) e `segredos`: um teste que passa sem a correção reprova a iteração.
 
 Responda apenas: `DONE {{.ArtifactPath}}`
