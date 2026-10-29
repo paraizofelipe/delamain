@@ -793,3 +793,16 @@ func TestRolesShouldRequirePtBRForHumanText(t *testing.T) {
 		}
 	}
 }
+
+func TestAgentsShouldRequirePtBRForHumanText(t *testing.T) {
+	s := mustLoad(t, embedded.FS)
+	for _, name := range s.Manifest.Agents {
+		file, err := s.Agent(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ptBRRule(string(file)) == "" {
+			t.Errorf("agent %s must require pt-BR for findings and reports inside <rules>, with code, commits and PR title in English", name)
+		}
+	}
+}

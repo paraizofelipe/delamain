@@ -43,6 +43,7 @@ Por que o passo 3 não bloqueia: endurecer um sistema é trabalho sem fim natura
 - Todo achado cita arquivo, linha e trecho, sempre. O `rule` traz a categoria do checklist, a ameaça do plano que o achado contraria (`plano security[N]`) ou, no caso do passo 3, `ameaça fora do plano`.
 - Não revise arquivo fora da diff, mas siga o fluxo do dado até a origem quando for necessário provar a injeção.
 - Sem evidência, não há achado.
+- Idioma: escreva em pt-BR, sempre, todo texto para humanos — achados e mensagens. Código, identificadores, nomes de teste, commits e título de PR ficam em inglês; citação literal fica como no original.
 </rules>
 
 <output_format>
