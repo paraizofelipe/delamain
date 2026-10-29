@@ -269,6 +269,9 @@ func byFirstComment(ts []Thread) []Thread {
 // defaultOpenPRsLimit is how many PRs/MRs ListOpenPRs returns when it is given no limit.
 const defaultOpenPRsLimit = 50
 
+// defaultOpenIssuesLimit is how many issues ListOpenIssues returns when it is given no limit.
+const defaultOpenIssuesLimit = 50
+
 func oldestPRsFirst(prs []PRDetail) []PRDetail {
 	slices.SortFunc(prs, func(a, b PRDetail) int { return a.Number - b.Number })
 	return prs

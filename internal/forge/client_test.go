@@ -534,6 +534,68 @@ var openIssuesCases = []openIssuesCase{
 	{"gitlab", gitlabAt, glProject + "/issues", glOpenIssue, func(*http.Request) string { return "X-Next-Page: 2" }},
 }
 
+func TestListOpenIssuesShouldUseDefaultLimitWhenZero(t *testing.T) {
+	for _, tc := range openIssuesCases {
+		for _, limit := range []int{0, -1} {
+			t.Run(fmt.Sprintf("%s/%d", tc.name, limit), func(t *testing.T) {
+				// the server ignores per_page and has more pages: only the limit stops the listing
+				f, api := tc.at(t, map[string]func(http.ResponseWriter, *http.Request){
+					"GET " + tc.list: func(w http.ResponseWriter, r *http.Request) {
+						k, v, _ := strings.Cut(tc.more(r), ": ")
+						w.Header().Set(k, v)
+						items := make([]string, 0, 60)
+						for n := 60; n > 0; n-- {
+							items = append(items, tc.item(n))
+						}
+						reply(200, "["+strings.Join(items, ",")+"]")(w, r)
+					},
+				})
+				is, err := f.ListOpenIssues(context.Background(), limit)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(is) != 50 || is[0].Number != 60 || is[49].Number != 11 {
+					t.Fatalf("want the 50 newest issues, got %v", issueNumbers(is))
+				}
+				reqs := api.requests()
+				if len(reqs) != 1 {
+					t.Fatalf("no page past the default limit may be requested: %+v", reqs)
+				}
+				if q, _ := url.ParseQuery(reqs[0].query); q.Get("per_page") != "50" {
+					t.Fatalf("a page must ask for the default 50: %v", q)
+				}
+			})
+		}
+	}
+}
+
+func TestListOpenIssuesShouldStopOnAnEmptyPage(t *testing.T) {
+	for _, tc := range openIssuesCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// A server that answers every page empty but always announces a next one must not keep
+			// the listing going; past 3 pages the fake stops announcing, so a failure ends instead
+			// of hanging.
+			var pages atomic.Int32
+			f, _ := tc.at(t, map[string]func(http.ResponseWriter, *http.Request){
+				"GET " + tc.list: func(w http.ResponseWriter, r *http.Request) {
+					if pages.Add(1) <= 3 {
+						k, v, _ := strings.Cut(tc.more(r), ": ")
+						w.Header().Set(k, v)
+					}
+					reply(200, `[]`)(w, r)
+				},
+			})
+			is, err := f.ListOpenIssues(context.Background(), 10)
+			if err != nil || len(is) != 0 {
+				t.Fatalf("issues = %+v, err = %v", is, err)
+			}
+			if n := pages.Load(); n != 1 {
+				t.Fatalf("an empty page must end the listing, got %d pages", n)
+			}
+		})
+	}
+}
+
 func TestListOpenIssuesShouldReturnEmptyWhenNoneOpen(t *testing.T) {
 	for _, tc := range openIssuesCases {
 		t.Run(tc.name, func(t *testing.T) {
