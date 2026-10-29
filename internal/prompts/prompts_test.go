@@ -912,6 +912,30 @@ func TestAgentsShouldRequirePtBRForHumanText(t *testing.T) {
 	}
 }
 
+func TestStandardsReviewerShouldCheckPRTitleLanguage(t *testing.T) {
+	file, err := mustLoad(t, embedded.FS).Agent("standards-reviewer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, context, _ := strings.Cut(string(file), "<context>")
+	context, _, _ = strings.Cut(context, "</context>")
+	var rule string
+	for _, paragraph := range strings.Split(context, "\n\n") {
+		if strings.Contains(paragraph, "título proposto do PR") {
+			rule = paragraph
+		}
+	}
+	for _, want := range []string{
+		"inglês", "diff inteira", "`major`", "sugestão de título", // what the axis judges and how it reports it
+		"formato, prefixo e comprimento", "gate `pr-title`", // what stays with the deterministic gate
+		"Sem título proposto", // review --pr hands no proposed title: nothing to judge
+	} {
+		if !strings.Contains(rule, want) {
+			t.Errorf("the standards reviewer's <context> must carry a proposed PR title rule with %q, got:\n%s", want, rule)
+		}
+	}
+}
+
 func TestPromptsShouldNotFollowInputLanguage(t *testing.T) {
 	forbidden := []string{"no idioma do PR", "no idioma do comentário", "no idioma do título"}
 	err := fs.WalkDir(embedded.FS, ".", func(p string, d fs.DirEntry, err error) error {
