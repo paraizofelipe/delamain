@@ -561,6 +561,31 @@ func TestWatchRecoverShouldToastWhenRunAlreadyFinished(t *testing.T) {
 	}
 }
 
+func TestWatchRecoverShouldShowErrorToastWhenRecoverFails(t *testing.T) {
+	now := watchNow
+	st := lineStyles(termenv.ANSI)
+	src := &fakeWatchSource{active: []RunView{owned(14, "#55", "a", 999999, false)}}
+	acts := &fakeWatchActions{recoverErr: errors.New("run 14: the run is not orphaned: its owner is alive")}
+	opts := watchOptions{limit: 20, interval: time.Millisecond, now: func() time.Time { return now }, actions: acts, after: noTimers}
+	m := tea.Model(newWatchModel(src, st, opts))
+	m = send(t, m, tea.WindowSizeMsg{Width: 160, Height: 40})
+	m = send(t, settle(t, m, m.Init()), keyPress("c"))
+	if got := border(m.View(), "delamain recover"); got != sgrOf(st.warn) {
+		t.Fatalf("the recover dialog is a warning, as the stop: SGR %q", got)
+	}
+	afterGrace(&now)
+	m = send(t, m, keyPress("c"))
+	if len(acts.recovers) != 1 {
+		t.Fatalf("the confirmation asks for the recover: %v", acts.recovers)
+	}
+	if got := footerText(m)[0]; got != "run 14: the run is not orphaned: its owner is alive" {
+		t.Fatalf("a failed recover is the toast, not the running one: %q", got)
+	}
+	if got := sgrBefore(m.(watchModel).footer()[0], "run 14: the run is not orphaned"); got != sgrOf(st.bad) {
+		t.Fatalf("a failed recover is a bad toast: SGR %q", got)
+	}
+}
+
 func TestWatchActionsShouldRecoverOnlyTheGivenOrphanedRun(t *testing.T) {
 	n := &fakeNotifier{}
 	useFakeNotifier(t, n, nil)
@@ -1071,12 +1096,14 @@ func TestWatchDialogsShouldFitEveryLayout(t *testing.T) {
 func TestWatchDialogsShouldStripControlCharactersFromRunData(t *testing.T) {
 	evil := "evil\x1b]52;c;ZXZpbA==\x07\x1b[2J\u009b6n\x00"
 	v := owned(14, "#55"+evil, "title "+evil, 51230, true)
+	orphan := owned(15, "#56"+evil, "title "+evil, 999999, false)
 	done := finished(12, "#49"+evil, "approved: "+evil, "title "+evil)
 	done.Branch = "feat/" + evil
-	src := &fakeWatchSource{active: []RunView{v}, done: []RunView{done}}
+	src := &fakeWatchSource{active: []RunView{v, orphan}, done: []RunView{done}}
 	acts := &fakeWatchActions{
-		stopErr:   errors.New("stop " + evil),
-		removeErr: []error{fmt.Errorf("worktree /wt/%s %w", evil, errDirtyWorktree)},
+		stopErr:    errors.New("stop " + evil),
+		removeErr:  []error{fmt.Errorf("worktree /wt/%s %w", evil, errDirtyWorktree)},
+		recoverErr: errors.New("recover " + evil),
 	}
 	now := watchNow
 	m := startActions(t, src, acts, 160, 40, &now)
@@ -1090,6 +1117,14 @@ func TestWatchDialogsShouldStripControlCharactersFromRunData(t *testing.T) {
 	}
 	acts.removeErr = []error{errors.New("rm " + evil)}
 	views["rm other error"] = send(t, send(t, send(t, m, keyPress("G")), keyPress("d")), keyPress("d")).View()
+	recovering := send(t, send(t, m, keyPress("j")), keyPress("c"))
+	views["recover"] = recovering.View()
+	afterGrace(&now)
+	failed := send(t, recovering, keyPress("c"))
+	if len(acts.recovers) != 1 || !strings.Contains(footerText(failed)[0], "recover evil") {
+		t.Fatalf("the recover failed with the error of the run: %v %q", acts.recovers, footerText(failed))
+	}
+	views["recover failed"] = failed.View()
 	for name, view := range views {
 		if i := strings.IndexFunc(view, func(r rune) bool { return r != '\n' && (r < 0x20 || (r >= 0x7f && r <= 0x9f)) }); i >= 0 {
 			t.Fatalf("%s: control character %q reached the terminal:\n%q", name, view[i], view)
