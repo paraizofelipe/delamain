@@ -244,6 +244,8 @@ type Impl struct {
 	Lint              Check                `json:"lint"`
 	Typecheck         Check                `json:"typecheck"`
 	Pending           []string             `json:"pending"`
+	// PRTitle is the PR/MR title the implementer proposes; the pr-title gate checks its format.
+	PRTitle string `json:"pr_title"`
 }
 
 // Validate checks shape only; the orchestrator re-verifies every claim by running the checks itself.
