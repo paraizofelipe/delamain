@@ -3,6 +3,7 @@ package forge
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -585,5 +586,66 @@ func TestGitLabListOpenPRsShouldReturnOpenMRsWithoutLabelFilter(t *testing.T) {
 	q, _ := url.ParseQuery(api.find(t, "GET", glProject+"/merge_requests").query)
 	if q.Get("state") != "opened" || q.Get("order_by") != "created_at" || q.Get("sort") != "desc" || q.Get("per_page") != "10" || q.Has("labels") {
 		t.Fatalf("must list open MRs newest first, with no label filter: %v", q)
+	}
+}
+
+// glOpenMR is a minimal open MR of the /merge_requests listing.
+func glOpenMR(n int) string {
+	return fmt.Sprintf(`{"iid":%d,"state":"opened","source_branch":"feat/%d","target_branch":"main"}`, n, n)
+}
+
+func TestGitLabListOpenPRsShouldPaginate(t *testing.T) {
+	f, api := gitlabAt(t, map[string]func(http.ResponseWriter, *http.Request){
+		"GET " + glProject + "/merge_requests": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			if r.URL.Query().Get("page") == "2" {
+				io.WriteString(w, `[`+glOpenMR(7)+`]`)
+				return
+			}
+			w.Header().Set("X-Next-Page", "2")
+			io.WriteString(w, `[`+glOpenMR(9)+`,`+glOpenMR(8)+`]`)
+		},
+	})
+	prs, err := f.ListOpenPRs(context.Background(), 150)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := numbers(prs); !reflect.DeepEqual(got, []int{9, 8, 7}) {
+		t.Fatalf("both pages' MRs must come back in order: %v", got)
+	}
+	var calls int
+	for _, rq := range api.requests() {
+		if rq.method == http.MethodGet && rq.path == glProject+"/merge_requests" {
+			calls++
+			if q, _ := url.ParseQuery(rq.query); q.Get("per_page") != "100" {
+				t.Fatalf("a page holds at most 100 MRs: %v", q)
+			}
+		}
+	}
+	if calls != 2 {
+		t.Fatalf("the second page must be fetched exactly once, got %d calls", calls)
+	}
+}
+
+func TestGitLabListOpenPRsShouldStopAtLimit(t *testing.T) {
+	// A server that ignores per_page and always has a next page must not keep the listing going.
+	f, api := gitlabAt(t, map[string]func(http.ResponseWriter, *http.Request){
+		"GET " + glProject + "/merge_requests": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("X-Next-Page", "2")
+			io.WriteString(w, `[`+glOpenMR(9)+`,`+glOpenMR(8)+`,`+glOpenMR(7)+`]`)
+		},
+	})
+	prs, err := f.ListOpenPRs(context.Background(), 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := numbers(prs); !reflect.DeepEqual(got, []int{9, 8}) {
+		t.Fatalf("want the 2 newest MRs only: %v", got)
+	}
+	for _, rq := range api.requests() {
+		if q, _ := url.ParseQuery(rq.query); q.Get("page") == "2" {
+			t.Fatalf("no page past the limit may be requested: %+v", api.requests())
+		}
 	}
 }

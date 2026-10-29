@@ -283,7 +283,7 @@ func TestForgeShouldNeverCallMergeEndpoints(t *testing.T) {
 		_ = f.Relabel(ctx, 1, []string{"a"}, []string{"b"})
 		_, _ = f.PRView(ctx, 1)
 		_, _ = f.ListPRs(ctx, "review")
-		_, _ = f.ListOpenPRs(ctx, 0)
+		_, _ = f.ListOpenPRs(ctx, 10)
 		_, _ = f.LinkedIssues(ctx, 1)
 		_, _ = f.Threads(ctx, 1)
 		_ = f.PostReview(ctx, 1, ReviewOptions{HeadSHA: "h", Summary: "s", Comments: []InlineComment{{Path: "a.go", Line: 1, Body: "c"}}})
@@ -360,7 +360,7 @@ func TestReadMethodsShouldNeverWriteToTheForge(t *testing.T) {
 			reads := map[string]func() error{
 				"PRView":       func() error { _, err := f.PRView(ctx, 1); return err },
 				"ListPRs":      func() error { _, err := f.ListPRs(ctx, "review"); return err },
-				"ListOpenPRs":  func() error { _, err := f.ListOpenPRs(ctx, 0); return err },
+				"ListOpenPRs":  func() error { _, err := f.ListOpenPRs(ctx, 10); return err },
 				"LinkedIssues": func() error { _, err := f.LinkedIssues(ctx, 1); return err },
 				"Threads":      func() error { _, err := f.Threads(ctx, 1); return err },
 			}

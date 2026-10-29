@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -671,5 +672,74 @@ func TestGitHubListOpenPRsShouldReturnOpenPRsWithoutLabelFilter(t *testing.T) {
 	q, _ := url.ParseQuery(api.find(t, "GET", "/repos/acme/api/pulls").query)
 	if q.Get("state") != "open" || q.Get("sort") != "created" || q.Get("direction") != "desc" || q.Get("per_page") != "10" || q.Has("labels") {
 		t.Fatalf("must list open PRs newest first, with no label filter: %v", q)
+	}
+}
+
+// ghOpenPR is a minimal open PR of the /pulls listing.
+func ghOpenPR(n int) string {
+	return fmt.Sprintf(`{"number":%d,"state":"open","base":{"ref":"main","repo":{"full_name":"acme/api"}},"head":{"ref":"feat/%d","repo":{"full_name":"acme/api"}}}`, n, n)
+}
+
+func numbers(prs []PRDetail) []int {
+	ns := make([]int, 0, len(prs))
+	for _, pr := range prs {
+		ns = append(ns, pr.Number)
+	}
+	return ns
+}
+
+func TestGitHubListOpenPRsShouldPaginate(t *testing.T) {
+	f, api := githubAt(t, map[string]func(http.ResponseWriter, *http.Request){
+		"GET /repos/acme/api/pulls": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			if r.URL.Query().Get("page") == "2" {
+				io.WriteString(w, `[`+ghOpenPR(7)+`]`)
+				return
+			}
+			w.Header().Set("Link", `<http://`+r.Host+r.URL.Path+`?page=2&per_page=100>; rel="next"`)
+			io.WriteString(w, `[`+ghOpenPR(9)+`,`+ghOpenPR(8)+`]`)
+		},
+	})
+	prs, err := f.ListOpenPRs(context.Background(), 150)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := numbers(prs); !reflect.DeepEqual(got, []int{9, 8, 7}) {
+		t.Fatalf("both pages' PRs must come back in order: %v", got)
+	}
+	var calls int
+	for _, rq := range api.requests() {
+		if rq.method == http.MethodGet && rq.path == "/repos/acme/api/pulls" {
+			calls++
+			if q, _ := url.ParseQuery(rq.query); q.Get("per_page") != "100" {
+				t.Fatalf("a page holds at most 100 PRs: %v", q)
+			}
+		}
+	}
+	if calls != 2 {
+		t.Fatalf("the second page must be fetched exactly once, got %d calls", calls)
+	}
+}
+
+func TestGitHubListOpenPRsShouldStopAtLimit(t *testing.T) {
+	// A server that ignores per_page and always has a next page must not keep the listing going.
+	f, api := githubAt(t, map[string]func(http.ResponseWriter, *http.Request){
+		"GET /repos/acme/api/pulls": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Link", `<http://`+r.Host+r.URL.Path+`?page=2&per_page=2>; rel="next"`)
+			io.WriteString(w, `[`+ghOpenPR(9)+`,`+ghOpenPR(8)+`,`+ghOpenPR(7)+`]`)
+		},
+	})
+	prs, err := f.ListOpenPRs(context.Background(), 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := numbers(prs); !reflect.DeepEqual(got, []int{9, 8}) {
+		t.Fatalf("want the 2 newest PRs only: %v", got)
+	}
+	for _, rq := range api.requests() {
+		if q, _ := url.ParseQuery(rq.query); q.Get("page") == "2" {
+			t.Fatalf("no page past the limit may be requested: %+v", api.requests())
+		}
 	}
 }

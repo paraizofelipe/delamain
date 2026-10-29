@@ -260,23 +260,35 @@ func (g *githubClient) ListPRs(ctx context.Context, label string) ([]PRDetail, e
 	return oldestPRsFirst(prs), nil
 }
 
-// ListOpenPRs keeps the forge's order: newest first.
+// ListOpenPRs keeps the forge's order, newest first, and reads pages only until it has limit
+// PRs: a repository with thousands of them must not be read whole.
 func (g *githubClient) ListOpenPRs(ctx context.Context, limit int) ([]PRDetail, error) {
-	var vs []*gogithub.PullRequest
-	err := g.do(ctx, "list open prs", func() (resp *gogithub.Response, err error) {
-		vs, resp, err = g.api.PullRequests.List(ctx, g.owner, g.name, &gogithub.PullRequestListOptions{
-			State: "open", Sort: "created", Direction: "desc", ListOptions: gogithub.ListOptions{PerPage: limit},
+	opts := &gogithub.PullRequestListOptions{
+		State: "open", Sort: "created", Direction: "desc", ListOptions: gogithub.ListOptions{PerPage: min(limit, 100)},
+	}
+	var prs []PRDetail
+	for len(prs) < limit {
+		var page []*gogithub.PullRequest
+		var next int
+		err := g.do(ctx, "list open prs", func() (resp *gogithub.Response, err error) {
+			page, resp, err = g.api.PullRequests.List(ctx, g.owner, g.name, opts)
+			if resp != nil {
+				next = resp.NextPage
+			}
+			return resp, err
 		})
-		return resp, err
-	})
-	if err != nil {
-		return nil, err
+		if err != nil {
+			return nil, err
+		}
+		for _, v := range page {
+			prs = append(prs, fromGitHubPR(v))
+		}
+		if next == 0 {
+			break
+		}
+		opts.Page = next
 	}
-	prs := make([]PRDetail, 0, len(vs))
-	for _, v := range vs {
-		prs = append(prs, fromGitHubPR(v))
-	}
-	return prs, nil
+	return prs[:min(len(prs), limit)], nil
 }
 
 const closingIssuesQuery = `query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){closingIssuesReferences(first:5){nodes{number repository{nameWithOwner}}}}}}`

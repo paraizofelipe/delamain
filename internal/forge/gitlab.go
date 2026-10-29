@@ -247,27 +247,39 @@ func (g *gitlabClient) ListPRs(ctx context.Context, label string) ([]PRDetail, e
 	return oldestPRsFirst(prs), nil
 }
 
-// ListOpenPRs keeps the forge's order: newest first. As in ListPRs, BaseSHA/StartSHA stay
-// empty.
+// ListOpenPRs keeps the forge's order, newest first, and reads pages only until it has limit
+// MRs: a project with thousands of them must not be read whole. As in ListPRs, BaseSHA and
+// StartSHA stay empty.
 func (g *gitlabClient) ListOpenPRs(ctx context.Context, limit int) ([]PRDetail, error) {
-	var mrs []*gogitlab.BasicMergeRequest
 	state, orderBy, sort := opened, "created_at", "desc"
-	err := g.do(ctx, "list open prs", func() (resp *gogitlab.Response, err error) {
-		mrs, resp, err = g.api.MergeRequests.ListProjectMergeRequests(g.repo.Path, &gogitlab.ListProjectMergeRequestsOptions{
-			State: &state, OrderBy: &orderBy, Sort: &sort, ListOptions: gogitlab.ListOptions{PerPage: int64(limit)},
-		}, gogitlab.WithContext(ctx))
-		return resp, err
-	})
-	if err != nil {
-		return nil, err
+	opts := &gogitlab.ListProjectMergeRequestsOptions{
+		State: &state, OrderBy: &orderBy, Sort: &sort, ListOptions: gogitlab.ListOptions{PerPage: int64(min(limit, 100))},
 	}
-	prs := make([]PRDetail, 0, len(mrs))
-	for _, v := range mrs {
-		pr := fromGitLabMR(v)
-		pr.HeadSHA = v.SHA
-		prs = append(prs, pr)
+	var prs []PRDetail
+	for len(prs) < limit {
+		var page []*gogitlab.BasicMergeRequest
+		var next int64
+		err := g.do(ctx, "list open prs", func() (resp *gogitlab.Response, err error) {
+			page, resp, err = g.api.MergeRequests.ListProjectMergeRequests(g.repo.Path, opts, gogitlab.WithContext(ctx))
+			if resp != nil {
+				next = int64(resp.NextPage)
+			}
+			return resp, err
+		})
+		if err != nil {
+			return nil, err
+		}
+		for _, v := range page {
+			pr := fromGitLabMR(v)
+			pr.HeadSHA = v.SHA
+			prs = append(prs, pr)
+		}
+		if next == 0 {
+			break
+		}
+		opts.Page = next
 	}
-	return prs, nil
+	return prs[:min(len(prs), limit)], nil
 }
 
 // LinkedIssues falls back to the closing keywords of the description when GitLab knows none.
