@@ -936,6 +936,7 @@ var helpRows = [][2]string{
 	{"← →", "switch the tab (mini)"},
 	{"s · d", "stop the run (delamain stop) · remove it (delamain rm)"},
 	{"c", "recover a run whose owner died (delamain recover)"},
+	{"i", "start an issue run (delamain run --issue)"},
 	{"o · y", "open the PR in the browser · copy the run ID"},
 	{"q · ctrl+c", "quit; the runs go on in the daemon"},
 }
@@ -1009,7 +1010,7 @@ func TestWatchHelpShouldScrollTheKeysWhenItDoesNotFitTheHeight(t *testing.T) {
 		t.Fatalf("↓ scrolls the keys to the last one, under the fixed text:\n%s", screen(m))
 	}
 	for _, k := range helpRows {
-		if !strings.Contains(seen, k[1]) {
+		if !strings.Contains(nospace(seen), nospace(k[1])) { // --issue breaks at its hyphen
 			t.Fatalf("scrolling shows every key, %q is missing", k[1])
 		}
 	}
@@ -1097,7 +1098,7 @@ func TestWatchDialogsShouldFitEveryLayout(t *testing.T) {
 				t.Fatalf("%dx%d: the labels take %d columns:\n%s", w, h, len(label)-3, screen(m))
 			}
 			var seen []string
-			for i := range 30 {
+			for i := range 40 { // enough downs to scroll the help to its last key
 				if i > 0 {
 					m = send(t, m, keyPress("down"))
 				}
@@ -1712,5 +1713,22 @@ func TestWatchStartIssueShouldToastExitCodeMeaning(t *testing.T) {
 	afterGrace(&now)
 	if got := footerText(send(t, m, keyPress("enter")))[0]; got != "starting issue #12 in app…" {
 		t.Fatalf("a run that went to the end leaves the toast of its start: %q", got)
+	}
+}
+
+func TestWatchHelpShouldListStartIssueKey(t *testing.T) {
+	now := watchNow
+	src := &fakeWatchSource{active: []RunView{owned(14, "#55", "a", 51230, true)}}
+	m := send(t, startActions(t, src, &fakeWatchActions{}, 160, 40, &now), keyPress("?"))
+	text := dialogText(screen(m), "help")
+	want := "i start an issue run (delamain run --issue)"
+	if !strings.Contains(text, want) {
+		t.Fatalf("the help lists %q:\n%s", want, screen(m))
+	}
+	if i, j := strings.Index(text, "c recover a run"), strings.Index(text, want); i < 0 || j < i {
+		t.Fatalf("i comes after c:\n%s", text)
+	}
+	if long := words(newWatchCmd(nil).Long); !strings.Contains(long, "i starts delamain run --issue in a repository of daemon.repos or any other") {
+		t.Fatalf("the help of watch tells i:\n%s", long)
 	}
 }
