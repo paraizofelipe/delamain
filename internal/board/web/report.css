@@ -1,0 +1,61 @@
+:root {
+  --r-planner: #3987e5;
+  --r-implementer: #d95926;
+  --r-reviewer: #199e70;
+  --r-pr-reviewer: #c98500;
+  --r-responder: #d55181;
+}
+
+.periods { display: flex; }
+.periods button {
+  background: var(--panel);
+  color: var(--muted);
+  border: 1px solid var(--line);
+  padding: 3px 10px;
+  font: inherit;
+  cursor: pointer;
+}
+.periods button + button { border-left: 0; }
+.periods button:first-child { border-radius: 6px 0 0 6px; }
+.periods button:last-child { border-radius: 0 6px 6px 0; }
+.periods button:hover { color: var(--text); }
+.periods button[aria-pressed="true"] { color: var(--active); background: var(--card); }
+
+.report {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 16px;
+}
+
+.kpis { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; }
+.kpi {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px 14px;
+}
+.kpi .label { color: var(--muted); font-size: 12px; }
+.kpi .value { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.kpi .delta { font: 12px var(--mono); color: var(--muted); }
+.kpi .delta.worse { color: var(--fail); }
+.kpi .delta.better { color: var(--pass); }
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px 14px;
+}
+.panel h2 { margin: 0 0 8px; font-size: 14px; font-weight: 600; }
+.report-top { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.report .empty { color: var(--muted); margin: 0; }
+
+@media (max-width: 1100px) {
+  .kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@media (max-width: 640px) {
+  .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .report-top { grid-template-columns: 1fr; }
+}

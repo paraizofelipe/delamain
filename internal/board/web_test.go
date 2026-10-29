@@ -37,6 +37,7 @@ func TestBoardScriptsShareTheCommonHelpers(t *testing.T) {
 
 var (
 	scriptTag   = regexp.MustCompile(`(?i)<script\b[^>]*>`)
+	scriptSrc   = regexp.MustCompile(`src="([^"]+)"`)
 	styleTag    = regexp.MustCompile(`(?i)<style\b`)
 	inlineStyle = regexp.MustCompile(`(?i)<[^>]*\sstyle\s*=`)
 	inlineEvent = regexp.MustCompile(`(?i)<[^>]*\son[a-z]+\s*=`)
@@ -84,9 +85,43 @@ func TestBoardPagesKeepToTheCSP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"index.html", "common.js", "board.js"} {
+	for _, want := range []string{"index.html", "common.js", "board.js", "report.html", "report.js"} {
 		if !seen[want] {
 			t.Errorf("%s was not checked: it is not in the embedded page", want)
+		}
+	}
+}
+
+func TestReportPageKeepsItsFiltersAndAsksTheAPI(t *testing.T) {
+	page := readAsset(t, "report.html")
+	for _, p := range []struct{ period, label string }{{"7d", "7d"}, {"30d", "30d"}, {"90d", "90d"}, {"all", "tudo"}} {
+		// "tudo" is only the label: the API answers 400 to anything but 7d, 30d, 90d or all.
+		button := regexp.MustCompile(`<button type="button" data-period="` + p.period + `"[^>]*>` + p.label + `</button>`)
+		if !button.MatchString(page) {
+			t.Errorf("report.html has no %q button for period %s", p.label, p.period)
+		}
+	}
+	for _, want := range []string{`<select id="filter-kind">`, `<option value="issue">`, `<option value="review">`, `<option value="address">`, `<select id="filter-repo">`} {
+		if !strings.Contains(page, want) {
+			t.Errorf("report.html has no %s", want)
+		}
+	}
+
+	js := readAsset(t, "report.js")
+	for _, want := range []string{"'api/report?'", "'delamain-report-filters'", "kpis.previous", "rep.repos", "$('banner')"} {
+		if !strings.Contains(js, want) {
+			t.Errorf("report.js has no %s", want)
+		}
+	}
+	// Storage may be off (private mode, file policy): reading or writing it must never stop the page.
+	uses := regexp.MustCompile(`localStorage\.`).FindAllStringIndex(js, -1)
+	if len(uses) == 0 {
+		t.Fatal("report.js does not keep the filters in localStorage")
+	}
+	for _, at := range uses {
+		before := js[:at[0]]
+		if strings.LastIndex(before, "try {") <= strings.LastIndex(before, "} catch") {
+			t.Errorf("report.js touches localStorage outside a try: ...%s", js[max(0, at[0]-60):at[1]])
 		}
 	}
 }
