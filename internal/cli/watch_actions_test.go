@@ -46,6 +46,21 @@ type fakeWatchActions struct {
 	recovers   []int64
 	recoverOut string
 	recoverErr error
+	started    []startCall
+	startErr   error
+}
+
+// startCall is one call of fakeWatchActions.StartIssue.
+type startCall struct {
+	repo  string
+	issue int
+}
+
+func (f *fakeWatchActions) StartIssue(repo string, issue int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.started = append(f.started, startCall{repo, issue})
+	return f.startErr
 }
 
 func (f *fakeWatchActions) Stop(id int64) (string, error) {
@@ -1429,5 +1444,150 @@ func TestWatchActionsShouldKeepTheRecoverLogsOffTheTerminal(t *testing.T) {
 	r.Log.Warn("recovered", "run", 1)
 	if !strings.Contains(logs.String(), "recovered") {
 		t.Fatalf("the runner logs where its caller asked: %q", logs.String())
+	}
+}
+
+// launchScript is an executable at dir/delamain that runs body, as the delamain StartIssue runs.
+func launchScript(t *testing.T, dir, body string) func() (string, error) {
+	t.Helper()
+	exe := filepath.Join(dir, "delamain")
+	if err := os.WriteFile(exe, []byte("#!/bin/sh\n"+body), 0o700); err != nil { //nolint:gosec // a test script
+		t.Fatal(err)
+	}
+	return func() (string, error) { return exe, nil }
+}
+
+// launchActions are the actions of watch on the state dir state, running exe.
+func launchActions(state string, exe func() (string, error)) *storeWatchActions {
+	cfg := config.Config{}
+	cfg.Paths.StateDir = state
+	acts := newStoreWatchActions(context.Background(), cfg, nil, &bytes.Buffer{})
+	acts.executable = exe
+	return acts
+}
+
+// launchLogs are the logs StartIssue wrote under state.
+func launchLogs(t *testing.T, state string) []string {
+	t.Helper()
+	logs, err := filepath.Glob(filepath.Join(state, "launch", "*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return logs
+}
+
+func TestStartIssueShouldLaunchDetachedRunWithArgsList(t *testing.T) {
+	cmd := launchCmd("/bin/delamain", "/src/a b; rm -rf ~", 42, os.Stderr)
+	if cmd.Path != "/bin/delamain" || !slices.Equal(cmd.Args, []string{"/bin/delamain", "run", "--issue", "42", "--repo", "/src/a b; rm -rf ~"}) {
+		t.Fatalf("the run is the binary with a list of arguments, no shell: %q %q", cmd.Path, cmd.Args)
+	}
+	if cmd.SysProcAttr == nil || !cmd.SysProcAttr.Setsid {
+		t.Fatal("the run starts a session of its own: the terminal of the watch does not end it")
+	}
+	if cmd.Stdin != nil || cmd.Stdout != os.Stderr || cmd.Stderr != os.Stderr {
+		t.Fatalf("the run reads nothing and writes to the log alone: %v %v %v", cmd.Stdin, cmd.Stdout, cmd.Stderr)
+	}
+
+	dir := t.TempDir()
+	state, args := filepath.Join(dir, "state"), filepath.Join(dir, "args")
+	repo := filepath.Join(dir, "a b; touch pwned")
+	exe := launchScript(t, dir, "printf '%s\\n' \"$@\" > '"+args+"'\necho to stdout\necho to stderr >&2\nread line || echo stdin is empty\n")
+	if err := launchActions(state, exe).StartIssue(repo, 42); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := os.ReadFile(args); err != nil || string(b) != "run\n--issue\n42\n--repo\n"+repo+"\n" { //nolint:gosec // inside the test's temp dir
+		t.Fatalf("the run gets the issue and the repo as arguments: %q %v", b, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "pwned")); err == nil {
+		t.Fatal("the repo never goes through a shell")
+	}
+	logs := launchLogs(t, state)
+	if len(logs) != 1 || !strings.HasSuffix(logs[0], "-issue-42.log") {
+		t.Fatalf("the run writes one log in launch/, named after the issue: %v", logs)
+	}
+	if b, err := os.ReadFile(logs[0]); err != nil || string(b) != "to stdout\nto stderr\nstdin is empty\n" {
+		t.Fatalf("stdout and stderr go to the log, stdin is empty: %q %v", b, err)
+	}
+	for path, want := range map[string]os.FileMode{filepath.Join(state, "launch"): 0o700, logs[0]: 0o600} {
+		if fi, err := os.Stat(path); err != nil || fi.Mode().Perm() != want {
+			t.Fatalf("%s is %v, want %v: %v", path, fi.Mode().Perm(), want, err)
+		}
+	}
+}
+
+func TestStartIssueShouldKeepTheRunAliveWhenTheWatchCloses(t *testing.T) {
+	dir := t.TempDir()
+	state, release, done := filepath.Join(dir, "state"), filepath.Join(dir, "release"), filepath.Join(dir, "done")
+	// The run waits for the test to release it, so it is still running when the watch closes.
+	exe := launchScript(t, dir, "echo started\nwhile [ ! -e '"+release+"' ]; do sleep 0.05; done\ntouch '"+done+"'\n")
+	acts := launchActions(state, exe)
+	ended := make(chan error, 1)
+	go func() { ended <- acts.StartIssue(dir, 7) }()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if logs := launchLogs(t, state); len(logs) == 1 {
+			if b, _ := os.ReadFile(logs[0]); string(b) == "started\n" { //nolint:gosec // inside the test's temp dir
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the run never started")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	closed := make(chan struct{})
+	go func() { acts.close(); close(closed) }()
+	select {
+	case <-closed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("closing the watch does not wait for the run")
+	}
+	if err := os.WriteFile(release, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-ended:
+		if err != nil {
+			t.Fatalf("the run went on to the end after the watch closed: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the run never ended")
+	}
+	if _, err := os.Stat(done); err != nil {
+		t.Fatalf("the run was not killed with the watch: %v", err)
+	}
+}
+
+func TestStartIssueShouldReportTheExitCodeAndTheLogOfAFailedRun(t *testing.T) {
+	for _, c := range []struct {
+		code int
+		want string
+	}{
+		{5, "issue #7 not started: maximum parallelism reached; see "},
+		{4, "issue #7 needs more information (exit 4); see "},
+		{2, "issue #7 failed: exit 2; see "},
+	} {
+		dir := t.TempDir()
+		state := filepath.Join(dir, "state")
+		err := launchActions(state, launchScript(t, dir, "exit "+strconv.Itoa(c.code)+"\n")).StartIssue(dir, 7)
+		exit, ok := errors.AsType[startIssueExit](err)
+		if !ok {
+			t.Fatalf("exit %d is a startIssueExit: %v", c.code, err)
+		}
+		logs := launchLogs(t, state)
+		if exit.code != c.code || len(logs) != 1 || exit.log != logs[0] {
+			t.Fatalf("exit %d carries its code and the log: %+v %v", c.code, exit, logs)
+		}
+		if got := err.Error(); got != c.want+logs[0] {
+			t.Errorf("exit %d says %q, want %q", c.code, got, c.want+logs[0])
+		}
+	}
+
+	dir := t.TempDir()
+	missing := func() (string, error) { return filepath.Join(dir, "missing"), nil }
+	err := launchActions(filepath.Join(dir, "state"), missing).StartIssue(dir, 7)
+	if _, ok := errors.AsType[startIssueExit](err); err == nil || ok {
+		t.Fatalf("a run that cannot start is an error of its own: %v", err)
 	}
 }

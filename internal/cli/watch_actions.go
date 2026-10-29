@@ -9,10 +9,12 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/aymanbagabas/go-osc52/v2"
@@ -22,6 +24,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/paraizo/delamain/internal/config"
+	"github.com/paraizo/delamain/internal/pipeline"
 	"github.com/paraizo/delamain/internal/store"
 )
 
@@ -41,6 +44,9 @@ type watchActions interface {
 	OpenURL(url string) error
 	// Copy puts text in the clipboard of the terminal.
 	Copy(text string) error
+	// StartIssue is `delamain run --issue issue --repo repo`, detached from the TUI: it waits for
+	// the run to end, and an exit code other than 0 comes back as a startIssueExit.
+	StartIssue(repo string, issue int) error
 }
 
 // dialogKeys are the keys of the open dialog: nothing else acts while it is open.
@@ -553,6 +559,8 @@ type storeWatchActions struct {
 	opener string    // the command that opens a URL in the browser
 	out    io.Writer // the terminal, for OSC 52
 	tmux   bool      // OSC 52 goes through tmux
+	// executable is the binary StartIssue runs: os.Executable, the delamain of this watch.
+	executable func() (string, error)
 }
 
 func newStoreWatchActions(ctx context.Context, cfg config.Config, st *store.Store, out io.Writer) *storeWatchActions {
@@ -560,12 +568,13 @@ func newStoreWatchActions(ctx context.Context, cfg config.Config, st *store.Stor
 	// The TUI owns the terminal: the logs of a recover would be drawn over the screen it holds.
 	quiet := slog.New(slog.DiscardHandler)
 	return &storeWatchActions{
-		ctx:    ctx,
-		cancel: cancel,
-		stop:   &stopper{cfg: cfg, st: st, noWait: true, log: quiet},
-		opener: browserOpener(),
-		out:    out,
-		tmux:   os.Getenv("TMUX") != "",
+		ctx:        ctx,
+		cancel:     cancel,
+		stop:       &stopper{cfg: cfg, st: st, noWait: true, log: quiet},
+		opener:     browserOpener(),
+		out:        out,
+		tmux:       os.Getenv("TMUX") != "",
+		executable: os.Executable,
 	}
 }
 
@@ -635,6 +644,40 @@ func (a *storeWatchActions) Copy(text string) error {
 	return err
 }
 
+// StartIssue runs `delamain run --issue issue --repo repo` in a session of its own, writing to
+// <state_dir>/launch/<unix time>-issue-<issue>.log, and waits for it to end.
+//
+// It takes neither the mutex nor the context of the actions: close would wait for a run that
+// takes hours, or kill it. Quitting the watch leaves the run going, as the daemon's runs do.
+func (a *storeWatchActions) StartIssue(repo string, issue int) error {
+	exe, err := a.executable()
+	if err != nil {
+		return err
+	}
+	dir := filepath.Join(a.stop.cfg.Paths.StateDir, "launch")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	path := filepath.Join(dir, fmt.Sprintf("%d-issue-%d.log", time.Now().Unix(), issue))
+	log, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600) //nolint:gosec // inside the state dir
+	if err != nil {
+		return err
+	}
+	cmd := launchCmd(exe, repo, issue, log)
+	err = cmd.Start()
+	_ = log.Close() // the run holds its own descriptor
+	if err != nil {
+		return err
+	}
+	if err := cmd.Wait(); err != nil {
+		if ee, ok := errors.AsType[*exec.ExitError](err); ok {
+			return startIssueExit{issue: issue, code: ee.ExitCode(), log: path}
+		}
+		return err
+	}
+	return nil
+}
+
 // close releases what the stops opened: the notifier of the recover. Cancelling first ends an
 // action that is still running, so quitting never waits on its mutex.
 func (a *storeWatchActions) close() {
@@ -642,4 +685,31 @@ func (a *storeWatchActions) close() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.stop.close()
+}
+
+// startIssueExit is a run started by StartIssue that exited with code: log is what it wrote.
+type startIssueExit struct {
+	issue, code int
+	log         string
+}
+
+// Error says what the code means to `delamain run`, and where its log is.
+func (e startIssueExit) Error() string {
+	switch e.code {
+	case exitNoSlot:
+		return fmt.Sprintf("issue #%d not started: %v; see %s", e.issue, errNoSlot, e.log)
+	case outcomeExit[pipeline.OutcomeNeedsInfo]:
+		return fmt.Sprintf("issue #%d needs more information (exit %d); see %s", e.issue, e.code, e.log)
+	}
+	return fmt.Sprintf("issue #%d failed: exit %d; see %s", e.issue, e.code, e.log)
+}
+
+// launchCmd is `exe run --issue issue --repo repo`, with no shell: the repo is one argument
+// whatever it holds. The run reads nothing, writes to log alone and starts a session of its own,
+// so the hangup of the terminal of the watch does not reach it.
+func launchCmd(exe, repo string, issue int, log *os.File) *exec.Cmd {
+	cmd := exec.Command(exe, "run", "--issue", strconv.Itoa(issue), "--repo", repo) //nolint:gosec // an argument list, no shell
+	cmd.Stdout, cmd.Stderr = log, log
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	return cmd
 }
