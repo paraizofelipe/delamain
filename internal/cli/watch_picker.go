@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -14,6 +15,8 @@ import (
 
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/paraizo/delamain/internal/forge"
 	"github.com/paraizo/delamain/internal/gitx"
@@ -34,10 +37,11 @@ const (
 type issuePicker struct {
 	step       pickStep
 	cursor     int              // the line of the list: a repo of daemon.repos, or other path…
-	input      lineInput        // the path, then the issue
+	input      lineInput        // the path, then the filter of the list of issues or PRs
 	path       string           // the path typed, kept to go back to it
 	repo       string           // the absolute path of the repository picked
 	number     int              // the issue to start, or the PR to review
+	title      string           // the title of the issue or the PR picked, cleaned
 	err        string           // why the path or the issue was refused
 	checking   bool             // the path is being checked: enter waits for it
 	checkID    uint64           // the check awaited: the answer of an earlier one is dropped
@@ -61,11 +65,16 @@ func (p issuePicker) runRepo() string {
 // pickerKeys are the keys of the dialog of i.
 var pickerKeys = struct {
 	next, back, start, cancel key.Binding
+	up, down, first, last     key.Binding // on a list of issues or PRs, whose letters are its filter
 }{
 	next:   key.NewBinding(key.WithKeys("enter")),
 	back:   key.NewBinding(key.WithKeys("esc")),
 	start:  key.NewBinding(key.WithKeys("enter", "y")),
 	cancel: key.NewBinding(key.WithKeys("esc", "n")),
+	up:     key.NewBinding(key.WithKeys("up")),
+	down:   key.NewBinding(key.WithKeys("down")),
+	first:  key.NewBinding(key.WithKeys("home")),
+	last:   key.NewBinding(key.WithKeys("end")),
 }
 
 // repoCheckFor is how long the check of a path may take: git on a dead network mount would hang.
@@ -82,7 +91,7 @@ type watchRepoMsg struct {
 // picker from zero.
 var repoCheckSeq atomic.Uint64
 
-// lineInput is a line typed at its end: the path or the issue. It needs no cursor that moves,
+// lineInput is a line typed at its end: the path or the filter of a list. It needs no cursor that moves,
 // nor one that blinks and asks for a timer on every key.
 type lineInput struct{ value []rune }
 
@@ -172,10 +181,8 @@ func (m watchModel) issueKey(msg tea.KeyMsg) (watchModel, tea.Cmd) {
 		return m, nil
 	case pickConfirm:
 		return m.confirmKey(msg)
-	case pickPR:
-		return m.prKey(msg)
 	}
-	return m.issueListKey(msg)
+	return m.listKey(msg)
 }
 
 // confirmKey handles a key of the confirmation: enter or y starts the run or the review, off
@@ -229,12 +236,13 @@ func (m watchModel) repoChecked(msg watchRepoMsg) (watchModel, tea.Cmd) {
 		p.err = clean(msg.err.Error())
 		return m, nil
 	}
+	p.repo, p.err, p.input = msg.repo, "", newPickerInput("")
 	if kind == dialogStartReview {
-		p.step, p.repo, p.err = pickPR, msg.repo, ""
+		p.step = pickPR
 		cmd := m.loadPRs() // before m is copied into the return: it sets loading
 		return m, cmd
 	}
-	p.step, p.repo, p.err = pickIssue, msg.repo, ""
+	p.step = pickIssue
 	cmd := m.loadIssues() // before m is copied into the return: it sets loading
 	return m, cmd
 }
@@ -323,10 +331,8 @@ func (m watchModel) pickerLines(d *dialogWriter) {
 		d.row("run", fmt.Sprintf("delamain run --issue %d, in the background; its log goes to the state dir", p.number))
 		d.blank()
 		d.buttons([2]string{"start", "enter"}, [2]string{"cancel", "esc"})
-	case pickPR:
-		m.prLines(d)
 	default:
-		m.issueLines(d)
+		m.pickListLines(d)
 	}
 }
 
@@ -337,4 +343,142 @@ func (m watchModel) pickerError(d *dialogWriter) {
 		d.text(m.st.bad, e)
 		d.blank()
 	}
+}
+
+// pickerItem is a line of the list of the dialog of i or r: an open issue or PR.
+type pickerItem struct {
+	number int
+	title  string // cleaned of its control characters, as author
+	author string // the author of a PR, empty for an issue
+	draft  bool
+}
+
+// filter is the text typed on the list of issues or PRs, without the spaces around it.
+func (p issuePicker) filter() string { return strings.TrimSpace(p.input.Value()) }
+
+// listItems are the lines of the list of the dialog, the issues for i and the PRs for r, that the
+// filter matches, in the order of the forge.
+func (m watchModel) listItems() []pickerItem {
+	p := m.dialog.issue
+	var all []pickerItem
+	if m.dialog.kind == dialogStartReview {
+		for _, pr := range p.prs {
+			all = append(all, pickerItem{number: pr.Number, title: clean(pr.Title), author: clean(pr.Author), draft: pr.Draft})
+		}
+	} else {
+		for _, issue := range p.issues {
+			all = append(all, pickerItem{number: issue.Number, title: clean(issue.Title)})
+		}
+	}
+	filter := strings.ToLower(p.filter())
+	var items []pickerItem
+	for _, it := range all {
+		if it.matches(filter) {
+			items = append(items, it)
+		}
+	}
+	return items
+}
+
+// matches reports whether filter, in lower case, starts the number of it, with or without its #,
+// or is part of its title or its author, whatever their case.
+func (it pickerItem) matches(filter string) bool {
+	num := strconv.Itoa(it.number)
+	return strings.HasPrefix(num, filter) || strings.HasPrefix("#"+num, filter) ||
+		strings.Contains(strings.ToLower(it.title), filter) || strings.Contains(strings.ToLower(it.author), filter)
+}
+
+// listNoun is what the list of the dialog holds: issues for i, PRs for r.
+func (m watchModel) listNoun() string {
+	if m.dialog.kind == dialogStartReview {
+		return "PR"
+	}
+	return "issue"
+}
+
+// listKey handles a key of the list of issues or PRs: the letters typed filter it, ↑, ↓, home and
+// end move its cursor, enter picks the line under the cursor, and esc clears the filter, then goes
+// back to the repository.
+func (m watchModel) listKey(msg tea.KeyMsg) (watchModel, tea.Cmd) {
+	p := &m.dialog.issue
+	items := m.listItems()
+	last := max(len(items)-1, 0)
+	switch {
+	case key.Matches(msg, pickerKeys.back):
+		if p.input.Value() != "" {
+			p.input, p.listCursor = newPickerInput(""), 0
+			return m, nil
+		}
+		p.issues, p.prs = nil, nil
+		m.backToRepo()
+	case key.Matches(msg, pickerKeys.up):
+		p.listCursor = max(p.listCursor-1, 0)
+	case key.Matches(msg, pickerKeys.down):
+		p.listCursor = min(p.listCursor+1, last)
+	case key.Matches(msg, pickerKeys.first):
+		p.listCursor = 0
+	case key.Matches(msg, pickerKeys.last):
+		p.listCursor = last
+	case key.Matches(msg, pickerKeys.next):
+		if len(items) == 0 {
+			return m, nil
+		}
+		it := items[min(p.listCursor, last)]
+		if m.activeRun(p.runRepo(), it.number) {
+			return m.showToast(m.st.warn, fmt.Sprintf("a run is already active for %s %d", m.listNoun(), it.number))
+		}
+		p.step, p.number, p.title = pickConfirm, it.number, it.title
+		m.dialog.at = m.opts.now() // the enter of the list, held, must not answer the confirmation
+	default:
+		before := p.input.Value()
+		if p.input = p.input.Update(msg); p.input.Value() != before {
+			p.listCursor = 0 // the lines changed: the cursor goes back to the first
+		}
+	}
+	return m, nil
+}
+
+// pickListLines are the step of the dialog of i or r that lists the open issues or PRs.
+func (m watchModel) pickListLines(d *dialogWriter) {
+	st, p, noun := m.st, m.dialog.issue, m.listNoun()
+	name := filepath.Base(p.repo)
+	d.text(st.none.Bold(true), fmt.Sprintf("Which %s in %s?", noun, name))
+	d.blank()
+	d.row("repo", paint(st.muted, p.repo))
+	d.row("filter", p.input.View())
+	d.blank()
+	items := m.listItems()
+	switch {
+	case p.loading:
+		d.text(st.muted, "loading "+noun+"s…")
+	case p.err != "":
+	case len(p.issues)+len(p.prs) == 0 && p.filter() == "":
+		d.text(st.muted, "no open "+noun+"s in "+name)
+	case len(items) == 0:
+		d.text(st.muted, "no match")
+	}
+	for i, it := range items {
+		mark := "  "
+		if i == p.listCursor {
+			mark = paint(st.info.Bold(true), "› ")
+		}
+		head, tail := fmt.Sprintf("#%d ", it.number), ""
+		if it.author != "" {
+			tail += " @" + it.author
+		}
+		if it.draft {
+			tail += " draft"
+		}
+		if m.activeRun(p.runRepo(), it.number) {
+			tail += " active run"
+		}
+		room := max(d.inner-lipgloss.Width(mark+head+tail), 1)
+		d.styled(mark + paint(st.info, head) + ansi.Truncate(it.title, room, "…") + paint(st.muted, tail))
+	}
+	m.pickerError(d)
+	pick := "next"
+	if m.dialog.kind == dialogStartReview {
+		pick = "review"
+	}
+	d.buttons([2]string{pick, "enter"}, [2]string{"back", "esc"})
 }

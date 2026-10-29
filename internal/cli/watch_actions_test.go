@@ -1673,7 +1673,8 @@ func TestStartReviewShouldReportTheExitCodeAndLog(t *testing.T) {
 	}
 }
 
-// typeIssue opens the dialog of i on a repository of daemon.repos and types issue in it.
+// typeIssue opens the dialog of i on a repository of daemon.repos, whose open issues are those of
+// twoIssues, types issue in the filter of the list and presses enter.
 func typeIssue(t *testing.T, acts *fakeWatchActions, now *time.Time, issue string) (tea.Model, string) {
 	t.Helper()
 	app := gitInit(t, filepath.Join(t.TempDir(), "app"))

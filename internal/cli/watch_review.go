@@ -7,10 +7,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
-	"github.com/charmbracelet/x/ansi"
 
 	"github.com/paraizo/delamain/internal/forge"
 	"github.com/paraizo/delamain/internal/gitx"
@@ -78,34 +75,6 @@ func (m watchModel) prsLoaded(msg watchPRsMsg) watchModel {
 	return m
 }
 
-// prKey handles a key of the list of PRs: enter picks the PR under the cursor, esc goes back to
-// the repository.
-func (m watchModel) prKey(msg tea.KeyMsg) (watchModel, tea.Cmd) {
-	p := &m.dialog.issue
-	last := max(len(p.prs)-1, 0)
-	switch {
-	case key.Matches(msg, pickerKeys.back):
-		p.prs = nil
-		m.backToRepo()
-	case key.Matches(msg, watchKeys.up):
-		p.listCursor = max(p.listCursor-1, 0)
-	case key.Matches(msg, watchKeys.down):
-		p.listCursor = min(p.listCursor+1, last)
-	case key.Matches(msg, watchKeys.first):
-		p.listCursor = 0
-	case key.Matches(msg, watchKeys.last):
-		p.listCursor = last
-	case key.Matches(msg, pickerKeys.next) && len(p.prs) > 0:
-		n := p.prs[p.listCursor].Number
-		if m.activeRun(p.runRepo(), n) {
-			return m.showToast(m.st.warn, fmt.Sprintf("a run is already active for PR %d", n))
-		}
-		p.step, p.number = pickConfirm, n
-		m.dialog.at = m.opts.now() // the enter of the list, held, must not answer the confirmation
-	}
-	return m, nil
-}
-
 // backToRepo leaves the list of issues or PRs for the repository it came from: the list of
 // daemon.repos, or the path typed.
 func (m *watchModel) backToRepo() {
@@ -141,44 +110,10 @@ func (m watchModel) activeRun(repo string, n int) bool {
 // reviewLines are the confirmation of the dialog of r.
 func (m watchModel) reviewLines(d *dialogWriter) {
 	st, p := m.st, m.dialog.issue
-	title := clean(p.prs[p.listCursor].Title)
-	d.text(st.none.Bold(true), fmt.Sprintf("Review PR #%d (%s) in %s?", p.number, title, filepath.Base(p.repo)))
+	d.text(st.none.Bold(true), fmt.Sprintf("Review PR #%d (%s) in %s?", p.number, p.title, filepath.Base(p.repo)))
 	d.blank()
 	d.row("repo", paint(st.muted, p.repo))
 	d.row("review", fmt.Sprintf("delamain review --pr %d, in the background; its log goes to the state dir", p.number))
 	d.blank()
 	d.buttons([2]string{"review", "enter"}, [2]string{"cancel", "esc"})
-}
-
-// prLines are the step of the dialog of r that lists the open PRs.
-func (m watchModel) prLines(d *dialogWriter) {
-	st, p := m.st, m.dialog.issue
-	d.text(st.none.Bold(true), fmt.Sprintf("Which PR in %s?", filepath.Base(p.repo)))
-	d.blank()
-	d.row("repo", paint(st.muted, p.repo))
-	d.blank()
-	switch {
-	case p.loading:
-		d.text(st.muted, "loading PRs…")
-	case len(p.prs) == 0 && p.err == "":
-		d.text(st.muted, "no open PRs in "+filepath.Base(p.repo))
-	}
-	for i, pr := range p.prs {
-		mark := "  "
-		if i == p.listCursor {
-			mark = paint(st.info.Bold(true), "› ")
-		}
-		head := fmt.Sprintf("#%d ", pr.Number)
-		tail := " @" + clean(pr.Author)
-		if pr.Draft {
-			tail += " draft"
-		}
-		if m.activeRun(p.runRepo(), pr.Number) {
-			tail += " active run"
-		}
-		room := max(d.inner-lipgloss.Width(mark+head+tail), 1)
-		d.styled(mark + paint(st.info, head) + ansi.Truncate(clean(pr.Title), room, "…") + paint(st.muted, tail))
-	}
-	m.pickerError(d)
-	d.buttons([2]string{"review", "enter"}, [2]string{"back", "esc"})
 }

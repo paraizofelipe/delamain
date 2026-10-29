@@ -2,13 +2,8 @@ package cli
 
 import (
 	"context"
-	"fmt"
-	"path/filepath"
 
-	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
-	"github.com/charmbracelet/x/ansi"
 
 	"github.com/paraizo/delamain/internal/forge"
 )
@@ -55,61 +50,4 @@ func (m watchModel) issuesLoaded(msg watchIssuesMsg) watchModel {
 		p.err = clean(msg.err.Error())
 	}
 	return m
-}
-
-// issueListKey handles a key of the list of issues: enter picks the issue under the cursor, esc
-// goes back to the repository.
-func (m watchModel) issueListKey(msg tea.KeyMsg) (watchModel, tea.Cmd) {
-	p := &m.dialog.issue
-	last := max(len(p.issues)-1, 0)
-	switch {
-	case key.Matches(msg, pickerKeys.back):
-		p.issues = nil
-		m.backToRepo()
-	case key.Matches(msg, watchKeys.up):
-		p.listCursor = max(p.listCursor-1, 0)
-	case key.Matches(msg, watchKeys.down):
-		p.listCursor = min(p.listCursor+1, last)
-	case key.Matches(msg, watchKeys.first):
-		p.listCursor = 0
-	case key.Matches(msg, watchKeys.last):
-		p.listCursor = last
-	case key.Matches(msg, pickerKeys.next) && len(p.issues) > 0:
-		n := p.issues[p.listCursor].Number
-		if m.activeRun(p.runRepo(), n) {
-			return m.showToast(m.st.warn, fmt.Sprintf("a run is already active for issue %d", n))
-		}
-		p.step, p.number = pickConfirm, n
-		m.dialog.at = m.opts.now() // the enter of the list, held, must not answer the confirmation
-	}
-	return m, nil
-}
-
-// issueLines are the step of the dialog of i that lists the open issues.
-func (m watchModel) issueLines(d *dialogWriter) {
-	st, p := m.st, m.dialog.issue
-	d.text(st.none.Bold(true), fmt.Sprintf("Which issue in %s?", filepath.Base(p.repo)))
-	d.blank()
-	d.row("repo", paint(st.muted, p.repo))
-	d.blank()
-	switch {
-	case p.loading:
-		d.text(st.muted, "loading issues…")
-	case len(p.issues) == 0 && p.err == "":
-		d.text(st.muted, "no open issues in "+filepath.Base(p.repo))
-	}
-	for i, issue := range p.issues {
-		mark := "  "
-		if i == p.listCursor {
-			mark = paint(st.info.Bold(true), "› ")
-		}
-		head, tail := fmt.Sprintf("#%d ", issue.Number), ""
-		if m.activeRun(p.runRepo(), issue.Number) {
-			tail = " active run"
-		}
-		room := max(d.inner-lipgloss.Width(mark+head+tail), 1)
-		d.styled(mark + paint(st.info, head) + ansi.Truncate(clean(issue.Title), room, "…") + paint(st.muted, tail))
-	}
-	m.pickerError(d)
-	d.buttons([2]string{"next", "enter"}, [2]string{"back", "esc"})
 }

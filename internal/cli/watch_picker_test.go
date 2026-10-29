@@ -188,3 +188,121 @@ func TestWatchPickerShouldExpandHomeInPath(t *testing.T) {
 		t.Fatalf("~ alone is the home: %s", text)
 	}
 }
+
+// issueList opens the dialog of i on app, whose open issues are issues, and picks it.
+func issueList(t *testing.T, acts *fakeWatchActions, now *time.Time, issues ...forge.Issue) (tea.Model, string) {
+	t.Helper()
+	var asked []string
+	return pickIssueRepo(t, acts, now, prForgeOf(&fakePRForge{issues: issues}, &asked))
+}
+
+// fourIssues are open issues whose numbers share their first digits.
+var fourIssues = []forge.Issue{
+	{Number: 120, Title: "parse dates"},
+	{Number: 12, Title: "fix the parser"},
+	{Number: 9, Title: "wip: watch"},
+	{Number: 31, Title: "Watch the queue"},
+}
+
+// typeKeys sends every key of keys, one by one.
+func typeKeys(t *testing.T, m tea.Model, keys ...string) tea.Model {
+	t.Helper()
+	for _, k := range keys {
+		m = send(t, m, keyPress(k))
+	}
+	return m
+}
+
+func TestWatchPickerListShouldFilterByNumberPrefix(t *testing.T) {
+	now := watchNow
+	m, _ := issueList(t, &fakeWatchActions{}, &now, fourIssues...)
+	m = typeKeys(t, m, "down", "1")
+	text := pickerText(m)
+	for _, want := range []string{"filter 1█", "› #120 parse dates", "#12 fix the parser"} {
+		if !pickerHas(text, want) {
+			t.Fatalf("1 keeps the issues whose number starts with it, the cursor on the first, %q:\n%s", want, screen(m))
+		}
+	}
+	if pickerHas(text, "#9 ") || pickerHas(text, "#31") {
+		t.Fatalf("1 hides the issues whose number does not start with it:\n%s", screen(m))
+	}
+
+	m = typeKeys(t, m, "backspace", "#", "1", "2", "down")
+	if text := pickerText(m); !pickerHas(text, "filter #12█") || !pickerHas(text, "#120 parse dates") || !pickerHas(text, "› #12 fix the parser") || pickerHas(text, "#31") {
+		t.Fatalf("#12 keeps #120 and #12, and down moves on the issues left:\n%s", screen(m))
+	}
+	if m = send(t, m, keyPress("enter")); !pickerHas(pickerText(m), "Start issue #12 in app?") {
+		t.Fatalf("enter picks the issue under the cursor of the list filtered:\n%s", screen(m))
+	}
+}
+
+func TestWatchPickerListShouldFilterByTitleIgnoringCase(t *testing.T) {
+	now := watchNow
+	m, _ := issueList(t, &fakeWatchActions{}, &now, fourIssues...)
+	m = typeKeys(t, m, "W", "a", "T", "C", "h")
+	text := pickerText(m)
+	if !pickerHas(text, "› #9 wip: watch") || !pickerHas(text, "#31 Watch the queue") || pickerHas(text, "#120") || pickerHas(text, "#12 ") {
+		t.Fatalf("WaTCh keeps the issues whose title holds it, whatever the case:\n%s", screen(m))
+	}
+
+	var asked []string
+	m, _ = pickApp(t, &fakeWatchActions{}, &now, prForgeOf(twoPRs(), &asked))
+	m = typeKeys(t, m, "P", "A", "R", "S", "E", "R")
+	if text := reviewText(m); !pickerHas(text, "› #12 fix the parser @ana") || pickerHas(text, "#9") {
+		t.Fatalf("the list of r is filtered by the title too:\n%s", screen(m))
+	}
+}
+
+func TestWatchPickerListShouldShowNoMatchWhenFilterEmptiesList(t *testing.T) {
+	now := watchNow
+	acts := &fakeWatchActions{}
+	m, _ := issueList(t, acts, &now, fourIssues...)
+	// j, k, g and G are letters of the filter here: ↑, ↓, home and end move the cursor.
+	m = typeKeys(t, m, "j", "k", "g", "G", "q", "?")
+	text := pickerText(m)
+	if !pickerHas(text, "filter jkgGq?█") || !pickerHas(text, "no match") || pickerHas(text, "no open issues") || pickerHas(text, "#12") {
+		t.Fatalf("a filter that matches no issue says so:\n%s", screen(m))
+	}
+	afterGrace(&now)
+	if m = send(t, m, keyPress("enter")); len(acts.started) != 0 || pickerHas(pickerText(m), "Start issue") {
+		t.Fatalf("enter without a line picks nothing: %v\n%s", acts.started, screen(m))
+	}
+	stillWatchingIssues(t, m)
+}
+
+func TestWatchPickerListShouldNavigateWithArrowsHomeAndEnd(t *testing.T) {
+	now := watchNow
+	m, _ := issueList(t, &fakeWatchActions{}, &now, fourIssues...)
+	for _, c := range []struct{ key, want string }{{"end", "› #31"}, {"up", "› #9"}, {"home", "› #120"}, {"down", "› #12 fix"}} {
+		if m = send(t, m, keyPress(c.key)); !pickerHas(pickerText(m), c.want) {
+			t.Fatalf("%s puts the cursor on %q:\n%s", c.key, c.want, screen(m))
+		}
+	}
+}
+
+func TestWatchPickerListEscShouldClearFilterThenGoBack(t *testing.T) {
+	now := watchNow
+	m, app := issueList(t, &fakeWatchActions{}, &now, fourIssues...)
+	m = typeKeys(t, m, "w", "i", "p", "esc")
+	text := pickerText(m)
+	if !pickerHas(text, "Which issue in app?") || !pickerHas(text, "filter █") || !pickerHas(text, "› #120 parse dates") || !pickerHas(text, "#31 Watch the queue") {
+		t.Fatalf("esc with a filter clears it and stays on the list:\n%s", screen(m))
+	}
+	m = send(t, m, keyPress("esc"))
+	if text := pickerText(m); !pickerHas(text, "Start an issue run in which repository?") || !pickerHas(text, "› app "+app) {
+		t.Fatalf("esc without a filter goes back to the repository:\n%s", screen(m))
+	}
+	if m = send(t, m, keyPress("enter")); !pickerHas(pickerText(m), "filter █") {
+		t.Fatalf("the list of the repository picked again starts with no filter:\n%s", screen(m))
+	}
+
+	var asked []string
+	m = typePath(t, send(t, startReviewTUI(t, &fakeWatchActions{}, nil, nil, &now, prForgeOf(twoPRs(), &asked)), keyPress("r")), app)
+	if text := reviewText(m); !pickerHas(text, "filter █") || pickerHas(text, "filter "+app) {
+		t.Fatalf("the path typed is no filter of the list:\n%s", screen(m))
+	}
+	m = typeKeys(t, m, "a", "n", "a", "esc", "esc")
+	if text := reviewText(m); !pickerHas(text, "Path of the repository") || !pickerHas(text, "path "+app) {
+		t.Fatalf("on r too, esc clears the filter, then goes back to the path typed:\n%s", screen(m))
+	}
+}
