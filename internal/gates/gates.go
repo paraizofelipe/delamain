@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"go.yaml.in/yaml/v3"
@@ -238,6 +239,8 @@ func PRTitle(title string, limit int) (bool, string) {
 	var bad []string
 	if !prTitle.MatchString(title) {
 		bad = append(bad, "título do PR fora do formato Conventional Commits: "+title)
+	} else if _, desc, _ := strings.Cut(title, ": "); unicode.IsUpper(firstRune(desc)) {
+		bad = append(bad, "título do PR com descrição em maiúscula: "+title)
 	}
 	if limit <= 0 {
 		limit = DefaultSubjectLimit
@@ -245,10 +248,18 @@ func PRTitle(title string, limit int) (bool, string) {
 	if n := utf8.RuneCountInString(title); n > limit {
 		bad = append(bad, fmt.Sprintf("título do PR com %d caracteres (limite %d): %s", n, limit, title))
 	}
+	if strings.HasSuffix(title, ".") {
+		bad = append(bad, "título do PR termina com ponto: "+title)
+	}
 	if len(bad) == 0 {
 		return true, ""
 	}
 	return false, strings.Join(bad, "\n")
+}
+
+func firstRune(s string) rune {
+	r, _ := utf8.DecodeRuneInString(s)
+	return r
 }
 
 // TestsTouched fails when production code changed but no test file did.

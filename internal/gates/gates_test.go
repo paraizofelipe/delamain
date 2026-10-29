@@ -589,3 +589,26 @@ func TestPRTitleShouldFailWhenLongerThanLimit(t *testing.T) {
 		t.Fatalf("an explicit limit must win over the default: ok=%v detail=%q", ok, detail)
 	}
 }
+
+func TestPRTitleShouldFailWhenDescriptionStartsUppercase(t *testing.T) {
+	for _, title := range []string{"feat: Add a pr title", "fix(gates)!: Reject long titles"} {
+		ok, detail := PRTitle(title, 0)
+		if ok || !strings.Contains(detail, "título do PR com descrição em maiúscula: "+title) {
+			t.Fatalf("commitlint wants a lowercase description: %q -> ok=%v detail=%q", title, ok, detail)
+		}
+	}
+	if ok, detail := PRTitle("feat: add PR title to impl", 0); !ok {
+		t.Fatalf("only the first letter of the description matters, not acronyms later on: %q", detail)
+	}
+}
+
+func TestPRTitleShouldFailWithTrailingPeriod(t *testing.T) {
+	title := "feat: add a pr title to the impl artifact."
+	ok, detail := PRTitle(title, 0)
+	if ok || !strings.Contains(detail, "título do PR termina com ponto: "+title) {
+		t.Fatalf("commitlint forbids a trailing period: ok=%v detail=%q", ok, detail)
+	}
+	if ok, detail := PRTitle("fix: read v1.2 configs", 0); !ok {
+		t.Fatalf("a period inside the description is fine: %q", detail)
+	}
+}
