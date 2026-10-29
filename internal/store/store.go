@@ -237,6 +237,19 @@ var migrations = []string{
 	);`,
 	// Why a queued item is held back; empty when it is not.
 	`ALTER TABLE queue ADD COLUMN waiting TEXT NOT NULL DEFAULT '';`,
+	// One row per omp session, so a role that runs again in a later iteration keeps its earlier
+	// sessions. No foreign key to runs: like the ledger, this history outlives DeleteRun.
+	`CREATE TABLE agent_sessions (
+		id         INTEGER PRIMARY KEY AUTOINCREMENT,
+		run_id     INTEGER NOT NULL,
+		role       TEXT NOT NULL,
+		iteration  INTEGER NOT NULL DEFAULT 0,
+		model      TEXT NOT NULL DEFAULT '',
+		state      TEXT NOT NULL,
+		started_at TIMESTAMP NOT NULL,
+		ended_at   TIMESTAMP
+	);
+	CREATE INDEX agent_sessions_run ON agent_sessions(run_id);`,
 }
 
 func (s *Store) migrate(ctx context.Context) error {
