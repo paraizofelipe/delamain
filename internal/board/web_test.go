@@ -219,3 +219,26 @@ func TestReportHistoryShouldPaintOnlyKnownRolesOnTheTimeline(t *testing.T) {
 		}
 	}
 }
+
+func TestReportHistoryShouldDetailTheSessionsWithTheTimelineNumbers(t *testing.T) {
+	js := readAsset(t, "report-history.js")
+	for _, want := range []string{"el('details', { class: 'detail', open: true }", "'abrir no quadro'", "href: './'", "Math.max(0,", "el('dl', { class: 'kv' }"} {
+		if !strings.Contains(js, want) {
+			t.Errorf("report-history.js has no %s", want)
+		}
+	}
+	for _, head := range []string{"'agente'", "'iteração'", "'modelo'", "'início'", "'duração'", "'tokens'", "'custo'"} {
+		if !strings.Contains(js, head) {
+			t.Errorf("report-history.js has no session column %s", head)
+		}
+	}
+	for _, label := range []string{"'iterações'", "'tempo dos agentes'", "'tempo fora dos agentes'"} {
+		if !strings.Contains(js, label) {
+			t.Errorf("report-history.js has no %s in the run summary", label)
+		}
+	}
+	// The table and the segment's tooltip say the same start: one function writes both.
+	if n := len(regexp.MustCompile(`\bsince\(`).FindAllString(js, -1)); n < 3 {
+		t.Errorf("report-history.js writes the relative start in %d places, want the definition, the tooltip and the table", n)
+	}
+}

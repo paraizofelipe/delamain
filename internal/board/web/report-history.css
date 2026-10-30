@@ -31,3 +31,14 @@
   white-space: nowrap;
 }
 .seg.running { background-image: repeating-linear-gradient(135deg, transparent 0 4px, rgb(255 255 255 / 28%) 4px 8px); }
+
+#history .detail { padding: 4px 8px 12px; }
+#history .detail > summary { color: var(--muted); font-size: 12px; cursor: pointer; }
+#history .detail-body { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 1fr); gap: 16px; margin-top: 6px; }
+#history .sessions { width: 100%; border-collapse: collapse; font-size: 12px; }
+#history .sessions th { color: var(--muted); font-weight: 400; text-align: left; }
+#history .sessions th, #history .sessions td { padding: 3px 8px 3px 0; white-space: nowrap; }
+#history .sessions .num { text-align: right; font-family: var(--mono); }
+#history .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--role); }
+#history .side { display: flex; flex-direction: column; gap: 8px; }
+#history .side a { color: var(--active); font-size: 12px; }

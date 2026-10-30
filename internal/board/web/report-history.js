@@ -67,6 +67,41 @@
     return el('div', { class: 'track' }, (r.sessions || []).map((s) => segment(s, start, span, now)))
   }
 
+  function kv(pairs) {
+    return el('dl', { class: 'kv' }, pairs.flatMap(([k, v]) => [el('dt', { text: k }), el('dd', { text: v })]))
+  }
+
+  const SESSION_HEAD = ['agente', 'iteração', 'modelo', 'início', 'duração', 'tokens', 'custo']
+
+  // The numbers of each segment of the timeline, and what the run spent outside the agents.
+  function detail(r) {
+    const start = ms(r.started_at)
+    const sessions = r.sessions || []
+    const agents = sessions.reduce((sum, s) => sum + s.seconds, 0)
+    return el('details', { class: 'detail', open: true },
+      el('summary', { text: 'sessões' }),
+      el('div', { class: 'detail-body' },
+        el('div', { class: 'table-wrap' }, el('table', { class: 'sessions' },
+          el('thead', {}, el('tr', {}, SESSION_HEAD.map((h, i) => el('th', { class: i >= 4 ? 'num' : null, text: h })))),
+          el('tbody', {}, sessions.map((s) => el('tr', {},
+            el('td', {}, paint(el('span', { class: 'dot' }), s.role), ' ', s.role),
+            el('td', { text: s.iteration > 0 ? String(s.iteration) : '—' }),
+            el('td', { text: s.model || 'padrão' }),
+            el('td', { class: 'mono', text: since(s, start) }),
+            el('td', { class: 'num', text: fmtDuration(s.seconds) }),
+            el('td', { class: 'num', text: fmtTokens(s.tokens) }),
+            el('td', { class: 'num', text: fmtUSD(s.cost_usd) })))))),
+        el('div', { class: 'side' },
+          kv([
+            ['iterações', String(r.iterations)],
+            ['tempo dos agentes', fmtDuration(agents)],
+            // Sessions that overlap can add up to more than the run lasted.
+            ['tempo fora dos agentes', fmtDuration(Math.max(0, r.seconds - agents))],
+            ['tokens', fmtTokens(r.tokens)],
+          ]),
+          el('a', { href: './', text: 'abrir no quadro' }))))
+  }
+
   function row(r, now) {
     const kind = KINDS.includes(r.kind) ? el('span', { class: 'tag kind-' + r.kind, text: r.kind }) : null
     return el('details', { class: 'run' },
@@ -77,7 +112,8 @@
         el('div', { class: 'outcome' }, outcome(r.outcome)),
         track(r, now),
         el('div', { class: 'num dur', text: fmtDuration(r.seconds) }),
-        el('div', { class: 'num cost', text: fmtUSD(r.cost_usd) })))
+        el('div', { class: 'num cost', text: fmtUSD(r.cost_usd) })),
+      detail(r))
   }
 
   window.reportSections = window.reportSections || {}
