@@ -34,6 +34,7 @@
 
 #history .detail { padding: 4px 8px 12px; }
 #history .detail > summary { color: var(--muted); font-size: 12px; cursor: pointer; }
+#history .table-wrap { overflow-x: auto; }
 #history .detail-body { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 1fr); gap: 16px; margin-top: 6px; }
 #history .sessions { width: 100%; border-collapse: collapse; font-size: 12px; }
 #history .sessions th { color: var(--muted); font-weight: 400; text-align: left; }
@@ -58,3 +59,19 @@
 #history .error { margin: 8px 0 0; }
 
 #history .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-bottom: 8px; color: var(--muted); font-size: 12px; }
+
+/* Narrow: the ref and the cost on top, the whole track below. */
+@media (max-width: 900px) {
+  #history .history-head { display: none; }
+  #history .run > summary {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas: "what cost" "outcome dur" "track track";
+    gap: 4px 12px;
+  }
+  #history .what { grid-area: what; }
+  #history .cost { grid-area: cost; }
+  #history .outcome { grid-area: outcome; }
+  #history .dur { grid-area: dur; }
+  #history .track { grid-area: track; }
+  #history .detail-body { grid-template-columns: 1fr; }
+}

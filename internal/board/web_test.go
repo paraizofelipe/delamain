@@ -4,6 +4,7 @@ import (
 	"io/fs"
 	"path"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -293,5 +294,32 @@ func TestReportHistoryShouldShowTheLegendOfTheRolesPresent(t *testing.T) {
 	}
 	if !regexp.MustCompile(`\.legend\s*\{`).MatchString(readAsset(t, "report-history.css")) {
 		t.Error("report-history.css does not style the legend")
+	}
+}
+
+func TestReportHistoryStylesShouldStackTheRowBelow900px(t *testing.T) {
+	css := readAsset(t, "report-history.css")
+	media := regexp.MustCompile(`@media \(max-width: 900px\)\s*\{(?:[^{}]*\{[^}]*\})*[^{}]*\}`).FindString(css)
+	for _, rule := range []string{
+		`\.history-head\s*\{[^}]*display:\s*none`,
+		`\.run > summary\s*\{[^}]*grid-template-areas:`,
+		`\.track\s*\{[^}]*grid-area:\s*track`,
+		`\.detail-body\s*\{[^}]*grid-template-columns:\s*1fr`,
+	} {
+		if !regexp.MustCompile(rule).MatchString(media) {
+			t.Errorf("report-history.css has no %s under @media (max-width: 900px):\n%s", rule, media)
+		}
+	}
+	if !regexp.MustCompile(`\.table-wrap\s*\{[^}]*overflow-x:\s*auto`).MatchString(css) {
+		t.Error("report-history.css lets the sessions table overflow the page")
+	}
+	if !strings.Contains(css, "text-overflow: ellipsis") {
+		t.Error("report-history.css does not truncate the long titles")
+	}
+	// The page has to read on a 375px phone.
+	for _, m := range regexp.MustCompile(`min-width:\s*(\d+)px`).FindAllStringSubmatch(css, -1) {
+		if n, _ := strconv.Atoi(m[1]); n > 375 {
+			t.Errorf("report-history.css sets min-width: %spx, wider than a 375px phone", m[1])
+		}
 	}
 }
