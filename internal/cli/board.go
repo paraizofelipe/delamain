@@ -227,10 +227,7 @@ func (s boardSource) Status(ctx context.Context) (board.Status, error) {
 	return st, nil
 }
 
-// Report answers an empty report until it is assembled from the store; its lists are empty, not null.
-func (s boardSource) Report(_ context.Context, q board.ReportQuery) (board.Report, error) {
-	return board.Report{
-		Period: q.Period, Repos: []string{}, Daily: []board.ReportDay{}, TopRuns: []board.ReportRun{},
-		TopRoles: []board.ReportRole{}, TopSessions: []board.ReportSession{}, History: []board.ReportRun{},
-	}, nil
+// Report assembles the Relatório page from the store.
+func (s boardSource) Report(ctx context.Context, q board.ReportQuery) (board.Report, error) {
+	return buildReport(ctx, s.in.st, q, time.Now())
 }

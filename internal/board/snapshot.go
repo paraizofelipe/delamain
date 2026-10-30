@@ -138,7 +138,7 @@ func (b *builder) card(r Run) Card {
 	}
 	switch {
 	case terminal(r.State):
-		c.Outcome, c.Reason = outcome(r.Reason), detail(r.Reason)
+		c.Outcome, c.Reason = Outcome(r.Reason), detail(r.Reason)
 		if c.Outcome == "" {
 			c.Outcome = r.State
 		}
