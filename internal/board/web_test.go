@@ -142,12 +142,80 @@ func TestReportPageHandsEachSectionItsContainer(t *testing.T) {
 			t.Errorf("report.js does not hand the %s section its container %s", s.name, s.container)
 		}
 		section := readAsset(t, "report-"+s.name+".js")
-		if !strings.Contains(section, "window.reportSections."+s.name+" = ") || !strings.Contains(section, "em construção") {
+		if !strings.Contains(section, "window.reportSections."+s.name+" = ") {
+			t.Errorf("report-%s.js does not register itself:\n%s", s.name, section)
+		}
+		if s.name != "history" && !strings.Contains(section, "em construção") {
 			t.Errorf("report-%s.js does not register its placeholder:\n%s", s.name, section)
 		}
 	}
 	top := readAsset(t, "report-top.js")
 	if !strings.Contains(top, "'#top-runs'") || !strings.Contains(top, "'#top-agents'") {
 		t.Error("report-top.js leaves #top-runs or #top-agents empty")
+	}
+}
+
+func TestReportHistoryShouldListEachRunWithItsOutcomeDurationAndCost(t *testing.T) {
+	js := readAsset(t, "report-history.js")
+	for _, want := range []string{"report.history || []", "el('details'", "'run '", "' · '", "padStart(", "fmtDuration(", "fmtUSD(", "'badge '", "'tag kind-'", "title: r.title, text: r.title"} {
+		if !strings.Contains(js, want) {
+			t.Errorf("report-history.js has no %s", want)
+		}
+	}
+	for _, head := range []string{"'Run'", "'Resultado'", "'Linha do tempo dos agentes'", "'Duração'", "'Custo'"} {
+		if !strings.Contains(js, head) {
+			t.Errorf("report-history.js has no column %s", head)
+		}
+	}
+	for _, o := range []struct{ outcome, label, tone string }{
+		{"approved", "aprovada", "good"},
+		{"exhausted", "máx. iterações", "warn"},
+		{"needs_info", "precisa de info", "warn"},
+		{"halted", "interrompida", "stop"},
+	} {
+		entry := regexp.MustCompile(`\b` + o.outcome + `: \['[^']+', '` + regexp.QuoteMeta(o.label) + `', '` + o.tone + `'\]`)
+		if !entry.MatchString(js) {
+			t.Errorf("report-history.js does not badge %s as %q (%s)", o.outcome, o.label, o.tone)
+		}
+	}
+	// Only a known kind becomes a class name: anything else from the data would be a class of its own.
+	if !strings.Contains(js, "['issue', 'review', 'address']") {
+		t.Error("report-history.js does not check the kind before it becomes a class")
+	}
+}
+
+func TestReportHistoryShouldDrawEachSessionAsASegmentOfTheRunTimeline(t *testing.T) {
+	js := readAsset(t, "report-history.js")
+	for _, want := range []string{"r.sessions || []", "style.setProperty('left'", "style.setProperty('width'", ">= 14", "'running'", "Date.now()", "ended_at", "toFixed(", "' · iter '"} {
+		if !strings.Contains(js, want) {
+			t.Errorf("report-history.js has no %s", want)
+		}
+	}
+	css := readAsset(t, "report-history.css")
+	if !regexp.MustCompile(`\.seg\s*\{[^}]*position:\s*absolute`).MatchString(css) {
+		t.Error("report-history.css does not place each segment on the track")
+	}
+	if !regexp.MustCompile(`\.seg\.running\s*\{[^}]*repeating-linear-gradient`).MatchString(css) {
+		t.Error("report-history.css does not texture a session still running")
+	}
+}
+
+// The API sends each run's sessions in start order (internal/cli/board_report.go): the page keeps it.
+func TestReportHistoryShouldKeepTheSessionsInTheOrderTheAPISent(t *testing.T) {
+	if strings.Contains(readAsset(t, "report-history.js"), ".sort(") {
+		t.Error("report-history.js reorders what the API already ordered")
+	}
+	if strings.Contains(readAsset(t, "report-history.js"), "em construção") {
+		t.Error("report-history.js is still the placeholder")
+	}
+}
+
+func TestReportHistoryShouldPaintOnlyKnownRolesOnTheTimeline(t *testing.T) {
+	js := readAsset(t, "report-history.js")
+	// Only a known role reaches var(--r-…): anything else would be a CSS token from the data.
+	for _, want := range []string{"['planner', 'implementer', 'reviewer', 'pr-reviewer', 'responder']", "ROLES.includes(role) ? `var(--r-${role})` : 'var(--muted)'"} {
+		if !strings.Contains(js, want) {
+			t.Errorf("report-history.js has no %s", want)
+		}
 	}
 }
