@@ -42,3 +42,17 @@
 #history .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--role); }
 #history .side { display: flex; flex-direction: column; gap: 8px; }
 #history .side a { color: var(--active); font-size: 12px; }
+
+#history .more {
+  display: block;
+  margin: 12px auto 0;
+  background: var(--card);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 4px 14px;
+  font: inherit;
+  cursor: pointer;
+}
+#history .more:disabled { color: var(--muted); cursor: wait; }
+#history .error { margin: 8px 0 0; }

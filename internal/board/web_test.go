@@ -242,3 +242,30 @@ func TestReportHistoryShouldDetailTheSessionsWithTheTimelineNumbers(t *testing.T
 		t.Errorf("report-history.js writes the relative start in %d places, want the definition, the tooltip and the table", n)
 	}
 }
+
+func TestReportHistoryShouldAppendTheNextPageWithoutDuplicatingRuns(t *testing.T) {
+	js := readAsset(t, "report-history.js")
+	for _, want := range []string{"api.page(", "report.next_offset", "new Set(", "shown.has(", "shown.add(", "'carregar mais 20'", "list.append(", "class: 'error'"} {
+		if !strings.Contains(js, want) {
+			t.Errorf("report-history.js has no %s", want)
+		}
+	}
+	if !regexp.MustCompile(`more\.hidden = (\w+\.)?next === null`).MatchString(js) {
+		t.Error("report-history.js keeps 'carregar mais 20' after the last page")
+	}
+	// A page asked for under the old filters must not land in the new history.
+	if !regexp.MustCompile(`const gen = \+\+generation`).MatchString(js) || !strings.Contains(js, "gen !== generation") {
+		t.Error("report-history.js does not drop a page that comes back after the filters changed")
+	}
+	handler := regexp.MustCompile(`(?s)async function loadMore\(.*?\n  \}\n`).FindString(js)
+	if handler == "" {
+		t.Fatal("report-history.js has no loadMore")
+	}
+	if strings.Contains(handler, "replaceChildren(") {
+		t.Error("report-history.js redraws the rows already on the page when it loads more")
+	}
+	// The section is called again on every filter change: a listener on window or document would pile up.
+	if regexp.MustCompile(`\b(window|document)\.addEventListener`).MatchString(js) {
+		t.Error("report-history.js listens on window or document")
+	}
+}

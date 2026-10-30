@@ -116,11 +116,53 @@
       detail(r))
   }
 
-  window.reportSections = window.reportSections || {}
-  window.reportSections.history = (container, report) => {
+  // Bumped on every call of the section, which report.js makes on every filter change.
+  let generation = 0
+
+  // Appends the runs not on the page yet: a run that moved up a page under new data is drawn once.
+  function append(v, runs) {
     const now = Date.now()
+    for (const r of runs) {
+      if (v.shown.has(r.id)) continue
+      v.shown.add(r.id)
+      v.list.append(row(r, now))
+    }
+    v.more.hidden = v.next === null
+  }
+
+  async function loadMore(v) {
+    v.more.disabled = true
+    v.error.hidden = true
+    try {
+      const page = await v.api.page(v.next)
+      if (v.gen !== generation) return
+      v.next = page.next_offset ?? null
+      append(v, page.history || [])
+    } catch (err) {
+      if (v.gen !== generation) return
+      // The rows already drawn stay; the button is there to try again.
+      v.error.textContent = 'não foi possível carregar mais execuções: ' + (err.message || err)
+      v.error.hidden = false
+    } finally {
+      v.more.disabled = false
+    }
+  }
+
+  window.reportSections = window.reportSections || {}
+  window.reportSections.history = (container, report, api) => {
+    const gen = ++generation
+    const v = {
+      gen,
+      api,
+      shown: new Set(),
+      next: report.next_offset ?? null,
+      list: el('div', { class: 'history-runs' }),
+      error: el('p', { class: 'error', hidden: true }),
+    }
+    v.more = el('button', { type: 'button', class: 'more', text: 'carregar mais 20', onclick: () => loadMore(v) })
+    append(v, report.history || [])
     container.replaceChildren(
       el('div', { class: 'history-head' }, HEAD.map((h) => el('span', { text: h }))),
-      el('div', { class: 'history-runs' }, (report.history || []).map((r) => row(r, now))))
+      v.list, v.error, v.more)
   }
 })()
