@@ -142,12 +142,55 @@ func TestReportPageHandsEachSectionItsContainer(t *testing.T) {
 			t.Errorf("report.js does not hand the %s section its container %s", s.name, s.container)
 		}
 		section := readAsset(t, "report-"+s.name+".js")
-		if !strings.Contains(section, "window.reportSections."+s.name+" = ") || !strings.Contains(section, "em construção") {
+		if !strings.Contains(section, "window.reportSections."+s.name+" = ") {
+			t.Errorf("report-%s.js does not register itself:\n%s", s.name, section)
+		}
+		if s.name != "top" && !strings.Contains(section, "em construção") {
 			t.Errorf("report-%s.js does not register its placeholder:\n%s", s.name, section)
 		}
 	}
 	top := readAsset(t, "report-top.js")
 	if !strings.Contains(top, "'#top-runs'") || !strings.Contains(top, "'#top-agents'") {
 		t.Error("report-top.js leaves #top-runs or #top-agents empty")
+	}
+}
+
+// The runs come ranked by cost from the API (internal/cli/board_report_test.go): the page keeps that order.
+func TestReportTopShouldRankTheMostExpensiveRuns(t *testing.T) {
+	js := readAsset(t, "report-top.js")
+	for _, want := range []string{"report.top_runs", "'#top-runs'", "'run '", "fmtUSD(", "fmtTokens(", "fmtDuration(", "style.setProperty('--w'", "class: 'ref'"} {
+		if !strings.Contains(js, want) {
+			t.Errorf("report-top.js has no %s", want)
+		}
+	}
+	if strings.Contains(js, ".sort(") {
+		t.Error("report-top.js reorders what the API already ranked")
+	}
+}
+
+func TestReportTopShouldBadgeEachOutcome(t *testing.T) {
+	js := readAsset(t, "report-top.js")
+	for _, o := range []struct{ outcome, label, tone string }{
+		{"approved", "aprovada", "good"},
+		{"exhausted", "máx. iterações", "warn"},
+		{"needs_info", "precisa de info", "warn"},
+		{"halted", "interrompida", "stop"},
+	} {
+		entry := regexp.MustCompile(`\b` + o.outcome + `: \['[^']+', '` + regexp.QuoteMeta(o.label) + `', '` + o.tone + `'\]`)
+		if !entry.MatchString(js) {
+			t.Errorf("report-top.js does not badge %s as %q (%s)", o.outcome, o.label, o.tone)
+		}
+	}
+	if !strings.Contains(js, "'badge '") {
+		t.Error("report-top.js does not give the outcome the badge class")
+	}
+}
+
+func TestReportTopShouldSayNothingInThePeriodWhenAListIsEmpty(t *testing.T) {
+	js := readAsset(t, "report-top.js")
+	for _, want := range []string{"'nada no período'", "class: 'empty'"} {
+		if !strings.Contains(js, want) {
+			t.Errorf("report-top.js has no %s", want)
+		}
 	}
 }
