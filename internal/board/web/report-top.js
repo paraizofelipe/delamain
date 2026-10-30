@@ -6,14 +6,36 @@
   // [icon, label, badge tone] per pipeline.Outcome.
   const OUTCOMES = { approved: ['✓', 'aprovada', 'good'], exhausted: ['↻', 'máx. iterações', 'warn'], needs_info: ['?', 'precisa de info', 'warn'], halted: ['■', 'interrompida', 'stop'] }
 
+  // Only these reach --role: a role from the data never becomes a CSS token.
+  const ROLES = ['planner', 'implementer', 'reviewer', 'pr-reviewer', 'responder']
+  const MODES = [['roles', 'por papel'], ['sessions', 'por sessão']]
+
+  let mode = 'roles'
+  try {
+    const saved = localStorage.getItem('delamain-report-top-mode')
+    if (MODES.some(([m]) => m === saved)) mode = saved
+  } catch (_) { /* no storage: the agents start by role */ }
+
+  let last = null
+
   const empty = () => el('p', { class: 'empty', text: 'nada no período' })
 
+  const pct = (share) => Math.min(100, Math.max(0, share * 100 || 0))
+
   // A bar of share 0..1 of the panel's reference value.
-  function bar(share) {
+  function bar(share, role) {
     const node = el('span', { class: 'bar' })
-    node.style.setProperty('--w', `${Math.min(100, Math.max(0, share * 100 || 0)).toFixed(1)}%`)
+    node.style.setProperty('--w', `${pct(share).toFixed(1)}%`)
+    if (role !== undefined) paint(node, role)
     return node
   }
+
+  function paint(node, role) {
+    node.style.setProperty('--role', ROLES.includes(role) ? `var(--r-${role})` : 'var(--muted)')
+    return node
+  }
+
+  const roleCell = (role) => el('td', { class: 'role' }, paint(el('span', { class: 'dot' }), role), ' ', role)
 
   // A run still going has no outcome yet; one the map does not know shows its own name.
   function outcome(o) {
@@ -41,9 +63,60 @@
         el('td', { class: 'num', text: fmtTokens(r.tokens) }))))))
   }
 
+  function rolesTable(roles) {
+    const total = roles.reduce((sum, r) => sum + r.cost_usd, 0)
+    return el('table', { class: 'ranking' },
+      el('thead', {}, el('tr', {},
+        el('th', { text: 'papel' }), el('th', { class: 'num', text: 'sessões' }), el('th', { text: 'tempo' }),
+        el('th', { class: 'num', text: 'médio' }), el('th', { class: 'num', text: 'custo' }), el('th', { class: 'share', text: '% do total' }))),
+      el('tbody', {}, roles.map((r) => {
+        const share = total > 0 ? r.cost_usd / total : 0
+        return el('tr', {},
+          roleCell(r.role),
+          el('td', { class: 'num', text: String(r.sessions) }),
+          el('td', { text: fmtDuration(r.seconds) }),
+          el('td', { class: 'num', text: fmtUSD(r.sessions ? r.cost_usd / r.sessions : 0) }),
+          el('td', { class: 'num', text: fmtUSD(r.cost_usd) }),
+          el('td', { class: 'share' }, el('span', { class: 'mono', text: `${Math.round(pct(share))}%` }), bar(share, r.role)))
+      })))
+  }
+
+  function sessionsTable(sessions) {
+    return el('table', { class: 'ranking' },
+      el('thead', {}, el('tr', {},
+        el('th', { text: 'papel' }), el('th', { text: 'execução' }), el('th', { text: 'modelo' }),
+        el('th', { text: 'tempo' }), el('th', { class: 'num', text: 'custo' }), el('th', { class: 'num', text: 'tokens' }))),
+      el('tbody', {}, sessions.map((s) => el('tr', {},
+        roleCell(s.role),
+        el('td', {}, el('span', { class: 'ref', text: s.run_ref }), s.iteration ? ' · iter ' + s.iteration : ' · —'),
+        el('td', { class: 'mono', text: s.model || 'padrão' }),
+        el('td', { text: fmtDuration(s.seconds) }),
+        el('td', { class: 'num', text: fmtUSD(s.cost_usd) }),
+        el('td', { class: 'num', text: fmtTokens(s.tokens) })))))
+  }
+
+  function renderAgents(target, report) {
+    const list = mode === 'sessions' ? report.top_sessions || [] : report.top_roles || []
+    const toggle = el('div', { class: 'periods', role: 'group', 'aria-label': 'agrupar agentes' },
+      MODES.map(([m, label]) => el('button', {
+        type: 'button',
+        'aria-pressed': String(m === mode),
+        text: label,
+        onclick: () => {
+          if (m === mode) return
+          mode = m
+          try { localStorage.setItem('delamain-report-top-mode', mode) } catch (_) { /* optional */ }
+          renderAgents(target, last)
+        },
+      })))
+    const body = !list.length ? empty() : mode === 'sessions' ? sessionsTable(list) : rolesTable(list)
+    target.replaceChildren(toggle, body)
+  }
+
   window.reportSections = window.reportSections || {}
   window.reportSections.top = (container, report) => {
+    last = report
     renderRuns(container.querySelector('#top-runs'), report.top_runs || [])
-    container.querySelector('#top-agents').replaceChildren(el('p', { class: 'empty', text: 'em construção' }))
+    renderAgents(container.querySelector('#top-agents'), report)
   }
 })()

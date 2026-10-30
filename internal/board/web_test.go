@@ -113,15 +113,20 @@ func TestReportPageKeepsItsFiltersAndAsksTheAPI(t *testing.T) {
 			t.Errorf("report.js has no %s", want)
 		}
 	}
-	// Storage may be off (private mode, file policy): reading or writing it must never stop the page.
+	touchesStorageOutsideTry(t, "report.js", js)
+}
+
+// Storage may be off (private mode, file policy): reading or writing it must never stop the page.
+func touchesStorageOutsideTry(t *testing.T, name, js string) {
+	t.Helper()
 	uses := regexp.MustCompile(`localStorage\.`).FindAllStringIndex(js, -1)
 	if len(uses) == 0 {
-		t.Fatal("report.js does not keep the filters in localStorage")
+		t.Fatalf("%s keeps nothing in localStorage", name)
 	}
 	for _, at := range uses {
 		before := js[:at[0]]
 		if strings.LastIndex(before, "try {") <= strings.LastIndex(before, "} catch") {
-			t.Errorf("report.js touches localStorage outside a try: ...%s", js[max(0, at[0]-60):at[1]])
+			t.Errorf("%s touches localStorage outside a try: ...%s", name, js[max(0, at[0]-60):at[1]])
 		}
 	}
 }
@@ -193,4 +198,38 @@ func TestReportTopShouldSayNothingInThePeriodWhenAListIsEmpty(t *testing.T) {
 			t.Errorf("report-top.js has no %s", want)
 		}
 	}
+	// Each list falls back on its own: an empty top_sessions must not leave the old table up.
+	for _, list := range []string{"report.top_runs || []", "report.top_roles || []", "report.top_sessions || []"} {
+		if !strings.Contains(js, list) {
+			t.Errorf("report-top.js does not read %s", list)
+		}
+	}
+}
+
+func TestReportTopShouldRankAgentsByRoleAndBySession(t *testing.T) {
+	js := readAsset(t, "report-top.js")
+	for _, want := range []string{"report.top_roles", "report.top_sessions", "'#top-agents'", "'padrão'", "'—'", "' · iter '", "style.setProperty('--role'"} {
+		if !strings.Contains(js, want) {
+			t.Errorf("report-top.js has no %s", want)
+		}
+	}
+	// Only a known role reaches the CSS custom property: anything else would be a CSS token from the data.
+	for _, role := range []string{"planner", "implementer", "reviewer", "pr-reviewer", "responder"} {
+		if !strings.Contains(js, "'"+role+"'") {
+			t.Errorf("report-top.js does not know the role %s", role)
+		}
+	}
+	if strings.Contains(js, "em construção") {
+		t.Error("report-top.js still leaves #top-agents as a placeholder")
+	}
+}
+
+func TestReportTopShouldRememberTheAgentsMode(t *testing.T) {
+	js := readAsset(t, "report-top.js")
+	for _, want := range []string{"'delamain-report-top-mode'", "'por papel'", "'por sessão'", "aria-pressed"} {
+		if !strings.Contains(js, want) {
+			t.Errorf("report-top.js has no %s", want)
+		}
+	}
+	touchesStorageOutsideTry(t, "report-top.js", js)
 }
