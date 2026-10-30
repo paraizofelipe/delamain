@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"database/sql"
+	"maps"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -330,5 +331,56 @@ func TestBoardReportShouldRankRolesAndSessionsByCost(t *testing.T) {
 	}
 	if !slices.Equal(rep.TopRoles, wantRoles) {
 		t.Errorf("top_roles =\n%+v\nwant\n%+v", rep.TopRoles, wantRoles)
+	}
+}
+
+func TestBoardReportShouldFillDaysWithoutCost(t *testing.T) {
+	f := newFixture(t)
+	start := reportNow.AddDate(0, 0, -12)
+	r := f.pastRun(t, f.repo, "#1", store.KindIssue, store.StateRecorded, "approved: ok", start, reportNow)
+	f.spend(t, r.ID, "planner", start, 2, 10)
+	// Before since, on its day: out of the period.
+	f.spend(t, r.ID, "planner", reportNow.AddDate(0, 0, -7).Add(-4*time.Hour), 8, 10)
+	f.spend(t, r.ID, "planner", reportNow.AddDate(0, 0, -5), 0.5, 10)
+	f.spend(t, r.ID, "implementer", reportNow.AddDate(0, 0, -5).Add(time.Hour), 0.25, 10)
+	f.spend(t, r.ID, "implementer", reportNow.AddDate(0, 0, -5).Add(2*time.Hour), 0.75, 10)
+	f.spend(t, r.ID, "reviewer", reportNow.Add(-time.Hour), 0.25, 10)
+
+	days := func(rep board.Report) map[string]map[string]float64 {
+		out := map[string]map[string]float64{}
+		for _, d := range rep.Daily {
+			if d.ByRole == nil {
+				t.Errorf("%s: by_role is {}, not null", d.Day)
+			}
+			out[d.Day] = d.ByRole
+		}
+		return out
+	}
+	rep := report(t, f, board.ReportQuery{Period: "7d"})
+	var order []string
+	for _, d := range rep.Daily {
+		order = append(order, d.Day)
+	}
+	// From the day of since to today, both included.
+	if want := []string{"2026-10-13", "2026-10-14", "2026-10-15", "2026-10-16", "2026-10-17", "2026-10-18", "2026-10-19", "2026-10-20"}; !slices.Equal(order, want) {
+		t.Fatalf("days of 7d = %v, want %v", order, want)
+	}
+	got := days(rep)
+	for day, want := range map[string]map[string]float64{
+		"2026-10-13": {}, "2026-10-14": {}, "2026-10-15": {"planner": 0.5, "implementer": 1}, "2026-10-16": {},
+		"2026-10-20": {"reviewer": 0.25},
+	} {
+		if !maps.Equal(got[day], want) {
+			t.Errorf("%s = %v, want %v", day, got[day], want)
+		}
+	}
+
+	all := report(t, f, board.ReportQuery{Period: "all"})
+	// From the first day with cost.
+	if len(all.Daily) != 13 || all.Daily[0].Day != "2026-10-08" || all.Daily[12].Day != "2026-10-20" {
+		t.Errorf("days of all = %+v", all.Daily)
+	}
+	if got := days(all); !maps.Equal(got["2026-10-08"], map[string]float64{"planner": 2}) || !maps.Equal(got["2026-10-13"], map[string]float64{"planner": 8}) {
+		t.Errorf("days of all = %v", got)
 	}
 }

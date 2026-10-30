@@ -69,6 +69,11 @@ func buildReport(ctx context.Context, st *store.Store, q board.ReportQuery, now 
 	}
 	rep.TopSessions = topByCost(all, 10, func(s board.ReportSession) float64 { return s.CostUSD })
 	rep.TopRoles = reportRoles(all)
+	costs, err := st.DailyCostByRole(ctx, store.ReportFilter{Since: since, Repo: q.Repo, Kind: q.Kind})
+	if err != nil {
+		return board.Report{}, err
+	}
+	rep.Daily = reportDays(costs, since, now)
 	if n > 0 {
 		p := reportKPIs(prev)
 		rep.KPIs.Previous = &p
@@ -151,6 +156,42 @@ func reportSessions(ctx context.Context, st *store.Store, runs []board.ReportRun
 		}
 	}
 	return out, nil
+}
+
+// reportDays is every local day from the one of since to the one of now, those without cost
+// included; with no since, they start on the first day with cost.
+func reportDays(costs []store.DayCost, since, now time.Time) []board.ReportDay {
+	out := []board.ReportDay{}
+	first := localDay(since)
+	if since.IsZero() {
+		if len(costs) == 0 {
+			return out
+		}
+		first = costs[0].Day
+	}
+	byDay := map[string]map[string]float64{}
+	for _, c := range costs {
+		day := c.Day.Format(time.DateOnly)
+		if byDay[day] == nil {
+			byDay[day] = map[string]float64{}
+		}
+		byDay[day][c.Role] += c.CostUSD
+	}
+	for d, last := first, localDay(now); !d.After(last); d = d.AddDate(0, 0, 1) {
+		day := d.Format(time.DateOnly)
+		roles := byDay[day]
+		if roles == nil {
+			roles = map[string]float64{}
+		}
+		out = append(out, board.ReportDay{Day: day, ByRole: roles})
+	}
+	return out
+}
+
+// localDay is the midnight of t's day in time.Local.
+func localDay(t time.Time) time.Time {
+	l := t.In(time.Local)
+	return time.Date(l.Year(), l.Month(), l.Day(), 0, 0, 0, 0, time.Local)
 }
 
 // reportRoles sums sessions per role, highest cost first and, on a tie, by role.
