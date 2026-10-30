@@ -776,6 +776,10 @@ func (r *Runner) send(ctx context.Context, ru *run, role, text string) error {
 		if err := r.startAgent(ctx, ru, role); err != nil {
 			return err
 		}
+	} else if s, ok := ru.sessions[role]; ok && s.iter != ru.rec.Iteration {
+		// The agent outlives the iteration; its session record does not.
+		r.endSession(ctx, ru, role, store.AgentDone)
+		r.startSession(ctx, ru, role, s.model)
 	}
 	timeout := r.Cfg.Pipeline.PromptTimeout
 	stop := r.watchBudget(ctx, ru, ru.agents[role])

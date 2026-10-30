@@ -717,6 +717,29 @@ func TestRunShouldRecordTheModelOfEachSession(t *testing.T) {
 	}
 }
 
+func TestRunShouldRecordOneSessionPerAgentAndIteration(t *testing.T) {
+	hs := newHarness(t, blockFirstReview)
+	res := hs.run(t)
+	if res.Outcome != OutcomeApproved || res.Iterations != 2 {
+		t.Fatalf("the second review approves: got %s after %d", res.Outcome, res.Iterations)
+	}
+
+	var got []string
+	for _, s := range sessions(t, hs, res.RunID) {
+		got = append(got, fmt.Sprintf("%s/%d", s.Role, s.Iteration))
+		if s.State != store.AgentDone || s.EndedAt.IsZero() {
+			t.Errorf("%s/%d = %s ended %v, want done", s.Role, s.Iteration, s.State, s.EndedAt)
+		}
+	}
+	slices.Sort(got)
+	if want := []string{"implementer/1", "implementer/2", "planner/0", "reviewer/1", "reviewer/2"}; !slices.Equal(got, want) {
+		t.Fatalf("sessions = %v, want %v", got, want)
+	}
+	if agents, _ := hs.st.Agents(context.Background(), res.RunID); len(agents) != 3 {
+		t.Fatalf("the agents table keeps one row per role: %+v", agents)
+	}
+}
+
 func TestStopAgentShouldEndItsSessionWithTheAgentState(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
