@@ -113,15 +113,20 @@ func TestReportPageKeepsItsFiltersAndAsksTheAPI(t *testing.T) {
 			t.Errorf("report.js has no %s", want)
 		}
 	}
-	// Storage may be off (private mode, file policy): reading or writing it must never stop the page.
+	touchesStorageOutsideTry(t, "report.js", js)
+}
+
+// Storage may be off (private mode, file policy): reading or writing it must never stop the page.
+func touchesStorageOutsideTry(t *testing.T, name, js string) {
+	t.Helper()
 	uses := regexp.MustCompile(`localStorage\.`).FindAllStringIndex(js, -1)
 	if len(uses) == 0 {
-		t.Fatal("report.js does not keep the filters in localStorage")
+		t.Fatalf("%s keeps nothing in localStorage", name)
 	}
 	for _, at := range uses {
 		before := js[:at[0]]
 		if strings.LastIndex(before, "try {") <= strings.LastIndex(before, "} catch") {
-			t.Errorf("report.js touches localStorage outside a try: ...%s", js[max(0, at[0]-60):at[1]])
+			t.Errorf("%s touches localStorage outside a try: ...%s", name, js[max(0, at[0]-60):at[1]])
 		}
 	}
 }
@@ -138,7 +143,7 @@ func TestReportPageHandsEachSectionItsContainer(t *testing.T) {
 		name, container string
 		placeholder     bool
 	}{
-		{"daily", "$('daily')", false}, {"top", "document.querySelector('.report-top')", true}, {"history", "$('history')", true},
+		{"daily", "$('daily')", false}, {"top", "document.querySelector('.report-top')", false}, {"history", "$('history')", true},
 	} {
 		call := regexp.MustCompile(`\['` + s.name + `',\s*` + regexp.QuoteMeta(s.container))
 		if !call.MatchString(js) {
@@ -155,6 +160,99 @@ func TestReportPageHandsEachSectionItsContainer(t *testing.T) {
 	top := readAsset(t, "report-top.js")
 	if !strings.Contains(top, "'#top-runs'") || !strings.Contains(top, "'#top-agents'") {
 		t.Error("report-top.js leaves #top-runs or #top-agents empty")
+	}
+}
+
+// The runs come ranked by cost from the API (internal/cli/board_report_test.go): the page keeps that order.
+func TestReportTopShouldRankTheMostExpensiveRuns(t *testing.T) {
+	js := readAsset(t, "report-top.js")
+	for _, want := range []string{"report.top_runs", "'#top-runs'", "'run '", "fmtUSD(", "fmtTokens(", "fmtDuration(", "style.setProperty('--w'", "class: 'ref'"} {
+		if !strings.Contains(js, want) {
+			t.Errorf("report-top.js has no %s", want)
+		}
+	}
+	if strings.Contains(js, ".sort(") {
+		t.Error("report-top.js reorders what the API already ranked")
+	}
+}
+
+func TestReportTopShouldBadgeEachOutcome(t *testing.T) {
+	js := readAsset(t, "report-top.js")
+	for _, o := range []struct{ outcome, label, tone string }{
+		{"approved", "aprovada", "good"},
+		{"exhausted", "máx. iterações", "warn"},
+		{"needs_info", "precisa de info", "warn"},
+		{"halted", "interrompida", "stop"},
+	} {
+		entry := regexp.MustCompile(`\b` + o.outcome + `: \['[^']+', '` + regexp.QuoteMeta(o.label) + `', '` + o.tone + `'\]`)
+		if !entry.MatchString(js) {
+			t.Errorf("report-top.js does not badge %s as %q (%s)", o.outcome, o.label, o.tone)
+		}
+	}
+	if !strings.Contains(js, "'badge '") {
+		t.Error("report-top.js does not give the outcome the badge class")
+	}
+}
+
+func TestReportTopShouldSayNothingInThePeriodWhenAListIsEmpty(t *testing.T) {
+	js := readAsset(t, "report-top.js")
+	for _, want := range []string{"'nada no período'", "class: 'empty'"} {
+		if !strings.Contains(js, want) {
+			t.Errorf("report-top.js has no %s", want)
+		}
+	}
+	// Each list falls back on its own: an empty top_sessions must not leave the old table up.
+	for _, list := range []string{"report.top_runs || []", "report.top_roles || []", "report.top_sessions || []"} {
+		if !strings.Contains(js, list) {
+			t.Errorf("report-top.js does not read %s", list)
+		}
+	}
+}
+
+func TestReportTopShouldRankAgentsByRoleAndBySession(t *testing.T) {
+	js := readAsset(t, "report-top.js")
+	for _, want := range []string{"report.top_roles", "report.top_sessions", "'#top-agents'", "'padrão'", "'—'", "' · iter '", "style.setProperty('--role'"} {
+		if !strings.Contains(js, want) {
+			t.Errorf("report-top.js has no %s", want)
+		}
+	}
+	// Only a known role reaches the CSS custom property: anything else would be a CSS token from the data.
+	for _, role := range []string{"planner", "implementer", "reviewer", "pr-reviewer", "responder"} {
+		if !strings.Contains(js, "'"+role+"'") {
+			t.Errorf("report-top.js does not know the role %s", role)
+		}
+	}
+	if strings.Contains(js, "em construção") {
+		t.Error("report-top.js still leaves #top-agents as a placeholder")
+	}
+}
+
+func TestReportTopShouldRememberTheAgentsMode(t *testing.T) {
+	js := readAsset(t, "report-top.js")
+	for _, want := range []string{"'delamain-report-top-mode'", "'por papel'", "'por sessão'", "aria-pressed"} {
+		if !strings.Contains(js, want) {
+			t.Errorf("report-top.js has no %s", want)
+		}
+	}
+	touchesStorageOutsideTry(t, "report-top.js", js)
+}
+
+func TestReportTopStylesShouldStackAndHideSecondaryColumns(t *testing.T) {
+	css := readAsset(t, "report-top.css")
+	for _, q := range []struct{ width, rule string }{
+		{"1100px", `\.report-top\s*\{[^}]*grid-template-columns:\s*1fr`},
+		{"640px", `\.secondary\s*\{[^}]*display:\s*none`},
+	} {
+		media := regexp.MustCompile(`@media \(max-width: ` + q.width + `\)\s*\{(?:[^{}]*\{[^}]*\})*[^{}]*\}`).FindString(css)
+		if !regexp.MustCompile(q.rule).MatchString(media) {
+			t.Errorf("report-top.css has no %s under @media (max-width: %s):\n%s", q.rule, q.width, media)
+		}
+	}
+	if !strings.Contains(css, "text-overflow: ellipsis") {
+		t.Error("report-top.css does not truncate the long titles")
+	}
+	if !strings.Contains(readAsset(t, "report-top.js"), "'secondary'") {
+		t.Error("report-top.js marks no column as secondary")
 	}
 }
 
