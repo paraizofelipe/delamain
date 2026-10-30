@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"testing"
 	"time"
 
@@ -116,5 +118,34 @@ func TestBoardReportShouldComputeKPIsAndThePreviousPeriod(t *testing.T) {
 	want = board.ReportKPIs{Runs: 8, CostUSD: 8.25, AvgCostUSD: 8.25 / 8, MedianSeconds: 200, P90Seconds: 500, Approved: 2, Halted: 2}
 	if all.KPIs != want {
 		t.Errorf("kpis in all = %+v, want %+v", all.KPIs, want)
+	}
+}
+
+// costlyRun seeds a finished run started hoursAgo that cost cost, billed to role.
+func (f *fixture) costlyRun(t *testing.T, ref string, hoursAgo int, role string, cost float64) store.Run {
+	t.Helper()
+	start := reportNow.Add(-time.Duration(hoursAgo) * time.Hour)
+	r := f.pastRun(t, f.repo, ref, store.KindIssue, store.StateRecorded, "approved: PR aberto", start, start.Add(time.Minute))
+	f.spend(t, r.ID, role, start, cost, 10)
+	return r
+}
+
+func TestBoardReportShouldRankTheMostExpensiveRuns(t *testing.T) {
+	f := newFixture(t)
+	for i, cost := range []float64{0.5, 3, 1, 2, 2, 0.1, 4} {
+		f.costlyRun(t, "#"+strconv.Itoa(i+1), 100-10*i, "implementer", cost)
+	}
+
+	rep := report(t, f, board.ReportQuery{Period: "7d"})
+	var got []string
+	for _, r := range rep.TopRuns {
+		got = append(got, r.Ref)
+		if r.Sessions != nil {
+			t.Errorf("%s: top_runs carry no sessions: %+v", r.Ref, r.Sessions)
+		}
+	}
+	// A tie keeps the newest first, as in the history.
+	if want := []string{"#7", "#2", "#5", "#4", "#3"}; !slices.Equal(got, want) {
+		t.Errorf("top_runs = %v, want %v", got, want)
 	}
 }

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"cmp"
 	"context"
 	"slices"
 	"time"
@@ -40,11 +41,19 @@ func buildReport(ctx context.Context, st *store.Store, q board.ReportQuery, now 
 		rep.History = append(rep.History, reportRun(s, now))
 	}
 	rep.KPIs = reportKPIs(rep.History)
+	rep.TopRuns = topByCost(rep.History, 5, func(r board.ReportRun) float64 { return r.CostUSD })
 	if n > 0 {
 		p := reportKPIs(prev)
 		rep.KPIs.Previous = &p
 	}
 	return rep, nil
+}
+
+// topByCost is up to n of xs, highest cost first; a tie keeps their order.
+func topByCost[T any](xs []T, n int, cost func(T) float64) []T {
+	out := slices.Clone(xs)
+	slices.SortStableFunc(out, func(a, b T) int { return cmp.Compare(cost(b), cost(a)) })
+	return out[:min(n, len(out))]
 }
 
 // reportKPIs totals runs; the median and p90 durations are of the finished ones only.
