@@ -56,3 +56,5 @@
 }
 #history .more:disabled { color: var(--muted); cursor: wait; }
 #history .error { margin: 8px 0 0; }
+
+#history .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-bottom: 8px; color: var(--muted); font-size: 12px; }

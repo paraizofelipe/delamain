@@ -119,15 +119,24 @@
   // Bumped on every call of the section, which report.js makes on every filter change.
   let generation = 0
 
+  // The roles on the timelines drawn so far: the known ones in their fixed order, then any other.
+  function legend(v) {
+    const roles = v.roles
+    const order = [...ROLES.filter((role) => roles.has(role)), ...[...roles].filter((role) => !ROLES.includes(role))]
+    v.legend.replaceChildren(...order.map((role) => el('span', { class: 'item' }, paint(el('span', { class: 'dot' }), role), ' ', role)))
+  }
+
   // Appends the runs not on the page yet: a run that moved up a page under new data is drawn once.
   function append(v, runs) {
     const now = Date.now()
     for (const r of runs) {
       if (v.shown.has(r.id)) continue
       v.shown.add(r.id)
+      for (const s of r.sessions || []) v.roles.add(s.role)
       v.list.append(row(r, now))
     }
     v.more.hidden = v.next === null
+    legend(v)
   }
 
   async function loadMore(v) {
@@ -151,10 +160,16 @@
   window.reportSections = window.reportSections || {}
   window.reportSections.history = (container, report, api) => {
     const gen = ++generation
+    if (!(report.history || []).length) {
+      container.replaceChildren(el('p', { class: 'empty', text: 'nenhuma execução no período' }))
+      return
+    }
     const v = {
       gen,
       api,
       shown: new Set(),
+      roles: new Set(),
+      legend: el('div', { class: 'legend' }),
       next: report.next_offset ?? null,
       list: el('div', { class: 'history-runs' }),
       error: el('p', { class: 'error', hidden: true }),
@@ -162,6 +177,7 @@
     v.more = el('button', { type: 'button', class: 'more', text: 'carregar mais 20', onclick: () => loadMore(v) })
     append(v, report.history || [])
     container.replaceChildren(
+      v.legend,
       el('div', { class: 'history-head' }, HEAD.map((h) => el('span', { text: h }))),
       v.list, v.error, v.more)
   }

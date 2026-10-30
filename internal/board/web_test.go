@@ -269,3 +269,29 @@ func TestReportHistoryShouldAppendTheNextPageWithoutDuplicatingRuns(t *testing.T
 		t.Error("report-history.js listens on window or document")
 	}
 }
+
+func TestReportHistoryShouldSayNoRunsInThePeriodWhenTheHistoryIsEmpty(t *testing.T) {
+	js := readAsset(t, "report-history.js")
+	if !strings.Contains(js, "el('p', { class: 'empty', text: 'nenhuma execução no período' })") {
+		t.Error("report-history.js does not say there is no run in the period")
+	}
+	if strings.Contains(js, "em construção") {
+		t.Error("report-history.js is still the placeholder")
+	}
+}
+
+func TestReportHistoryShouldShowTheLegendOfTheRolesPresent(t *testing.T) {
+	js := readAsset(t, "report-history.js")
+	for _, want := range []string{"class: 'legend'", "v.legend.replaceChildren("} {
+		if !strings.Contains(js, want) {
+			t.Errorf("report-history.js has no %s", want)
+		}
+	}
+	// The known roles in their fixed order, then any other one the data has, painted --muted by paint().
+	if !regexp.MustCompile(`ROLES\.filter\(\(role\) => roles\.has\(role\)\)`).MatchString(js) || !strings.Contains(js, "!ROLES.includes(role)") {
+		t.Error("report-history.js does not list the roles present in the fixed order, unknown ones last")
+	}
+	if !regexp.MustCompile(`\.legend\s*\{`).MatchString(readAsset(t, "report-history.css")) {
+		t.Error("report-history.css does not style the legend")
+	}
+}
