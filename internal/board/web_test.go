@@ -233,3 +233,22 @@ func TestReportTopShouldRememberTheAgentsMode(t *testing.T) {
 	}
 	touchesStorageOutsideTry(t, "report-top.js", js)
 }
+
+func TestReportTopStylesShouldStackAndHideSecondaryColumns(t *testing.T) {
+	css := readAsset(t, "report-top.css")
+	for _, q := range []struct{ width, rule string }{
+		{"1100px", `\.report-top\s*\{[^}]*grid-template-columns:\s*1fr`},
+		{"640px", `\.secondary\s*\{[^}]*display:\s*none`},
+	} {
+		media := regexp.MustCompile(`@media \(max-width: ` + q.width + `\)\s*\{(?:[^{}]*\{[^}]*\})*[^{}]*\}`).FindString(css)
+		if !regexp.MustCompile(q.rule).MatchString(media) {
+			t.Errorf("report-top.css has no %s under @media (max-width: %s):\n%s", q.rule, q.width, media)
+		}
+	}
+	if !strings.Contains(css, "text-overflow: ellipsis") {
+		t.Error("report-top.css does not truncate the long titles")
+	}
+	if !strings.Contains(readAsset(t, "report-top.js"), "'secondary'") {
+		t.Error("report-top.js marks no column as secondary")
+	}
+}

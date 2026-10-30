@@ -49,16 +49,16 @@
     const max = Math.max(...runs.map((r) => r.cost_usd))
     target.replaceChildren(el('table', { class: 'ranking' },
       el('thead', {}, el('tr', {},
-        el('th', { class: 'pos', text: '#' }), el('th', { class: 'what', text: 'execução' }), el('th', { text: 'resultado' }),
-        el('th', { text: 'tempo' }), el('th', { class: 'num', text: 'custo' }), el('th', { class: 'num', text: 'tokens' }))),
+        el('th', { class: 'pos', text: '#' }), el('th', { class: 'what', text: 'execução' }), el('th', { class: 'secondary', text: 'resultado' }),
+        el('th', { class: 'secondary', text: 'tempo' }), el('th', { class: 'num', text: 'custo' }), el('th', { class: 'num', text: 'tokens' }))),
       el('tbody', {}, runs.map((r, i) => el('tr', {},
         el('td', { class: 'pos', text: String(i + 1) }),
         el('td', { class: 'what' },
           el('div', {}, el('span', { class: 'ref', text: r.ref }), ' ', el('span', { class: 'meta', text: 'run ' + r.id + ' · ' + r.repo })),
           el('div', { class: 'title', title: r.title, text: r.title }),
           bar(max > 0 ? r.cost_usd / max : 0)),
-        el('td', {}, outcome(r.outcome)),
-        el('td', { text: fmtDuration(r.seconds) }),
+        el('td', { class: 'secondary' }, outcome(r.outcome)),
+        el('td', { class: 'secondary', text: fmtDuration(r.seconds) }),
         el('td', { class: 'num', text: fmtUSD(r.cost_usd) }),
         el('td', { class: 'num', text: fmtTokens(r.tokens) }))))))
   }
@@ -67,14 +67,14 @@
     const total = roles.reduce((sum, r) => sum + r.cost_usd, 0)
     return el('table', { class: 'ranking' },
       el('thead', {}, el('tr', {},
-        el('th', { text: 'papel' }), el('th', { class: 'num', text: 'sessões' }), el('th', { text: 'tempo' }),
+        el('th', { text: 'papel' }), el('th', { class: 'num secondary', text: 'sessões' }), el('th', { class: 'secondary', text: 'tempo' }),
         el('th', { class: 'num', text: 'médio' }), el('th', { class: 'num', text: 'custo' }), el('th', { class: 'share', text: '% do total' }))),
       el('tbody', {}, roles.map((r) => {
         const share = total > 0 ? r.cost_usd / total : 0
         return el('tr', {},
           roleCell(r.role),
-          el('td', { class: 'num', text: String(r.sessions) }),
-          el('td', { text: fmtDuration(r.seconds) }),
+          el('td', { class: 'num secondary', text: String(r.sessions) }),
+          el('td', { class: 'secondary', text: fmtDuration(r.seconds) }),
           el('td', { class: 'num', text: fmtUSD(r.sessions ? r.cost_usd / r.sessions : 0) }),
           el('td', { class: 'num', text: fmtUSD(r.cost_usd) }),
           el('td', { class: 'share' }, el('span', { class: 'mono', text: `${Math.round(pct(share))}%` }), bar(share, r.role)))
@@ -84,13 +84,13 @@
   function sessionsTable(sessions) {
     return el('table', { class: 'ranking' },
       el('thead', {}, el('tr', {},
-        el('th', { text: 'papel' }), el('th', { text: 'execução' }), el('th', { text: 'modelo' }),
-        el('th', { text: 'tempo' }), el('th', { class: 'num', text: 'custo' }), el('th', { class: 'num', text: 'tokens' }))),
+        el('th', { text: 'papel' }), el('th', { text: 'execução' }), el('th', { class: 'secondary', text: 'modelo' }),
+        el('th', { class: 'secondary', text: 'tempo' }), el('th', { class: 'num', text: 'custo' }), el('th', { class: 'num', text: 'tokens' }))),
       el('tbody', {}, sessions.map((s) => el('tr', {},
         roleCell(s.role),
         el('td', {}, el('span', { class: 'ref', text: s.run_ref }), s.iteration ? ' · iter ' + s.iteration : ' · —'),
-        el('td', { class: 'mono', text: s.model || 'padrão' }),
-        el('td', { text: fmtDuration(s.seconds) }),
+        el('td', { class: 'mono secondary', text: s.model || 'padrão' }),
+        el('td', { class: 'secondary', text: fmtDuration(s.seconds) }),
         el('td', { class: 'num', text: fmtUSD(s.cost_usd) }),
         el('td', { class: 'num', text: fmtTokens(s.tokens) })))))
   }
