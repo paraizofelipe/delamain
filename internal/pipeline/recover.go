@@ -110,7 +110,7 @@ func (r *Runner) recoverRun(ctx context.Context, rec store.Run) (Result, error) 
 	maxIter, perIssue := rec.Limits(r.Cfg.Pipeline.MaxIterations, r.Cfg.Budget.PerIssue)
 	ru := &run{
 		rec: rec, task: prompts.Issue{Ref: t.Ref, Title: t.Title, Kind: t.Kind},
-		dir: r.runDir(rec.Repo, rec.ID), agents: map[string]Agent{},
+		dir: r.runDir(rec.Repo, rec.ID), agents: map[string]Agent{}, sessions: map[string]session{},
 		res: &res, issue: t.Issue, maxIter: maxIter, perIssue: perIssue, budget: day,
 		recovered: true,
 	}

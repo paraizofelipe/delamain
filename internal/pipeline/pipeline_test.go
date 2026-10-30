@@ -681,6 +681,68 @@ func TestRunShouldRecordAnAgentThatDidNotStopCleanlyAsFailed(t *testing.T) {
 	}
 }
 
+// sessions reads the agent sessions the run recorded.
+func sessions(t *testing.T, hs *harness, runID int64) []store.AgentSession {
+	t.Helper()
+	all, err := hs.st.Sessions(context.Background(), []int64{runID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return all[runID]
+}
+
+// blockFirstReview blocks the first review and approves the next: a run of two iterations.
+func blockFirstReview(role string, n int, text string) reply {
+	if role == "reviewer" && n == 1 {
+		return reply{write: reviewJSON("major")}
+	}
+	return happy(role, n, text)
+}
+
+func TestRunShouldRecordTheModelOfEachSession(t *testing.T) {
+	hs := newHarness(t, blockFirstReview)
+	hs.r.Cfg.Agents = map[string]config.AgentSettings{"implementer": {Model: "cheap-fast"}}
+	res := hs.run(t)
+
+	want := map[string]string{"planner": "", "implementer": "cheap-fast", "reviewer": ""}
+	seen := map[string]bool{}
+	for _, s := range sessions(t, hs, res.RunID) {
+		seen[s.Role] = true
+		if s.Model != want[s.Role] {
+			t.Errorf("%s iteration %d model = %q, want %q", s.Role, s.Iteration, s.Model, want[s.Role])
+		}
+	}
+	if len(seen) != len(want) {
+		t.Fatalf("every started agent records a session, got roles %v", seen)
+	}
+}
+
+func TestStopAgentShouldEndItsSessionWithTheAgentState(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		closeErr error
+		want     store.AgentState
+	}{
+		{"clean stop", nil, store.AgentDone},
+		{"close fails", errors.New("omp did not exit"), store.AgentFailed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			hs := newHarness(t, happy)
+			hs.h.closeErr = tc.closeErr
+			res := hs.run(t)
+			ss := sessions(t, hs, res.RunID)
+			if len(ss) != 3 {
+				t.Fatalf("planner, implementer and reviewer each record a session: %+v", ss)
+			}
+			for _, s := range ss {
+				if s.State != tc.want || s.EndedAt.IsZero() {
+					t.Errorf("%s = %s ended %v, want %s and an end", s.Role, s.State, s.EndedAt, tc.want)
+				}
+			}
+		})
+	}
+}
+
 func TestHerdrTabsShouldStartAQuietShellWhenConfigured(t *testing.T) {
 	hs := newHarness(t, happy)
 	quiet := filepath.Join(t.TempDir(), "herdr-shell")
