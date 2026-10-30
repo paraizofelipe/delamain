@@ -21,3 +21,22 @@
 }
 .daily-legend .item { display: inline-flex; align-items: center; gap: 5px; }
 .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; }
+#daily .hit { fill: transparent; }
+#daily .hit:hover { fill: var(--text); fill-opacity: 0.06; }
+
+.daily-tip {
+  position: absolute;
+  z-index: 2;
+  pointer-events: none;
+  white-space: nowrap;
+  padding: 6px 8px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font: 12px var(--mono);
+  color: var(--text);
+}
+.daily-tip[hidden] { display: none; }
+.daily-tip .head { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 4px; font-weight: 600; }
+.daily-tip .row { display: flex; align-items: center; gap: 6px; }
+.daily-tip .role { flex: 1; color: var(--muted); }

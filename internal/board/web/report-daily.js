@@ -90,9 +90,34 @@ window.reportSections.daily = (container, report) => {
     }
   })
 
+  // One invisible column per day, over the bars, so the whole height of a day answers the pointer.
+  const tip = el('div', { class: 'daily-tip', hidden: true })
+  days.forEach((day, i) => {
+    const hit = svgEl('rect', { class: 'hit', x: DAILY_PAD.left + i * slot, y: DAILY_PAD.top, width: slot, height: plotH })
+    hit.addEventListener('pointermove', (ev) => showDailyTip(container, tip, day, ev))
+    svg.append(hit)
+  })
+  svg.addEventListener('pointerleave', () => { tip.hidden = true })
+
   const present = DAILY_ROLES.filter((r) => days.some((d) => dayCost(d, r) > 0))
   const legend = el('div', { class: 'daily-legend' },
     present.map((r) => el('span', { class: 'item' }, el('span', { class: 'swatch r-' + r }), r)))
 
-  container.replaceChildren(legend, svg)
+  container.replaceChildren(legend, svg, tip)
+}
+
+function showDailyTip(container, tip, day, ev) {
+  tip.replaceChildren(
+    el('div', { class: 'head' }, el('span', { text: dayLabel(day.day) }), el('span', { text: fmtUSD(dayTotal(day)) })),
+    ...DAILY_ROLES.filter((r) => dayCost(day, r) > 0).map((r) => el('div', { class: 'row' },
+      el('span', { class: 'swatch r-' + r }), el('span', { class: 'role', text: r }), el('span', { text: fmtUSD(dayCost(day, r)) }))))
+  tip.hidden = false
+
+  // Beside the pointer, flipped to its left near the right edge so it never widens the page.
+  const box = container.getBoundingClientRect()
+  let x = ev.clientX - box.left + 12
+  if (x + tip.offsetWidth > box.width) x = Math.max(0, ev.clientX - box.left - tip.offsetWidth - 12)
+  const y = Math.max(0, ev.clientY - box.top - tip.offsetHeight - 12)
+  tip.style.setProperty('left', `${x}px`)
+  tip.style.setProperty('top', `${y}px`)
 }

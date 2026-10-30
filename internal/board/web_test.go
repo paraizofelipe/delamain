@@ -219,3 +219,46 @@ func TestReportDailyFitsANarrowScreen(t *testing.T) {
 		t.Error("report-daily.css sets a min-width: the chart would scroll on a narrow screen")
 	}
 }
+
+// Hovering a day shows its date, its total and what each role spent, with the role's colour.
+func TestReportDailyTooltipShowsTheDayByRole(t *testing.T) {
+	js := readAsset(t, "report-daily.js")
+	for _, want := range []string{
+		"el('div', { class: 'daily-tip'",
+		".style.setProperty('left'", ".style.setProperty('top'",
+		"dayLabel(", "fmtUSD(", "swatch",
+		"class: 'hit'", "pointerleave",
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("report-daily.js has no %s", want)
+		}
+	}
+	css := readAsset(t, "report-daily.css")
+	tip := regexp.MustCompile(`\.daily-tip\s*\{[^}]*\}`).FindString(css)
+	for _, want := range []string{"position: absolute", "pointer-events: none"} {
+		if !strings.Contains(tip, want) {
+			t.Errorf("report-daily.css: .daily-tip has no %s", want)
+		}
+	}
+}
+
+// Every filter change redraws the section: the listeners go away with the nodes they sit on.
+func TestReportDailyRedrawsWithoutPilingUpListeners(t *testing.T) {
+	js := readAsset(t, "report-daily.js")
+	if !strings.Contains(js, "container.replaceChildren(") {
+		t.Error("report-daily.js does not replace the container's children on redraw")
+	}
+	listeners := regexp.MustCompile(`([\w.]+)\.addEventListener\('(\w+)'`).FindAllStringSubmatch(js, -1)
+	events := map[string]bool{}
+	for _, l := range listeners {
+		events[l[2]] = true
+		if l[1] == "window" || l[1] == "document" || strings.HasPrefix(l[1], "document.") {
+			t.Errorf("report-daily.js listens to %s on %s: it outlives the redraw", l[2], l[1])
+		}
+	}
+	for _, want := range []string{"pointermove", "pointerleave"} {
+		if !events[want] {
+			t.Errorf("report-daily.js does not listen to %s on the chart", want)
+		}
+	}
+}
