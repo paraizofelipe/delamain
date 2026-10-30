@@ -13,6 +13,9 @@ import (
 // periodDays is the length of each period of the report; "all" has none.
 var periodDays = map[string]int{"7d": 7, "30d": 30, "90d": 90}
 
+// historyPage is how many runs a page of the history has.
+const historyPage = 20
+
 // buildReport assembles the Relatório page from the store as of now.
 func buildReport(ctx context.Context, st *store.Store, q board.ReportQuery, now time.Time) (board.Report, error) {
 	rep := board.Report{
@@ -32,16 +35,23 @@ func buildReport(ctx context.Context, st *store.Store, q board.ReportQuery, now 
 	if err != nil {
 		return board.Report{}, err
 	}
-	var prev []board.ReportRun
+	var runs, prev []board.ReportRun
 	for _, s := range sums {
 		if s.Run.CreatedAt.Before(since) {
 			prev = append(prev, reportRun(s, now))
 			continue
 		}
-		rep.History = append(rep.History, reportRun(s, now))
+		runs = append(runs, reportRun(s, now))
 	}
-	rep.KPIs = reportKPIs(rep.History)
-	rep.TopRuns = topByCost(rep.History, 5, func(r board.ReportRun) float64 { return r.CostUSD })
+	rep.KPIs = reportKPIs(runs)
+	rep.TopRuns = topByCost(runs, 5, func(r board.ReportRun) float64 { return r.CostUSD })
+	// An offset past the end is an empty page.
+	from := min(q.Offset, len(runs))
+	to := min(from+historyPage, len(runs))
+	rep.History = append(rep.History, runs[from:to]...)
+	if to < len(runs) {
+		rep.NextOffset = &to
+	}
 	if n > 0 {
 		p := reportKPIs(prev)
 		rep.KPIs.Previous = &p
@@ -49,9 +59,9 @@ func buildReport(ctx context.Context, st *store.Store, q board.ReportQuery, now 
 	return rep, nil
 }
 
-// topByCost is up to n of xs, highest cost first; a tie keeps their order.
+// topByCost is up to n of xs, highest cost first, never nil; a tie keeps their order.
 func topByCost[T any](xs []T, n int, cost func(T) float64) []T {
-	out := slices.Clone(xs)
+	out := append([]T{}, xs...)
 	slices.SortStableFunc(out, func(a, b T) int { return cmp.Compare(cost(b), cost(a)) })
 	return out[:min(n, len(out))]
 }

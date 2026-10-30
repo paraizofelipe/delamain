@@ -149,3 +149,42 @@ func TestBoardReportShouldRankTheMostExpensiveRuns(t *testing.T) {
 		t.Errorf("top_runs = %v, want %v", got, want)
 	}
 }
+
+func TestBoardReportShouldPageTheHistory(t *testing.T) {
+	f := newFixture(t)
+	for i := range 45 {
+		start := reportNow.Add(-time.Duration(i+1) * time.Hour)
+		f.pastRun(t, f.repo, "#"+strconv.Itoa(i+1), store.KindIssue, store.StateRecorded, "approved: ok", start, start.Add(time.Minute))
+	}
+
+	for _, c := range []struct {
+		offset     int
+		first      string
+		size       int
+		nextOffset int // 0: none
+	}{
+		{0, "#1", 20, 20},
+		{20, "#21", 20, 40},
+		{40, "#41", 5, 0},
+		{45, "", 0, 0},
+		{1000, "", 0, 0},
+	} {
+		rep := report(t, f, board.ReportQuery{Period: "30d", Offset: c.offset})
+		if len(rep.History) != c.size || rep.History == nil {
+			t.Errorf("offset %d: %d runs (nil: %v), want %d", c.offset, len(rep.History), rep.History == nil, c.size)
+			continue
+		}
+		if c.size > 0 && rep.History[0].Ref != c.first {
+			t.Errorf("offset %d starts at %s, want %s", c.offset, rep.History[0].Ref, c.first)
+		}
+		switch {
+		case c.nextOffset == 0 && rep.NextOffset != nil:
+			t.Errorf("offset %d: next_offset = %d, want none", c.offset, *rep.NextOffset)
+		case c.nextOffset != 0 && (rep.NextOffset == nil || *rep.NextOffset != c.nextOffset):
+			t.Errorf("offset %d: next_offset = %v, want %d", c.offset, rep.NextOffset, c.nextOffset)
+		}
+		if rep.KPIs.Runs != 45 {
+			t.Errorf("offset %d: the kpis are of the whole period, got %d runs", c.offset, rep.KPIs.Runs)
+		}
+	}
+}
