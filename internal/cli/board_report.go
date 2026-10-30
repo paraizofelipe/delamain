@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"slices"
 	"time"
 
 	"github.com/paraizo/delamain/internal/board"
@@ -17,20 +18,65 @@ func buildReport(ctx context.Context, st *store.Store, q board.ReportQuery, now 
 		Period: q.Period, Repos: []string{}, Daily: []board.ReportDay{}, TopRuns: []board.ReportRun{},
 		TopRoles: []board.ReportRole{}, TopSessions: []board.ReportSession{}, History: []board.ReportRun{},
 	}
+	n := periodDays[q.Period]
+	var since time.Time
 	f := store.ReportFilter{Repo: q.Repo, Kind: q.Kind}
-	if n := periodDays[q.Period]; n > 0 {
-		f.Since = now.AddDate(0, 0, -n)
-		since := f.Since
+	if n > 0 {
+		since = now.AddDate(0, 0, -n)
 		rep.Since = &since
+		// One query covers the previous period too: [since-n, since).
+		f.Since = since.AddDate(0, 0, -n)
 	}
 	sums, err := st.RunSummaries(ctx, f)
 	if err != nil {
 		return board.Report{}, err
 	}
+	var prev []board.ReportRun
 	for _, s := range sums {
+		if s.Run.CreatedAt.Before(since) {
+			prev = append(prev, reportRun(s, now))
+			continue
+		}
 		rep.History = append(rep.History, reportRun(s, now))
 	}
+	rep.KPIs = reportKPIs(rep.History)
+	if n > 0 {
+		p := reportKPIs(prev)
+		rep.KPIs.Previous = &p
+	}
 	return rep, nil
+}
+
+// reportKPIs totals runs; the median and p90 durations are of the finished ones only.
+func reportKPIs(runs []board.ReportRun) board.ReportKPIs {
+	k := board.ReportKPIs{Runs: len(runs)}
+	var secs []int64
+	for _, r := range runs {
+		k.CostUSD += r.CostUSD
+		switch r.Outcome {
+		case "approved":
+			k.Approved++
+		case "halted":
+			k.Halted++
+		}
+		if r.EndedAt != nil {
+			secs = append(secs, r.Seconds)
+		}
+	}
+	if k.Runs > 0 {
+		k.AvgCostUSD = k.CostUSD / float64(k.Runs)
+	}
+	if len(secs) > 0 {
+		slices.Sort(secs)
+		m := len(secs) / 2
+		k.MedianSeconds = secs[m]
+		if len(secs)%2 == 0 {
+			k.MedianSeconds = (secs[m-1] + secs[m]) / 2
+		}
+		// Nearest rank: the ceil(0.9n)-th of the sorted durations.
+		k.P90Seconds = secs[(9*len(secs)+9)/10-1]
+	}
+	return k
 }
 
 // reportRun is a run of the report; a run that has not finished runs until now.
