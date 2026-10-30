@@ -98,6 +98,7 @@ func (r *Runner) RunReview(ctx context.Context, repo string, n int) (Result, err
 		task:     prompts.Issue{Ref: ref, Title: pr.Title, URL: pr.URL},
 		dir:      r.runDir(repo, rec.ID),
 		agents:   map[string]Agent{},
+		sessions: map[string]session{},
 		res:      &res,
 		maxIter:  r.Cfg.Pipeline.MaxIterations,
 		perIssue: r.Cfg.Review.PerReview,

@@ -174,7 +174,9 @@ type run struct {
 	repo   prompts.Repo
 	dir    string
 	agents map[string]Agent // role -> running session
-	view   View             // nil without a display
+	// sessions is the agent_sessions row each running role writes to.
+	sessions map[string]session
+	view     View // nil without a display
 	// log also writes the run's own logs/delamain.log, read by `delamain logs`.
 	log      *slog.Logger
 	closeLog func()
@@ -252,6 +254,7 @@ func (r *Runner) Run(ctx context.Context, t Task) (Result, error) {
 		task:     prompts.Issue{Ref: t.Ref, Title: t.Title, Body: t.Body, URL: t.URL, Kind: t.Kind},
 		dir:      r.runDir(repo, rec.ID),
 		agents:   map[string]Agent{},
+		sessions: map[string]session{},
 		res:      &res,
 		issue:    t.Issue,
 		maxIter:  r.Cfg.Pipeline.MaxIterations,
@@ -732,7 +735,36 @@ func (r *Runner) startAgent(ctx context.Context, ru *run, role string) error {
 	if err := r.Store.StartAgent(ctx, store.Agent{RunID: ru.rec.ID, Role: role, PID: agent.PID(), LogPath: logPath, SessionDir: sessDir}); err != nil {
 		ru.log.Warn("could not record agent", "role", role, "err", err)
 	}
+	r.startSession(ctx, ru, role, model)
 	return nil
+}
+
+// session is the agent_sessions row of a running role; id is 0 when it could not be recorded.
+type session struct {
+	id    int64
+	iter  int
+	model string
+}
+
+// startSession records role's session in the current iteration.
+func (r *Runner) startSession(ctx context.Context, ru *run, role, model string) {
+	id, err := r.Store.StartSession(ctx, store.AgentSession{RunID: ru.rec.ID, Role: role, Iteration: ru.rec.Iteration, Model: model})
+	if err != nil {
+		ru.log.Warn("could not record session", "role", role, "err", err)
+	}
+	ru.sessions[role] = session{id: id, iter: ru.rec.Iteration, model: model}
+}
+
+// endSession closes role's session with state.
+func (r *Runner) endSession(ctx context.Context, ru *run, role string, state store.AgentState) {
+	s, ok := ru.sessions[role]
+	delete(ru.sessions, role)
+	if !ok || s.id == 0 {
+		return
+	}
+	if err := r.Store.EndSession(ctx, s.id, state); err != nil {
+		ru.log.Warn("could not record session", "role", role, "err", err)
+	}
 }
 
 // prompt renders a stage, submits it and proves the turn ended without a provider error.
@@ -749,6 +781,10 @@ func (r *Runner) send(ctx context.Context, ru *run, role, text string) error {
 		if err := r.startAgent(ctx, ru, role); err != nil {
 			return err
 		}
+	} else if s, ok := ru.sessions[role]; ok && s.iter != ru.rec.Iteration {
+		// The agent outlives the iteration; its session record does not.
+		r.endSession(ctx, ru, role, store.AgentDone)
+		r.startSession(ctx, ru, role, s.model)
 	}
 	timeout := r.Cfg.Pipeline.PromptTimeout
 	stop := r.watchBudget(ctx, ru, ru.agents[role])
@@ -902,6 +938,7 @@ func (r *Runner) stopAgent(ctx context.Context, ru *run, role string) {
 	if err := r.Store.EndAgent(ctx, ru.rec.ID, role, state); err != nil {
 		ru.log.Warn("could not record agent", "role", role, "err", err)
 	}
+	r.endSession(ctx, ru, role, state)
 	ru.viewDo("done "+role, func(v View) error { return v.Done(ctx, role) })
 }
 

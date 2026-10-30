@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -678,6 +679,119 @@ func TestRunShouldRecordAnAgentThatDidNotStopCleanlyAsFailed(t *testing.T) {
 		if a.State != store.AgentFailed {
 			t.Errorf("%s = %s", a.Role, a.State)
 		}
+	}
+}
+
+// sessions reads the agent sessions the run recorded.
+func sessions(t *testing.T, hs *harness, runID int64) []store.AgentSession {
+	t.Helper()
+	all, err := hs.st.Sessions(context.Background(), []int64{runID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return all[runID]
+}
+
+// blockFirstReview blocks the first review and approves the next: a run of two iterations.
+func blockFirstReview(role string, n int, text string) reply {
+	if role == "reviewer" && n == 1 {
+		return reply{write: reviewJSON("major")}
+	}
+	return happy(role, n, text)
+}
+
+func TestRunShouldRecordTheModelOfEachSession(t *testing.T) {
+	hs := newHarness(t, blockFirstReview)
+	hs.r.Cfg.Agents = map[string]config.AgentSettings{"implementer": {Model: "cheap-fast"}}
+	res := hs.run(t)
+
+	want := map[string]string{"planner": "", "implementer": "cheap-fast", "reviewer": ""}
+	seen := map[string]bool{}
+	for _, s := range sessions(t, hs, res.RunID) {
+		seen[s.Role] = true
+		if s.Model != want[s.Role] {
+			t.Errorf("%s iteration %d model = %q, want %q", s.Role, s.Iteration, s.Model, want[s.Role])
+		}
+	}
+	if len(seen) != len(want) {
+		t.Fatalf("every started agent records a session, got roles %v", seen)
+	}
+}
+
+func TestRunShouldRecordOneSessionPerAgentAndIteration(t *testing.T) {
+	hs := newHarness(t, blockFirstReview)
+	res := hs.run(t)
+	if res.Outcome != OutcomeApproved || res.Iterations != 2 {
+		t.Fatalf("the second review approves: got %s after %d", res.Outcome, res.Iterations)
+	}
+
+	var got []string
+	for _, s := range sessions(t, hs, res.RunID) {
+		got = append(got, fmt.Sprintf("%s/%d", s.Role, s.Iteration))
+		if s.State != store.AgentDone || s.EndedAt.IsZero() {
+			t.Errorf("%s/%d = %s ended %v, want done", s.Role, s.Iteration, s.State, s.EndedAt)
+		}
+	}
+	slices.Sort(got)
+	if want := []string{"implementer/1", "implementer/2", "planner/0", "reviewer/1", "reviewer/2"}; !slices.Equal(got, want) {
+		t.Fatalf("sessions = %v, want %v", got, want)
+	}
+	if agents, _ := hs.st.Agents(context.Background(), res.RunID); len(agents) != 3 {
+		t.Fatalf("the agents table keeps one row per role: %+v", agents)
+	}
+}
+
+func TestRunShouldDeliverWhenTheSessionCannotBeRecorded(t *testing.T) {
+	for _, op := range []string{"INSERT", "UPDATE"} {
+		t.Run(op, func(t *testing.T) {
+			hs := newHarness(t, happy)
+			db, err := sql.Open("sqlite", "file:"+filepath.Join(hs.r.Cfg.Paths.StateDir, "d.db")+"?_pragma=busy_timeout(5000)")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			if _, err := db.Exec(`CREATE TRIGGER broken BEFORE ` + op + ` ON agent_sessions BEGIN SELECT RAISE(ABORT, 'disk says no'); END`); err != nil {
+				t.Fatal(err)
+			}
+
+			res := hs.run(t)
+			if res.Outcome != OutcomeApproved {
+				t.Fatalf("the session record is not the work: got %s (%s)", res.Outcome, res.Reason)
+			}
+			if agents, _ := hs.st.Agents(context.Background(), res.RunID); len(agents) != 3 {
+				t.Fatalf("the agents table is still recorded: %+v", agents)
+			}
+			log, _ := os.ReadFile(filepath.Join(res.RunDir, "logs", "delamain.log"))
+			if !strings.Contains(string(log), "could not record session") || !strings.Contains(string(log), "disk says no") {
+				t.Fatalf("the lost record is warned in the run's log:\n%s", log)
+			}
+		})
+	}
+}
+
+func TestStopAgentShouldEndItsSessionWithTheAgentState(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		closeErr error
+		want     store.AgentState
+	}{
+		{"clean stop", nil, store.AgentDone},
+		{"close fails", errors.New("omp did not exit"), store.AgentFailed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			hs := newHarness(t, happy)
+			hs.h.closeErr = tc.closeErr
+			res := hs.run(t)
+			ss := sessions(t, hs, res.RunID)
+			if len(ss) != 3 {
+				t.Fatalf("planner, implementer and reviewer each record a session: %+v", ss)
+			}
+			for _, s := range ss {
+				if s.State != tc.want || s.EndedAt.IsZero() {
+					t.Errorf("%s = %s ended %v, want %s and an end", s.Role, s.State, s.EndedAt, tc.want)
+				}
+			}
+		})
 	}
 }
 
