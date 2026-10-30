@@ -121,8 +121,8 @@ func columns() []Column {
 // Outcomes recorded in Run.Reason that need nothing else from a person.
 var settled = map[string]bool{"approved": true, "reviewed": true, "answered": true, "skipped": true}
 
-// outcome is the prefix Runner.record writes to the reason of a recorded run.
-func outcome(reason string) string {
+// Outcome is the prefix Runner.record writes to the reason of a recorded run.
+func Outcome(reason string) string {
 	o, _, _ := strings.Cut(reason, ":")
 	return strings.TrimSpace(o)
 }
@@ -143,7 +143,7 @@ func terminal(state string) bool {
 // columnOf places a run on the board.
 func columnOf(r Run) string {
 	if terminal(r.State) {
-		if r.State == "recorded" && settled[outcome(r.Reason)] {
+		if r.State == "recorded" && settled[Outcome(r.Reason)] {
 			return ColDone
 		}
 		return ColHuman
