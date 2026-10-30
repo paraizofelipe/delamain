@@ -249,6 +249,40 @@ func TestRecoverShouldMarkTheDeadRunsAgentsAsFailed(t *testing.T) {
 	}
 }
 
+func TestRecoverShouldFailRunningSessions(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		kind store.RunKind
+		ref  string
+	}{
+		{"issue run", store.KindIssue, "#7"},
+		{"review run", store.KindReview, "pr:9"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			hs := newHarness(t, happy)
+			withForge(hs)
+			rec := crashedAs(t, hs, store.StateImplement, tc.kind, tc.ref)
+			ctx := context.Background()
+			ended, _ := hs.st.StartSession(ctx, store.AgentSession{RunID: rec.ID, Role: "implementer", Iteration: 1})
+			_ = hs.st.EndSession(ctx, ended, store.AgentDone)
+			running, _ := hs.st.StartSession(ctx, store.AgentSession{RunID: rec.ID, Role: "implementer", Iteration: 2})
+			recoverAll(t, hs)
+
+			all, _ := hs.st.Sessions(ctx, []int64{rec.ID})
+			byID := map[int64]store.AgentSession{}
+			for _, s := range all[rec.ID] {
+				byID[s.ID] = s
+			}
+			if s := byID[running]; s.State != store.AgentFailed || s.EndedAt.IsZero() {
+				t.Fatalf("the session still running died with its owner: %+v", s)
+			}
+			if s := byID[ended]; s.State != store.AgentDone {
+				t.Fatalf("the session that had ended keeps its state: %+v", s)
+			}
+		})
+	}
+}
+
 func TestRecoverShouldLeaveARestoredWorkspaceAloneWithoutADisplay(t *testing.T) {
 	hs := newHarness(t, happy)
 	hs.r.Display = nil

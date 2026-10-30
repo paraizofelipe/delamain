@@ -131,6 +131,9 @@ func (r *Runner) recoverRun(ctx context.Context, rec store.Run) (Result, error) 
 	if _, err := r.Store.FailRunningAgents(ctx, rec.ID); err != nil {
 		ru.log.Warn("could not record agents", "err", err)
 	}
+	if _, err := r.Store.FailRunningSessions(ctx, rec.ID); err != nil {
+		ru.log.Warn("could not record sessions", "err", err)
+	}
 	return res, r.finish(ctx, ru, t)
 }
 
@@ -156,6 +159,9 @@ func (r *Runner) haltUnresumable(ctx context.Context, ru *run) error {
 	}
 	if _, err := r.Store.FailRunningAgents(ctx, rec.ID); err != nil {
 		ru.log.Warn("could not record agents", "err", err)
+	}
+	if _, err := r.Store.FailRunningSessions(ctx, rec.ID); err != nil {
+		ru.log.Warn("could not record sessions", "err", err)
 	}
 	ru.res.Reason = "interrompida: run de review não é retomada"
 	return r.record(ctx, ru)
