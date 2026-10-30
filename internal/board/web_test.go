@@ -134,20 +134,88 @@ func TestReportPageHandsEachSectionItsContainer(t *testing.T) {
 			t.Errorf("report.js has no %s", want)
 		}
 	}
-	for _, s := range []struct{ name, container string }{
-		{"daily", "$('daily')"}, {"top", "document.querySelector('.report-top')"}, {"history", "$('history')"},
+	for _, s := range []struct {
+		name, container string
+		placeholder     bool
+	}{
+		{"daily", "$('daily')", false}, {"top", "document.querySelector('.report-top')", true}, {"history", "$('history')", true},
 	} {
 		call := regexp.MustCompile(`\['` + s.name + `',\s*` + regexp.QuoteMeta(s.container))
 		if !call.MatchString(js) {
 			t.Errorf("report.js does not hand the %s section its container %s", s.name, s.container)
 		}
 		section := readAsset(t, "report-"+s.name+".js")
-		if !strings.Contains(section, "window.reportSections."+s.name+" = ") || !strings.Contains(section, "em construção") {
+		if !strings.Contains(section, "window.reportSections."+s.name+" = ") {
+			t.Errorf("report-%s.js does not register itself in window.reportSections", s.name)
+		}
+		if s.placeholder && !strings.Contains(section, "em construção") {
 			t.Errorf("report-%s.js does not register its placeholder:\n%s", s.name, section)
 		}
 	}
 	top := readAsset(t, "report-top.js")
 	if !strings.Contains(top, "'#top-runs'") || !strings.Contains(top, "'#top-agents'") {
 		t.Error("report-top.js leaves #top-runs or #top-agents empty")
+	}
+}
+
+// The cost of each day is a stacked bar, one segment per role, always in the same order and colour.
+func TestReportDailyStacksTheRolesInTheirFixedOrder(t *testing.T) {
+	js := readAsset(t, "report-daily.js")
+	for _, want := range []string{
+		"['planner', 'implementer', 'reviewer', 'pr-reviewer', 'responder']",
+		"createElementNS('http://www.w3.org/2000/svg'",
+		"report.daily", "by_role",
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("report-daily.js has no %s", want)
+		}
+	}
+	// A role that changes place from one day to the next makes the stacks unreadable.
+	if strings.Contains(js, "sort(") {
+		t.Error("report-daily.js reorders something: the roles keep their fixed order")
+	}
+	css := readAsset(t, "report-daily.css")
+	for _, role := range []string{"planner", "implementer", "reviewer", "pr-reviewer", "responder"} {
+		if !strings.Contains(css, "fill: var(--r-"+role+")") {
+			t.Errorf("report-daily.css does not paint %s with var(--r-%s)", role, role)
+		}
+	}
+	for _, want := range []string{"stroke: var(--panel)", "var(--line)"} {
+		if !strings.Contains(css, want) {
+			t.Errorf("report-daily.css has no %s", want)
+		}
+	}
+}
+
+func TestReportDailyLabelsTheChartWithThePeriodTotal(t *testing.T) {
+	js := readAsset(t, "report-daily.js")
+	for _, want := range []string{"'aria-label'", "Custo por dia: total ", "fmtUSD("} {
+		if !strings.Contains(js, want) {
+			t.Errorf("report-daily.js has no %s", want)
+		}
+	}
+}
+
+func TestReportDailyShowsTheEmptyStateWhenThePeriodHasNoCost(t *testing.T) {
+	js := readAsset(t, "report-daily.js")
+	if !regexp.MustCompile(`class: 'empty', text: 'sem custo no período'`).MatchString(js) {
+		t.Error("report-daily.js has no empty state 'sem custo no período'")
+	}
+	if strings.Contains(js, "em construção") {
+		t.Error("report-daily.js still shows its placeholder")
+	}
+}
+
+// At 375px the chart shrinks with the panel instead of scrolling sideways.
+func TestReportDailyFitsANarrowScreen(t *testing.T) {
+	if js := readAsset(t, "report-daily.js"); !strings.Contains(js, "'viewBox'") {
+		t.Error("report-daily.js does not give the svg a viewBox")
+	}
+	css := readAsset(t, "report-daily.css")
+	if !regexp.MustCompile(`svg\s*\{[^}]*width: 100%`).MatchString(css) {
+		t.Error("report-daily.css does not give the svg width: 100%")
+	}
+	if strings.Contains(css, "min-width") {
+		t.Error("report-daily.css sets a min-width: the chart would scroll on a narrow screen")
 	}
 }

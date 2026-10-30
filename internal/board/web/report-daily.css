@@ -1,0 +1,23 @@
+#daily { position: relative; }
+#daily svg { display: block; width: 100%; height: 220px; }
+#daily .grid { stroke: var(--line); stroke-width: 1; }
+#daily .axis { fill: var(--muted); font: 11px var(--mono); }
+#daily .seg { stroke: var(--panel); stroke-width: 1; }
+
+#daily .r-planner { fill: var(--r-planner); background: var(--r-planner); }
+#daily .r-implementer { fill: var(--r-implementer); background: var(--r-implementer); }
+#daily .r-reviewer { fill: var(--r-reviewer); background: var(--r-reviewer); }
+#daily .r-pr-reviewer { fill: var(--r-pr-reviewer); background: var(--r-pr-reviewer); }
+#daily .r-responder { fill: var(--r-responder); background: var(--r-responder); }
+
+.daily-legend {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px 12px;
+  margin-bottom: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.daily-legend .item { display: inline-flex; align-items: center; gap: 5px; }
+.swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; }
