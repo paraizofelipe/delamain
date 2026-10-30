@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/paraizo/delamain/internal/board"
@@ -52,13 +53,22 @@ func buildReport(ctx context.Context, st *store.Store, q board.ReportQuery, now 
 	if to < len(runs) {
 		rep.NextOffset = &to
 	}
-	sessions, err := reportSessions(ctx, st, rep.History, now)
+	sessions, err := reportSessions(ctx, st, runs, now)
 	if err != nil {
 		return board.Report{}, err
 	}
 	for i := range rep.History {
 		rep.History[i].Sessions = sessions[rep.History[i].ID]
 	}
+	var all []board.ReportSession
+	for _, r := range runs {
+		for _, s := range sessions[r.ID] {
+			s.RunRef = r.Ref
+			all = append(all, s)
+		}
+	}
+	rep.TopSessions = topByCost(all, 10, func(s board.ReportSession) float64 { return s.CostUSD })
+	rep.TopRoles = reportRoles(all)
 	if n > 0 {
 		p := reportKPIs(prev)
 		rep.KPIs.Previous = &p
@@ -141,6 +151,31 @@ func reportSessions(ctx context.Context, st *store.Store, runs []board.ReportRun
 		}
 	}
 	return out, nil
+}
+
+// reportRoles sums sessions per role, highest cost first and, on a tie, by role.
+func reportRoles(sessions []board.ReportSession) []board.ReportRole {
+	idx := map[string]int{}
+	out := []board.ReportRole{}
+	for _, s := range sessions {
+		i, ok := idx[s.Role]
+		if !ok {
+			i = len(out)
+			idx[s.Role] = i
+			out = append(out, board.ReportRole{Role: s.Role})
+		}
+		out[i].Sessions++
+		out[i].Seconds += s.Seconds
+		out[i].CostUSD += s.CostUSD
+		out[i].Tokens += s.Tokens
+	}
+	slices.SortFunc(out, func(a, b board.ReportRole) int {
+		if c := cmp.Compare(b.CostUSD, a.CostUSD); c != 0 {
+			return c
+		}
+		return strings.Compare(a.Role, b.Role)
+	})
+	return out
 }
 
 // reportSession is a session of the report; one still running runs until now.

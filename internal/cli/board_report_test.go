@@ -277,3 +277,58 @@ func TestBoardReportShouldFallBackToAgentsForOldRuns(t *testing.T) {
 		}
 	}
 }
+
+func TestBoardReportShouldRankRolesAndSessionsByCost(t *testing.T) {
+	f := newFixture(t)
+	sec := time.Second
+	// session seeds a 10s session of role in r that cost cost.
+	session := func(r store.Run, role string, cost float64) {
+		f.session(t, r.ID, role, 1, "m", store.AgentDone, r.CreatedAt, r.CreatedAt.Add(10*sec))
+		f.spend(t, r.ID, role, r.CreatedAt.Add(5*sec), cost, 10)
+	}
+	var runs []store.Run
+	for i := 1; i <= 22; i++ {
+		start := reportNow.Add(-time.Duration(i) * time.Hour)
+		runs = append(runs, f.pastRun(t, f.repo, "#"+strconv.Itoa(i), store.KindIssue, store.StateRecorded, "approved: ok", start, start.Add(time.Minute)))
+	}
+	for i, r := range runs[:21] {
+		session(r, "implementer", float64(i+1)*0.25)
+	}
+	// The costliest session is in a run past the first page of the history.
+	session(runs[21], "implementer", 9)
+	session(runs[0], "planner", 4)
+	session(runs[1], "reviewer", 0.5)
+	start := reportNow.Add(-30 * time.Hour)
+	old := f.pastRun(t, f.repo, "#23", store.KindIssue, store.StateRecorded, "approved: ok", start, start.Add(time.Minute))
+	f.agent(t, old.ID, "analyzer", store.AgentDone, start, start.Add(20*sec))
+	f.spend(t, old.ID, "analyzer", start.Add(sec), 0.5, 10)
+
+	rep := report(t, f, board.ReportQuery{Period: "7d"})
+	type top struct {
+		Ref, Role string
+		CostUSD   float64
+	}
+	var got []top
+	for _, s := range rep.TopSessions {
+		got = append(got, top{s.RunRef, s.Role, s.CostUSD})
+	}
+	// A tie keeps the newest run first.
+	want := []top{
+		{"#22", "implementer", 9}, {"#21", "implementer", 5.25}, {"#20", "implementer", 5}, {"#19", "implementer", 4.75},
+		{"#18", "implementer", 4.5}, {"#17", "implementer", 4.25}, {"#1", "planner", 4}, {"#16", "implementer", 4},
+		{"#15", "implementer", 3.75}, {"#14", "implementer", 3.5},
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("top_sessions =\n%+v\nwant\n%+v", got, want)
+	}
+	// A tie of cost goes by the name of the role.
+	wantRoles := []board.ReportRole{
+		{Role: "implementer", Sessions: 22, Seconds: 220, CostUSD: 66.75, Tokens: 220},
+		{Role: "planner", Sessions: 1, Seconds: 10, CostUSD: 4, Tokens: 10},
+		{Role: "analyzer", Sessions: 1, Seconds: 20, CostUSD: 0.5, Tokens: 10},
+		{Role: "reviewer", Sessions: 1, Seconds: 10, CostUSD: 0.5, Tokens: 10},
+	}
+	if !slices.Equal(rep.TopRoles, wantRoles) {
+		t.Errorf("top_roles =\n%+v\nwant\n%+v", rep.TopRoles, wantRoles)
+	}
+}
