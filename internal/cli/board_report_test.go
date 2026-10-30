@@ -384,3 +384,65 @@ func TestBoardReportShouldFillDaysWithoutCost(t *testing.T) {
 		t.Errorf("days of all = %v", got)
 	}
 }
+
+func TestBoardReportShouldFilterByRepoAndKind(t *testing.T) {
+	f := newFixture(t)
+	run := func(repo, ref string, kind store.RunKind, hoursAgo int, role string, cost float64) {
+		start := reportNow.Add(-time.Duration(hoursAgo) * time.Hour)
+		r := f.pastRun(t, repo, ref, kind, store.StateRecorded, "approved: ok", start, start.Add(time.Minute))
+		f.session(t, r.ID, role, 1, "m", store.AgentDone, start, start.Add(time.Minute))
+		f.spend(t, r.ID, role, start.Add(time.Second), cost, 10)
+	}
+	run("acme/a", "#1", store.KindIssue, 1, "implementer", 1)
+	run("acme/b", "#2", store.KindReview, 2, "reviewer", 2)
+	run("acme/b", "#3", store.KindIssue, 3, "implementer", 0.5)
+	run("acme/0-addr", "#4", store.KindAddress, 4, "implementer", 0.125)
+	run("acme/c-old", "#5", store.KindIssue, 24*10, "implementer", 0.25)
+
+	refs := func(rep board.Report) []string {
+		var out []string
+		for _, r := range rep.History {
+			out = append(out, r.Ref)
+		}
+		return out
+	}
+	for _, c := range []struct {
+		repo, kind string
+		refs       []string
+		repos      []string
+		costUSD    float64
+		today      map[string]float64
+	}{
+		{"", "", []string{"#1", "#2", "#3", "#4"}, []string{"acme/0-addr", "acme/a", "acme/b"}, 3.625,
+			map[string]float64{"implementer": 1.625, "reviewer": 2}},
+		// The repos to pick from ignore the repo picked.
+		{"acme/b", "", []string{"#2", "#3"}, []string{"acme/0-addr", "acme/a", "acme/b"}, 2.5,
+			map[string]float64{"implementer": 0.5, "reviewer": 2}},
+		{"", "review", []string{"#2"}, []string{"acme/b"}, 2, map[string]float64{"reviewer": 2}},
+		{"acme/b", "issue", []string{"#3"}, []string{"acme/a", "acme/b"}, 0.5, map[string]float64{"implementer": 0.5}},
+		{"acme/nope", "", nil, []string{"acme/0-addr", "acme/a", "acme/b"}, 0, map[string]float64{}},
+		{"acme/a' OR '1'='1", "issue\"--", nil, []string{}, 0, map[string]float64{}},
+	} {
+		rep := report(t, f, board.ReportQuery{Period: "7d", Repo: c.repo, Kind: c.kind})
+		name := c.repo + "|" + c.kind
+		if got := refs(rep); !slices.Equal(got, c.refs) {
+			t.Errorf("%s: history = %v, want %v", name, got, c.refs)
+		}
+		if !slices.Equal(rep.Repos, c.repos) {
+			t.Errorf("%s: repos = %v, want %v", name, rep.Repos, c.repos)
+		}
+		if rep.KPIs.CostUSD != c.costUSD {
+			t.Errorf("%s: cost = %v, want %v", name, rep.KPIs.CostUSD, c.costUSD)
+		}
+		if today := rep.Daily[len(rep.Daily)-1]; !maps.Equal(today.ByRole, c.today) {
+			t.Errorf("%s: today = %v, want %v", name, today.ByRole, c.today)
+		}
+		var roleCost float64
+		for _, r := range rep.TopRoles {
+			roleCost += r.CostUSD
+		}
+		if roleCost != c.costUSD {
+			t.Errorf("%s: top_roles sum US$ %v, want %v", name, roleCost, c.costUSD)
+		}
+	}
+}

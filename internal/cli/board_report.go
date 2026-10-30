@@ -44,6 +44,9 @@ func buildReport(ctx context.Context, st *store.Store, q board.ReportQuery, now 
 		}
 		runs = append(runs, reportRun(s, now))
 	}
+	if rep.Repos, err = reportRepos(ctx, st, q, since); err != nil {
+		return board.Report{}, err
+	}
 	rep.KPIs = reportKPIs(runs)
 	rep.TopRuns = topByCost(runs, 5, func(r board.ReportRun) float64 { return r.CostUSD })
 	// An offset past the end is an empty page.
@@ -79,6 +82,21 @@ func buildReport(ctx context.Context, st *store.Store, q board.ReportQuery, now 
 		rep.KPIs.Previous = &p
 	}
 	return rep, nil
+}
+
+// reportRepos is the repos with runs in the period, sorted: what the repo filter can pick
+// from, so it ignores the repo picked but keeps the kind.
+func reportRepos(ctx context.Context, st *store.Store, q board.ReportQuery, since time.Time) ([]string, error) {
+	sums, err := st.RunSummaries(ctx, store.ReportFilter{Since: since, Kind: q.Kind})
+	if err != nil {
+		return nil, err
+	}
+	repos := []string{}
+	for _, s := range sums {
+		repos = append(repos, s.Run.Repo)
+	}
+	slices.Sort(repos)
+	return slices.Compact(repos), nil
 }
 
 // topByCost is up to n of xs, highest cost first, never nil; a tie keeps their order.
