@@ -40,6 +40,17 @@ code, pre, .mono { font-family: var(--mono); }
 }
 .top h1 { margin: 0; font-size: 18px; font-weight: 650; letter-spacing: .02em; }
 .top h1 span { color: var(--active); font-weight: 400; }
+.tabs { display: flex; gap: 4px; }
+.tabs a {
+  padding: 3px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--muted);
+  text-decoration: none;
+  font-size: 13px;
+}
+.tabs a:hover { color: var(--text); }
+.tabs a[aria-current="page"] { color: var(--active); border-color: var(--active); background: var(--panel); }
 .status { display: flex; flex-wrap: wrap; gap: 6px 16px; color: var(--muted); font-size: 13px; }
 .status b { color: var(--text); font-weight: 500; }
 .status .on { color: var(--pass); }

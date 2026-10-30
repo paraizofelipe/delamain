@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>delamain board · relatório</title>
+  <link rel="stylesheet" href="board.css">
+  <link rel="stylesheet" href="report.css">
+  <link rel="stylesheet" href="report-daily.css">
+  <link rel="stylesheet" href="report-top.css">
+  <link rel="stylesheet" href="report-history.css">
+  <script src="common.js" defer></script>
+  <script src="report-daily.js" defer></script>
+  <script src="report-top.js" defer></script>
+  <script src="report-history.js" defer></script>
+  <script src="report.js" defer></script>
+</head>
+<body>
+  <header class="top">
+    <h1>delamain <span>board</span></h1>
+    <nav class="tabs" aria-label="páginas">
+      <a href="./">Quadro</a>
+      <a href="report.html" aria-current="page">Relatório</a>
+    </nav>
+    <div class="filters">
+      <div class="periods" id="filter-period" role="group" aria-label="período">
+        <button type="button" data-period="7d">7d</button>
+        <button type="button" data-period="30d">30d</button>
+        <button type="button" data-period="90d">90d</button>
+        <button type="button" data-period="all">tudo</button>
+      </div>
+      <label>tipo
+        <select id="filter-kind">
+          <option value="">todos</option>
+          <option value="issue">issue</option>
+          <option value="review">PR review</option>
+          <option value="address">address</option>
+        </select>
+      </label>
+      <label>repo
+        <select id="filter-repo"><option value="">todos</option></select>
+      </label>
+    </div>
+  </header>
+  <div class="banner" id="banner" hidden></div>
+  <main class="report">
+    <section class="kpis" id="kpis" aria-label="indicadores"></section>
+    <section class="panel">
+      <h2>Custo por dia</h2>
+      <div id="daily"></div>
+    </section>
+    <div class="report-top">
+      <section class="panel">
+        <h2>Execuções mais caras</h2>
+        <div id="top-runs"></div>
+      </section>
+      <section class="panel">
+        <h2>Agentes mais caros</h2>
+        <div id="top-agents"></div>
+      </section>
+    </div>
+    <section class="panel">
+      <h2>Histórico</h2>
+      <div id="history"></div>
+    </section>
+  </main>
+</body>
+</html>
