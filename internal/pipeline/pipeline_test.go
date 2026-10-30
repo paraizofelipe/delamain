@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -737,6 +738,34 @@ func TestRunShouldRecordOneSessionPerAgentAndIteration(t *testing.T) {
 	}
 	if agents, _ := hs.st.Agents(context.Background(), res.RunID); len(agents) != 3 {
 		t.Fatalf("the agents table keeps one row per role: %+v", agents)
+	}
+}
+
+func TestRunShouldDeliverWhenTheSessionCannotBeRecorded(t *testing.T) {
+	for _, op := range []string{"INSERT", "UPDATE"} {
+		t.Run(op, func(t *testing.T) {
+			hs := newHarness(t, happy)
+			db, err := sql.Open("sqlite", "file:"+filepath.Join(hs.r.Cfg.Paths.StateDir, "d.db")+"?_pragma=busy_timeout(5000)")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			if _, err := db.Exec(`CREATE TRIGGER broken BEFORE ` + op + ` ON agent_sessions BEGIN SELECT RAISE(ABORT, 'disk says no'); END`); err != nil {
+				t.Fatal(err)
+			}
+
+			res := hs.run(t)
+			if res.Outcome != OutcomeApproved {
+				t.Fatalf("the session record is not the work: got %s (%s)", res.Outcome, res.Reason)
+			}
+			if agents, _ := hs.st.Agents(context.Background(), res.RunID); len(agents) != 3 {
+				t.Fatalf("the agents table is still recorded: %+v", agents)
+			}
+			log, _ := os.ReadFile(filepath.Join(res.RunDir, "logs", "delamain.log"))
+			if !strings.Contains(string(log), "could not record session") || !strings.Contains(string(log), "disk says no") {
+				t.Fatalf("the lost record is warned in the run's log:\n%s", log)
+			}
+		})
 	}
 }
 

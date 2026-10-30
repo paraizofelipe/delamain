@@ -748,7 +748,10 @@ type session struct {
 
 // startSession records role's session in the current iteration.
 func (r *Runner) startSession(ctx context.Context, ru *run, role, model string) {
-	id, _ := r.Store.StartSession(ctx, store.AgentSession{RunID: ru.rec.ID, Role: role, Iteration: ru.rec.Iteration, Model: model})
+	id, err := r.Store.StartSession(ctx, store.AgentSession{RunID: ru.rec.ID, Role: role, Iteration: ru.rec.Iteration, Model: model})
+	if err != nil {
+		ru.log.Warn("could not record session", "role", role, "err", err)
+	}
 	ru.sessions[role] = session{id: id, iter: ru.rec.Iteration, model: model}
 }
 
@@ -759,7 +762,9 @@ func (r *Runner) endSession(ctx context.Context, ru *run, role string, state sto
 	if !ok || s.id == 0 {
 		return
 	}
-	_ = r.Store.EndSession(ctx, s.id, state)
+	if err := r.Store.EndSession(ctx, s.id, state); err != nil {
+		ru.log.Warn("could not record session", "role", role, "err", err)
+	}
 }
 
 // prompt renders a stage, submits it and proves the turn ended without a provider error.
