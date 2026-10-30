@@ -4,6 +4,7 @@ import (
 	"io/fs"
 	"path"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -143,7 +144,7 @@ func TestReportPageHandsEachSectionItsContainer(t *testing.T) {
 		name, container string
 		placeholder     bool
 	}{
-		{"daily", "$('daily')", false}, {"top", "document.querySelector('.report-top')", false}, {"history", "$('history')", true},
+		{"daily", "$('daily')", false}, {"top", "document.querySelector('.report-top')", false}, {"history", "$('history')", false},
 	} {
 		call := regexp.MustCompile(`\['` + s.name + `',\s*` + regexp.QuoteMeta(s.container))
 		if !call.MatchString(js) {
@@ -357,6 +358,174 @@ func TestReportDailyRedrawsWithoutPilingUpListeners(t *testing.T) {
 	for _, want := range []string{"pointermove", "pointerleave"} {
 		if !events[want] {
 			t.Errorf("report-daily.js does not listen to %s on the chart", want)
+		}
+	}
+}
+
+func TestReportHistoryShouldListEachRunWithItsOutcomeDurationAndCost(t *testing.T) {
+	js := readAsset(t, "report-history.js")
+	for _, want := range []string{"report.history || []", "el('details'", "'run '", "' · '", "padStart(", "fmtDuration(", "fmtUSD(", "'badge '", "'tag kind-'", "title: r.title, text: r.title"} {
+		if !strings.Contains(js, want) {
+			t.Errorf("report-history.js has no %s", want)
+		}
+	}
+	for _, head := range []string{"'Run'", "'Resultado'", "'Linha do tempo dos agentes'", "'Duração'", "'Custo'"} {
+		if !strings.Contains(js, head) {
+			t.Errorf("report-history.js has no column %s", head)
+		}
+	}
+	for _, o := range []struct{ outcome, label, tone string }{
+		{"approved", "aprovada", "good"},
+		{"exhausted", "máx. iterações", "warn"},
+		{"needs_info", "precisa de info", "warn"},
+		{"halted", "interrompida", "stop"},
+	} {
+		entry := regexp.MustCompile(`\b` + o.outcome + `: \['[^']+', '` + regexp.QuoteMeta(o.label) + `', '` + o.tone + `'\]`)
+		if !entry.MatchString(js) {
+			t.Errorf("report-history.js does not badge %s as %q (%s)", o.outcome, o.label, o.tone)
+		}
+	}
+	// Only a known kind becomes a class name: anything else from the data would be a class of its own.
+	if !strings.Contains(js, "['issue', 'review', 'address']") {
+		t.Error("report-history.js does not check the kind before it becomes a class")
+	}
+}
+
+func TestReportHistoryShouldDrawEachSessionAsASegmentOfTheRunTimeline(t *testing.T) {
+	js := readAsset(t, "report-history.js")
+	for _, want := range []string{"r.sessions || []", "style.setProperty('left'", "style.setProperty('width'", ">= 14", "'running'", "Date.now()", "ended_at", "toFixed(", "' · iter '"} {
+		if !strings.Contains(js, want) {
+			t.Errorf("report-history.js has no %s", want)
+		}
+	}
+	css := readAsset(t, "report-history.css")
+	if !regexp.MustCompile(`\.seg\s*\{[^}]*position:\s*absolute`).MatchString(css) {
+		t.Error("report-history.css does not place each segment on the track")
+	}
+	if !regexp.MustCompile(`\.seg\.running\s*\{[^}]*repeating-linear-gradient`).MatchString(css) {
+		t.Error("report-history.css does not texture a session still running")
+	}
+}
+
+// The API sends each run's sessions in start order (internal/cli/board_report.go): the page keeps it.
+func TestReportHistoryShouldKeepTheSessionsInTheOrderTheAPISent(t *testing.T) {
+	if strings.Contains(readAsset(t, "report-history.js"), ".sort(") {
+		t.Error("report-history.js reorders what the API already ordered")
+	}
+	if strings.Contains(readAsset(t, "report-history.js"), "em construção") {
+		t.Error("report-history.js is still the placeholder")
+	}
+}
+
+func TestReportHistoryShouldPaintOnlyKnownRolesOnTheTimeline(t *testing.T) {
+	js := readAsset(t, "report-history.js")
+	// Only a known role reaches var(--r-…): anything else would be a CSS token from the data.
+	for _, want := range []string{"['planner', 'implementer', 'reviewer', 'pr-reviewer', 'responder']", "ROLES.includes(role) ? `var(--r-${role})` : 'var(--muted)'"} {
+		if !strings.Contains(js, want) {
+			t.Errorf("report-history.js has no %s", want)
+		}
+	}
+}
+
+func TestReportHistoryShouldDetailTheSessionsWithTheTimelineNumbers(t *testing.T) {
+	js := readAsset(t, "report-history.js")
+	for _, want := range []string{"el('details', { class: 'detail', open: true }", "'abrir no quadro'", "href: './'", "Math.max(0,", "el('dl', { class: 'kv' }"} {
+		if !strings.Contains(js, want) {
+			t.Errorf("report-history.js has no %s", want)
+		}
+	}
+	for _, head := range []string{"'agente'", "'iteração'", "'modelo'", "'início'", "'duração'", "'tokens'", "'custo'"} {
+		if !strings.Contains(js, head) {
+			t.Errorf("report-history.js has no session column %s", head)
+		}
+	}
+	for _, label := range []string{"'iterações'", "'tempo dos agentes'", "'tempo fora dos agentes'"} {
+		if !strings.Contains(js, label) {
+			t.Errorf("report-history.js has no %s in the run summary", label)
+		}
+	}
+	// The table and the segment's tooltip say the same start: one function writes both.
+	if n := len(regexp.MustCompile(`\bsince\(`).FindAllString(js, -1)); n < 3 {
+		t.Errorf("report-history.js writes the relative start in %d places, want the definition, the tooltip and the table", n)
+	}
+}
+
+func TestReportHistoryShouldAppendTheNextPageWithoutDuplicatingRuns(t *testing.T) {
+	js := readAsset(t, "report-history.js")
+	for _, want := range []string{"api.page(", "report.next_offset", "new Set(", "shown.has(", "shown.add(", "'carregar mais 20'", "list.append(", "class: 'error'"} {
+		if !strings.Contains(js, want) {
+			t.Errorf("report-history.js has no %s", want)
+		}
+	}
+	if !regexp.MustCompile(`more\.hidden = (\w+\.)?next === null`).MatchString(js) {
+		t.Error("report-history.js keeps 'carregar mais 20' after the last page")
+	}
+	// A page asked for under the old filters must not land in the new history.
+	if !regexp.MustCompile(`const gen = \+\+generation`).MatchString(js) || !strings.Contains(js, "gen !== generation") {
+		t.Error("report-history.js does not drop a page that comes back after the filters changed")
+	}
+	handler := regexp.MustCompile(`(?s)async function loadMore\(.*?\n  \}\n`).FindString(js)
+	if handler == "" {
+		t.Fatal("report-history.js has no loadMore")
+	}
+	if strings.Contains(handler, "replaceChildren(") {
+		t.Error("report-history.js redraws the rows already on the page when it loads more")
+	}
+	// The section is called again on every filter change: a listener on window or document would pile up.
+	if regexp.MustCompile(`\b(window|document)\.addEventListener`).MatchString(js) {
+		t.Error("report-history.js listens on window or document")
+	}
+}
+
+func TestReportHistoryShouldSayNoRunsInThePeriodWhenTheHistoryIsEmpty(t *testing.T) {
+	js := readAsset(t, "report-history.js")
+	if !strings.Contains(js, "el('p', { class: 'empty', text: 'nenhuma execução no período' })") {
+		t.Error("report-history.js does not say there is no run in the period")
+	}
+	if strings.Contains(js, "em construção") {
+		t.Error("report-history.js is still the placeholder")
+	}
+}
+
+func TestReportHistoryShouldShowTheLegendOfTheRolesPresent(t *testing.T) {
+	js := readAsset(t, "report-history.js")
+	for _, want := range []string{"class: 'legend'", "v.legend.replaceChildren("} {
+		if !strings.Contains(js, want) {
+			t.Errorf("report-history.js has no %s", want)
+		}
+	}
+	// The known roles in their fixed order, then any other one the data has, painted --muted by paint().
+	if !regexp.MustCompile(`ROLES\.filter\(\(role\) => roles\.has\(role\)\)`).MatchString(js) || !strings.Contains(js, "!ROLES.includes(role)") {
+		t.Error("report-history.js does not list the roles present in the fixed order, unknown ones last")
+	}
+	if !regexp.MustCompile(`\.legend\s*\{`).MatchString(readAsset(t, "report-history.css")) {
+		t.Error("report-history.css does not style the legend")
+	}
+}
+
+func TestReportHistoryStylesShouldStackTheRowBelow900px(t *testing.T) {
+	css := readAsset(t, "report-history.css")
+	media := regexp.MustCompile(`@media \(max-width: 900px\)\s*\{(?:[^{}]*\{[^}]*\})*[^{}]*\}`).FindString(css)
+	for _, rule := range []string{
+		`\.history-head\s*\{[^}]*display:\s*none`,
+		`\.run > summary\s*\{[^}]*grid-template-areas:`,
+		`\.track\s*\{[^}]*grid-area:\s*track`,
+		`\.detail-body\s*\{[^}]*grid-template-columns:\s*1fr`,
+	} {
+		if !regexp.MustCompile(rule).MatchString(media) {
+			t.Errorf("report-history.css has no %s under @media (max-width: 900px):\n%s", rule, media)
+		}
+	}
+	if !regexp.MustCompile(`\.table-wrap\s*\{[^}]*overflow-x:\s*auto`).MatchString(css) {
+		t.Error("report-history.css lets the sessions table overflow the page")
+	}
+	if !strings.Contains(css, "text-overflow: ellipsis") {
+		t.Error("report-history.css does not truncate the long titles")
+	}
+	// The page has to read on a 375px phone.
+	for _, m := range regexp.MustCompile(`min-width:\s*(\d+)px`).FindAllStringSubmatch(css, -1) {
+		if n, _ := strconv.Atoi(m[1]); n > 375 {
+			t.Errorf("report-history.css sets min-width: %spx, wider than a 375px phone", m[1])
 		}
 	}
 }
