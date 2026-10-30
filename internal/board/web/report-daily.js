@@ -93,11 +93,23 @@ window.reportSections.daily = (container, report) => {
   // One invisible column per day, over the bars, so the whole height of a day answers the pointer.
   const tip = el('div', { class: 'daily-tip', hidden: true })
   days.forEach((day, i) => {
-    const hit = svgEl('rect', { class: 'hit', x: DAILY_PAD.left + i * slot, y: DAILY_PAD.top, width: slot, height: plotH })
-    hit.addEventListener('pointermove', (ev) => showDailyTip(container, tip, day, ev))
+    const hit = svgEl('rect', {
+      class: 'hit', x: DAILY_PAD.left + i * slot, y: DAILY_PAD.top, width: slot, height: plotH,
+      tabindex: 0, role: 'img', 'aria-label': dailyDescription(day),
+    })
+    // A tap has no pointermove, so pointerdown shows the day too; focus does it for the keyboard.
+    const atPointer = (ev) => showDailyTip(container, tip, day, ev.clientX, ev.clientY)
+    hit.addEventListener('pointermove', atPointer)
+    hit.addEventListener('pointerdown', atPointer)
+    hit.addEventListener('focus', () => {
+      const r = hit.getBoundingClientRect()
+      showDailyTip(container, tip, day, r.left + r.width / 2, r.top + r.height / 2)
+    })
+    hit.addEventListener('blur', () => { tip.hidden = true })
     svg.append(hit)
   })
-  svg.addEventListener('pointerleave', () => { tip.hidden = true })
+  // A finger lifting also fires pointerleave; only the mouse hides the tip that way.
+  svg.addEventListener('pointerleave', (ev) => { if (ev.pointerType === 'mouse') tip.hidden = true })
 
   const present = DAILY_ROLES.filter((r) => days.some((d) => dayCost(d, r) > 0))
   const legend = el('div', { class: 'daily-legend' },
@@ -106,7 +118,11 @@ window.reportSections.daily = (container, report) => {
   container.replaceChildren(legend, svg, tip)
 }
 
-function showDailyTip(container, tip, day, ev) {
+// "30/10: US$ 1.20 — planner US$ 0.50, implementer US$ 0.70", for the screen reader on a focused day.
+const dailyDescription = (day) => `${dayLabel(day.day)}: ${fmtUSD(dayTotal(day))}` +
+  DAILY_ROLES.filter((r) => dayCost(day, r) > 0).map((r) => `, ${r} ${fmtUSD(dayCost(day, r))}`).join('')
+
+function showDailyTip(container, tip, day, clientX, clientY) {
   tip.replaceChildren(
     el('div', { class: 'head' }, el('span', { text: dayLabel(day.day) }), el('span', { text: fmtUSD(dayTotal(day)) })),
     ...DAILY_ROLES.filter((r) => dayCost(day, r) > 0).map((r) => el('div', { class: 'row' },
@@ -115,9 +131,9 @@ function showDailyTip(container, tip, day, ev) {
 
   // Beside the pointer, flipped to its left near the right edge so it never widens the page.
   const box = container.getBoundingClientRect()
-  let x = ev.clientX - box.left + 12
-  if (x + tip.offsetWidth > box.width) x = Math.max(0, ev.clientX - box.left - tip.offsetWidth - 12)
-  const y = Math.max(0, ev.clientY - box.top - tip.offsetHeight - 12)
+  let x = clientX - box.left + 12
+  if (x + tip.offsetWidth > box.width) x = Math.max(0, clientX - box.left - tip.offsetWidth - 12)
+  const y = Math.max(0, clientY - box.top - tip.offsetHeight - 12)
   tip.style.setProperty('left', `${x}px`)
   tip.style.setProperty('top', `${y}px`)
 }

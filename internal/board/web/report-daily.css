@@ -23,6 +23,7 @@
 .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; }
 #daily .hit { fill: transparent; }
 #daily .hit:hover { fill: var(--text); fill-opacity: 0.06; }
+#daily .hit:focus-visible { outline: 2px solid var(--text); outline-offset: -2px; }
 
 .daily-tip {
   position: absolute;
