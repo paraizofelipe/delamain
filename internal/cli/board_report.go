@@ -52,6 +52,13 @@ func buildReport(ctx context.Context, st *store.Store, q board.ReportQuery, now 
 	if to < len(runs) {
 		rep.NextOffset = &to
 	}
+	sessions, err := reportSessions(ctx, st, rep.History, now)
+	if err != nil {
+		return board.Report{}, err
+	}
+	for i := range rep.History {
+		rep.History[i].Sessions = sessions[rep.History[i].ID]
+	}
 	if n > 0 {
 		p := reportKPIs(prev)
 		rep.KPIs.Previous = &p
@@ -96,6 +103,60 @@ func reportKPIs(runs []board.ReportRun) board.ReportKPIs {
 		k.P90Seconds = secs[(9*len(secs)+9)/10-1]
 	}
 	return k
+}
+
+// reportSessions is the sessions of runs, keyed by run, in start order. A run from before
+// agent_sessions has one session per agents row, with what its role billed in the run.
+func reportSessions(ctx context.Context, st *store.Store, runs []board.ReportRun, now time.Time) (map[int64][]board.ReportSession, error) {
+	ids := make([]int64, 0, len(runs))
+	for _, r := range runs {
+		ids = append(ids, r.ID)
+	}
+	recorded, err := st.Sessions(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	out := map[int64][]board.ReportSession{}
+	for _, id := range ids {
+		if ss, ok := recorded[id]; ok {
+			for _, a := range ss {
+				out[id] = append(out[id], reportSession(a, now))
+			}
+			continue
+		}
+		agents, err := st.Agents(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		if len(agents) == 0 {
+			continue
+		}
+		usage, err := st.RoleUsage(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		for _, a := range agents {
+			as := store.AgentSession{RunID: id, Role: a.Role, State: a.State, StartedAt: a.StartedAt, EndedAt: a.EndedAt, Usage: usage[a.Role]}
+			out[id] = append(out[id], reportSession(as, now))
+		}
+	}
+	return out, nil
+}
+
+// reportSession is a session of the report; one still running runs until now.
+func reportSession(a store.AgentSession, now time.Time) board.ReportSession {
+	s := board.ReportSession{
+		RunID: a.RunID, Role: a.Role, Iteration: a.Iteration, Model: a.Model, State: string(a.State), StartedAt: a.StartedAt,
+		CostUSD: a.Usage.CostUSD, Tokens: a.Usage.BudgetTokens(),
+	}
+	if a.EndedAt.IsZero() {
+		s.Seconds = seconds(a.StartedAt, now)
+		return s
+	}
+	end := a.EndedAt
+	s.EndedAt = &end
+	s.Seconds = seconds(a.StartedAt, end)
+	return s
 }
 
 // reportRun is a run of the report; a run that has not finished runs until now.

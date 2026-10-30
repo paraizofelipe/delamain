@@ -188,3 +188,92 @@ func TestBoardReportShouldPageTheHistory(t *testing.T) {
 		}
 	}
 }
+
+// nullTime is t, or NULL when it is zero.
+func nullTime(t time.Time) any {
+	if t.IsZero() {
+		return nil
+	}
+	return t.UTC()
+}
+
+// session seeds an agent session of run; a zero end is one still running.
+func (f *fixture) session(t *testing.T, run int64, role string, iteration int, model string, state store.AgentState, start, end time.Time) {
+	t.Helper()
+	f.sql(t, `INSERT INTO agent_sessions (run_id, role, iteration, model, state, started_at, ended_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		run, role, iteration, model, state, start, nullTime(end))
+}
+
+// agent seeds the agents row of role in run, all a run from before agent_sessions has.
+func (f *fixture) agent(t *testing.T, run int64, role string, state store.AgentState, start, end time.Time) {
+	t.Helper()
+	f.sql(t, `INSERT INTO agents (run_id, role, state, started_at, ended_at) VALUES (?, ?, ?, ?, ?)`, run, role, state, start, nullTime(end))
+}
+
+func TestBoardReportShouldFallBackToAgentsForOldRuns(t *testing.T) {
+	f := newFixture(t)
+	sec := time.Second
+	t0 := reportNow.Add(-2 * time.Hour)
+	running := f.pastRun(t, f.repo, "#1", store.KindIssue, store.StateImplement, "", t0, t0.Add(300*sec))
+	f.session(t, running.ID, "planner", 0, "m1", store.AgentDone, t0, t0.Add(60*sec))
+	f.session(t, running.ID, "implementer", 1, "m2", store.AgentDone, t0.Add(60*sec), t0.Add(300*sec))
+	f.session(t, running.ID, "implementer", 2, "m2", store.AgentRunning, t0.Add(300*sec), time.Time{})
+	f.spend(t, running.ID, "planner", t0.Add(30*sec), 0.25, 100)
+	f.spend(t, running.ID, "implementer", t0.Add(200*sec), 0.5, 200)
+	f.spend(t, running.ID, "implementer", t0.Add(400*sec), 0.75, 300)
+
+	t1 := reportNow.AddDate(0, 0, -3)
+	old := f.pastRun(t, f.repo, "#2", store.KindIssue, store.StateRecorded, "approved: PR aberto", t1, t1.Add(300*sec))
+	f.agent(t, old.ID, "planner", store.AgentDone, t1, t1.Add(50*sec))
+	f.agent(t, old.ID, "implementer", store.AgentDone, t1.Add(50*sec), t1.Add(250*sec))
+	f.spend(t, old.ID, "planner", t1.Add(10*sec), 0.125, 50)
+	f.spend(t, old.ID, "implementer", t1.Add(60*sec), 0.25, 100)
+	f.spend(t, old.ID, "implementer", t1.Add(200*sec), 0.125, 50)
+	// A role with spend but no agents row has no session to show.
+	f.spend(t, old.ID, "reviewer", t1.Add(260*sec), 0.0625, 5)
+
+	rep := report(t, f, board.ReportQuery{Period: "7d"})
+	if len(rep.History) != 2 {
+		t.Fatalf("history = %+v", rep.History)
+	}
+	type seg struct {
+		Role      string
+		Iteration int
+		Model     string
+		State     string
+		Ended     bool
+		Seconds   int64
+		CostUSD   float64
+		Tokens    int64
+	}
+	segs := func(ss []board.ReportSession) []seg {
+		var out []seg
+		for _, s := range ss {
+			if s.RunRef != "" {
+				t.Errorf("run_ref only in top_sessions: %+v", s)
+			}
+			out = append(out, seg{s.Role, s.Iteration, s.Model, s.State, s.EndedAt != nil, s.Seconds, s.CostUSD, s.Tokens})
+		}
+		return out
+	}
+	want := []seg{
+		{"planner", 0, "m1", "done", true, 60, 0.25, 100},
+		{"implementer", 1, "m2", "done", true, 240, 0.5, 200},
+		{"implementer", 2, "m2", "running", false, int64(reportNow.Sub(t0.Add(300*sec)) / sec), 0.75, 300},
+	}
+	if got := segs(rep.History[0].Sessions); !slices.Equal(got, want) {
+		t.Errorf("sessions of the running run =\n%+v\nwant\n%+v", got, want)
+	}
+	want = []seg{
+		{"planner", 0, "", "done", true, 50, 0.125, 50},
+		{"implementer", 0, "", "done", true, 200, 0.375, 150},
+	}
+	if got := segs(rep.History[1].Sessions); !slices.Equal(got, want) {
+		t.Errorf("sessions of the old run, one per role =\n%+v\nwant\n%+v", got, want)
+	}
+	for _, r := range rep.TopRuns {
+		if r.Sessions != nil {
+			t.Errorf("%s: top_runs carry no sessions", r.Ref)
+		}
+	}
+}
