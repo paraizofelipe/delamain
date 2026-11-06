@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -258,5 +259,34 @@ func TestNovelBlockersShouldMatchAtThreshold(t *testing.T) {
 	r, ru, _, _ := dedupRunner(config.DecisionOn, 0.85, matchPrev0(0.85))
 	if twoReviews(r, ru) {
 		t.Fatal("the threshold itself is a match: the blocker is already seen")
+	}
+}
+
+func TestNovelBlockersShouldFallBackToKeysWhenDeciderFails(t *testing.T) {
+	r, ru, d, log := dedupRunner(config.DecisionOn, 0.85, nil)
+	d.err = errors.New("decide: status 503")
+	if !twoReviews(r, ru) {
+		t.Fatal("a failed decision keeps the identity by key: the blocker is new")
+	}
+	for _, want := range []string{`msg="decision skipped"`, "point=review_dedup", `reason="decide: status 503"`, "run=91", "iteration=2"} {
+		if !strings.Contains(log.String(), want) {
+			t.Errorf("the skip log lacks %q:\n%s", want, log.String())
+		}
+	}
+
+	// new_0 matches, but new_1 got no answer: the whole review falls back to the keys.
+	r, ru, _, log = dedupRunner(config.DecisionOn, 0.85, matchPrev0(0.9))
+	seen := newSeenBlockers()
+	r.novelBlockers(context.Background(), ru, 1, seen, axisReview("spec", blocker("calc.go", "faltando", "Add(2,3) devolve -1")))
+	if !r.novelBlockers(context.Background(), ru, 2, seen, axisReview("spec", blocker("calc_test.go", "quebrado", "a soma não dá 5"), blocker("sub.go", "faltando", "falta Sub"))) {
+		t.Fatal("a missing answer keeps the identity by key: every blocker is new")
+	}
+	for _, want := range []string{`msg="decision skipped"`, "point=review_dedup", `reason="no answer to new_1"`} {
+		if !strings.Contains(log.String(), want) {
+			t.Errorf("the skip log lacks %q:\n%s", want, log.String())
+		}
+	}
+	if strings.Contains(log.String(), "review blocker matched") {
+		t.Errorf("nothing is matched when the answer is incomplete:\n%s", log.String())
 	}
 }

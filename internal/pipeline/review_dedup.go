@@ -82,7 +82,7 @@ func (r *Runner) novelBlockers(ctx context.Context, ru *run, iter int, seen *see
 
 // matchBlockers asks, in one request, whether each blocker of fresh is the same problem as one of
 // previous; true means at least one is, with its probability at the threshold or above. Shadow
-// only logs the decision.
+// only logs the decision; a missing answer leaves the whole review to the keys.
 func (r *Runner) matchBlockers(ctx context.Context, ru *run, iter int, previous, fresh []seenBlocker) bool {
 	prev := dedupItems("prev", previous)
 	options := map[string]string{"nenhum": "É um problema diferente de todos os anteriores."}
@@ -105,15 +105,24 @@ func (r *Runner) matchBlockers(ctx context.Context, ru *run, iter int, previous,
 	if !ok || p.Mode != config.DecisionOn {
 		return false
 	}
-	matched := false
-	for i, b := range fresh {
-		a := res.Answers[fmt.Sprintf("new_%d", i)]
-		pb, known := byID[a.Choice]
-		if !known || a.Probabilities[a.Choice] < p.Threshold {
-			continue
-		}
-		matched = true
-		ru.log.Info("review blocker matched", "run", ru.rec.ID, "new", b.key(), "previous", pb.key(), "p", a.Probabilities[a.Choice])
+	type match struct {
+		b, prev seenBlocker
+		p       float64
 	}
-	return matched
+	var matches []match
+	for i, b := range fresh {
+		key := fmt.Sprintf("new_%d", i)
+		a, answered := res.Answers[key]
+		if !answered {
+			ru.log.Warn("decision skipped", append([]any{"point", "review_dedup", "reason", "no answer to " + key}, attrs...)...)
+			return false
+		}
+		if pb, known := byID[a.Choice]; known && a.Probabilities[a.Choice] >= p.Threshold {
+			matches = append(matches, match{b, pb, a.Probabilities[a.Choice]})
+		}
+	}
+	for _, m := range matches {
+		ru.log.Info("review blocker matched", "run", ru.rec.ID, "new", m.b.key(), "previous", m.prev.key(), "p", m.p)
+	}
+	return len(matches) > 0
 }
