@@ -745,3 +745,28 @@ func TestDoctorShouldNotCallDecisionsProbeWhenDisabled(t *testing.T) {
 		t.Fatalf("a disabled layer with a key set must stay disabled: %+v", c)
 	}
 }
+
+func TestDoctorShouldNeverPrintDecisionsAPIKey(t *testing.T) {
+	const key = "decisions-secret-marker"
+	for name, probe := range map[string]func(context.Context) error{
+		"no probe":    nil,
+		"probe ok":    func(context.Context) error { return nil },
+		"probe error": func(context.Context) error { return fmt.Errorf("decisions: 401 bad key %q (Bearer %s)", key, key) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg, d := decisionsHarness(t, key)
+			d.DecisionsProbe = probe
+			for _, c := range Run(context.Background(), cfg, d) {
+				if strings.Contains(c.Detail, key) {
+					t.Fatalf("%s leaks the decisions key: %q", c.Name, c.Detail)
+				}
+			}
+		})
+	}
+
+	cfg, d := decisionsHarness(t, key)
+	d.DecisionsProbe = func(context.Context) error { return errors.New("echo " + key) }
+	if c := byName(Run(context.Background(), cfg, d))["decisions"]; c.Status != Fail || c.Detail != "typesafe/jev-1.14 at https://openrouter.ai/api: echo ***" {
+		t.Fatalf("a probe error echoing the key must be masked: %+v", c)
+	}
+}

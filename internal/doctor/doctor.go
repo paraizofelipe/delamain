@@ -211,7 +211,8 @@ func decisions(ctx context.Context, dc config.Decisions, d Deps) Check {
 		getenv = os.Getenv
 	}
 	p := dc.Provider
-	if getenv(p.APIKeyEnv) == "" {
+	key := getenv(p.APIKeyEnv)
+	if key == "" {
 		return Check{"decisions", Fail, p.APIKeyEnv + " is not set; decision points fall back to the current rules"}
 	}
 	modes := fmt.Sprintf("(triage=%s checks=%s review_dedup=%s)", dc.Triage.Mode, dc.Checks.Mode, dc.ReviewDedup.Mode)
@@ -219,7 +220,8 @@ func decisions(ctx context.Context, dc config.Decisions, d Deps) Check {
 		return Check{"decisions", OK, fmt.Sprintf("%s at %s %s; probe skipped", p.Model, p.BaseURL, modes)}
 	}
 	if err := d.DecisionsProbe(ctx); err != nil {
-		return Check{"decisions", Fail, fmt.Sprintf("%s at %s: %v", p.Model, p.BaseURL, err)}
+		// a provider may echo the credential back; mask it before it reaches the Detail
+		return Check{"decisions", Fail, fmt.Sprintf("%s at %s: %s", p.Model, p.BaseURL, strings.ReplaceAll(err.Error(), key, "***"))}
 	}
 	return Check{"decisions", OK, fmt.Sprintf("%s at %s %s", p.Model, p.BaseURL, modes)}
 }
