@@ -70,6 +70,10 @@ type Deps struct {
 	Stat     func(string) (fs.FileInfo, error)
 	ReadFile func(string) ([]byte, error)
 	Getenv   func(string) string
+	// DecisionsProbe asks the decisions provider whether it answers; nil skips the probe. It
+	// only runs when the decisions layer is enabled and its key is set. Getenv also backs the
+	// decisions check, and a nil Getenv falls back to os.Getenv there.
+	DecisionsProbe func(ctx context.Context) error
 }
 
 // Run executes every check; it never stops at the first failure so the report is complete.
@@ -163,6 +167,8 @@ func Run(ctx context.Context, cfg config.Config, d Deps) []Check {
 		checks = append(checks, promptChecks(d.Prompts, d.PromptsTarget)...)
 	}
 
+	checks = append(checks, decisions(cfg.Decisions, d))
+
 	if err := writable(cfg.Paths.StateDir); err != nil {
 		add("state dir", Fail, "%s: %v", cfg.Paths.StateDir, err)
 	} else {
@@ -192,6 +198,24 @@ func forgeAuth(ctx context.Context, d Deps, dir string) Check {
 	default:
 		return Check{"forge auth", Warn, fmt.Sprintf("%s%v", where, err)}
 	}
+}
+
+// decisions reports whether the optional decisions layer can run. Only the key's emptiness
+// is checked: its value never reaches a Detail.
+func decisions(dc config.Decisions, d Deps) Check {
+	if !dc.Enabled {
+		return Check{"decisions", OK, "disabled"}
+	}
+	getenv := d.Getenv
+	if getenv == nil {
+		getenv = os.Getenv
+	}
+	p := dc.Provider
+	if getenv(p.APIKeyEnv) == "" {
+		return Check{"decisions", Fail, p.APIKeyEnv + " is not set; decision points fall back to the current rules"}
+	}
+	return Check{"decisions", OK, fmt.Sprintf("%s at %s (triage=%s checks=%s review_dedup=%s); probe skipped",
+		p.Model, p.BaseURL, dc.Triage.Mode, dc.Checks.Mode, dc.ReviewDedup.Mode)}
 }
 
 // hindsight checks what the agents' memory needs to run and reports only the first problem.
