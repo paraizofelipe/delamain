@@ -854,3 +854,78 @@ func TestLoadShouldLetDecisionsModelEnvOverrideFile(t *testing.T) {
 		t.Fatalf("DELAMAIN_DECISIONS_MODEL must win over the file, got %q", cfg.Decisions.Provider.Model)
 	}
 }
+
+// enabledDecisions returns the defaults with the decisions block turned on, so each case changes one field.
+func enabledDecisions() Config {
+	cfg := Default()
+	cfg.Decisions.Enabled = true
+	return cfg
+}
+
+func TestValidateShouldIgnoreInvalidDecisionsWhenDisabled(t *testing.T) {
+	cfg := Default()
+	cfg.Decisions = Decisions{
+		Provider: DecisionsProvider{BaseURL: "http://insecure", APIKeyEnv: "sk-or-v1-x", Model: " ", Timeout: time.Hour},
+		Triage:   DecisionPoint{Mode: "maybe", Threshold: 2},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("a disabled block is not validated: %v", err)
+	}
+	if err := enabledDecisions().Validate(); err != nil {
+		t.Fatalf("the enabled defaults must be valid: %v", err)
+	}
+}
+
+func TestValidateShouldRejectNonHTTPSDecisionsBaseURL(t *testing.T) {
+	for _, u := range []string{"http://openrouter.ai/api", "openrouter.ai/api", ""} {
+		cfg := enabledDecisions()
+		cfg.Decisions.Provider.BaseURL = u
+		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "decisions.provider.base_url") {
+			t.Errorf("base_url %q: want error citing decisions.provider.base_url, got %v", u, err)
+		}
+	}
+}
+
+func TestValidateShouldRejectInvalidDecisionsAPIKeyEnvName(t *testing.T) {
+	for _, name := range []string{"", "my_key", "1KEY", "MY-KEY", "sk-or-v1-abc"} {
+		cfg := enabledDecisions()
+		cfg.Decisions.Provider.APIKeyEnv = name
+		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "decisions.provider.api_key_env") {
+			t.Errorf("api_key_env %q: want error citing decisions.provider.api_key_env, got %v", name, err)
+		}
+	}
+	for _, name := range []string{"_KEY", "OPENROUTER_API_KEY2"} {
+		cfg := enabledDecisions()
+		cfg.Decisions.Provider.APIKeyEnv = name
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("api_key_env %q is a valid variable name: %v", name, err)
+		}
+	}
+}
+
+func TestValidateShouldRequireDecisionsModelWhenEnabled(t *testing.T) {
+	for _, m := range []string{"", "  "} {
+		cfg := enabledDecisions()
+		cfg.Decisions.Provider.Model = m
+		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "decisions.provider.model") {
+			t.Errorf("model %q: want error citing decisions.provider.model, got %v", m, err)
+		}
+	}
+}
+
+func TestValidateShouldRejectDecisionsTimeoutOutOfRange(t *testing.T) {
+	for _, d := range []time.Duration{0, -time.Second, 10*time.Second + time.Nanosecond} {
+		cfg := enabledDecisions()
+		cfg.Decisions.Provider.Timeout = d
+		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "decisions.provider.timeout") {
+			t.Errorf("timeout %s: want error citing decisions.provider.timeout, got %v", d, err)
+		}
+	}
+	for _, d := range []time.Duration{time.Nanosecond, 10 * time.Second} {
+		cfg := enabledDecisions()
+		cfg.Decisions.Provider.Timeout = d
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("timeout %s is within (0, 10s]: %v", d, err)
+		}
+	}
+}

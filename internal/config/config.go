@@ -8,6 +8,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -652,7 +653,33 @@ func (c Config) Validate() error {
 		errs = append(errs, fmt.Errorf("gates.red_proof %q is not one of bug|always|never", c.Gates.RedProof))
 	}
 	errs = append(errs, c.Notify.validate()...)
+	errs = append(errs, c.Decisions.validate()...)
 	return errors.Join(errs...)
+}
+
+// envName is a portable environment variable name, which a pasted key (sk-...) never matches.
+var envName = regexp.MustCompile(`^[A-Z_][A-Z0-9_]*$`)
+
+// validate checks the decisions block only when it is enabled, so a disabled block never blocks a run.
+func (d Decisions) validate() []error {
+	if !d.Enabled {
+		return nil
+	}
+	var errs []error
+	p := d.Provider
+	if !strings.HasPrefix(p.BaseURL, "https://") {
+		errs = append(errs, fmt.Errorf("decisions.provider.base_url %q must start with https://", p.BaseURL))
+	}
+	if !envName.MatchString(p.APIKeyEnv) {
+		errs = append(errs, fmt.Errorf("decisions.provider.api_key_env %q must match %s", p.APIKeyEnv, envName))
+	}
+	if strings.TrimSpace(p.Model) == "" {
+		errs = append(errs, errors.New("decisions.provider.model is required when enabled"))
+	}
+	if p.Timeout <= 0 || p.Timeout > 10*time.Second {
+		errs = append(errs, fmt.Errorf("decisions.provider.timeout must be in (0, 10s], got %s", p.Timeout))
+	}
+	return errs
 }
 
 func (n Notify) validate() []error {
