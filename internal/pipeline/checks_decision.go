@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"slices"
 
+	"github.com/paraizo/delamain/internal/config"
 	"github.com/paraizo/delamain/internal/decide"
 )
 
@@ -43,7 +44,7 @@ func checkCause(name string) decide.Choice {
 }
 
 // retryChecks asks the checks point the cause of each failure in cs; true means verify may run
-// once more before the iteration goes back to the implementer.
+// once more before the iteration goes back to the implementer. Shadow only logs the decision.
 func (r *Runner) retryChecks(ctx context.Context, ru *run, iter int, cs []CheckResult) bool {
 	var failed []CheckResult
 	for _, c := range cs {
@@ -80,5 +81,5 @@ func (r *Runner) retryChecks(ctx context.Context, ru *run, iter int, cs []CheckR
 			retry = false
 		}
 	}
-	return retry
+	return retry && p.Mode == config.DecisionOn
 }

@@ -3,6 +3,7 @@ package pipeline
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"strings"
 	"testing"
@@ -249,5 +250,53 @@ func TestExecuteShouldNotConsultDeciderWhenRedProofFailed(t *testing.T) {
 	if d.calls() != 0 || hs.h.checkRuns["redproof"] != 2 || res.Iterations != 2 {
 		t.Fatalf("a red proof failure never asks nor retries: calls=%d redproof runs=%d iterations=%d",
 			d.calls(), hs.h.checkRuns["redproof"], res.Iterations)
+	}
+}
+
+func TestExecuteShouldOnlyLogCheckCauseInShadowMode(t *testing.T) {
+	hs := newHarness(t, happy)
+	hs.h.checks = failOnRuns("test", 1)
+	d := withChecks(hs, config.DecisionShadow, 0.8, map[string]decide.Answer{"check_0": cause(0.9, 0.1)})
+	d.res.CostUSD = 0.0004
+	var log bytes.Buffer
+	hs.r.Log = slog.New(slog.NewTextHandler(&log, nil))
+	res := hs.run(t)
+
+	if res.Iterations != 2 || d.calls() != 1 || hs.h.checkRuns["test"] != 2 {
+		t.Fatalf("shadow never retries: %d iterations, calls=%d test runs=%d", res.Iterations, d.calls(), hs.h.checkRuns["test"])
+	}
+	if second := hs.h.prompts["implementer"][1]; !strings.Contains(second, "Gate `test` (`go test ./...`) falhou com código 1") {
+		t.Fatalf("in shadow the failing gate still reaches the implementer:\n%s", second)
+	}
+	for _, want := range []string{
+		"msg=decision", "point=checks", "mode=shadow", "model=typesafe/jev-1.14", "cost_usd=0.0004",
+		"choice.check_0=flaky", "iteration=1", "checks=[test]",
+	} {
+		if !strings.Contains(log.String(), want) {
+			t.Errorf("the decision log lacks %q:\n%s", want, log.String())
+		}
+	}
+	if strings.Contains(log.String(), "checks retried") {
+		t.Errorf("shadow only logs the decision:\n%s", log.String())
+	}
+}
+
+func TestExecuteShouldFallBackToFeedbackWhenDeciderFails(t *testing.T) {
+	hs := newHarness(t, happy)
+	hs.h.checks = failOnRuns("test", 1)
+	d := withChecks(hs, config.DecisionOn, 0.8, nil)
+	d.err = errors.New("decide: status 503")
+	var log bytes.Buffer
+	hs.r.Log = slog.New(slog.NewTextHandler(&log, nil))
+	res := hs.run(t)
+
+	if res.Outcome != OutcomeApproved || res.Iterations != 2 || d.calls() != 1 || hs.h.checkRuns["test"] != 2 {
+		t.Fatalf("a failed decision keeps today's flow: %s after %d, calls=%d test runs=%d",
+			res.Outcome, res.Iterations, d.calls(), hs.h.checkRuns["test"])
+	}
+	for _, want := range []string{`msg="decision skipped"`, "point=checks", `reason="decide: status 503"`, "checks=[test]"} {
+		if !strings.Contains(log.String(), want) {
+			t.Errorf("the skip log lacks %q:\n%s", want, log.String())
+		}
 	}
 }
