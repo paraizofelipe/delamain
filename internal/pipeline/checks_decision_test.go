@@ -1,0 +1,123 @@
+package pipeline
+
+import (
+	"bytes"
+	"encoding/json"
+	"log/slog"
+	"strings"
+	"testing"
+
+	"github.com/paraizo/delamain/internal/config"
+	"github.com/paraizo/delamain/internal/decide"
+)
+
+// withChecks turns the decisions on with the checks point in mode and a decider giving answers;
+// the triage is off so the decider only counts checks requests.
+func withChecks(hs *harness, mode config.DecisionMode, threshold float64, answers map[string]decide.Answer) *fakeDecider {
+	d := &fakeDecider{res: decide.Result{Answers: answers, Model: "typesafe/jev-1.14"}}
+	hs.r.Decider = d
+	hs.r.Cfg.Decisions.Enabled = true
+	hs.r.Cfg.Decisions.Triage = config.DecisionPoint{Mode: config.DecisionOff}
+	hs.r.Cfg.Decisions.Checks = config.DecisionPoint{Mode: mode, Threshold: threshold}
+	return d
+}
+
+// cause answers one check_<i> choice with the given flaky and infra probabilities.
+func cause(flaky, infra float64) decide.Answer {
+	return decide.Answer{Choice: "flaky", Confidence: flaky, Probabilities: map[string]float64{
+		"teste_real": 1 - flaky - infra, "lint_format": 0, "flaky": flaky, "infra": infra,
+	}}
+}
+
+// failOnRuns makes the gate name fail on the given runs and every other gate behave by default.
+func failOnRuns(name string, runs ...int) func(string, int) int {
+	return func(n string, i int) int {
+		if n == name {
+			for _, r := range runs {
+				if r == i {
+					return 1
+				}
+			}
+			return 0
+		}
+		return defaultChecks(n, i)
+	}
+}
+
+// checkStateItems decodes state.checks the way the decisions API reads it.
+func checkStateItems(t *testing.T, state map[string]any) []map[string]any {
+	t.Helper()
+	b, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out struct {
+		Checks []map[string]any `json:"checks"`
+	}
+	if err := json.Unmarshal(b, &out); err != nil {
+		t.Fatal(err)
+	}
+	return out.Checks
+}
+
+func TestExecuteShouldRetryVerifyOnceWhenAllFailuresAreFlakyOrInfra(t *testing.T) {
+	hs := newHarness(t, happy)
+	hs.h.checks = failOnRuns("test", 1)
+	d := withChecks(hs, config.DecisionOn, 0.8, map[string]decide.Answer{"check_0": cause(0.6, 0.3)})
+	var log bytes.Buffer
+	hs.r.Log = slog.New(slog.NewTextHandler(&log, nil))
+	res := hs.run(t)
+
+	if res.Outcome != OutcomeApproved || res.Iterations != 1 {
+		t.Fatalf("a flaky failure that passes on retry must not cost an iteration: %s after %d (%s)", res.Outcome, res.Iterations, res.Reason)
+	}
+	if d.calls() != 1 || hs.h.checkRuns["test"] != 2 {
+		t.Fatalf("one decision and one retry: calls=%d test runs=%d", d.calls(), hs.h.checkRuns["test"])
+	}
+	if len(hs.h.prompts["implementer"]) != 1 || len(hs.h.prompts["reviewer"]) != 1 {
+		t.Fatalf("the retried iteration goes to review, not back to the implementer: impl=%d review=%d",
+			len(hs.h.prompts["implementer"]), len(hs.h.prompts["reviewer"]))
+	}
+	if !res.History[0].Verified {
+		t.Fatalf("the retry result replaces the checks: %+v", res.History[0].Checks)
+	}
+	req := d.requests[0]
+	q, ok := req.Choices["check_0"]
+	if !ok || len(req.Choices) != 1 || q.Instructions != "Qual a causa mais provável desta falha do check test?" {
+		t.Fatalf("one choice per failed check: %+v", req.Choices)
+	}
+	for _, opt := range []string{"teste_real", "lint_format", "flaky", "infra"} {
+		if q.Options[opt] == "" {
+			t.Errorf("the choice lacks option %q: %+v", opt, q.Options)
+		}
+	}
+	items := checkStateItems(t, req.State)
+	if len(items) != 1 || items[0]["name"] != "test" || items[0]["command"] != "go test ./..." || items[0]["exit_code"] != float64(1) {
+		t.Fatalf("state.checks carries the failed check: %v", items)
+	}
+	if _, ok := items[0]["tail"]; !ok {
+		t.Fatalf("state.checks carries the tail: %v", items)
+	}
+	for _, want := range []string{"msg=decision", "point=checks", "choice.check_0=flaky", "msg=\"checks retried\"", "iteration=1", "checks=[test]"} {
+		if !strings.Contains(log.String(), want) {
+			t.Errorf("the run log lacks %q:\n%s", want, log.String())
+		}
+	}
+}
+
+func TestExecuteShouldNotConsultDeciderWhenChecksPointIsOff(t *testing.T) {
+	hs := newHarness(t, happy)
+	hs.h.checks = failOnRuns("test", 1)
+	d := withChecks(hs, config.DecisionOff, 0.8, map[string]decide.Answer{"check_0": cause(0.6, 0.3)})
+	res := hs.run(t)
+
+	if res.Outcome != OutcomeApproved || res.Iterations != 2 {
+		t.Fatalf("off keeps today's flow: %s after %d (%s)", res.Outcome, res.Iterations, res.Reason)
+	}
+	if d.calls() != 0 || hs.h.checkRuns["test"] != 2 {
+		t.Fatalf("off never asks nor retries: calls=%d test runs=%d", d.calls(), hs.h.checkRuns["test"])
+	}
+	if second := hs.h.prompts["implementer"][1]; !strings.Contains(second, "Gate `test` (`go test ./...`) falhou com código 1") {
+		t.Fatalf("the failing gate must reach the implementer:\n%s", second)
+	}
+}

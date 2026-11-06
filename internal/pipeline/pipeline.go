@@ -424,6 +424,13 @@ func (r *Runner) execute(ctx context.Context, ru *run, repo string, t Task) erro
 			return err
 		}
 		it.Checks, it.Verified = checks, allPassed(checks)
+		if !it.Verified && r.retryChecks(ctx, ru, iter, checks) {
+			ru.log.Info("checks retried", "run", ru.rec.ID, "iteration", iter, "checks", failedChecks(checks))
+			if checks, err = r.verify(ctx, ru, iterDir); err != nil {
+				return err
+			}
+			it.Checks, it.Verified = checks, allPassed(checks)
+		}
 		if !it.Verified {
 			feedback, why = verifyFeedback(checks), verifyReason(checks)
 			ru.res.History = append(ru.res.History, it)
