@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"slices"
@@ -8,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/paraizo/delamain/internal/config"
+	"github.com/paraizo/delamain/internal/decide"
+	"github.com/paraizo/delamain/internal/notify"
 	"github.com/paraizo/delamain/internal/pipeline"
 	"github.com/paraizo/delamain/internal/prompts"
 )
@@ -99,5 +102,74 @@ func TestPromptsTargetShouldIsolateTheClaudeDirPerAgentOverrides(t *testing.T) {
 	cfg.Agent.Harness = config.HarnessOmp
 	if omp := promptsTarget(cfg).ClaudeDir; omp != base {
 		t.Fatalf("omp discovers its own agent dir, nothing may move: %s", omp)
+	}
+}
+
+// withDecisions turns the decisions block of the fixture config on and sets its key variable to
+// key; the enabled override is cleared so the developer's environment never decides the test.
+func (f *fixture) withDecisions(t *testing.T, key string) config.Config {
+	t.Helper()
+	b, err := os.ReadFile(f.cfgFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(f.cfgFile, append(b, "decisions:\n  enabled: true\n"...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DELAMAIN_DECISIONS_ENABLED", "")
+	t.Setenv(config.DefaultDecisionsAPIKeyEnv, key)
+	cfg, err := config.Load(f.cfgFile, os.Getenv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cfg
+}
+
+func TestNewRunnerShouldLeaveDeciderNilWhenDecisionsDisabled(t *testing.T) {
+	f := newFixture(t)
+	t.Setenv("DELAMAIN_DECISIONS_ENABLED", "")
+	t.Setenv(config.DefaultDecisionsAPIKeyEnv, fakeDecisionsKey)
+	cfg, err := config.Load(f.cfgFile, os.Getenv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := newRunner(cfg, f.st, notify.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = r.Notify.Close() })
+	if r.Decider != nil {
+		t.Fatalf("decisions off by default leave the runner without a decider, got %T", r.Decider)
+	}
+}
+
+func TestNewRunnerShouldWireDecisionsClientWhenEnabledWithKey(t *testing.T) {
+	f := newFixture(t)
+	cfg := f.withDecisions(t, fakeDecisionsKey)
+	r, err := newRunner(cfg, f.st, notify.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = r.Notify.Close() })
+	if _, ok := r.Decider.(*decide.Client); !ok {
+		t.Fatalf("decisions on with a key wire the real client into the runner, got %T", r.Decider)
+	}
+}
+
+func TestRunTaskShouldFailBeforeCreatingRunWhenDecisionsEnabledWithoutAPIKey(t *testing.T) {
+	f := newFixture(t)
+	cfg := f.withDecisions(t, "")
+	task := pipeline.Task{Ref: "#7", Issue: 7, Title: "feat: something", Kind: "feature", Repo: f.repo}
+	_, err := runTask(context.Background(), cfg, task, nil)
+	want := "decisions.enabled: variable DELAMAIN_DECISIONS_API_KEY is empty; set the key or turn decisions.enabled off"
+	if err == nil || err.Error() != want {
+		t.Fatalf("runTask error = %v, want %q", err, want)
+	}
+	runs, err := f.st.RecentRuns(context.Background(), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 0 {
+		t.Fatalf("a run that fails at start is never recorded, got %+v", runs)
 	}
 }
