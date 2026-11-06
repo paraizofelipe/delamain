@@ -1,6 +1,8 @@
 package config
 
 import (
+	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -747,5 +749,239 @@ func TestWithProjectOverridesShouldInheritHindsightWhenTheProjectOmitsIt(t *test
 	}
 	if _, changed, err := cfg.WithProjectOverrides(Agent{}, Claude{}, Omp{}, nil); changed || err != nil {
 		t.Fatalf("a project without overrides keeps the global config: changed=%v err=%v", changed, err)
+	}
+}
+
+func TestLoadShouldDefaultDecisionsToDisabledWithOpenRouterJev(t *testing.T) {
+	cfg, err := Load(writeFile(t, "pipeline:\n  max_iterations: 2\n"), noEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Decisions{
+		Enabled: false,
+		Provider: DecisionsProvider{
+			BaseURL:   "https://openrouter.ai/api",
+			APIKeyEnv: "DELAMAIN_DECISIONS_API_KEY",
+			Model:     "typesafe/jev-1.14",
+			Timeout:   2 * time.Second,
+		},
+		Triage:      DecisionPoint{Mode: DecisionShadow, Threshold: 0.3},
+		Checks:      DecisionPoint{Mode: DecisionOff, Threshold: 0.8},
+		ReviewDedup: DecisionPoint{Mode: DecisionOff, Threshold: 0.85},
+	}
+	if cfg.Decisions != want {
+		t.Fatalf("no block means the documented defaults, disabled: got %+v, want %+v", cfg.Decisions, want)
+	}
+	if Default().Decisions != want {
+		t.Fatalf("Default() must carry the same decisions defaults: %+v", Default().Decisions)
+	}
+}
+
+func TestLoadShouldReadDecisionsBlockFromFile(t *testing.T) {
+	p := writeFile(t, "decisions:\n  enabled: true\n  provider:\n    model: typesafe/jev-2\n    timeout: 3s\n"+
+		"  triage:\n    mode: on\n  review_dedup:\n    mode: shadow\n    threshold: 0.9\n")
+	cfg, err := Load(p, noEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := cfg.Decisions
+	if !d.Enabled || d.Provider.Model != "typesafe/jev-2" || d.Provider.Timeout != 3*time.Second {
+		t.Fatalf("file values not applied: %+v", d)
+	}
+	if d.Provider.BaseURL != "https://openrouter.ai/api" || d.Provider.APIKeyEnv != "DELAMAIN_DECISIONS_API_KEY" {
+		t.Fatalf("unset provider fields lost their defaults: %+v", d.Provider)
+	}
+	if d.Triage != (DecisionPoint{Mode: DecisionOn, Threshold: 0.3}) {
+		t.Fatalf("triage must take the file mode and keep the default threshold: %+v", d.Triage)
+	}
+	if d.Checks != (DecisionPoint{Mode: DecisionOff, Threshold: 0.8}) {
+		t.Fatalf("an omitted point keeps its defaults: %+v", d.Checks)
+	}
+	if d.ReviewDedup != (DecisionPoint{Mode: DecisionShadow, Threshold: 0.9}) {
+		t.Fatalf("review_dedup not applied: %+v", d.ReviewDedup)
+	}
+}
+
+func TestLoadShouldNotReadDecisionsAPIKeyValue(t *testing.T) {
+	const secret = "sk-or-v1-not-a-real-key"
+	p := writeFile(t, "decisions:\n  enabled: true\n  provider:\n    api_key_env: MY_DECISIONS_KEY\n")
+	var asked []string
+	cfg, err := Load(p, func(k string) string {
+		asked = append(asked, k)
+		if k == "MY_DECISIONS_KEY" || k == DefaultDecisionsAPIKeyEnv {
+			return secret
+		}
+		return ""
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Decisions.Provider.APIKeyEnv != "MY_DECISIONS_KEY" {
+		t.Fatalf("api_key_env must hold the variable name: %+v", cfg.Decisions.Provider)
+	}
+	if slices.Contains(asked, "MY_DECISIONS_KEY") || slices.Contains(asked, DefaultDecisionsAPIKeyEnv) {
+		t.Fatalf("Load must never read the key value, asked for %v", asked)
+	}
+	if strings.Contains(fmt.Sprintf("%+v", cfg.Decisions), secret) {
+		t.Fatal("the key value must not be stored in the config")
+	}
+}
+
+func TestLoadShouldLetDecisionsEnabledEnvOverrideFile(t *testing.T) {
+	p := writeFile(t, "decisions:\n  enabled: false\n")
+	cfg, err := Load(p, envOf(map[string]string{"DELAMAIN_DECISIONS_ENABLED": "true"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Decisions.Enabled {
+		t.Fatal("DELAMAIN_DECISIONS_ENABLED must win over the file")
+	}
+}
+
+func TestLoadShouldRejectNonBooleanDecisionsEnabledEnv(t *testing.T) {
+	_, err := Load(filepath.Join(t.TempDir(), "x.yaml"), envOf(map[string]string{"DELAMAIN_DECISIONS_ENABLED": "talvez"}))
+	if err == nil || !strings.Contains(err.Error(), "DELAMAIN_DECISIONS_ENABLED") {
+		t.Fatalf("want error naming the bad variable, got %v", err)
+	}
+}
+
+func TestLoadShouldLetDecisionsModelEnvOverrideFile(t *testing.T) {
+	p := writeFile(t, "decisions:\n  provider:\n    model: typesafe/jev-2\n")
+	cfg, err := Load(p, envOf(map[string]string{"DELAMAIN_DECISIONS_MODEL": "typesafe/jev-3"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Decisions.Provider.Model != "typesafe/jev-3" {
+		t.Fatalf("DELAMAIN_DECISIONS_MODEL must win over the file, got %q", cfg.Decisions.Provider.Model)
+	}
+}
+
+// enabledDecisions returns the defaults with the decisions block turned on, so each case changes one field.
+func enabledDecisions() Config {
+	cfg := Default()
+	cfg.Decisions.Enabled = true
+	return cfg
+}
+
+func TestValidateShouldIgnoreInvalidDecisionsWhenDisabled(t *testing.T) {
+	cfg := Default()
+	cfg.Decisions = Decisions{
+		Provider: DecisionsProvider{BaseURL: "http://insecure", APIKeyEnv: "sk-or-v1-x", Model: " ", Timeout: time.Hour},
+		Triage:   DecisionPoint{Mode: "maybe", Threshold: 2},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("a disabled block is not validated: %v", err)
+	}
+	if err := enabledDecisions().Validate(); err != nil {
+		t.Fatalf("the enabled defaults must be valid: %v", err)
+	}
+}
+
+func TestValidateShouldRejectNonHTTPSDecisionsBaseURL(t *testing.T) {
+	for _, u := range []string{"http://openrouter.ai/api", "openrouter.ai/api", ""} {
+		cfg := enabledDecisions()
+		cfg.Decisions.Provider.BaseURL = u
+		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "decisions.provider.base_url") {
+			t.Errorf("base_url %q: want error citing decisions.provider.base_url, got %v", u, err)
+		}
+	}
+}
+
+func TestValidateShouldRejectInvalidDecisionsAPIKeyEnvName(t *testing.T) {
+	for _, name := range []string{"", "my_key", "1KEY", "MY-KEY", "sk-or-v1-abc"} {
+		cfg := enabledDecisions()
+		cfg.Decisions.Provider.APIKeyEnv = name
+		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "decisions.provider.api_key_env") {
+			t.Errorf("api_key_env %q: want error citing decisions.provider.api_key_env, got %v", name, err)
+		}
+	}
+	for _, name := range []string{"_KEY", "OPENROUTER_API_KEY2"} {
+		cfg := enabledDecisions()
+		cfg.Decisions.Provider.APIKeyEnv = name
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("api_key_env %q is a valid variable name: %v", name, err)
+		}
+	}
+}
+
+func TestValidateShouldNotEchoRejectedDecisionsAPIKeyEnvValue(t *testing.T) {
+	const pasted = "sk-or-v1-not-a-real-key" // a key pasted where the variable name belongs
+	cfg := enabledDecisions()
+	cfg.Decisions.Provider.APIKeyEnv = pasted
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "decisions.provider.api_key_env") {
+		t.Fatalf("want error citing decisions.provider.api_key_env, got %v", err)
+	}
+	if strings.Contains(err.Error(), pasted) {
+		t.Fatalf("the rejected value may be a key and must not reach the error: %v", err)
+	}
+}
+
+func TestValidateShouldRequireDecisionsModelWhenEnabled(t *testing.T) {
+	for _, m := range []string{"", "  "} {
+		cfg := enabledDecisions()
+		cfg.Decisions.Provider.Model = m
+		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "decisions.provider.model") {
+			t.Errorf("model %q: want error citing decisions.provider.model, got %v", m, err)
+		}
+	}
+}
+
+func TestValidateShouldRejectDecisionsTimeoutOutOfRange(t *testing.T) {
+	for _, d := range []time.Duration{0, -time.Second, 10*time.Second + time.Nanosecond} {
+		cfg := enabledDecisions()
+		cfg.Decisions.Provider.Timeout = d
+		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "decisions.provider.timeout") {
+			t.Errorf("timeout %s: want error citing decisions.provider.timeout, got %v", d, err)
+		}
+	}
+	for _, d := range []time.Duration{time.Nanosecond, 10 * time.Second} {
+		cfg := enabledDecisions()
+		cfg.Decisions.Provider.Timeout = d
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("timeout %s is within (0, 10s]: %v", d, err)
+		}
+	}
+}
+
+// decisionPoints exposes each point by its key, so a case can change one point at a time.
+func decisionPoints(d *Decisions) map[string]*DecisionPoint {
+	return map[string]*DecisionPoint{"triage": &d.Triage, "checks": &d.Checks, "review_dedup": &d.ReviewDedup}
+}
+
+func TestValidateShouldRejectUnknownDecisionMode(t *testing.T) {
+	for _, name := range []string{"triage", "checks", "review_dedup"} {
+		cfg := enabledDecisions()
+		decisionPoints(&cfg.Decisions)[name].Mode = "maybe"
+		err := cfg.Validate()
+		if err == nil || !strings.Contains(err.Error(), `decisions.`+name+`.mode "maybe" is not one of off|shadow|on`) {
+			t.Errorf("%s: want error citing decisions.%s.mode, got %v", name, name, err)
+		}
+		for _, m := range []DecisionMode{DecisionOff, DecisionShadow, DecisionOn} {
+			cfg := enabledDecisions()
+			decisionPoints(&cfg.Decisions)[name].Mode = m
+			if err := cfg.Validate(); err != nil {
+				t.Errorf("%s: mode %q is valid: %v", name, m, err)
+			}
+		}
+	}
+}
+
+func TestValidateShouldRejectDecisionThresholdOutsideZeroToOne(t *testing.T) {
+	for _, name := range []string{"triage", "checks", "review_dedup"} {
+		for _, th := range []float64{-0.1, 1.1, math.NaN()} {
+			cfg := enabledDecisions()
+			decisionPoints(&cfg.Decisions)[name].Threshold = th
+			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "decisions."+name+".threshold") {
+				t.Errorf("%s threshold %v: want error citing decisions.%s.threshold, got %v", name, th, name, err)
+			}
+		}
+		for _, th := range []float64{0, 1} {
+			cfg := enabledDecisions()
+			decisionPoints(&cfg.Decisions)[name].Threshold = th
+			if err := cfg.Validate(); err != nil {
+				t.Errorf("%s threshold %v is within [0, 1]: %v", name, th, err)
+			}
+		}
 	}
 }

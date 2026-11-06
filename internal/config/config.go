@@ -8,6 +8,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -39,6 +40,8 @@ type Config struct {
 	Daemon   Daemon   `yaml:"daemon"`
 	Paths    Paths    `yaml:"paths"`
 	Notify   Notify   `yaml:"notify"`
+	// Decisions configures the optional fast decisions between pipeline stages; off by default.
+	Decisions Decisions `yaml:"decisions"`
 	// Complexity holds optional per-level limits applied once the plan is classified.
 	Complexity Complexity `yaml:"complexity"`
 	// Agents overrides the harness' model and reasoning per role or subagent, keyed by AgentNames.
@@ -333,6 +336,42 @@ type Notify struct {
 	Events []string `yaml:"events"`
 }
 
+// DecisionMode selects whether a decision point is skipped, only logged or acted upon.
+type DecisionMode string
+
+const (
+	DecisionOff    DecisionMode = "off"
+	DecisionShadow DecisionMode = "shadow"
+	DecisionOn     DecisionMode = "on"
+)
+
+// DefaultDecisionsAPIKeyEnv names the variable holding the decisions provider key.
+const DefaultDecisionsAPIKeyEnv = "DELAMAIN_DECISIONS_API_KEY" //nolint:gosec // a variable name, not a secret
+
+// Decisions configures the fast decisions (Jev via the OpenRouter Decisions API) between pipeline stages.
+type Decisions struct {
+	Enabled     bool              `yaml:"enabled"`
+	Provider    DecisionsProvider `yaml:"provider"`
+	Triage      DecisionPoint     `yaml:"triage"`
+	Checks      DecisionPoint     `yaml:"checks"`
+	ReviewDedup DecisionPoint     `yaml:"review_dedup"`
+}
+
+// DecisionsProvider points at the decisions API; the key is read from the APIKeyEnv variable, never stored.
+type DecisionsProvider struct {
+	BaseURL string `yaml:"base_url"`
+	// APIKeyEnv is the name of the variable holding the key, not the key itself.
+	APIKeyEnv string        `yaml:"api_key_env"`
+	Model     string        `yaml:"model"`
+	Timeout   time.Duration `yaml:"timeout"`
+}
+
+// DecisionPoint sets the mode and the confidence threshold of one decision.
+type DecisionPoint struct {
+	Mode      DecisionMode `yaml:"mode"`
+	Threshold float64      `yaml:"threshold"`
+}
+
 type Paths struct {
 	StateDir string `yaml:"state_dir"`
 	// WorktreesDir holds every run's worktree, as <worktrees_dir>/<repo>/<branch>; `delamain
@@ -397,6 +436,17 @@ func defaults() Config {
 			Enabled: true, Backend: NotifyAuto,
 			Events: []string{"pr_opened", "needs_human", "halted", "needs_info", "budget", "recover"},
 		},
+		Decisions: Decisions{
+			Provider: DecisionsProvider{
+				BaseURL:   "https://openrouter.ai/api",
+				APIKeyEnv: DefaultDecisionsAPIKeyEnv,
+				Model:     "typesafe/jev-1.14",
+				Timeout:   2 * time.Second,
+			},
+			Triage:      DecisionPoint{Mode: DecisionShadow, Threshold: 0.3},
+			Checks:      DecisionPoint{Mode: DecisionOff, Threshold: 0.8},
+			ReviewDedup: DecisionPoint{Mode: DecisionOff, Threshold: 0.85},
+		},
 		Paths: Paths{
 			StateDir:     "~/.local/state/delamain",
 			WorktreesDir: "~/projects/.worktrees",
@@ -445,15 +495,16 @@ func Load(path string, getenv func(string) string) (Config, error) {
 
 func applyEnv(cfg *Config, getenv func(string) string) error {
 	strs := map[string]*string{
-		"DELAMAIN_AGENT_HARNESS":  (*string)(&cfg.Agent.Harness),
-		"DELAMAIN_CLAUDE_MODEL":   &cfg.Claude.Model,
-		"DELAMAIN_HERDR_SESSION":  &cfg.Herdr.Session,
-		"DELAMAIN_OMP_MODEL":      &cfg.Omp.Model,
-		"DELAMAIN_OMP_AGENT_DIR":  &cfg.Omp.AgentDir,
-		"DELAMAIN_STATE_DIR":      &cfg.Paths.StateDir,
-		"DELAMAIN_PROMPTS_DIR":    &cfg.Paths.PromptsDir,
-		"DELAMAIN_LABEL_PREFIX":   &cfg.Forge.Labels.Prefix,
-		"DELAMAIN_NOTIFY_BACKEND": &cfg.Notify.Backend,
+		"DELAMAIN_AGENT_HARNESS":   (*string)(&cfg.Agent.Harness),
+		"DELAMAIN_CLAUDE_MODEL":    &cfg.Claude.Model,
+		"DELAMAIN_HERDR_SESSION":   &cfg.Herdr.Session,
+		"DELAMAIN_OMP_MODEL":       &cfg.Omp.Model,
+		"DELAMAIN_OMP_AGENT_DIR":   &cfg.Omp.AgentDir,
+		"DELAMAIN_STATE_DIR":       &cfg.Paths.StateDir,
+		"DELAMAIN_PROMPTS_DIR":     &cfg.Paths.PromptsDir,
+		"DELAMAIN_LABEL_PREFIX":    &cfg.Forge.Labels.Prefix,
+		"DELAMAIN_NOTIFY_BACKEND":  &cfg.Notify.Backend,
+		"DELAMAIN_DECISIONS_MODEL": &cfg.Decisions.Provider.Model,
 	}
 	for key, dst := range strs {
 		if v := getenv(key); v != "" {
@@ -461,9 +512,10 @@ func applyEnv(cfg *Config, getenv func(string) string) error {
 		}
 	}
 	bools := map[string]*bool{
-		"DELAMAIN_HERDR":          &cfg.Herdr.Enabled,
-		"DELAMAIN_REVIEW_ENABLED": &cfg.Review.Enabled,
-		"DELAMAIN_REVIEW_FIX":     &cfg.Review.Fix,
+		"DELAMAIN_HERDR":             &cfg.Herdr.Enabled,
+		"DELAMAIN_REVIEW_ENABLED":    &cfg.Review.Enabled,
+		"DELAMAIN_REVIEW_FIX":        &cfg.Review.Fix,
+		"DELAMAIN_DECISIONS_ENABLED": &cfg.Decisions.Enabled,
 	}
 	for key, dst := range bools {
 		v := getenv(key)
@@ -601,7 +653,48 @@ func (c Config) Validate() error {
 		errs = append(errs, fmt.Errorf("gates.red_proof %q is not one of bug|always|never", c.Gates.RedProof))
 	}
 	errs = append(errs, c.Notify.validate()...)
+	errs = append(errs, c.Decisions.validate()...)
 	return errors.Join(errs...)
+}
+
+// envName is a portable environment variable name, which a pasted key (sk-...) never matches.
+var envName = regexp.MustCompile(`^[A-Z_][A-Z0-9_]*$`)
+
+// validate checks the decisions block only when it is enabled, so a disabled block never blocks a run.
+func (d Decisions) validate() []error {
+	if !d.Enabled {
+		return nil
+	}
+	var errs []error
+	p := d.Provider
+	if !strings.HasPrefix(p.BaseURL, "https://") {
+		errs = append(errs, fmt.Errorf("decisions.provider.base_url %q must start with https://", p.BaseURL))
+	}
+	// The rejected value is left out: it may be a key pasted where the variable name belongs.
+	if !envName.MatchString(p.APIKeyEnv) {
+		errs = append(errs, fmt.Errorf("decisions.provider.api_key_env must be a variable name matching %s", envName))
+	}
+	if strings.TrimSpace(p.Model) == "" {
+		errs = append(errs, errors.New("decisions.provider.model is required when enabled"))
+	}
+	if p.Timeout <= 0 || p.Timeout > 10*time.Second {
+		errs = append(errs, fmt.Errorf("decisions.provider.timeout must be in (0, 10s], got %s", p.Timeout))
+	}
+	for _, np := range []struct {
+		name string
+		p    DecisionPoint
+	}{{"triage", d.Triage}, {"checks", d.Checks}, {"review_dedup", d.ReviewDedup}} {
+		switch np.p.Mode {
+		case DecisionOff, DecisionShadow, DecisionOn:
+		default:
+			errs = append(errs, fmt.Errorf("decisions.%s.mode %q is not one of off|shadow|on", np.name, np.p.Mode))
+		}
+		// The negated form also rejects NaN, which fails every comparison.
+		if t := np.p.Threshold; !(t >= 0 && t <= 1) {
+			errs = append(errs, fmt.Errorf("decisions.%s.threshold must be in [0, 1], got %v", np.name, t))
+		}
+	}
+	return errs
 }
 
 func (n Notify) validate() []error {
