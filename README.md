@@ -62,7 +62,7 @@ decisions:
 
 **Pontos.** Hoje só `triage` está implementado. Antes de a run começar, ele pergunta se a issue tem objetivo concreto e critérios de aceite verificáveis. Em `on`, uma issue com resposta abaixo do `threshold` termina em `needs_info`, com a label `needs-info` e um comentário pedindo o escopo e os critérios. `checks` e `review_dedup` já aceitam configuração, mas ainda não perguntam nada.
 
-**Chave.** Use uma chave OpenRouter **dedicada**, com limite de gasto, na variável nomeada em `api_key_env`. A chave nunca vai no YAML e é apagada do ambiente dos agentes. Com `enabled: true` e a variável vazia, a run não inicia: `delamain run` e o daemon falham na partida, citando o nome da variável. No daemon, a variável precisa estar no ambiente do processo.
+**Chave.** Use uma chave OpenRouter **dedicada**, com limite de gasto, na variável nomeada em `api_key_env`. A chave nunca vai no YAML e é apagada do ambiente dos agentes. Com `enabled: true` e a variável vazia, a run não inicia: `delamain run`, `delamain daemon`, `delamain review`, `delamain recover` e o `delamain stop` que finaliza uma run órfã falham na partida, citando o nome da variável, mesmo os que não consultam o modelo. No daemon, a variável precisa estar no ambiente do processo.
 
 **Overrides.** `DELAMAIN_DECISIONS_ENABLED` liga ou desliga a camada, e `DELAMAIN_DECISIONS_MODEL` troca o modelo.
 
