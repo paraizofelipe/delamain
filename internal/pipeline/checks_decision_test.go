@@ -121,3 +121,63 @@ func TestExecuteShouldNotConsultDeciderWhenChecksPointIsOff(t *testing.T) {
 		t.Fatalf("the failing gate must reach the implementer:\n%s", second)
 	}
 }
+
+func TestExecuteShouldSendFeedbackWhenRetryFailsAgain(t *testing.T) {
+	hs := newHarness(t, happy)
+	hs.h.checks = failOnRuns("test", 1, 2)
+	d := withChecks(hs, config.DecisionOn, 0.8, map[string]decide.Answer{"check_0": cause(0.6, 0.3)})
+	res := hs.run(t)
+
+	if res.Outcome != OutcomeApproved || res.Iterations != 2 {
+		t.Fatalf("a retry that fails again goes to the implementer: %s after %d (%s)", res.Outcome, res.Iterations, res.Reason)
+	}
+	if d.calls() != 1 || hs.h.checkRuns["test"] != 3 {
+		t.Fatalf("at most one decision and one retry per iteration: calls=%d test runs=%d", d.calls(), hs.h.checkRuns["test"])
+	}
+	if res.History[0].Verified {
+		t.Fatalf("the failed retry is what the iteration records: %+v", res.History[0].Checks)
+	}
+	if second := hs.h.prompts["implementer"][1]; !strings.Contains(second, "Gate `test` (`go test ./...`) falhou com código 1") {
+		t.Fatalf("the failing gate must reach the implementer:\n%s", second)
+	}
+	if len(hs.h.prompts["reviewer"]) != 1 {
+		t.Fatal("review is skipped while the retried checks fail")
+	}
+}
+
+func TestExecuteShouldNotRetryWhenAnyFailureIsBelowThreshold(t *testing.T) {
+	hs := newHarness(t, happy)
+	hs.h.checks = func(name string, n int) int {
+		if (name == "lint" || name == "test") && n == 1 {
+			return 1
+		}
+		return defaultChecks(name, n)
+	}
+	d := withChecks(hs, config.DecisionOn, 0.8, map[string]decide.Answer{
+		"check_0": cause(0.6, 0.3), // lint: flaky enough
+		"check_1": cause(0.4, 0.3), // test: likely a real failure
+	})
+	res := hs.run(t)
+
+	if res.Iterations != 2 || d.calls() != 1 {
+		t.Fatalf("one real failure sends the iteration back: %d iterations, calls=%d", res.Iterations, d.calls())
+	}
+	if hs.h.checkRuns["test"] != 2 || hs.h.checkRuns["lint"] != 2 {
+		t.Fatalf("no retry below the threshold: test=%d lint=%d", hs.h.checkRuns["test"], hs.h.checkRuns["lint"])
+	}
+	if len(d.requests[0].Choices) != 2 {
+		t.Fatalf("one choice per failed check: %+v", d.requests[0].Choices)
+	}
+}
+
+func TestExecuteShouldRetryWhenFlakyPlusInfraEqualsThreshold(t *testing.T) {
+	hs := newHarness(t, happy)
+	hs.h.checks = failOnRuns("test", 1)
+	d := withChecks(hs, config.DecisionOn, 0.75, map[string]decide.Answer{"check_0": cause(0.5, 0.25)})
+	res := hs.run(t)
+
+	if res.Outcome != OutcomeApproved || res.Iterations != 1 || d.calls() != 1 || hs.h.checkRuns["test"] != 2 {
+		t.Fatalf("the threshold itself allows the retry: %s after %d, calls=%d test runs=%d",
+			res.Outcome, res.Iterations, d.calls(), hs.h.checkRuns["test"])
+	}
+}

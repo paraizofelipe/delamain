@@ -54,6 +54,22 @@ func (r *Runner) retryChecks(ctx context.Context, ru *run, iter int, cs []CheckR
 		req.Choices[fmt.Sprintf("check_%d", i)] = checkCause(c.Name)
 	}
 	attrs := []any{"run", ru.rec.ID, "iteration", iter, "checks", failedChecks(cs)}
-	_, ok := r.ask(ctx, ru.log, "checks", r.Cfg.Decisions.Checks, req, attrs...)
-	return ok
+	p := r.Cfg.Decisions.Checks
+	res, ok := r.ask(ctx, ru.log, "checks", p, req, attrs...)
+	if !ok {
+		return false
+	}
+	retry := true
+	for i := range failed {
+		key := fmt.Sprintf("check_%d", i)
+		a, answered := res.Answers[key]
+		if !answered {
+			ru.log.Warn("decision skipped", append([]any{"point", "checks", "reason", "no answer to " + key}, attrs...)...)
+			return false
+		}
+		if a.Probabilities["flaky"]+a.Probabilities["infra"] < p.Threshold {
+			retry = false
+		}
+	}
+	return retry
 }
