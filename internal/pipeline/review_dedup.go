@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/paraizo/delamain/internal/artifacts"
+	"github.com/paraizo/delamain/internal/config"
 	"github.com/paraizo/delamain/internal/decide"
 )
 
@@ -80,7 +81,8 @@ func (r *Runner) novelBlockers(ctx context.Context, ru *run, iter int, seen *see
 }
 
 // matchBlockers asks, in one request, whether each blocker of fresh is the same problem as one of
-// previous; true means at least one is.
+// previous; true means at least one is, with its probability at the threshold or above. Shadow
+// only logs the decision.
 func (r *Runner) matchBlockers(ctx context.Context, ru *run, iter int, previous, fresh []seenBlocker) bool {
 	prev := dedupItems("prev", previous)
 	options := map[string]string{"nenhum": "É um problema diferente de todos os anteriores."}
@@ -98,15 +100,16 @@ func (r *Runner) matchBlockers(ctx context.Context, ru *run, iter int, previous,
 		}
 	}
 	attrs := []any{"run", ru.rec.ID, "iteration", iter, "new_blockers", len(fresh)}
-	res, ok := r.ask(ctx, ru.log, "review_dedup", r.Cfg.Decisions.ReviewDedup, req, attrs...)
-	if !ok {
+	p := r.Cfg.Decisions.ReviewDedup
+	res, ok := r.ask(ctx, ru.log, "review_dedup", p, req, attrs...)
+	if !ok || p.Mode != config.DecisionOn {
 		return false
 	}
 	matched := false
 	for i, b := range fresh {
 		a := res.Answers[fmt.Sprintf("new_%d", i)]
 		pb, known := byID[a.Choice]
-		if !known {
+		if !known || a.Probabilities[a.Choice] < p.Threshold {
 			continue
 		}
 		matched = true

@@ -206,3 +206,57 @@ func TestExecuteShouldNotStopAsDivergentWhenRepeatedBlockersAreReworded(t *testi
 		t.Fatalf("every review after the first asks once: %d calls", d.calls())
 	}
 }
+
+// twoReviews runs a first review with calc.go and a second whose only blocker is new by key, and
+// returns what the second reported.
+func twoReviews(r *Runner, ru *run) bool {
+	seen := newSeenBlockers()
+	r.novelBlockers(context.Background(), ru, 1, seen, axisReview("spec", blocker("calc.go", "faltando", "Add(2,3) devolve -1")))
+	return r.novelBlockers(context.Background(), ru, 2, seen, axisReview("spec", blocker("calc_test.go", "quebrado", "a soma de 2 e 3 não dá 5")))
+}
+
+func TestNovelBlockersShouldOnlyLogInShadowMode(t *testing.T) {
+	r, ru, d, log := dedupRunner(config.DecisionShadow, 0.85, matchPrev0(0.9))
+	if !twoReviews(r, ru) {
+		t.Fatal("shadow never changes the outcome: the blocker is still new")
+	}
+	if d.calls() != 1 {
+		t.Fatalf("shadow still asks: %d calls", d.calls())
+	}
+	for _, want := range []string{"msg=decision", "point=review_dedup", "mode=shadow", "model=typesafe/jev-1.14", "choice.new_0=prev_0", "iteration=2"} {
+		if !strings.Contains(log.String(), want) {
+			t.Errorf("the decision log lacks %q:\n%s", want, log.String())
+		}
+	}
+	if strings.Contains(log.String(), "review blocker matched") {
+		t.Errorf("shadow only logs the decision:\n%s", log.String())
+	}
+}
+
+func TestNovelBlockersShouldKeepBlockerNewWhenChoiceIsNenhum(t *testing.T) {
+	for _, choice := range []string{"nenhum", "prev_9"} { // prev_9 was never sent: it counts as nenhum
+		r, ru, _, log := dedupRunner(config.DecisionOn, 0.85, map[string]decide.Answer{
+			"new_0": {Choice: choice, Confidence: 0.99, Probabilities: map[string]float64{choice: 0.99}},
+		})
+		if !twoReviews(r, ru) {
+			t.Fatalf("choice %s: the blocker is a different problem, still new", choice)
+		}
+		if strings.Contains(log.String(), "review blocker matched") {
+			t.Errorf("choice %s: nothing matched:\n%s", choice, log.String())
+		}
+	}
+}
+
+func TestNovelBlockersShouldKeepBlockerNewBelowThreshold(t *testing.T) {
+	r, ru, _, _ := dedupRunner(config.DecisionOn, 0.85, matchPrev0(0.84))
+	if !twoReviews(r, ru) {
+		t.Fatal("a match below the threshold is not trusted: the blocker is still new")
+	}
+}
+
+func TestNovelBlockersShouldMatchAtThreshold(t *testing.T) {
+	r, ru, _, _ := dedupRunner(config.DecisionOn, 0.85, matchPrev0(0.85))
+	if twoReviews(r, ru) {
+		t.Fatal("the threshold itself is a match: the blocker is already seen")
+	}
+}
