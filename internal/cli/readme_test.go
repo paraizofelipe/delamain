@@ -53,8 +53,8 @@ func TestReadmeShouldDocumentOptionalDecisions(t *testing.T) {
 		"`off`", "`shadow`", "`on`", "triage", // the modes and the only point built today
 		"dedicada", "limite de gasto", "nunca vai no YAML", // the key
 		"DELAMAIN_DECISIONS_ENABLED", "DELAMAIN_DECISIONS_MODEL", // the overrides
-		"decision point=triage", // the calibration
-		"delamain doctor",       // the check
+		"decision point=triage",                           // the calibration
+		"delamain doctor",                                 // the check
 		"DELAMAIN_IT_DECISIONS_MODEL", "-run Integration", // the opt-in contract test
 	} {
 		if !strings.Contains(section, want) {
