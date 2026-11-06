@@ -114,11 +114,12 @@ func (c *Client) Decide(ctx context.Context, req Request) (Result, error) {
 	}
 	defer func() { _ = resp.Body.Close() }()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes+1))
+	if resp.StatusCode/100 != 2 {
+		// A body that fails to read must not hide the status: keep whatever arrived and the cause.
+		return Result{}, &APIError{Status: resp.StatusCode, Message: truncate(c.redact(strings.TrimSpace(string(raw))), maxErrorBytes), cause: err}
+	}
 	if err != nil {
 		return Result{}, c.fail("read response", err)
-	}
-	if resp.StatusCode/100 != 2 {
-		return Result{}, &APIError{Status: resp.StatusCode, Message: truncate(c.redact(strings.TrimSpace(string(raw))), maxErrorBytes)}
 	}
 	if len(raw) > maxBodyBytes {
 		return Result{}, c.fail("read response", errBodyTooLarge)
@@ -155,9 +156,12 @@ func (c *Client) Decide(ctx context.Context, req Request) (Result, error) {
 type APIError struct {
 	Status  int
 	Message string // response body, without the API key, cut to 300 bytes
+
+	cause error // why reading the body failed, if it did
 }
 
 func (e *APIError) Error() string { return fmt.Sprintf("decisions: %d %s", e.Status, e.Message) }
+func (e *APIError) Unwrap() error { return e.cause }
 
 // noul checks the answer to the noul name: present, a noul, and a probability in [0,1].
 func (c *Client) noul(name string, answers map[string]answer) (Answer, error) {
