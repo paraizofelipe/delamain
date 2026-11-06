@@ -73,7 +73,7 @@ func (c *Client) Decide(ctx context.Context, req Request) (Result, error) {
 	}
 	state, err := json.Marshal(req.State)
 	if err != nil {
-		return Result{}, fmt.Errorf("decision state: %w", err)
+		return Result{}, c.fail("encode state", err)
 	}
 	if len(state) > maxStateBytes {
 		return Result{}, ErrStateTooLarge
@@ -94,7 +94,7 @@ func (c *Client) Decide(ctx context.Context, req Request) (Result, error) {
 		Questions map[string]question `json:"questions"`
 	}{c.opts.Model, state, questions})
 	if err != nil {
-		return Result{}, err
+		return Result{}, c.fail("encode request", err)
 	}
 	if c.opts.Timeout > 0 {
 		var cancel context.CancelFunc
