@@ -3,6 +3,7 @@ package pipeline
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log/slog"
 	"slices"
 	"strings"
@@ -187,5 +188,39 @@ func TestAskShouldLogChoiceWithConfidence(t *testing.T) {
 		if !strings.Contains(log.String(), want) {
 			t.Errorf("the decision log lacks %q:\n%s", want, log.String())
 		}
+	}
+}
+
+func TestRunShouldProceedAndLogSkipWhenDeciderFails(t *testing.T) {
+	hs := newHarness(t, happy)
+	d := withTriage(hs, config.DecisionOn, 0)
+	d.err = errors.New("decide: status 503")
+	var log bytes.Buffer
+	hs.r.Log = slog.New(slog.NewTextHandler(&log, nil))
+	res := hs.run(t)
+
+	if res.Outcome != OutcomeApproved || d.calls() != 1 {
+		t.Fatalf("a failed decision never stops the run: %s %q calls=%d", res.Outcome, res.Reason, d.calls())
+	}
+	for _, want := range []string{`msg="decision skipped"`, "point=triage", `reason="decide: status 503"`, "ref=#7"} {
+		if !strings.Contains(log.String(), want) {
+			t.Errorf("the skip log lacks %q:\n%s", want, log.String())
+		}
+	}
+}
+
+func TestRunShouldProceedWhenTriageAnswerIsMissing(t *testing.T) {
+	hs := newHarness(t, happy)
+	d := withTriage(hs, config.DecisionOn, 0)
+	d.res.Answers = nil
+	var log bytes.Buffer
+	hs.r.Log = slog.New(slog.NewTextHandler(&log, nil))
+	res := hs.run(t)
+
+	if res.Outcome != OutcomeApproved || d.calls() != 1 {
+		t.Fatalf("an unanswered triage never stops the run: %s %q calls=%d", res.Outcome, res.Reason, d.calls())
+	}
+	if !strings.Contains(log.String(), `msg="decision skipped"`) || !strings.Contains(log.String(), "point=triage") {
+		t.Fatalf("the missing answer is logged as a skip:\n%s", log.String())
 	}
 }

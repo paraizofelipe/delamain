@@ -19,6 +19,7 @@ func (r *Runner) ask(ctx context.Context, log *slog.Logger, point string, p conf
 	}
 	res, err := r.Decider.Decide(ctx, req)
 	if err != nil {
+		log.Warn("decision skipped", append([]any{"point", point, "reason", err}, attrs...)...)
 		return decide.Result{}, false
 	}
 	args := append([]any{
@@ -49,12 +50,17 @@ func (r *Runner) triage(ctx context.Context, t Task) string {
 			False:        "Ideia vaga, escopo aberto, critérios ausentes ou que dependem de decisão humana.",
 		}},
 	}
-	res, ok := r.ask(ctx, r.Log, "triage", p, req, "repo", t.Repo, "ref", t.Ref)
-	if !ok || p.Mode != config.DecisionOn {
+	attrs := []any{"repo", t.Repo, "ref", t.Ref}
+	res, ok := r.ask(ctx, r.Log, "triage", p, req, attrs...)
+	if !ok {
 		return ""
 	}
-	a := res.Answers["actionable"]
-	if a.Noul >= p.Threshold {
+	a, answered := res.Answers["actionable"]
+	if !answered {
+		r.Log.Warn("decision skipped", append([]any{"point", "triage", "reason", "no answer to actionable"}, attrs...)...)
+		return ""
+	}
+	if p.Mode != config.DecisionOn || a.Noul >= p.Threshold {
 		return ""
 	}
 	return fmt.Sprintf("triagem automática: a issue parece não ter objetivo e critérios de aceite verificáveis (p=%.2f); detalhe o escopo e os critérios de aceite", a.Noul)
