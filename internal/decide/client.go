@@ -179,7 +179,8 @@ func (c *Client) noul(name string, answers map[string]answer) (Answer, error) {
 	return Answer{Noul: *a.Noul}, nil
 }
 
-// choice checks the answer to the choice name: present, a choice, and one of the options sent.
+// choice checks the answer to the choice name: present, a choice, one of the options sent,
+// with confidence and probabilities in [0,1] and keyed by those options.
 func (c *Client) choice(name string, ch Choice, answers map[string]answer) (Answer, error) {
 	a, ok := answers[name]
 	switch {
@@ -190,6 +191,17 @@ func (c *Client) choice(name string, ch Choice, answers map[string]answer) (Answ
 	}
 	if _, ok := ch.Options[a.Choice]; !ok {
 		return Answer{}, c.invalid(name, fmt.Sprintf("choice %q is not among the options", a.Choice))
+	}
+	if a.Confidence < 0 || a.Confidence > 1 {
+		return Answer{}, c.invalid(name, fmt.Sprintf("confidence %v is outside [0,1]", a.Confidence))
+	}
+	for opt, p := range a.Probabilities {
+		if _, ok := ch.Options[opt]; !ok {
+			return Answer{}, c.invalid(name, fmt.Sprintf("probability for %q, which is not among the options", opt))
+		}
+		if p < 0 || p > 1 {
+			return Answer{}, c.invalid(name, fmt.Sprintf("probability %v of %q is outside [0,1]", p, opt))
+		}
 	}
 	return Answer{Choice: a.Choice, Confidence: a.Confidence, Probabilities: a.Probabilities}, nil
 }
