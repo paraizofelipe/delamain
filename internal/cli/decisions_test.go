@@ -151,3 +151,71 @@ func TestNewDeciderShouldReadCustomAPIKeyEnvName(t *testing.T) {
 		t.Fatalf("the client sends the key of the custom variable: %+v", calls)
 	}
 }
+
+func TestDoctorDepsShouldSkipDecisionsProbeWhenDisabled(t *testing.T) {
+	dc := config.Default().Decisions
+	if probe := decisionsProbe(dc, envOf(map[string]string{config.DefaultDecisionsAPIKeyEnv: fakeDecisionsKey})); probe != nil {
+		t.Fatal("a disabled decisions block skips the doctor probe")
+	}
+}
+
+func TestDoctorDepsShouldSkipDecisionsProbeWhenAPIKeyEnvIsEmpty(t *testing.T) {
+	dc, api := serveDecisions(t, http.StatusOK, okAnswer)
+	if probe := decisionsProbe(dc, envOf(nil)); probe != nil {
+		t.Fatal("without the key the doctor reports the missing variable and skips the probe")
+	}
+	if calls := api.received(); len(calls) != 0 {
+		t.Fatalf("no request goes out without the key: %d", len(calls))
+	}
+}
+
+func TestDoctorDepsShouldProbeDecisionsProviderWithMinimalRequest(t *testing.T) {
+	dc, api := serveDecisions(t, http.StatusOK, okAnswer)
+	probe := decisionsProbe(dc, envOf(map[string]string{config.DefaultDecisionsAPIKeyEnv: fakeDecisionsKey}))
+	if probe == nil {
+		t.Fatal("an enabled decisions block with a key probes the provider")
+	}
+	if err := probe(context.Background()); err != nil {
+		t.Fatalf("a provider that answers passes the probe: %v", err)
+	}
+	calls := api.received()
+	if len(calls) != 1 {
+		t.Fatalf("requests = %d, want a single probe", len(calls))
+	}
+	var body struct {
+		State     map[string]any `json:"state"`
+		Questions map[string]struct {
+			Type         string            `json:"type"`
+			Instructions string            `json:"instructions"`
+			Criteria     map[string]string `json:"criteria"`
+		} `json:"questions"`
+	}
+	if err := json.Unmarshal(calls[0].body, &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.State) != 1 || body.State["text"] != "delamain doctor probe" {
+		t.Fatalf("state = %v, want only the probe text", body.State)
+	}
+	ok, found := body.Questions["ok"]
+	if len(body.Questions) != 1 || !found || ok.Type != "noul" {
+		t.Fatalf("questions = %+v, want a single noul named ok", body.Questions)
+	}
+	if ok.Instructions != "Is the text a connection test?" || ok.Criteria["true"] != "Yes" || ok.Criteria["false"] != "No" {
+		t.Fatalf("noul ok = %+v", ok)
+	}
+}
+
+func TestDoctorDepsShouldNotLeakAPIKeyWhenDecisionsProbeFails(t *testing.T) {
+	dc, _ := serveDecisions(t, http.StatusUnauthorized, `{"error":{"message":"invalid key `+fakeDecisionsKey+`"}}`)
+	probe := decisionsProbe(dc, envOf(map[string]string{config.DefaultDecisionsAPIKeyEnv: fakeDecisionsKey}))
+	if probe == nil {
+		t.Fatal("an enabled decisions block with a key probes the provider")
+	}
+	err := probe(context.Background())
+	if err == nil {
+		t.Fatal("a provider that refuses the key fails the probe")
+	}
+	if strings.Contains(err.Error(), fakeDecisionsKey) {
+		t.Fatalf("the probe error never carries the key: %q", err)
+	}
+}
