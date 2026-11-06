@@ -670,8 +670,9 @@ func (d Decisions) validate() []error {
 	if !strings.HasPrefix(p.BaseURL, "https://") {
 		errs = append(errs, fmt.Errorf("decisions.provider.base_url %q must start with https://", p.BaseURL))
 	}
+	// The rejected value is left out: it may be a key pasted where the variable name belongs.
 	if !envName.MatchString(p.APIKeyEnv) {
-		errs = append(errs, fmt.Errorf("decisions.provider.api_key_env %q must match %s", p.APIKeyEnv, envName))
+		errs = append(errs, fmt.Errorf("decisions.provider.api_key_env must be a variable name matching %s", envName))
 	}
 	if strings.TrimSpace(p.Model) == "" {
 		errs = append(errs, errors.New("decisions.provider.model is required when enabled"))

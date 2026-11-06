@@ -904,6 +904,19 @@ func TestValidateShouldRejectInvalidDecisionsAPIKeyEnvName(t *testing.T) {
 	}
 }
 
+func TestValidateShouldNotEchoRejectedDecisionsAPIKeyEnvValue(t *testing.T) {
+	const pasted = "sk-or-v1-not-a-real-key" // a key pasted where the variable name belongs
+	cfg := enabledDecisions()
+	cfg.Decisions.Provider.APIKeyEnv = pasted
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "decisions.provider.api_key_env") {
+		t.Fatalf("want error citing decisions.provider.api_key_env, got %v", err)
+	}
+	if strings.Contains(err.Error(), pasted) {
+		t.Fatalf("the rejected value may be a key and must not reach the error: %v", err)
+	}
+}
+
 func TestValidateShouldRequireDecisionsModelWhenEnabled(t *testing.T) {
 	for _, m := range []string{"", "  "} {
 		cfg := enabledDecisions()
