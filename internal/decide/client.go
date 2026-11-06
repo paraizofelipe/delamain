@@ -17,6 +17,8 @@ const (
 	maxStateBytes = 32000   // above it the model falls into its slower, less precise long-context mode
 	maxBodyBytes  = 1 << 20 // caps how much of a response is read
 	maxErrorBytes = 300
+
+	defaultTimeout = 30 * time.Second // used when Options.Timeout is not positive, so a stalled server never hangs the caller
 )
 
 var errBodyTooLarge = errors.New("response body exceeds 1 MiB")
@@ -26,8 +28,8 @@ type Options struct {
 	BaseURL string // e.g. https://openrouter.ai/api
 	APIKey  string
 	Model   string
-	Timeout time.Duration
-	HTTP    *http.Client // optional; default &http.Client{Timeout: Timeout}
+	Timeout time.Duration // zero or negative means 30s
+	HTTP    *http.Client  // optional; default &http.Client{Timeout: Timeout}
 }
 
 // Client asks the OpenRouter Decisions API. It never retries.
@@ -38,6 +40,9 @@ type Client struct {
 
 // New builds a Client from resolved options.
 func New(o Options) *Client {
+	if o.Timeout <= 0 {
+		o.Timeout = defaultTimeout
+	}
 	h := o.HTTP
 	if h == nil {
 		h = &http.Client{Timeout: o.Timeout}
