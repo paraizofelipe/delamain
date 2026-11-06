@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"maps"
+	"slices"
 
 	"github.com/paraizo/delamain/internal/config"
 	"github.com/paraizo/delamain/internal/decide"
@@ -19,6 +21,19 @@ func (r *Runner) ask(ctx context.Context, log *slog.Logger, point string, p conf
 	if err != nil {
 		return decide.Result{}, false
 	}
+	args := append([]any{
+		"point", point, "mode", p.Mode, "model", res.Model, "cost_usd", res.CostUSD,
+		"latency_ms", res.Latency.Milliseconds(),
+	}, attrs...)
+	for _, name := range slices.Sorted(maps.Keys(res.Answers)) {
+		a := res.Answers[name]
+		if _, noul := req.Nouls[name]; noul {
+			args = append(args, "noul."+name, a.Noul)
+			continue
+		}
+		args = append(args, "choice."+name, a.Choice, "confidence."+name, a.Confidence)
+	}
+	log.Info("decision", args...)
 	return res, true
 }
 

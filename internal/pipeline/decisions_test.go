@@ -140,3 +140,52 @@ func TestAskShouldTreatNilDeciderAsOff(t *testing.T) {
 		t.Fatalf("a nil decider keeps today's run: %s %q", res.Outcome, res.Reason)
 	}
 }
+
+func TestRunShouldOnlyLogTriageInShadowModeEvenBelowThreshold(t *testing.T) {
+	hs := newHarness(t, happy)
+	f := withForge(hs)
+	d := withTriage(hs, config.DecisionShadow, 0.05)
+	d.res.CostUSD = 0.0004
+	var log bytes.Buffer
+	hs.r.Log = slog.New(slog.NewTextHandler(&log, nil))
+	res := hs.run(t)
+
+	if res.Outcome != OutcomeApproved || d.calls() != 1 {
+		t.Fatalf("shadow never changes the outcome: %s %q calls=%d", res.Outcome, res.Reason, d.calls())
+	}
+	for _, c := range f.comments {
+		if strings.Contains(c, "triagem automática") {
+			t.Fatalf("shadow posts nothing: %q", c)
+		}
+	}
+	for _, want := range []string{
+		"msg=decision", "point=triage", "mode=shadow", "model=typesafe/jev-1.14", "cost_usd=0.0004",
+		"latency_ms=", "noul.actionable=0.05", "repo=" + hs.task.Repo, "ref=#7",
+	} {
+		if !strings.Contains(log.String(), want) {
+			t.Errorf("the decision log lacks %q:\n%s", want, log.String())
+		}
+	}
+}
+
+func TestAskShouldLogChoiceWithConfidence(t *testing.T) {
+	hs := newHarness(t, happy)
+	hs.r.Cfg.Decisions.Enabled = true
+	hs.r.Decider = &fakeDecider{res: decide.Result{Model: "m", Answers: map[string]decide.Answer{
+		"next": {Choice: "retry", Confidence: 0.67, Probabilities: map[string]float64{"retry": 0.67, "stop": 0.33}},
+	}}}
+	var log bytes.Buffer
+	l := slog.New(slog.NewTextHandler(&log, nil))
+	p := config.DecisionPoint{Mode: config.DecisionShadow}
+	req := decide.Request{Choices: map[string]decide.Choice{"next": {Instructions: "?", Options: map[string]string{"retry": "a", "stop": "b"}}}}
+
+	res, ok := hs.r.ask(context.Background(), l, "checks", p, req, "run", 3)
+	if !ok || res.Answers["next"].Choice != "retry" {
+		t.Fatalf("ask returns the answers: ok=%v %+v", ok, res)
+	}
+	for _, want := range []string{"msg=decision", "point=checks", "mode=shadow", "choice.next=retry", "confidence.next=0.67", "run=3"} {
+		if !strings.Contains(log.String(), want) {
+			t.Errorf("the decision log lacks %q:\n%s", want, log.String())
+		}
+	}
+}
