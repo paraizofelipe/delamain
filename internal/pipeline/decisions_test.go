@@ -244,3 +244,41 @@ func TestRunShouldTruncateTriageBodyTo24000BytesOnRuneBoundary(t *testing.T) {
 		t.Fatalf("the cut keeps every whole rune that fits: len=%d", len(body))
 	}
 }
+
+// assertKeyBlanked proves every agent got name= and never the key's value.
+func assertKeyBlanked(t *testing.T, hs *harness, name, value string) {
+	t.Helper()
+	if len(hs.h.starts) == 0 {
+		t.Fatal("no agent started")
+	}
+	for agent, o := range hs.h.starts {
+		if !slices.Contains(o.Env, name+"=") {
+			t.Errorf("%s must start with %s blanked: %v", agent, name, o.Env)
+		}
+		for _, kv := range o.Env {
+			if strings.Contains(kv, value) {
+				t.Errorf("%s must never get the key: %q", agent, kv)
+			}
+		}
+	}
+}
+
+func TestStartAgentShouldBlankDecisionsAPIKeyEnvForAgents(t *testing.T) {
+	t.Setenv("DELAMAIN_DECISIONS_API_KEY", "sk-or-fake-default")
+	hs := newHarness(t, happy)
+	if res := hs.run(t); res.Outcome != OutcomeApproved {
+		t.Fatalf("outcome = %s %q", res.Outcome, res.Reason)
+	}
+	assertKeyBlanked(t, hs, "DELAMAIN_DECISIONS_API_KEY", "sk-or-fake-default")
+}
+
+func TestStartAgentShouldBlankCustomDecisionsAPIKeyEnv(t *testing.T) {
+	t.Setenv("MY_JEV_KEY", "sk-or-fake-custom")
+	hs := newHarness(t, happy)
+	hs.r.Cfg.Decisions.Enabled = true
+	hs.r.Cfg.Decisions.Provider.APIKeyEnv = "MY_JEV_KEY"
+	if res := hs.run(t); res.Outcome != OutcomeApproved {
+		t.Fatalf("outcome = %s %q", res.Outcome, res.Reason)
+	}
+	assertKeyBlanked(t, hs, "MY_JEV_KEY", "sk-or-fake-custom")
+}

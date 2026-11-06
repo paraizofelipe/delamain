@@ -728,6 +728,10 @@ func (r *Runner) startAgent(ctx context.Context, ru *run, role string) error {
 			env = append(env, "HINDSIGHT_API_TOKEN="+token)
 		}
 	}
+	// *_API_KEY passes AgentEnviron: a blank value wins over the decisions key the agent would inherit.
+	if name := r.Cfg.Decisions.Provider.APIKeyEnv; name != "" && os.Getenv(name) != "" {
+		env = append(env, name+"=")
+	}
 	agent, err := r.Agents.Start(ctx, AgentOptions{
 		Name: fmt.Sprintf("%s-r%d", role, ru.rec.ID), Dir: dir,
 		SessionDir: sessDir, SystemPrompt: r.PromptsTarget.RolePath(role),
