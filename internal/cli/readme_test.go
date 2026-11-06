@@ -34,3 +34,31 @@ func TestReadmeShouldDocumentDependenciesBetweenIssues(t *testing.T) {
 		}
 	}
 }
+
+func TestReadmeShouldDocumentOptionalDecisions(t *testing.T) {
+	b, err := os.ReadFile("../../README.md")
+	if err != nil {
+		t.Fatalf("the README documents the optional decisions: %v", err)
+	}
+	readme := string(b)
+	_, section, ok := strings.Cut(readme, "## Decisões (opcional)")
+	if !ok {
+		t.Fatalf("the README has no section on the optional decisions:\n%s", readme)
+	}
+	if next := strings.Index(section, "\n## "); next >= 0 {
+		section = section[:next]
+	}
+	for _, want := range []string{
+		"api_key_env: DELAMAIN_DECISIONS_API_KEY", "typesafe/jev-1.14", // the config block and its defaults
+		"`off`", "`shadow`", "`on`", "triage", // the modes and the only point built today
+		"dedicada", "limite de gasto", "nunca vai no YAML", // the key
+		"DELAMAIN_DECISIONS_ENABLED", "DELAMAIN_DECISIONS_MODEL", // the overrides
+		"decision point=triage",                           // the calibration
+		"delamain doctor",                                 // the check
+		"DELAMAIN_IT_DECISIONS_MODEL", "-run Integration", // the opt-in contract test
+	} {
+		if !strings.Contains(section, want) {
+			t.Errorf("the section on the optional decisions should mention %q", want)
+		}
+	}
+}

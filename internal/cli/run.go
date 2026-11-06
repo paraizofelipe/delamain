@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/paraizo/delamain/internal/config"
+	"github.com/paraizo/delamain/internal/decide"
 	"github.com/paraizo/delamain/internal/forge"
 	"github.com/paraizo/delamain/internal/gates"
 	"github.com/paraizo/delamain/internal/gitx"
@@ -176,9 +177,13 @@ func runTask(ctx context.Context, cfg config.Config, task pipeline.Task, fg forg
 var newNotifier = notify.New
 
 // newRunner wires the configured agent harness, git, prompts, the desktop notifier (no says whether
-// it is interactive) and, when enabled, herdr; the caller sets Forge per repository and closes
-// the notifier.
+// it is interactive) and, when enabled, herdr and the decisions client; the caller sets Forge per
+// repository and closes the notifier.
 func newRunner(cfg config.Config, st *store.Store, no notify.Options) (*pipeline.Runner, error) {
+	decider, err := newDecider(cfg.Decisions, os.Getenv)
+	if err != nil {
+		return nil, err
+	}
 	set, err := loadPrompts(cfg)
 	if err != nil {
 		return nil, err
@@ -207,6 +212,7 @@ func newRunner(cfg config.Config, st *store.Store, no notify.Options) (*pipeline
 		PromptsTarget: target,
 		Log:           log,
 		Notify:        newNotifier(cfg.Notify, no),
+		Decider:       decider,
 	}, nil
 }
 
@@ -287,4 +293,20 @@ func IsExit(err error) (int, bool) {
 		return e.Code, true
 	}
 	return 0, false
+}
+
+// newDecider builds the client of the decisions layer, reading its key from the variable named by
+// APIKeyEnv. Off, it returns a nil interface so the pipeline skips every decision point; on and
+// without the key, it fails so a run stops at start instead of quietly falling back on each one.
+// The error names the variable, never a value.
+func newDecider(dc config.Decisions, getenv func(string) string) (decide.Decider, error) {
+	if !dc.Enabled {
+		return nil, nil
+	}
+	p := dc.Provider
+	key := getenv(p.APIKeyEnv)
+	if key == "" {
+		return nil, fmt.Errorf("decisions.enabled: variable %s is empty; set the key or turn decisions.enabled off", p.APIKeyEnv)
+	}
+	return decide.New(decide.Options{BaseURL: p.BaseURL, APIKey: key, Model: p.Model, Timeout: p.Timeout}), nil
 }

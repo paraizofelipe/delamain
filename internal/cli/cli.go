@@ -19,6 +19,7 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	"github.com/paraizo/delamain/internal/config"
+	"github.com/paraizo/delamain/internal/decide"
 	"github.com/paraizo/delamain/internal/doctor"
 	"github.com/paraizo/delamain/internal/herdr"
 	"github.com/paraizo/delamain/internal/notify"
@@ -80,6 +81,7 @@ func NewRoot() *cobra.Command {
 					ForgeAuth: func(ctx context.Context, dir string) (doctor.ForgeIdentity, error) { return forgeAuth(ctx, cfg, dir) },
 					Notify:    func(ctx context.Context) notify.Probe { return notify.Diagnose(ctx, cfg.Notify) },
 					Stat:      os.Stat, ReadFile: os.ReadFile, Getenv: os.Getenv,
+					DecisionsProbe: decisionsProbe(cfg.Decisions, os.Getenv),
 				})
 				if err := printChecks(cmd.OutOrStdout(), checks); err != nil {
 					return err
@@ -173,4 +175,21 @@ func printChecks(w io.Writer, checks []doctor.Check) error {
 		fmt.Fprintf(tw, "%s\t%s\t%s\n", icon[c.Status], c.Name, c.Detail)
 	}
 	return tw.Flush()
+}
+
+// decisionsProbe asks the decisions provider a single trivial question, so the doctor learns
+// whether it answers; only the error matters. Off or without the key it is nil: the doctor
+// already reports why.
+func decisionsProbe(dc config.Decisions, getenv func(string) string) func(context.Context) error {
+	d, err := newDecider(dc, getenv)
+	if err != nil || d == nil {
+		return nil
+	}
+	return func(ctx context.Context) error {
+		_, err := d.Decide(ctx, decide.Request{
+			State: map[string]any{"text": "delamain doctor probe"},
+			Nouls: map[string]decide.Noul{"ok": {Instructions: "Is the text a connection test?", True: "Yes", False: "No"}},
+		})
+		return err
+	}
 }
