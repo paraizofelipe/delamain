@@ -1,9 +1,12 @@
 package decide
 
 import (
+	"context"
+	"errors"
 	"go/parser"
 	"go/token"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -38,5 +41,16 @@ func TestPackageShouldImportOnlyStandardLibrary(t *testing.T) {
 	}
 	if files == 0 {
 		t.Fatal("found no production .go file in internal/decide")
+	}
+}
+
+func TestOffShouldReturnErrDisabledWithoutCallingAnything(t *testing.T) {
+	var d Decider = Off{}
+	res, err := d.Decide(context.Background(), Request{Nouls: map[string]Noul{"is_bug": {Instructions: "Bug?"}}})
+	if !errors.Is(err, ErrDisabled) {
+		t.Fatalf("err = %v, want ErrDisabled", err)
+	}
+	if !reflect.DeepEqual(res, Result{}) {
+		t.Fatalf("result = %+v, want none", res)
 	}
 }

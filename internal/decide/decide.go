@@ -45,6 +45,13 @@ type Decider interface {
 }
 
 var (
+	ErrDisabled      = errors.New("decisions disabled")
 	ErrStateTooLarge = errors.New("decision state exceeds 32000 bytes")
 	ErrNoQuestions   = errors.New("decision request has no questions")
 )
+
+// Off is the Decider used when decisions are disabled: it never calls anything.
+type Off struct{}
+
+// Decide answers nothing: it always returns ErrDisabled.
+func (Off) Decide(context.Context, Request) (Result, error) { return Result{}, ErrDisabled }
