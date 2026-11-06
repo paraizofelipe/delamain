@@ -631,3 +631,142 @@ func TestDoctorShouldCheckTheHindsightTokenTheAgentsGetFromClaudeEnv(t *testing.
 		}
 	})
 }
+
+func decisionsHarness(t *testing.T, key string) (config.Config, Deps) {
+	cfg, d := healthy(t)
+	cfg.Decisions.Enabled = true
+	d.Getenv = func(k string) string {
+		if k == config.DefaultDecisionsAPIKeyEnv {
+			return key
+		}
+		return ""
+	}
+	return cfg, d
+}
+
+func TestDoctorShouldReportDecisionsDisabledAsOK(t *testing.T) {
+	cfg, d := healthy(t)
+	d.Getenv = func(string) string { t.Fatal("Getenv must not run with the decisions layer off"); return "" }
+	d.DecisionsProbe = func(context.Context) error {
+		t.Fatal("the probe must not run with the decisions layer off")
+		return nil
+	}
+	results := Run(context.Background(), cfg, d)
+	if c, ok := byName(results)["decisions"]; !ok || c.Status != OK || c.Detail != "disabled" {
+		t.Fatalf("a disabled decisions layer must be listed as ok: %+v", c)
+	}
+	if Failed(results) {
+		t.Fatalf("a disabled decisions layer must not fail doctor: %+v", results)
+	}
+}
+
+func TestDoctorShouldFailDecisionsWhenAPIKeyEnvIsUnset(t *testing.T) {
+	cfg, d := decisionsHarness(t, "")
+	d.DecisionsProbe = func(context.Context) error { t.Fatal("the probe must not run without the key"); return nil }
+	results := Run(context.Background(), cfg, d)
+	want := "DELAMAIN_DECISIONS_API_KEY is not set; decision points fall back to the current rules"
+	if c := byName(results)["decisions"]; c.Status != Fail || c.Detail != want {
+		t.Fatalf("an enabled layer without the key must fail naming the variable: %+v", c)
+	}
+	if !Failed(results) {
+		t.Fatalf("a missing decisions key must fail doctor: %+v", results)
+	}
+
+	cfg, d = decisionsHarness(t, "")
+	cfg.Decisions.Provider.APIKeyEnv = "MY_DECISIONS_KEY"
+	if c := byName(Run(context.Background(), cfg, d))["decisions"]; c.Status != Fail || c.Detail != "MY_DECISIONS_KEY is not set; decision points fall back to the current rules" {
+		t.Fatalf("the check must name the configured variable: %+v", c)
+	}
+}
+
+func TestDoctorShouldSkipDecisionsProbeWhenNil(t *testing.T) {
+	cfg, d := decisionsHarness(t, "k")
+	results := Run(context.Background(), cfg, d)
+	want := "typesafe/jev-1.14 at https://openrouter.ai/api (triage=shadow checks=off review_dedup=off); probe skipped"
+	if c := byName(results)["decisions"]; c.Status != OK || c.Detail != want {
+		t.Fatalf("an enabled layer with the key and no probe must pass with the modes: %+v", c)
+	}
+	if Failed(results) {
+		t.Fatalf("a skipped probe must not fail doctor: %+v", results)
+	}
+
+	cfg, d = healthy(t)
+	cfg.Decisions.Enabled = true
+	cfg.Decisions.Provider.APIKeyEnv = "DELAMAIN_TEST_DECISIONS_KEY"
+	t.Setenv("DELAMAIN_TEST_DECISIONS_KEY", "k")
+	if c := byName(Run(context.Background(), cfg, d))["decisions"]; c.Status != OK || c.Detail != want {
+		t.Fatalf("a nil Getenv must read the process environment: %+v", c)
+	}
+}
+
+func TestDoctorShouldFailDecisionsWhenProbeErrors(t *testing.T) {
+	cfg, d := decisionsHarness(t, "k")
+	d.DecisionsProbe = func(context.Context) error { return errors.New("decisions: 503 unavailable") }
+	results := Run(context.Background(), cfg, d)
+	want := "typesafe/jev-1.14 at https://openrouter.ai/api: decisions: 503 unavailable"
+	if c := byName(results)["decisions"]; c.Status != Fail || c.Detail != want {
+		t.Fatalf("a failing probe must fail the check with the error: %+v", c)
+	}
+	if !Failed(results) {
+		t.Fatalf("a failing probe must fail doctor: %+v", results)
+	}
+}
+
+func TestDoctorShouldReportDecisionsModesWhenProbeSucceeds(t *testing.T) {
+	cfg, d := decisionsHarness(t, "k")
+	cfg.Decisions.Provider.Model = "acme/judge"
+	cfg.Decisions.Provider.BaseURL = "https://decide.example"
+	cfg.Decisions.Triage.Mode = config.DecisionOn
+	cfg.Decisions.Checks.Mode = config.DecisionShadow
+	cfg.Decisions.ReviewDedup.Mode = config.DecisionOff
+	probed := 0
+	d.DecisionsProbe = func(context.Context) error { probed++; return nil }
+	results := Run(context.Background(), cfg, d)
+	want := "acme/judge at https://decide.example (triage=on checks=shadow review_dedup=off)"
+	if c := byName(results)["decisions"]; c.Status != OK || c.Detail != want {
+		t.Fatalf("a passing probe must report the modes of every decision point: %+v", c)
+	}
+	if probed != 1 {
+		t.Fatalf("the probe must run once with the layer on and the key set, ran %d times", probed)
+	}
+	if Failed(results) {
+		t.Fatalf("a ready decisions layer must not fail doctor: %+v", results)
+	}
+}
+
+func TestDoctorShouldNotCallDecisionsProbeWhenDisabled(t *testing.T) {
+	cfg, d := decisionsHarness(t, "k")
+	cfg.Decisions.Enabled = false
+	d.DecisionsProbe = func(context.Context) error {
+		t.Fatal("the probe must not run with the decisions layer off")
+		return nil
+	}
+	if c := byName(Run(context.Background(), cfg, d))["decisions"]; c.Status != OK || c.Detail != "disabled" {
+		t.Fatalf("a disabled layer with a key set must stay disabled: %+v", c)
+	}
+}
+
+func TestDoctorShouldNeverPrintDecisionsAPIKey(t *testing.T) {
+	const key = "decisions-secret-marker"
+	for name, probe := range map[string]func(context.Context) error{
+		"no probe":    nil,
+		"probe ok":    func(context.Context) error { return nil },
+		"probe error": func(context.Context) error { return fmt.Errorf("decisions: 401 bad key %q (Bearer %s)", key, key) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg, d := decisionsHarness(t, key)
+			d.DecisionsProbe = probe
+			for _, c := range Run(context.Background(), cfg, d) {
+				if strings.Contains(c.Detail, key) {
+					t.Fatalf("%s leaks the decisions key: %q", c.Name, c.Detail)
+				}
+			}
+		})
+	}
+
+	cfg, d := decisionsHarness(t, key)
+	d.DecisionsProbe = func(context.Context) error { return errors.New("echo " + key) }
+	if c := byName(Run(context.Background(), cfg, d))["decisions"]; c.Status != Fail || c.Detail != "typesafe/jev-1.14 at https://openrouter.ai/api: echo ***" {
+		t.Fatalf("a probe error echoing the key must be masked: %+v", c)
+	}
+}
