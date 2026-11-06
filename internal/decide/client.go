@@ -4,17 +4,22 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 const (
 	maxStateBytes = 32000   // above it the model falls into its slower, less precise long-context mode
 	maxBodyBytes  = 1 << 20 // caps how much of a response is read
+	maxErrorBytes = 300
 )
+
+var errBodyTooLarge = errors.New("response body exceeds 1 MiB")
 
 // Options configure a Client; the caller resolves them (the package reads no config).
 type Options struct {
@@ -86,18 +91,33 @@ func (c *Client) Decide(ctx context.Context, req Request) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	if c.opts.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, c.opts.Timeout)
+		defer cancel()
+	}
 	hreq, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimSuffix(c.opts.BaseURL, "/")+"/alpha/decisions", bytes.NewReader(body))
 	if err != nil {
-		return Result{}, err
+		return Result{}, c.fail("build request", err)
 	}
 	hreq.Header.Set("Authorization", "Bearer "+c.opts.APIKey)
 	hreq.Header.Set("Content-Type", "application/json")
 	start := time.Now()
 	resp, err := c.http.Do(hreq)
 	if err != nil {
-		return Result{}, err
+		return Result{}, c.fail("send request", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes+1))
+	if err != nil {
+		return Result{}, c.fail("read response", err)
+	}
+	if resp.StatusCode/100 != 2 {
+		return Result{}, &APIError{Status: resp.StatusCode, Message: truncate(c.redact(strings.TrimSpace(string(raw))), maxErrorBytes)}
+	}
+	if len(raw) > maxBodyBytes {
+		return Result{}, c.fail("read response", errBodyTooLarge)
+	}
 	var v struct {
 		Model   string            `json:"model"`
 		Answers map[string]answer `json:"answers"`
@@ -105,12 +125,53 @@ func (c *Client) Decide(ctx context.Context, req Request) (Result, error) {
 			Cost float64 `json:"cost"`
 		} `json:"usage"`
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, maxBodyBytes)).Decode(&v); err != nil {
-		return Result{}, err
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return Result{}, c.fail("decode response", err)
 	}
 	res := Result{Answers: map[string]Answer{}, Model: v.Model, CostUSD: v.Usage.Cost, Latency: time.Since(start)}
 	for name, a := range v.Answers {
 		res.Answers[name] = Answer{Noul: a.Noul, Choice: a.Choice, Confidence: a.Confidence, Probabilities: a.Probabilities}
 	}
 	return res, nil
+}
+
+// APIError is a non-2xx answer of the Decisions API.
+type APIError struct {
+	Status  int
+	Message string // response body, without the API key, cut to 300 bytes
+}
+
+func (e *APIError) Error() string { return fmt.Sprintf("decisions: %d %s", e.Status, e.Message) }
+
+// opError is a failure that got no answer from the API (request, network, timeout, decoding).
+type opError struct {
+	msg string
+	err error
+}
+
+func (e *opError) Error() string { return e.msg }
+func (e *opError) Unwrap() error { return e.err }
+
+// fail wraps err for op, without the API key, keeping err reachable for errors.Is.
+func (c *Client) fail(op string, err error) error {
+	return &opError{msg: "decisions: " + op + ": " + c.redact(err.Error()), err: err}
+}
+
+// redact replaces every occurrence of the API key so it never reaches an error.
+func (c *Client) redact(s string) string {
+	if c.opts.APIKey == "" {
+		return s
+	}
+	return strings.ReplaceAll(s, c.opts.APIKey, "[redacted]")
+}
+
+// truncate cuts s to at most n bytes, never inside a UTF-8 sequence.
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
 }

@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -228,5 +230,113 @@ func TestDecideShouldRejectQuestionNameUsedTwice(t *testing.T) {
 	}
 	if n := len(api.received()); n != 0 {
 		t.Fatalf("server got %d requests, want none", n)
+	}
+}
+
+func TestDecideShouldReturnAPIErrorOnNon2xx(t *testing.T) {
+	for _, status := range []int{400, 401, 413, 429, 500, 503, 524, 529} {
+		t.Run(strconv.Itoa(status), func(t *testing.T) {
+			body := fmt.Sprintf(`{"error":{"code":%d,"message":"upstream said no"}}`, status)
+			c, api := serve(t, respond(status, body+"\n"), Options{})
+			_, err := c.Decide(context.Background(), bugTriage())
+			var apiErr *APIError
+			if !errors.As(err, &apiErr) {
+				t.Fatalf("err = %v, want *APIError", err)
+			}
+			if apiErr.Status != status || apiErr.Message != body {
+				t.Fatalf("APIError = %+v, want status %d and message %s", apiErr, status, body)
+			}
+			if want := fmt.Sprintf("decisions: %d %s", status, body); err.Error() != want {
+				t.Fatalf("Error() = %q, want %q", err.Error(), want)
+			}
+			if n := len(api.received()); n != 1 {
+				t.Fatalf("server got %d requests, want 1 (no retry)", n)
+			}
+		})
+	}
+}
+
+func TestDecideShouldTruncateAPIErrorMessageTo300Bytes(t *testing.T) {
+	cases := map[string]struct{ body, want string }{
+		// "a" then two-byte runes: byte 300 is mid-rune, so the cut falls back to byte 299.
+		"never inside a UTF-8 sequence": {"a" + strings.Repeat("é", 300), "a" + strings.Repeat("é", 149)},
+		// The key straddles byte 300: it is replaced before the cut, so no prefix of it survives.
+		"key replaced before the cut": {strings.Repeat("x", 295) + testKey, strings.Repeat("x", 295) + "[reda"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			c, _ := serve(t, respond(500, tc.body), Options{})
+			_, err := c.Decide(context.Background(), bugTriage())
+			var apiErr *APIError
+			if !errors.As(err, &apiErr) {
+				t.Fatalf("err = %v, want *APIError", err)
+			}
+			if apiErr.Message != tc.want {
+				t.Fatalf("Message = %q (%d bytes), want %q", apiErr.Message, len(apiErr.Message), tc.want)
+			}
+			if strings.Contains(err.Error(), testKey[:5]) {
+				t.Fatalf("error leaks a prefix of the key: %v", err)
+			}
+		})
+	}
+}
+
+func TestDecideShouldNeverLeakAPIKeyInErrors(t *testing.T) {
+	t.Run("error body echoes the Authorization header", func(t *testing.T) {
+		c, _ := serve(t, func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = fmt.Fprintf(w, `{"error":{"message":"bad header %s"}}`, r.Header.Get("Authorization"))
+		}, Options{})
+		_, err := c.Decide(context.Background(), bugTriage())
+		if err == nil || strings.Contains(err.Error(), testKey) {
+			t.Fatalf("err = %v, want an error without the key", err)
+		}
+		if !strings.Contains(err.Error(), "bad header Bearer [redacted]") {
+			t.Fatalf("err = %v, want the key replaced by [redacted]", err)
+		}
+	})
+	t.Run("request that never reaches the server", func(t *testing.T) {
+		// A key pasted into the base URL makes the URL invalid; the parse error quotes the URL.
+		c := New(Options{BaseURL: "https://openrouter.invalid/" + testKey + "\x7f", APIKey: testKey})
+		_, err := c.Decide(context.Background(), bugTriage())
+		if err == nil || strings.Contains(err.Error(), testKey) {
+			t.Fatalf("err = %v, want an error without the key", err)
+		}
+	})
+}
+
+func TestDecideShouldFailOnTimeout(t *testing.T) {
+	c, _ := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-time.After(5 * time.Second):
+			respond(200, realResponse)(w, r)
+		}
+	}, Options{Timeout: 50 * time.Millisecond})
+	start := time.Now()
+	_, err := c.Decide(context.Background(), bugTriage())
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want context.DeadlineExceeded", err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("Decide took %v, want it to give up after the 50ms Timeout", elapsed)
+	}
+}
+
+func TestDecideShouldRejectMalformedJSONBody(t *testing.T) {
+	c, _ := serve(t, respond(200, `{"answers": {"is_bug": `), Options{})
+	_, err := c.Decide(context.Background(), bugTriage())
+	if err == nil || !strings.HasPrefix(err.Error(), "decisions: ") {
+		t.Fatalf("err = %v, want a decisions error", err)
+	}
+}
+
+func TestDecideShouldRejectResponseBodyOver1MiB(t *testing.T) {
+	// A valid answer, padded past 1 MiB: only the size limit can refuse it.
+	big := strings.Replace(realResponse, `"provider"`, `"pad": "`+strings.Repeat("x", 1<<20)+`", "provider"`, 1)
+	c, _ := serve(t, respond(200, big), Options{})
+	_, err := c.Decide(context.Background(), bugTriage())
+	if err == nil || !strings.HasPrefix(err.Error(), "decisions: ") {
+		t.Fatalf("err = %v, want a decisions error", err)
 	}
 }
