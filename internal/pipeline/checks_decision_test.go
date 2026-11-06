@@ -31,10 +31,10 @@ func cause(flaky, infra float64) decide.Answer {
 	}}
 }
 
-// failOnRuns makes the gate name fail on the given runs and every other gate behave by default.
-func failOnRuns(name string, runs ...int) func(string, int) int {
+// failTestOnRuns makes the test gate fail on the given runs and every other gate behave by default.
+func failTestOnRuns(runs ...int) func(string, int) int {
 	return func(n string, i int) int {
-		if n == name {
+		if n == "test" {
 			for _, r := range runs {
 				if r == i {
 					return 1
@@ -64,7 +64,7 @@ func checkStateItems(t *testing.T, state map[string]any) []map[string]any {
 
 func TestExecuteShouldRetryVerifyOnceWhenAllFailuresAreFlakyOrInfra(t *testing.T) {
 	hs := newHarness(t, happy)
-	hs.h.checks = failOnRuns("test", 1)
+	hs.h.checks = failTestOnRuns(1)
 	d := withChecks(hs, config.DecisionOn, 0.8, map[string]decide.Answer{"check_0": cause(0.6, 0.3)})
 	var log bytes.Buffer
 	hs.r.Log = slog.New(slog.NewTextHandler(&log, nil))
@@ -109,7 +109,7 @@ func TestExecuteShouldRetryVerifyOnceWhenAllFailuresAreFlakyOrInfra(t *testing.T
 
 func TestExecuteShouldNotConsultDeciderWhenChecksPointIsOff(t *testing.T) {
 	hs := newHarness(t, happy)
-	hs.h.checks = failOnRuns("test", 1)
+	hs.h.checks = failTestOnRuns(1)
 	d := withChecks(hs, config.DecisionOff, 0.8, map[string]decide.Answer{"check_0": cause(0.6, 0.3)})
 	res := hs.run(t)
 
@@ -126,7 +126,7 @@ func TestExecuteShouldNotConsultDeciderWhenChecksPointIsOff(t *testing.T) {
 
 func TestExecuteShouldSendFeedbackWhenRetryFailsAgain(t *testing.T) {
 	hs := newHarness(t, happy)
-	hs.h.checks = failOnRuns("test", 1, 2)
+	hs.h.checks = failTestOnRuns(1, 2)
 	d := withChecks(hs, config.DecisionOn, 0.8, map[string]decide.Answer{"check_0": cause(0.6, 0.3)})
 	res := hs.run(t)
 
@@ -174,7 +174,7 @@ func TestExecuteShouldNotRetryWhenAnyFailureIsBelowThreshold(t *testing.T) {
 
 func TestExecuteShouldRetryWhenFlakyPlusInfraEqualsThreshold(t *testing.T) {
 	hs := newHarness(t, happy)
-	hs.h.checks = failOnRuns("test", 1)
+	hs.h.checks = failTestOnRuns(1)
 	d := withChecks(hs, config.DecisionOn, 0.75, map[string]decide.Answer{"check_0": cause(0.5, 0.25)})
 	res := hs.run(t)
 
@@ -201,7 +201,7 @@ func TestExecuteShouldNotConsultDeciderWhenAGitGateFailed(t *testing.T) {
 		}
 		return happy(role, n, text)
 	})
-	hs.h.checks = failOnRuns("test", 1)
+	hs.h.checks = failTestOnRuns(1)
 	d := flakyOn(hs)
 	res := hs.run(t)
 
@@ -256,7 +256,7 @@ func TestExecuteShouldNotConsultDeciderWhenRedProofFailed(t *testing.T) {
 
 func TestExecuteShouldOnlyLogCheckCauseInShadowMode(t *testing.T) {
 	hs := newHarness(t, happy)
-	hs.h.checks = failOnRuns("test", 1)
+	hs.h.checks = failTestOnRuns(1)
 	d := withChecks(hs, config.DecisionShadow, 0.8, map[string]decide.Answer{"check_0": cause(0.9, 0.1)})
 	d.res.CostUSD = 0.0004
 	var log bytes.Buffer
@@ -284,7 +284,7 @@ func TestExecuteShouldOnlyLogCheckCauseInShadowMode(t *testing.T) {
 
 func TestExecuteShouldFallBackToFeedbackWhenDeciderFails(t *testing.T) {
 	hs := newHarness(t, happy)
-	hs.h.checks = failOnRuns("test", 1)
+	hs.h.checks = failTestOnRuns(1)
 	d := withChecks(hs, config.DecisionOn, 0.8, nil)
 	d.err = errors.New("decide: status 503")
 	var log bytes.Buffer
