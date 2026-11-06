@@ -39,6 +39,8 @@ type Config struct {
 	Daemon   Daemon   `yaml:"daemon"`
 	Paths    Paths    `yaml:"paths"`
 	Notify   Notify   `yaml:"notify"`
+	// Decisions configures the optional fast decisions between pipeline stages; off by default.
+	Decisions Decisions `yaml:"decisions"`
 	// Complexity holds optional per-level limits applied once the plan is classified.
 	Complexity Complexity `yaml:"complexity"`
 	// Agents overrides the harness' model and reasoning per role or subagent, keyed by AgentNames.
@@ -333,6 +335,42 @@ type Notify struct {
 	Events []string `yaml:"events"`
 }
 
+// DecisionMode selects whether a decision point is skipped, only logged or acted upon.
+type DecisionMode string
+
+const (
+	DecisionOff    DecisionMode = "off"
+	DecisionShadow DecisionMode = "shadow"
+	DecisionOn     DecisionMode = "on"
+)
+
+// DefaultDecisionsAPIKeyEnv names the variable holding the decisions provider key.
+const DefaultDecisionsAPIKeyEnv = "DELAMAIN_DECISIONS_API_KEY"
+
+// Decisions configures the fast decisions (Jev via the OpenRouter Decisions API) between pipeline stages.
+type Decisions struct {
+	Enabled     bool              `yaml:"enabled"`
+	Provider    DecisionsProvider `yaml:"provider"`
+	Triage      DecisionPoint     `yaml:"triage"`
+	Checks      DecisionPoint     `yaml:"checks"`
+	ReviewDedup DecisionPoint     `yaml:"review_dedup"`
+}
+
+// DecisionsProvider points at the decisions API; the key is read from the APIKeyEnv variable, never stored.
+type DecisionsProvider struct {
+	BaseURL string `yaml:"base_url"`
+	// APIKeyEnv is the name of the variable holding the key, not the key itself.
+	APIKeyEnv string        `yaml:"api_key_env"`
+	Model     string        `yaml:"model"`
+	Timeout   time.Duration `yaml:"timeout"`
+}
+
+// DecisionPoint sets the mode and the confidence threshold of one decision.
+type DecisionPoint struct {
+	Mode      DecisionMode `yaml:"mode"`
+	Threshold float64      `yaml:"threshold"`
+}
+
 type Paths struct {
 	StateDir string `yaml:"state_dir"`
 	// WorktreesDir holds every run's worktree, as <worktrees_dir>/<repo>/<branch>; `delamain
@@ -396,6 +434,17 @@ func defaults() Config {
 		Notify: Notify{
 			Enabled: true, Backend: NotifyAuto,
 			Events: []string{"pr_opened", "needs_human", "halted", "needs_info", "budget", "recover"},
+		},
+		Decisions: Decisions{
+			Provider: DecisionsProvider{
+				BaseURL:   "https://openrouter.ai/api",
+				APIKeyEnv: DefaultDecisionsAPIKeyEnv,
+				Model:     "typesafe/jev-1.14",
+				Timeout:   2 * time.Second,
+			},
+			Triage:      DecisionPoint{Mode: DecisionShadow, Threshold: 0.3},
+			Checks:      DecisionPoint{Mode: DecisionOff, Threshold: 0.8},
+			ReviewDedup: DecisionPoint{Mode: DecisionOff, Threshold: 0.85},
 		},
 		Paths: Paths{
 			StateDir:     "~/.local/state/delamain",

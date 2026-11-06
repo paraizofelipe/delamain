@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -747,5 +748,80 @@ func TestWithProjectOverridesShouldInheritHindsightWhenTheProjectOmitsIt(t *test
 	}
 	if _, changed, err := cfg.WithProjectOverrides(Agent{}, Claude{}, Omp{}, nil); changed || err != nil {
 		t.Fatalf("a project without overrides keeps the global config: changed=%v err=%v", changed, err)
+	}
+}
+
+func TestLoadShouldDefaultDecisionsToDisabledWithOpenRouterJev(t *testing.T) {
+	cfg, err := Load(writeFile(t, "pipeline:\n  max_iterations: 2\n"), noEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Decisions{
+		Enabled: false,
+		Provider: DecisionsProvider{
+			BaseURL:   "https://openrouter.ai/api",
+			APIKeyEnv: "DELAMAIN_DECISIONS_API_KEY",
+			Model:     "typesafe/jev-1.14",
+			Timeout:   2 * time.Second,
+		},
+		Triage:      DecisionPoint{Mode: DecisionShadow, Threshold: 0.3},
+		Checks:      DecisionPoint{Mode: DecisionOff, Threshold: 0.8},
+		ReviewDedup: DecisionPoint{Mode: DecisionOff, Threshold: 0.85},
+	}
+	if cfg.Decisions != want {
+		t.Fatalf("no block means the documented defaults, disabled: got %+v, want %+v", cfg.Decisions, want)
+	}
+	if Default().Decisions != want {
+		t.Fatalf("Default() must carry the same decisions defaults: %+v", Default().Decisions)
+	}
+}
+
+func TestLoadShouldReadDecisionsBlockFromFile(t *testing.T) {
+	p := writeFile(t, "decisions:\n  enabled: true\n  provider:\n    model: typesafe/jev-2\n    timeout: 3s\n"+
+		"  triage:\n    mode: on\n  review_dedup:\n    mode: shadow\n    threshold: 0.9\n")
+	cfg, err := Load(p, noEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := cfg.Decisions
+	if !d.Enabled || d.Provider.Model != "typesafe/jev-2" || d.Provider.Timeout != 3*time.Second {
+		t.Fatalf("file values not applied: %+v", d)
+	}
+	if d.Provider.BaseURL != "https://openrouter.ai/api" || d.Provider.APIKeyEnv != "DELAMAIN_DECISIONS_API_KEY" {
+		t.Fatalf("unset provider fields lost their defaults: %+v", d.Provider)
+	}
+	if d.Triage != (DecisionPoint{Mode: DecisionOn, Threshold: 0.3}) {
+		t.Fatalf("triage must take the file mode and keep the default threshold: %+v", d.Triage)
+	}
+	if d.Checks != (DecisionPoint{Mode: DecisionOff, Threshold: 0.8}) {
+		t.Fatalf("an omitted point keeps its defaults: %+v", d.Checks)
+	}
+	if d.ReviewDedup != (DecisionPoint{Mode: DecisionShadow, Threshold: 0.9}) {
+		t.Fatalf("review_dedup not applied: %+v", d.ReviewDedup)
+	}
+}
+
+func TestLoadShouldNotReadDecisionsAPIKeyValue(t *testing.T) {
+	const secret = "sk-or-v1-not-a-real-key"
+	p := writeFile(t, "decisions:\n  enabled: true\n  provider:\n    api_key_env: MY_DECISIONS_KEY\n")
+	var asked []string
+	cfg, err := Load(p, func(k string) string {
+		asked = append(asked, k)
+		if k == "MY_DECISIONS_KEY" || k == DefaultDecisionsAPIKeyEnv {
+			return secret
+		}
+		return ""
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Decisions.Provider.APIKeyEnv != "MY_DECISIONS_KEY" {
+		t.Fatalf("api_key_env must hold the variable name: %+v", cfg.Decisions.Provider)
+	}
+	if slices.Contains(asked, "MY_DECISIONS_KEY") || slices.Contains(asked, DefaultDecisionsAPIKeyEnv) {
+		t.Fatalf("Load must never read the key value, asked for %v", asked)
+	}
+	if strings.Contains(fmt.Sprintf("%+v", cfg.Decisions), secret) {
+		t.Fatal("the key value must not be stored in the config")
 	}
 }
