@@ -295,6 +295,15 @@ func TestDecideShouldNeverLeakAPIKeyInErrors(t *testing.T) {
 			t.Fatalf("err = %v, want the key replaced by [redacted]", err)
 		}
 	})
+	t.Run("answer echoes the Authorization header", func(t *testing.T) {
+		c, _ := serve(t, func(w http.ResponseWriter, r *http.Request) {
+			respond(200, strings.Replace(realResponse, `"choice": "payments"`, `"choice": "`+r.Header.Get("Authorization")+`"`, 1))(w, r)
+		}, Options{})
+		_, err := c.Decide(context.Background(), bugTriage())
+		if err == nil || strings.Contains(err.Error(), testKey) {
+			t.Fatalf("err = %v, want an error without the key", err)
+		}
+	})
 	t.Run("request that never reaches the server", func(t *testing.T) {
 		// A key pasted into the base URL makes the URL invalid; the parse error quotes the URL.
 		c := New(Options{BaseURL: "https://openrouter.invalid/" + testKey + "\x7f", APIKey: testKey})
@@ -338,5 +347,75 @@ func TestDecideShouldRejectResponseBodyOver1MiB(t *testing.T) {
 	_, err := c.Decide(context.Background(), bugTriage())
 	if err == nil || !strings.HasPrefix(err.Error(), "decisions: ") {
 		t.Fatalf("err = %v, want a decisions error", err)
+	}
+}
+
+// answering serves realResponse with old replaced by new, failing if old is not in it.
+func answering(t *testing.T, old, new string) func(w http.ResponseWriter, r *http.Request) {
+	t.Helper()
+	if !strings.Contains(realResponse, old) {
+		t.Fatalf("fixture has no %s", old)
+	}
+	return respond(200, strings.Replace(realResponse, old, new, 1))
+}
+
+// wantInvalid fails unless err is the invalid-answer error of question.
+func wantInvalid(t *testing.T, err error, question string) {
+	t.Helper()
+	if prefix := "invalid decision answer: " + question + ": "; err == nil || !strings.HasPrefix(err.Error(), prefix) {
+		t.Fatalf("err = %v, want %q...", err, prefix)
+	}
+}
+
+func TestDecideShouldRejectNoulOutsideZeroToOne(t *testing.T) {
+	for _, noul := range []string{"-0.01", "1.01"} {
+		t.Run(noul, func(t *testing.T) {
+			c, _ := serve(t, answering(t, `"noul": 0.96`, `"noul": `+noul), Options{})
+			_, err := c.Decide(context.Background(), bugTriage())
+			wantInvalid(t, err, "is_bug")
+		})
+	}
+	for _, noul := range []string{"0", "1"} {
+		t.Run(noul, func(t *testing.T) {
+			c, _ := serve(t, answering(t, `"noul": 0.96`, `"noul": `+noul), Options{})
+			if _, err := c.Decide(context.Background(), bugTriage()); err != nil {
+				t.Fatalf("noul %s is inside [0,1]: %v", noul, err)
+			}
+		})
+	}
+}
+
+func TestDecideShouldRejectChoiceNotAmongOptions(t *testing.T) {
+	c, _ := serve(t, answering(t, `"choice": "payments"`, `"choice": "legal"`), Options{})
+	_, err := c.Decide(context.Background(), bugTriage())
+	wantInvalid(t, err, "team")
+}
+
+func TestDecideShouldRejectMissingAnswer(t *testing.T) {
+	cases := map[string]struct{ old, new, question string }{
+		"noul not answered":   {`"is_bug": { "type": "noul", "noul": 0.96 },`, ``, "is_bug"},
+		"choice not answered": {`"team": { "type": "choice"`, `"other": { "type": "choice"`, "team"},
+		"noul without value":  {`"type": "noul", "noul": 0.96`, `"type": "noul"`, "is_bug"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			c, _ := serve(t, answering(t, tc.old, tc.new), Options{})
+			_, err := c.Decide(context.Background(), bugTriage())
+			wantInvalid(t, err, tc.question)
+		})
+	}
+}
+
+func TestDecideShouldRejectAnswerOfWrongType(t *testing.T) {
+	cases := map[string]struct{ old, new, question string }{
+		"noul answered as choice": {`"type": "noul", "noul": 0.96`, `"type": "choice", "choice": "payments", "noul": 0.96`, "is_bug"},
+		"choice answered as noul": {`"type": "choice", "choice": "payments"`, `"type": "noul", "noul": 0.5, "choice": "payments"`, "team"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			c, _ := serve(t, answering(t, tc.old, tc.new), Options{})
+			_, err := c.Decide(context.Background(), bugTriage())
+			wantInvalid(t, err, tc.question)
+		})
 	}
 }

@@ -55,7 +55,7 @@ type question struct {
 // answer is one entry of the response "answers" object.
 type answer struct {
 	Type          string             `json:"type"`
-	Noul          float64            `json:"noul"`
+	Noul          *float64           `json:"noul"`
 	Choice        string             `json:"choice"`
 	Confidence    float64            `json:"confidence"`
 	Probabilities map[string]float64 `json:"probabilities"`
@@ -129,8 +129,19 @@ func (c *Client) Decide(ctx context.Context, req Request) (Result, error) {
 		return Result{}, c.fail("decode response", err)
 	}
 	res := Result{Answers: map[string]Answer{}, Model: v.Model, CostUSD: v.Usage.Cost, Latency: time.Since(start)}
-	for name, a := range v.Answers {
-		res.Answers[name] = Answer{Noul: a.Noul, Choice: a.Choice, Confidence: a.Confidence, Probabilities: a.Probabilities}
+	for name := range req.Nouls {
+		a, err := c.noul(name, v.Answers)
+		if err != nil {
+			return Result{}, err
+		}
+		res.Answers[name] = a
+	}
+	for name, ch := range req.Choices {
+		a, err := c.choice(name, ch, v.Answers)
+		if err != nil {
+			return Result{}, err
+		}
+		res.Answers[name] = a
 	}
 	return res, nil
 }
@@ -142,6 +153,42 @@ type APIError struct {
 }
 
 func (e *APIError) Error() string { return fmt.Sprintf("decisions: %d %s", e.Status, e.Message) }
+
+// noul checks the answer to the noul name: present, a noul, and a probability in [0,1].
+func (c *Client) noul(name string, answers map[string]answer) (Answer, error) {
+	a, ok := answers[name]
+	switch {
+	case !ok:
+		return Answer{}, c.invalid(name, "no answer")
+	case a.Type != "noul":
+		return Answer{}, c.invalid(name, fmt.Sprintf("answered as %q, want noul", a.Type))
+	case a.Noul == nil:
+		return Answer{}, c.invalid(name, "noul has no value")
+	case *a.Noul < 0 || *a.Noul > 1:
+		return Answer{}, c.invalid(name, fmt.Sprintf("noul %v is outside [0,1]", *a.Noul))
+	}
+	return Answer{Noul: *a.Noul}, nil
+}
+
+// choice checks the answer to the choice name: present, a choice, and one of the options sent.
+func (c *Client) choice(name string, ch Choice, answers map[string]answer) (Answer, error) {
+	a, ok := answers[name]
+	switch {
+	case !ok:
+		return Answer{}, c.invalid(name, "no answer")
+	case a.Type != "choice":
+		return Answer{}, c.invalid(name, fmt.Sprintf("answered as %q, want choice", a.Type))
+	}
+	if _, ok := ch.Options[a.Choice]; !ok {
+		return Answer{}, c.invalid(name, fmt.Sprintf("choice %q is not among the options", a.Choice))
+	}
+	return Answer{Choice: a.Choice, Confidence: a.Confidence, Probabilities: a.Probabilities}, nil
+}
+
+// invalid is the error of an answer that breaks the request it answers.
+func (c *Client) invalid(question, reason string) error {
+	return fmt.Errorf("invalid decision answer: %s: %s", question, c.redact(reason))
+}
 
 // opError is a failure that got no answer from the API (request, network, timeout, decoding).
 type opError struct {
