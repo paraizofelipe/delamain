@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/paraizo/delamain/internal/config"
 	"github.com/paraizo/delamain/internal/decide"
@@ -298,5 +299,43 @@ func TestExecuteShouldFallBackToFeedbackWhenDeciderFails(t *testing.T) {
 		if !strings.Contains(log.String(), want) {
 			t.Errorf("the skip log lacks %q:\n%s", want, log.String())
 		}
+	}
+}
+
+func TestCheckDecisionStateShouldStayUnder32000BytesWithLongTails(t *testing.T) {
+	var failed []CheckResult
+	for _, name := range []string{"format", "lint", "typecheck", "test"} {
+		// "<" is escaped by json.Marshal as \u003c: the raw length underestimates the state.
+		failed = append(failed, CheckResult{Name: name, Command: "make " + name, ExitCode: 2, Tail: strings.Repeat("<", 10000) + "fim-" + name})
+	}
+	state := checkDecisionState(failed)
+	b, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(b) >= 32000 {
+		t.Fatalf("the state must stay under decide's 32000 bytes, got %d", len(b))
+	}
+	items := checkStateItems(t, state)
+	if len(items) != len(failed) {
+		t.Fatalf("every failed check is kept: %d", len(items))
+	}
+	for i, it := range items {
+		tail, _ := it["tail"].(string)
+		if len(tail) > 6000 || !strings.HasSuffix(tail, "fim-"+failed[i].Name) || len(tail) <= len("fim-"+failed[i].Name) {
+			t.Errorf("tail %d must keep its last bytes within 6000: len=%d suffix ok=%v", i, len(tail), strings.HasSuffix(tail, "fim-"+failed[i].Name))
+		}
+	}
+}
+
+func TestCheckDecisionStateShouldKeepTheLastBytesOfEachTail(t *testing.T) {
+	tail := "começo do log " + strings.Repeat("é", 4000) + "FIM"
+	items := checkStateItems(t, checkDecisionState([]CheckResult{{Name: "test", Command: "go test ./...", ExitCode: 1, Tail: tail}}))
+	got, _ := items[0]["tail"].(string)
+	if len(got) > 6000 || len(got) < 5998 {
+		t.Fatalf("the tail keeps the last 6000 bytes, got %d", len(got))
+	}
+	if !strings.HasSuffix(got, "FIM") || strings.Contains(got, "começo") || !utf8.ValidString(got) {
+		t.Fatalf("the tail is cut from its start on a rune boundary: %q...", got[:20])
 	}
 }

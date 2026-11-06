@@ -2,8 +2,10 @@ package pipeline
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"slices"
+	"unicode/utf8"
 
 	"github.com/paraizo/delamain/internal/config"
 	"github.com/paraizo/delamain/internal/decide"
@@ -21,13 +23,48 @@ type checkState struct {
 	Tail     string `json:"tail"`
 }
 
-// checkDecisionState is the state of the checks decision: the failed checks, in order.
+// checkTailBytes keeps the end of each tail sent to the checks decision, where a failure explains itself.
+const checkTailBytes = 6000
+
+// checkStateBytes is decide's limit on the encoded state; the checks state must stay under it.
+const checkStateBytes = 32000
+
+// clipTail keeps at most the last n bytes of s without splitting a rune.
+func clipTail(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	i := len(s) - n
+	for i < len(s) && !utf8.RuneStart(s[i]) {
+		i++
+	}
+	return s[i:]
+}
+
+// checkDecisionState is the state of the checks decision: the failed checks, in order. Each tail
+// keeps its last checkTailBytes, and all tails shrink proportionally, from their start, until the
+// JSON — measured encoded, since json.Marshal escapes <, > and & — fits under checkStateBytes.
 func checkDecisionState(failed []CheckResult) map[string]any {
 	items := make([]checkState, len(failed))
 	for i, c := range failed {
-		items[i] = checkState{Name: c.Name, Command: c.Command, ExitCode: c.ExitCode, Tail: c.Tail}
+		items[i] = checkState{Name: c.Name, Command: c.Command, ExitCode: c.ExitCode, Tail: clipTail(c.Tail, checkTailBytes)}
 	}
-	return map[string]any{"checks": items}
+	state := map[string]any{"checks": items}
+	for {
+		b, err := json.Marshal(state)
+		if err != nil || len(b) < checkStateBytes {
+			return state
+		}
+		shrunk := false
+		for i := range items {
+			if n := len(items[i].Tail) * (checkStateBytes - 1) / len(b); n < len(items[i].Tail) {
+				items[i].Tail, shrunk = clipTail(items[i].Tail, n), true
+			}
+		}
+		if !shrunk {
+			return state
+		}
+	}
 }
 
 // checkCause asks the cause of the failure of the check name.
