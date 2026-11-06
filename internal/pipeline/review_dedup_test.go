@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/paraizo/delamain/internal/artifacts"
 	"github.com/paraizo/delamain/internal/config"
@@ -92,8 +93,8 @@ func matchPrev0(p float64) map[string]decide.Answer {
 	return map[string]decide.Answer{"new_0": {Choice: "prev_0", Confidence: p, Probabilities: map[string]float64{"prev_0": p, "nenhum": 1 - p}}}
 }
 
-// dedupState decodes the request state the way the decisions API reads it.
-func dedupState(t *testing.T, req decide.Request) (previous, fresh []map[string]any) {
+// sentState decodes the request state the way the decisions API reads it.
+func sentState(t *testing.T, req decide.Request) (previous, fresh []map[string]any) {
 	t.Helper()
 	b, err := json.Marshal(req.State)
 	if err != nil {
@@ -149,7 +150,7 @@ func TestNovelBlockersShouldAskOnlyBlockersNewByKeyInOneRequest(t *testing.T) {
 	if got := slices.Sorted(maps.Keys(req.Choices)); !slices.Equal(got, []string{"new_0", "new_1"}) {
 		t.Fatalf("only the blockers new by key are asked: %v", got)
 	}
-	previous, fresh := dedupState(t, req)
+	previous, fresh := sentState(t, req)
 	if len(previous) != 2 || previous[0]["id"] != "prev_0" || previous[0]["file"] != "a.go" || previous[1]["id"] != "prev_1" || previous[1]["file"] != "b.go" {
 		t.Fatalf("previous holds what came before this review, oldest first: %v", previous)
 	}
@@ -288,5 +289,80 @@ func TestNovelBlockersShouldFallBackToKeysWhenDeciderFails(t *testing.T) {
 	}
 	if strings.Contains(log.String(), "review blocker matched") {
 		t.Errorf("nothing is matched when the answer is incomplete:\n%s", log.String())
+	}
+}
+
+// dedupRequest records a first review with n blockers saying message, then a second with one
+// blocker new by key, and returns the request the second sent.
+func dedupRequest(t *testing.T, n int, message string) decide.Request {
+	t.Helper()
+	r, ru, d, _ := dedupRunner(config.DecisionOn, 0.85, map[string]decide.Answer{"new_0": {Choice: "nenhum", Probabilities: map[string]float64{"nenhum": 1}}})
+	var fs []artifacts.Finding
+	for i := range n {
+		fs = append(fs, blocker(fmt.Sprintf("f%03d.go", i), "faltando", message))
+	}
+	seen := newSeenBlockers()
+	r.novelBlockers(context.Background(), ru, 1, seen, axisReview("spec", fs...))
+	r.novelBlockers(context.Background(), ru, 2, seen, axisReview("spec", blocker("novo.go", "faltando", message)))
+	if d.calls() != 1 {
+		t.Fatalf("calls = %d, want 1", d.calls())
+	}
+	return d.requests[0]
+}
+
+func TestNovelBlockersStateShouldKeepAtMost254PreviousAndStayUnder32000Bytes(t *testing.T) {
+	// Short messages: only the count caps previous, at the 254 most recent.
+	previous, _ := sentState(t, dedupRequest(t, 300, "m"))
+	if len(previous) != 254 || previous[0]["id"] != "prev_0" || previous[0]["file"] != "f046.go" || previous[253]["file"] != "f299.go" {
+		t.Fatalf("previous keeps the 254 most recent, renumbered: %d, first %v, last %v", len(previous), previous[0], previous[len(previous)-1])
+	}
+
+	// "<" is escaped by json.Marshal as \u003c: the raw length underestimates the state.
+	req := dedupRequest(t, 300, strings.Repeat("<é", 300))
+	b, err := json.Marshal(req.State)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(b) >= 32000 {
+		t.Fatalf("the state must stay under decide's 32000 bytes, got %d", len(b))
+	}
+	previous, fresh := sentState(t, req)
+	if len(previous) == 0 || previous[len(previous)-1]["file"] != "f299.go" {
+		t.Fatalf("the oldest previous go first, the newest stay: %d kept", len(previous))
+	}
+	want := []string{"nenhum"}
+	for j, it := range append(previous, fresh...) {
+		msg, _ := it["message"].(string)
+		if len(msg) > 500 || len(msg) < 490 || !utf8.ValidString(msg) {
+			t.Errorf("item %d: message must be cut to 500 bytes without splitting a rune: len=%d valid=%v", j, len(msg), utf8.ValidString(msg))
+		}
+		for _, leak := range []string{"evidence", "line", "rule"} {
+			if _, ok := it[leak]; ok {
+				t.Errorf("item %d must not carry %s: %v", j, leak, it)
+			}
+		}
+		if j < len(previous) {
+			want = append(want, fmt.Sprintf("prev_%d", j))
+		}
+	}
+	if got := slices.Sorted(maps.Keys(req.Choices["new_0"].Options)); !slices.Equal(got, slices.Sorted(slices.Values(want))) {
+		t.Fatalf("the options are only the previous sent and nenhum: %v", got)
+	}
+}
+
+func TestNovelBlockersShouldNotConsultWhenNoPreviousFitsTheState(t *testing.T) {
+	r, ru, d, _ := dedupRunner(config.DecisionOn, 0.85, matchPrev0(0.9))
+	seen := newSeenBlockers()
+	r.novelBlockers(context.Background(), ru, 1, seen, axisReview("spec", blocker("calc.go", "faltando", "Add(2,3) devolve -1")))
+	// Twelve new blockers of 500 escaped "<" fill the state alone: no previous is left to compare with.
+	var fs []artifacts.Finding
+	for i := range 12 {
+		fs = append(fs, blocker(fmt.Sprintf("n%02d.go", i), "faltando", strings.Repeat("<", 500)))
+	}
+	if !r.novelBlockers(context.Background(), ru, 2, seen, axisReview("spec", fs...)) {
+		t.Fatal("without a previous to compare with, the keys decide: every blocker is new")
+	}
+	if d.calls() != 0 {
+		t.Fatalf("a question with only nenhum is not asked: %d calls", d.calls())
 	}
 }

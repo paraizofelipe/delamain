@@ -2,7 +2,9 @@ package pipeline
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"sort"
 
 	"github.com/paraizo/delamain/internal/artifacts"
 	"github.com/paraizo/delamain/internal/config"
@@ -38,13 +40,39 @@ type dedupItem struct {
 	Message  string `json:"message"`
 }
 
-// dedupItems numbers bs as <prefix>_<i>, in order.
+// dedupMessageBytes caps each message sent to the review_dedup decision.
+const dedupMessageBytes = 500
+
+// dedupPrevious caps the previous blockers sent: with nenhum, one choice holds at most 255 options.
+const dedupPrevious = 254
+
+// dedupItems numbers bs as <prefix>_<i>, in order, each message cut to dedupMessageBytes.
 func dedupItems(prefix string, bs []seenBlocker) []dedupItem {
 	items := make([]dedupItem, len(bs))
 	for i, b := range bs {
-		items[i] = dedupItem{ID: fmt.Sprintf("%s_%d", prefix, i), Axis: b.Axis, File: b.File, Category: b.Category, Message: b.Message}
+		items[i] = dedupItem{
+			ID: fmt.Sprintf("%s_%d", prefix, i), Axis: b.Axis, File: b.File, Category: b.Category,
+			Message: clipBytes(b.Message, dedupMessageBytes),
+		}
 	}
 	return items
+}
+
+// dedupState is the state of the review_dedup decision: the fresh blockers and the most recent
+// dedupPrevious of previous, dropping the oldest until the JSON — measured encoded, since
+// json.Marshal escapes <, > and & — fits under checkStateBytes. It returns the previous it kept.
+func dedupState(previous, fresh []seenBlocker) (map[string]any, []seenBlocker) {
+	previous = previous[max(0, len(previous)-dedupPrevious):]
+	news := dedupItems("new", fresh)
+	state := func(prev []seenBlocker) map[string]any {
+		return map[string]any{"previous": dedupItems("prev", prev), "new": news}
+	}
+	// Dropping the oldest only shrinks the JSON, so the first start that fits is found by halving.
+	start := sort.Search(len(previous), func(i int) bool {
+		b, err := json.Marshal(state(previous[i:]))
+		return err != nil || len(b) < checkStateBytes
+	})
+	return state(previous[start:]), previous[start:]
 }
 
 // novelBlockers records the review's blocking findings in seen and reports whether every one of
@@ -82,16 +110,20 @@ func (r *Runner) novelBlockers(ctx context.Context, ru *run, iter int, seen *see
 
 // matchBlockers asks, in one request, whether each blocker of fresh is the same problem as one of
 // previous; true means at least one is, with its probability at the threshold or above. Shadow
-// only logs the decision; a missing answer leaves the whole review to the keys.
+// only logs the decision. No previous fitting the state skips the question, and a missing answer
+// leaves the whole review to the keys.
 func (r *Runner) matchBlockers(ctx context.Context, ru *run, iter int, previous, fresh []seenBlocker) bool {
-	prev := dedupItems("prev", previous)
+	state, previous := dedupState(previous, fresh)
+	if len(previous) == 0 {
+		return false
+	}
 	options := map[string]string{"nenhum": "É um problema diferente de todos os anteriores."}
 	byID := map[string]seenBlocker{}
-	for j, it := range prev {
+	for j, it := range dedupItems("prev", previous) {
 		options[it.ID] = fmt.Sprintf("Mesmo problema que %s: %s %s — %s", it.ID, it.Axis, it.File, it.Message)
 		byID[it.ID] = previous[j]
 	}
-	req := decide.Request{State: map[string]any{"previous": prev, "new": dedupItems("new", fresh)}, Choices: map[string]decide.Choice{}}
+	req := decide.Request{State: state, Choices: map[string]decide.Choice{}}
 	for i := range fresh {
 		id := fmt.Sprintf("new_%d", i)
 		req.Choices[id] = decide.Choice{
