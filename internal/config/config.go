@@ -679,6 +679,20 @@ func (d Decisions) validate() []error {
 	if p.Timeout <= 0 || p.Timeout > 10*time.Second {
 		errs = append(errs, fmt.Errorf("decisions.provider.timeout must be in (0, 10s], got %s", p.Timeout))
 	}
+	for _, np := range []struct {
+		name string
+		p    DecisionPoint
+	}{{"triage", d.Triage}, {"checks", d.Checks}, {"review_dedup", d.ReviewDedup}} {
+		switch np.p.Mode {
+		case DecisionOff, DecisionShadow, DecisionOn:
+		default:
+			errs = append(errs, fmt.Errorf("decisions.%s.mode %q is not one of off|shadow|on", np.name, np.p.Mode))
+		}
+		// The negated form also rejects NaN, which fails every comparison.
+		if t := np.p.Threshold; !(t >= 0 && t <= 1) {
+			errs = append(errs, fmt.Errorf("decisions.%s.threshold must be in [0, 1], got %v", np.name, t))
+		}
+	}
 	return errs
 }
 

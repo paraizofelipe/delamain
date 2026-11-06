@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -926,6 +927,48 @@ func TestValidateShouldRejectDecisionsTimeoutOutOfRange(t *testing.T) {
 		cfg.Decisions.Provider.Timeout = d
 		if err := cfg.Validate(); err != nil {
 			t.Errorf("timeout %s is within (0, 10s]: %v", d, err)
+		}
+	}
+}
+
+// decisionPoints exposes each point by its key, so a case can change one point at a time.
+func decisionPoints(d *Decisions) map[string]*DecisionPoint {
+	return map[string]*DecisionPoint{"triage": &d.Triage, "checks": &d.Checks, "review_dedup": &d.ReviewDedup}
+}
+
+func TestValidateShouldRejectUnknownDecisionMode(t *testing.T) {
+	for _, name := range []string{"triage", "checks", "review_dedup"} {
+		cfg := enabledDecisions()
+		decisionPoints(&cfg.Decisions)[name].Mode = "maybe"
+		err := cfg.Validate()
+		if err == nil || !strings.Contains(err.Error(), `decisions.`+name+`.mode "maybe" is not one of off|shadow|on`) {
+			t.Errorf("%s: want error citing decisions.%s.mode, got %v", name, name, err)
+		}
+		for _, m := range []DecisionMode{DecisionOff, DecisionShadow, DecisionOn} {
+			cfg := enabledDecisions()
+			decisionPoints(&cfg.Decisions)[name].Mode = m
+			if err := cfg.Validate(); err != nil {
+				t.Errorf("%s: mode %q is valid: %v", name, m, err)
+			}
+		}
+	}
+}
+
+func TestValidateShouldRejectDecisionThresholdOutsideZeroToOne(t *testing.T) {
+	for _, name := range []string{"triage", "checks", "review_dedup"} {
+		for _, th := range []float64{-0.1, 1.1, math.NaN()} {
+			cfg := enabledDecisions()
+			decisionPoints(&cfg.Decisions)[name].Threshold = th
+			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "decisions."+name+".threshold") {
+				t.Errorf("%s threshold %v: want error citing decisions.%s.threshold, got %v", name, th, name, err)
+			}
+		}
+		for _, th := range []float64{0, 1} {
+			cfg := enabledDecisions()
+			decisionPoints(&cfg.Decisions)[name].Threshold = th
+			if err := cfg.Validate(); err != nil {
+				t.Errorf("%s threshold %v is within [0, 1]: %v", name, th, err)
+			}
 		}
 	}
 }
