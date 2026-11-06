@@ -4,14 +4,17 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"time"
 )
 
-// maxBodyBytes caps how much of a response is read.
-const maxBodyBytes = 1 << 20
+const (
+	maxStateBytes = 32000   // above it the model falls into its slower, less precise long-context mode
+	maxBodyBytes  = 1 << 20 // caps how much of a response is read
+)
 
 // Options configure a Client; the caller resolves them (the package reads no config).
 type Options struct {
@@ -55,18 +58,31 @@ type answer struct {
 
 // Decide sends req to POST {BaseURL}/alpha/decisions and returns the validated answers.
 func (c *Client) Decide(ctx context.Context, req Request) (Result, error) {
+	if len(req.Nouls)+len(req.Choices) == 0 {
+		return Result{}, ErrNoQuestions
+	}
+	state, err := json.Marshal(req.State)
+	if err != nil {
+		return Result{}, fmt.Errorf("decision state: %w", err)
+	}
+	if len(state) > maxStateBytes {
+		return Result{}, ErrStateTooLarge
+	}
 	questions := map[string]question{}
 	for name, n := range req.Nouls {
 		questions[name] = question{Type: "noul", Instructions: n.Instructions, Criteria: map[string]string{"true": n.True, "false": n.False}}
 	}
 	for name, ch := range req.Choices {
+		if _, dup := questions[name]; dup {
+			return Result{}, fmt.Errorf("decision question %q is both a noul and a choice", name)
+		}
 		questions[name] = question{Type: "choice", Instructions: ch.Instructions, Criteria: ch.Options}
 	}
 	body, err := json.Marshal(struct {
 		Model     string              `json:"model"`
-		State     map[string]any      `json:"state"`
+		State     json.RawMessage     `json:"state"`
 		Questions map[string]question `json:"questions"`
-	}{c.opts.Model, req.State, questions})
+	}{c.opts.Model, state, questions})
 	if err != nil {
 		return Result{}, err
 	}

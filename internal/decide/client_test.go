@@ -3,16 +3,18 @@ package decide
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 )
 
-const testKey = "sk-or-v1-test-secret-key-0123456789"
+const testKey = "fake-decisions-key-for-tests"
 
 // received is one call the fake Decisions API got.
 type received struct {
@@ -160,5 +162,71 @@ func TestDecideShouldReportCostModelAndLatency(t *testing.T) {
 	}
 	if res.Latency < delay {
 		t.Fatalf("Latency = %v, want at least the %v the server took", res.Latency, delay)
+	}
+}
+
+func TestDecideShouldRejectRequestWithoutQuestions(t *testing.T) {
+	c, api := serve(t, respond(200, realResponse), Options{})
+	empty := map[string]Request{
+		"nil maps":   {State: map[string]any{"title": "x"}},
+		"empty maps": {State: map[string]any{"title": "x"}, Nouls: map[string]Noul{}, Choices: map[string]Choice{}},
+	}
+	for name, req := range empty {
+		t.Run(name, func(t *testing.T) {
+			if _, err := c.Decide(context.Background(), req); !errors.Is(err, ErrNoQuestions) {
+				t.Fatalf("err = %v, want ErrNoQuestions", err)
+			}
+		})
+	}
+	if n := len(api.received()); n != 0 {
+		t.Fatalf("server got %d requests, want none", n)
+	}
+}
+
+// stateOf returns a state whose JSON is exactly size bytes: {"body":"x...x"}.
+func stateOf(t *testing.T, size int) map[string]any {
+	t.Helper()
+	s := map[string]any{"body": strings.Repeat("x", size-len(`{"body":""}`))}
+	if b, _ := json.Marshal(s); len(b) != size {
+		t.Fatalf("state is %d bytes, want %d", len(b), size)
+	}
+	return s
+}
+
+func TestDecideShouldRejectStateOver32000BytesBeforeSending(t *testing.T) {
+	c, api := serve(t, respond(200, realResponse), Options{})
+	req := bugTriage()
+	req.State = stateOf(t, 32001)
+	if _, err := c.Decide(context.Background(), req); !errors.Is(err, ErrStateTooLarge) {
+		t.Fatalf("err = %v, want ErrStateTooLarge", err)
+	}
+	if n := len(api.received()); n != 0 {
+		t.Fatalf("server got %d requests, want none", n)
+	}
+
+	req.State = stateOf(t, 32000)
+	if _, err := c.Decide(context.Background(), req); err != nil {
+		t.Fatalf("a state of exactly 32000 bytes is accepted: %v", err)
+	}
+
+	req.State = map[string]any{"ch": make(chan int)}
+	if _, err := c.Decide(context.Background(), req); err == nil {
+		t.Fatal("a state that is not JSON must fail")
+	}
+	if n := len(api.received()); n != 1 {
+		t.Fatalf("server got %d requests, want only the 32000-byte one", n)
+	}
+}
+
+func TestDecideShouldRejectQuestionNameUsedTwice(t *testing.T) {
+	c, api := serve(t, respond(200, realResponse), Options{})
+	req := bugTriage()
+	req.Choices["is_bug"] = Choice{Instructions: "Kind?", Options: map[string]string{"bug": "a defect", "feature": "a request"}}
+	_, err := c.Decide(context.Background(), req)
+	if err == nil || !strings.Contains(err.Error(), `"is_bug"`) {
+		t.Fatalf("err = %v, want a refusal naming the repeated question", err)
+	}
+	if n := len(api.received()); n != 0 {
+		t.Fatalf("server got %d requests, want none", n)
 	}
 }

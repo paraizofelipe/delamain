@@ -3,6 +3,7 @@ package decide
 
 import (
 	"context"
+	"errors"
 	"time"
 )
 
@@ -42,3 +43,8 @@ type Result struct {
 type Decider interface {
 	Decide(ctx context.Context, req Request) (Result, error)
 }
+
+var (
+	ErrStateTooLarge = errors.New("decision state exceeds 32000 bytes")
+	ErrNoQuestions   = errors.New("decision request has no questions")
+)
