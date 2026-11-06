@@ -698,3 +698,50 @@ func TestDoctorShouldSkipDecisionsProbeWhenNil(t *testing.T) {
 		t.Fatalf("a nil Getenv must read the process environment: %+v", c)
 	}
 }
+
+func TestDoctorShouldFailDecisionsWhenProbeErrors(t *testing.T) {
+	cfg, d := decisionsHarness(t, "k")
+	d.DecisionsProbe = func(context.Context) error { return errors.New("decisions: 503 unavailable") }
+	results := Run(context.Background(), cfg, d)
+	want := "typesafe/jev-1.14 at https://openrouter.ai/api: decisions: 503 unavailable"
+	if c := byName(results)["decisions"]; c.Status != Fail || c.Detail != want {
+		t.Fatalf("a failing probe must fail the check with the error: %+v", c)
+	}
+	if !Failed(results) {
+		t.Fatalf("a failing probe must fail doctor: %+v", results)
+	}
+}
+
+func TestDoctorShouldReportDecisionsModesWhenProbeSucceeds(t *testing.T) {
+	cfg, d := decisionsHarness(t, "k")
+	cfg.Decisions.Provider.Model = "acme/judge"
+	cfg.Decisions.Provider.BaseURL = "https://decide.example"
+	cfg.Decisions.Triage.Mode = config.DecisionOn
+	cfg.Decisions.Checks.Mode = config.DecisionShadow
+	cfg.Decisions.ReviewDedup.Mode = config.DecisionOff
+	probed := 0
+	d.DecisionsProbe = func(context.Context) error { probed++; return nil }
+	results := Run(context.Background(), cfg, d)
+	want := "acme/judge at https://decide.example (triage=on checks=shadow review_dedup=off)"
+	if c := byName(results)["decisions"]; c.Status != OK || c.Detail != want {
+		t.Fatalf("a passing probe must report the modes of every decision point: %+v", c)
+	}
+	if probed != 1 {
+		t.Fatalf("the probe must run once with the layer on and the key set, ran %d times", probed)
+	}
+	if Failed(results) {
+		t.Fatalf("a ready decisions layer must not fail doctor: %+v", results)
+	}
+}
+
+func TestDoctorShouldNotCallDecisionsProbeWhenDisabled(t *testing.T) {
+	cfg, d := decisionsHarness(t, "k")
+	cfg.Decisions.Enabled = false
+	d.DecisionsProbe = func(context.Context) error {
+		t.Fatal("the probe must not run with the decisions layer off")
+		return nil
+	}
+	if c := byName(Run(context.Background(), cfg, d))["decisions"]; c.Status != OK || c.Detail != "disabled" {
+		t.Fatalf("a disabled layer with a key set must stay disabled: %+v", c)
+	}
+}

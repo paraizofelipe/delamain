@@ -167,7 +167,7 @@ func Run(ctx context.Context, cfg config.Config, d Deps) []Check {
 		checks = append(checks, promptChecks(d.Prompts, d.PromptsTarget)...)
 	}
 
-	checks = append(checks, decisions(cfg.Decisions, d))
+	checks = append(checks, decisions(ctx, cfg.Decisions, d))
 
 	if err := writable(cfg.Paths.StateDir); err != nil {
 		add("state dir", Fail, "%s: %v", cfg.Paths.StateDir, err)
@@ -202,7 +202,7 @@ func forgeAuth(ctx context.Context, d Deps, dir string) Check {
 
 // decisions reports whether the optional decisions layer can run. Only the key's emptiness
 // is checked: its value never reaches a Detail.
-func decisions(dc config.Decisions, d Deps) Check {
+func decisions(ctx context.Context, dc config.Decisions, d Deps) Check {
 	if !dc.Enabled {
 		return Check{"decisions", OK, "disabled"}
 	}
@@ -214,8 +214,14 @@ func decisions(dc config.Decisions, d Deps) Check {
 	if getenv(p.APIKeyEnv) == "" {
 		return Check{"decisions", Fail, p.APIKeyEnv + " is not set; decision points fall back to the current rules"}
 	}
-	return Check{"decisions", OK, fmt.Sprintf("%s at %s (triage=%s checks=%s review_dedup=%s); probe skipped",
-		p.Model, p.BaseURL, dc.Triage.Mode, dc.Checks.Mode, dc.ReviewDedup.Mode)}
+	modes := fmt.Sprintf("(triage=%s checks=%s review_dedup=%s)", dc.Triage.Mode, dc.Checks.Mode, dc.ReviewDedup.Mode)
+	if d.DecisionsProbe == nil {
+		return Check{"decisions", OK, fmt.Sprintf("%s at %s %s; probe skipped", p.Model, p.BaseURL, modes)}
+	}
+	if err := d.DecisionsProbe(ctx); err != nil {
+		return Check{"decisions", Fail, fmt.Sprintf("%s at %s: %v", p.Model, p.BaseURL, err)}
+	}
+	return Check{"decisions", OK, fmt.Sprintf("%s at %s %s", p.Model, p.BaseURL, modes)}
 }
 
 // hindsight checks what the agents' memory needs to run and reports only the first problem.
