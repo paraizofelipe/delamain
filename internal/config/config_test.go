@@ -825,3 +825,32 @@ func TestLoadShouldNotReadDecisionsAPIKeyValue(t *testing.T) {
 		t.Fatal("the key value must not be stored in the config")
 	}
 }
+
+func TestLoadShouldLetDecisionsEnabledEnvOverrideFile(t *testing.T) {
+	p := writeFile(t, "decisions:\n  enabled: false\n")
+	cfg, err := Load(p, envOf(map[string]string{"DELAMAIN_DECISIONS_ENABLED": "true"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Decisions.Enabled {
+		t.Fatal("DELAMAIN_DECISIONS_ENABLED must win over the file")
+	}
+}
+
+func TestLoadShouldRejectNonBooleanDecisionsEnabledEnv(t *testing.T) {
+	_, err := Load(filepath.Join(t.TempDir(), "x.yaml"), envOf(map[string]string{"DELAMAIN_DECISIONS_ENABLED": "talvez"}))
+	if err == nil || !strings.Contains(err.Error(), "DELAMAIN_DECISIONS_ENABLED") {
+		t.Fatalf("want error naming the bad variable, got %v", err)
+	}
+}
+
+func TestLoadShouldLetDecisionsModelEnvOverrideFile(t *testing.T) {
+	p := writeFile(t, "decisions:\n  provider:\n    model: typesafe/jev-2\n")
+	cfg, err := Load(p, envOf(map[string]string{"DELAMAIN_DECISIONS_MODEL": "typesafe/jev-3"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Decisions.Provider.Model != "typesafe/jev-3" {
+		t.Fatalf("DELAMAIN_DECISIONS_MODEL must win over the file, got %q", cfg.Decisions.Provider.Model)
+	}
+}

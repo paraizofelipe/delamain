@@ -494,15 +494,16 @@ func Load(path string, getenv func(string) string) (Config, error) {
 
 func applyEnv(cfg *Config, getenv func(string) string) error {
 	strs := map[string]*string{
-		"DELAMAIN_AGENT_HARNESS":  (*string)(&cfg.Agent.Harness),
-		"DELAMAIN_CLAUDE_MODEL":   &cfg.Claude.Model,
-		"DELAMAIN_HERDR_SESSION":  &cfg.Herdr.Session,
-		"DELAMAIN_OMP_MODEL":      &cfg.Omp.Model,
-		"DELAMAIN_OMP_AGENT_DIR":  &cfg.Omp.AgentDir,
-		"DELAMAIN_STATE_DIR":      &cfg.Paths.StateDir,
-		"DELAMAIN_PROMPTS_DIR":    &cfg.Paths.PromptsDir,
-		"DELAMAIN_LABEL_PREFIX":   &cfg.Forge.Labels.Prefix,
-		"DELAMAIN_NOTIFY_BACKEND": &cfg.Notify.Backend,
+		"DELAMAIN_AGENT_HARNESS":   (*string)(&cfg.Agent.Harness),
+		"DELAMAIN_CLAUDE_MODEL":    &cfg.Claude.Model,
+		"DELAMAIN_HERDR_SESSION":   &cfg.Herdr.Session,
+		"DELAMAIN_OMP_MODEL":       &cfg.Omp.Model,
+		"DELAMAIN_OMP_AGENT_DIR":   &cfg.Omp.AgentDir,
+		"DELAMAIN_STATE_DIR":       &cfg.Paths.StateDir,
+		"DELAMAIN_PROMPTS_DIR":     &cfg.Paths.PromptsDir,
+		"DELAMAIN_LABEL_PREFIX":    &cfg.Forge.Labels.Prefix,
+		"DELAMAIN_NOTIFY_BACKEND":  &cfg.Notify.Backend,
+		"DELAMAIN_DECISIONS_MODEL": &cfg.Decisions.Provider.Model,
 	}
 	for key, dst := range strs {
 		if v := getenv(key); v != "" {
@@ -510,9 +511,10 @@ func applyEnv(cfg *Config, getenv func(string) string) error {
 		}
 	}
 	bools := map[string]*bool{
-		"DELAMAIN_HERDR":          &cfg.Herdr.Enabled,
-		"DELAMAIN_REVIEW_ENABLED": &cfg.Review.Enabled,
-		"DELAMAIN_REVIEW_FIX":     &cfg.Review.Fix,
+		"DELAMAIN_HERDR":             &cfg.Herdr.Enabled,
+		"DELAMAIN_REVIEW_ENABLED":    &cfg.Review.Enabled,
+		"DELAMAIN_REVIEW_FIX":        &cfg.Review.Fix,
+		"DELAMAIN_DECISIONS_ENABLED": &cfg.Decisions.Enabled,
 	}
 	for key, dst := range bools {
 		v := getenv(key)
