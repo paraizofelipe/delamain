@@ -391,7 +391,7 @@ func (r *Runner) execute(ctx context.Context, ru *run, repo string, t Task) erro
 	ru.log.Info("gate commands", "run", ru.rec.ID, "stack", ru.stack.Name, "sources", ru.res.CommandSources)
 
 	feedback, digest, why := "", "", ""
-	seenBlockers, diverging := map[string]bool{}, 0
+	seen, diverging := newSeenBlockers(), 0
 	for iter := 1; iter <= ru.maxIter; iter++ {
 		it := Iteration{N: iter, Feedback: feedback}
 		ru.rec.Iteration, ru.res.Iterations = iter, iter
@@ -454,7 +454,7 @@ func (r *Runner) execute(ctx context.Context, ru *run, repo string, t Task) erro
 			return r.setState(ctx, ru, store.StateDeliver)
 		}
 		feedback, digest, why = reviewFeedback(review), prevReviewDigest(review), reviewReason(review)
-		if markBlockers(seenBlockers, review) {
+		if r.novelBlockers(ctx, ru, iter, seen, review) {
 			diverging++
 		} else {
 			diverging = 0
@@ -563,25 +563,6 @@ func (r *Runner) discardMinorPass(ctx context.Context, ru *run, head, reason str
 // time, not converging: the iterations cost full budget and the implementer never learns when it
 // is done. Run 12 of this repository burned five iterations that way.
 const divergingReviews = 3
-
-// markBlockers records the review's blocking findings and reports whether every one of them is
-// new to the run. Findings are compared by findingKey, not by message.
-func markBlockers(seen map[string]bool, r artifacts.Review) bool {
-	allNew := true
-	for _, a := range r.Axes {
-		for _, f := range a.Findings {
-			if !f.Blocking() {
-				continue
-			}
-			k := findingKey(a.Axis, f)
-			if seen[k] {
-				allNew = false
-			}
-			seen[k] = true
-		}
-	}
-	return allNew
-}
 
 // plannedFilesWarning is the plan size above which a phase is worth splitting: past it the review
 // grows a diff it cannot audit in one pass.
