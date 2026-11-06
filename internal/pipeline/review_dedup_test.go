@@ -19,13 +19,13 @@ import (
 	"github.com/paraizo/delamain/internal/store"
 )
 
-// dedupRunner is a Runner with the review_dedup point in mode and a decider giving answers, plus
-// a run whose log lands in the returned buffer.
-func dedupRunner(mode config.DecisionMode, threshold float64, answers map[string]decide.Answer) (*Runner, *run, *fakeDecider, *bytes.Buffer) {
+// dedupRunner is a Runner with the review_dedup point in mode, at threshold 0.85, and a decider
+// giving answers, plus a run whose log lands in the returned buffer.
+func dedupRunner(mode config.DecisionMode, answers map[string]decide.Answer) (*Runner, *run, *fakeDecider, *bytes.Buffer) {
 	d := &fakeDecider{res: decide.Result{Answers: answers, Model: "typesafe/jev-1.14"}}
 	cfg := config.Default()
 	cfg.Decisions.Enabled = true
-	cfg.Decisions.ReviewDedup = config.DecisionPoint{Mode: mode, Threshold: threshold}
+	cfg.Decisions.ReviewDedup = config.DecisionPoint{Mode: mode, Threshold: 0.85}
 	var log bytes.Buffer
 	l := slog.New(slog.NewTextHandler(&log, nil))
 	return &Runner{Cfg: cfg, Decider: d, Log: l}, &run{rec: store.Run{ID: 91}, log: l}, d, &log
@@ -42,7 +42,7 @@ func axisReview(axis string, fs ...artifacts.Finding) artifacts.Review {
 }
 
 func TestNovelBlockersShouldMatchMarkBlockersWhenPointIsOff(t *testing.T) {
-	r, ru, d, _ := dedupRunner(config.DecisionOff, 0.85, map[string]decide.Answer{"new_0": {Choice: "prev_0", Probabilities: map[string]float64{"prev_0": 1}}})
+	r, ru, d, _ := dedupRunner(config.DecisionOff, map[string]decide.Answer{"new_0": {Choice: "prev_0", Probabilities: map[string]float64{"prev_0": 1}}})
 	seen := newSeenBlockers()
 	for i, tc := range []struct {
 		review artifacts.Review
@@ -67,7 +67,7 @@ func TestNovelBlockersShouldMatchMarkBlockersWhenPointIsOff(t *testing.T) {
 }
 
 func TestNovelBlockersShouldNotConsultOnFirstReview(t *testing.T) {
-	r, ru, d, _ := dedupRunner(config.DecisionOn, 0.85, map[string]decide.Answer{"new_0": {Choice: "prev_0", Probabilities: map[string]float64{"prev_0": 1}}})
+	r, ru, d, _ := dedupRunner(config.DecisionOn, map[string]decide.Answer{"new_0": {Choice: "prev_0", Probabilities: map[string]float64{"prev_0": 1}}})
 	if !r.novelBlockers(context.Background(), ru, 1, newSeenBlockers(), axisReview("spec", blocker("a.go", "faltando", "falta Add"))) {
 		t.Fatal("the first review's blockers are all new")
 	}
@@ -77,7 +77,7 @@ func TestNovelBlockersShouldNotConsultOnFirstReview(t *testing.T) {
 }
 
 func TestNovelBlockersShouldNotConsultWhenAllBlockersAreKnownByKey(t *testing.T) {
-	r, ru, d, _ := dedupRunner(config.DecisionOn, 0.85, map[string]decide.Answer{"new_0": {Choice: "nenhum", Probabilities: map[string]float64{"nenhum": 1}}})
+	r, ru, d, _ := dedupRunner(config.DecisionOn, map[string]decide.Answer{"new_0": {Choice: "nenhum", Probabilities: map[string]float64{"nenhum": 1}}})
 	seen := newSeenBlockers()
 	r.novelBlockers(context.Background(), ru, 1, seen, axisReview("spec", blocker("a.go", "faltando", "falta Add")))
 	if r.novelBlockers(context.Background(), ru, 2, seen, axisReview("spec", blocker("a.go", "faltando", "Add ainda falta"))) {
@@ -111,7 +111,7 @@ func sentState(t *testing.T, req decide.Request) (previous, fresh []map[string]a
 }
 
 func TestNovelBlockersShouldTreatMatchedBlockerAsSeenInOnMode(t *testing.T) {
-	r, ru, d, log := dedupRunner(config.DecisionOn, 0.85, matchPrev0(0.9))
+	r, ru, d, log := dedupRunner(config.DecisionOn, matchPrev0(0.9))
 	seen := newSeenBlockers()
 	r.novelBlockers(context.Background(), ru, 1, seen, axisReview("spec", blocker("calc.go", "faltando", "Add(2,3) devolve -1")))
 	// Same problem, another file and category: the key differs, the model sees through it.
@@ -129,7 +129,7 @@ func TestNovelBlockersShouldTreatMatchedBlockerAsSeenInOnMode(t *testing.T) {
 }
 
 func TestNovelBlockersShouldAskOnlyBlockersNewByKeyInOneRequest(t *testing.T) {
-	r, ru, d, log := dedupRunner(config.DecisionOn, 0.85, map[string]decide.Answer{
+	r, ru, d, log := dedupRunner(config.DecisionOn, map[string]decide.Answer{
 		"new_0": {Choice: "nenhum", Probabilities: map[string]float64{"nenhum": 1}},
 		"new_1": {Choice: "nenhum", Probabilities: map[string]float64{"nenhum": 1}},
 	})
@@ -218,7 +218,7 @@ func twoReviews(r *Runner, ru *run) bool {
 }
 
 func TestNovelBlockersShouldOnlyLogInShadowMode(t *testing.T) {
-	r, ru, d, log := dedupRunner(config.DecisionShadow, 0.85, matchPrev0(0.9))
+	r, ru, d, log := dedupRunner(config.DecisionShadow, matchPrev0(0.9))
 	if !twoReviews(r, ru) {
 		t.Fatal("shadow never changes the outcome: the blocker is still new")
 	}
@@ -237,7 +237,7 @@ func TestNovelBlockersShouldOnlyLogInShadowMode(t *testing.T) {
 
 func TestNovelBlockersShouldKeepBlockerNewWhenChoiceIsNenhum(t *testing.T) {
 	for _, choice := range []string{"nenhum", "prev_9"} { // prev_9 was never sent: it counts as nenhum
-		r, ru, _, log := dedupRunner(config.DecisionOn, 0.85, map[string]decide.Answer{
+		r, ru, _, log := dedupRunner(config.DecisionOn, map[string]decide.Answer{
 			"new_0": {Choice: choice, Confidence: 0.99, Probabilities: map[string]float64{choice: 0.99}},
 		})
 		if !twoReviews(r, ru) {
@@ -250,21 +250,21 @@ func TestNovelBlockersShouldKeepBlockerNewWhenChoiceIsNenhum(t *testing.T) {
 }
 
 func TestNovelBlockersShouldKeepBlockerNewBelowThreshold(t *testing.T) {
-	r, ru, _, _ := dedupRunner(config.DecisionOn, 0.85, matchPrev0(0.84))
+	r, ru, _, _ := dedupRunner(config.DecisionOn, matchPrev0(0.84))
 	if !twoReviews(r, ru) {
 		t.Fatal("a match below the threshold is not trusted: the blocker is still new")
 	}
 }
 
 func TestNovelBlockersShouldMatchAtThreshold(t *testing.T) {
-	r, ru, _, _ := dedupRunner(config.DecisionOn, 0.85, matchPrev0(0.85))
+	r, ru, _, _ := dedupRunner(config.DecisionOn, matchPrev0(0.85))
 	if twoReviews(r, ru) {
 		t.Fatal("the threshold itself is a match: the blocker is already seen")
 	}
 }
 
 func TestNovelBlockersShouldFallBackToKeysWhenDeciderFails(t *testing.T) {
-	r, ru, d, log := dedupRunner(config.DecisionOn, 0.85, nil)
+	r, ru, d, log := dedupRunner(config.DecisionOn, nil)
 	d.err = errors.New("decide: status 503")
 	if !twoReviews(r, ru) {
 		t.Fatal("a failed decision keeps the identity by key: the blocker is new")
@@ -276,7 +276,7 @@ func TestNovelBlockersShouldFallBackToKeysWhenDeciderFails(t *testing.T) {
 	}
 
 	// new_0 matches, but new_1 got no answer: the whole review falls back to the keys.
-	r, ru, _, log = dedupRunner(config.DecisionOn, 0.85, matchPrev0(0.9))
+	r, ru, _, log = dedupRunner(config.DecisionOn, matchPrev0(0.9))
 	seen := newSeenBlockers()
 	r.novelBlockers(context.Background(), ru, 1, seen, axisReview("spec", blocker("calc.go", "faltando", "Add(2,3) devolve -1")))
 	if !r.novelBlockers(context.Background(), ru, 2, seen, axisReview("spec", blocker("calc_test.go", "quebrado", "a soma não dá 5"), blocker("sub.go", "faltando", "falta Sub"))) {
@@ -296,7 +296,7 @@ func TestNovelBlockersShouldFallBackToKeysWhenDeciderFails(t *testing.T) {
 // blocker new by key, and returns the request the second sent.
 func dedupRequest(t *testing.T, n int, message string) decide.Request {
 	t.Helper()
-	r, ru, d, _ := dedupRunner(config.DecisionOn, 0.85, map[string]decide.Answer{"new_0": {Choice: "nenhum", Probabilities: map[string]float64{"nenhum": 1}}})
+	r, ru, d, _ := dedupRunner(config.DecisionOn, map[string]decide.Answer{"new_0": {Choice: "nenhum", Probabilities: map[string]float64{"nenhum": 1}}})
 	var fs []artifacts.Finding
 	for i := range n {
 		fs = append(fs, blocker(fmt.Sprintf("f%03d.go", i), "faltando", message))
@@ -351,7 +351,7 @@ func TestNovelBlockersStateShouldKeepAtMost254PreviousAndStayUnder32000Bytes(t *
 }
 
 func TestNovelBlockersShouldNotConsultWhenNoPreviousFitsTheState(t *testing.T) {
-	r, ru, d, _ := dedupRunner(config.DecisionOn, 0.85, matchPrev0(0.9))
+	r, ru, d, _ := dedupRunner(config.DecisionOn, matchPrev0(0.9))
 	seen := newSeenBlockers()
 	r.novelBlockers(context.Background(), ru, 1, seen, axisReview("spec", blocker("calc.go", "faltando", "Add(2,3) devolve -1")))
 	// Twelve new blockers of 500 escaped "<" fill the state alone: no previous is left to compare with.
