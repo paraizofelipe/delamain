@@ -181,3 +181,73 @@ func TestExecuteShouldRetryWhenFlakyPlusInfraEqualsThreshold(t *testing.T) {
 			res.Outcome, res.Iterations, d.calls(), hs.h.checkRuns["test"])
 	}
 }
+
+// flakyOn turns the checks point on with a decider sure that every failure is flaky.
+func flakyOn(hs *harness) *fakeDecider {
+	return withChecks(hs, config.DecisionOn, 0.8, map[string]decide.Answer{
+		"check_0": cause(0.9, 0.1), "check_1": cause(0.9, 0.1), "check_2": cause(0.9, 0.1),
+	})
+}
+
+func TestExecuteShouldNotConsultDeciderWhenAGitGateFailed(t *testing.T) {
+	hs := newHarness(t, func(role string, n int, text string) reply {
+		if role == "implementer" && n == 1 {
+			return reply{write: implJSON, mutate: func(g *fakeGit) {
+				fixAdd(g)
+				g.status = "?? scratch.txt"
+			}}
+		}
+		return happy(role, n, text)
+	})
+	hs.h.checks = failOnRuns("test", 1)
+	d := flakyOn(hs)
+	res := hs.run(t)
+
+	if c, ok := checkNamed(res.History[0], "worktree-limpa"); !ok || c.Passed() {
+		t.Fatalf("worktree-limpa = %+v, want a failure", c)
+	}
+	if d.calls() != 0 || hs.h.checkRuns["test"] != 2 || res.Iterations != 2 {
+		t.Fatalf("a git gate never asks nor retries: calls=%d test runs=%d iterations=%d", d.calls(), hs.h.checkRuns["test"], res.Iterations)
+	}
+}
+
+func TestExecuteShouldNotConsultDeciderWhenSecretsGateFailed(t *testing.T) {
+	hs := newHarness(t, happy)
+	hs.r.LookPath = func(string) (string, error) { return "/usr/bin/gitleaks", nil }
+	hs.h.checks = func(name string, n int) int {
+		if (name == "secrets" || name == "test") && n == 1 {
+			return 1
+		}
+		return defaultChecks(name, n)
+	}
+	d := flakyOn(hs)
+	res := hs.run(t)
+
+	if c, ok := checkNamed(res.History[0], "segredos"); !ok || c.Passed() {
+		t.Fatalf("segredos = %+v, want a failure", c)
+	}
+	if d.calls() != 0 || hs.h.checkRuns["test"] != 2 || hs.h.checkRuns["secrets"] != 2 || res.Iterations != 2 {
+		t.Fatalf("a secrets failure never asks nor retries: calls=%d test=%d secrets=%d iterations=%d",
+			d.calls(), hs.h.checkRuns["test"], hs.h.checkRuns["secrets"], res.Iterations)
+	}
+}
+
+func TestExecuteShouldNotConsultDeciderWhenRedProofFailed(t *testing.T) {
+	hs := newHarness(t, happy)
+	hs.h.checks = func(name string, n int) int {
+		if name == "redproof" && n == 1 {
+			return 0 // the new tests pass on base: the red proof fails
+		}
+		return defaultChecks(name, n)
+	}
+	d := flakyOn(hs)
+	res := hs.run(t)
+
+	if c, ok := checkNamed(res.History[0], "prova-vermelho"); !ok || c.Passed() {
+		t.Fatalf("prova-vermelho = %+v, want a failure", c)
+	}
+	if d.calls() != 0 || hs.h.checkRuns["redproof"] != 2 || res.Iterations != 2 {
+		t.Fatalf("a red proof failure never asks nor retries: calls=%d redproof runs=%d iterations=%d",
+			d.calls(), hs.h.checkRuns["redproof"], res.Iterations)
+	}
+}

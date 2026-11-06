@@ -3,9 +3,14 @@ package pipeline
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"github.com/paraizo/delamain/internal/decide"
 )
+
+// checkCommands are the checks commandChecks runs: the only ones whose failure may be classified.
+// A failed git gate, matriz-criterios, segredos or prova-vermelho never asks nor retries.
+var checkCommands = []string{"format", "lint", "typecheck", "test"}
 
 // checkState is one failed check as the checks decision reads it.
 type checkState struct {
@@ -42,9 +47,13 @@ func checkCause(name string) decide.Choice {
 func (r *Runner) retryChecks(ctx context.Context, ru *run, iter int, cs []CheckResult) bool {
 	var failed []CheckResult
 	for _, c := range cs {
-		if !c.Passed() && !c.Skipped {
-			failed = append(failed, c)
+		if c.Passed() || c.Skipped {
+			continue
 		}
+		if !slices.Contains(checkCommands, c.Name) {
+			return false
+		}
+		failed = append(failed, c)
 	}
 	if len(failed) == 0 {
 		return false
