@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/paraizo/delamain/internal/config"
 	"github.com/paraizo/delamain/internal/decide"
@@ -222,5 +223,24 @@ func TestRunShouldProceedWhenTriageAnswerIsMissing(t *testing.T) {
 	}
 	if !strings.Contains(log.String(), `msg="decision skipped"`) || !strings.Contains(log.String(), "point=triage") {
 		t.Fatalf("the missing answer is logged as a skip:\n%s", log.String())
+	}
+}
+
+func TestRunShouldTruncateTriageBodyTo24000BytesOnRuneBoundary(t *testing.T) {
+	hs := newHarness(t, happy)
+	d := withTriage(hs, config.DecisionShadow, 1)
+	// 23999 ASCII bytes put the first byte of a 2-byte rune at 24000: a byte cut would split it.
+	hs.task.Body += "\n" + strings.Repeat("a", 23999-len(hs.task.Body)-1) + strings.Repeat("é", 100)
+	hs.run(t)
+
+	if d.calls() != 1 {
+		t.Fatalf("the decider is asked once, got %d", d.calls())
+	}
+	body, _ := d.requests[0].State["body"].(string)
+	if len(body) > 24000 || len(body) == 0 || !utf8.ValidString(body) || !strings.HasPrefix(hs.task.Body, body) {
+		t.Fatalf("body must be a valid prefix of at most 24000 bytes: len=%d valid=%v", len(body), utf8.ValidString(body))
+	}
+	if len(body) != 23999 {
+		t.Fatalf("the cut keeps every whole rune that fits: len=%d", len(body))
 	}
 }
