@@ -346,7 +346,7 @@ const (
 )
 
 // DefaultDecisionsAPIKeyEnv names the variable holding the decisions provider key.
-const DefaultDecisionsAPIKeyEnv = "DELAMAIN_DECISIONS_API_KEY"
+const DefaultDecisionsAPIKeyEnv = "DELAMAIN_DECISIONS_API_KEY" //nolint:gosec // a variable name, not a secret
 
 // Decisions configures the fast decisions (Jev via the OpenRouter Decisions API) between pipeline stages.
 type Decisions struct {
