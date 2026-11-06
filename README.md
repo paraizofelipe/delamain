@@ -36,3 +36,42 @@ Antes de rodar uma issue, o delamain confere se ela depende de outra que ainda e
 - Declare só as dependências diretas: a espera em cadeia já sai delas.
 - Nunca use um épico como dependência: ele só fecha depois das suas issues, então elas esperariam para sempre.
 - Evite ciclos: duas issues que dependem uma da outra nunca rodam.
+
+## Decisões (opcional)
+
+Entre um estágio e outro, o pipeline pode fazer perguntas rápidas e tipadas a um modelo de decisão (Jev, pela Decisions API da OpenRouter). Esse modelo não substitui os agentes: ele só responde se uma condição vale ou qual opção escolher. Quando a decisão falha ou não chega a tempo, vale a regra de hoje. A camada vem desligada.
+
+```yaml
+decisions:
+  enabled: false
+  provider:
+    base_url: https://openrouter.ai/api
+    api_key_env: DELAMAIN_DECISIONS_API_KEY
+    model: typesafe/jev-1.14
+    timeout: 2s
+  triage:       { mode: shadow, threshold: 0.3 }
+  checks:       { mode: off,    threshold: 0.8 }
+  review_dedup: { mode: off,    threshold: 0.85 }
+```
+
+**Modos.** Cada ponto de decisão tem o seu:
+
+- `off`: o ponto não pergunta nada;
+- `shadow`: o ponto pergunta e registra a resposta no log, mas a run segue a regra de hoje;
+- `on`: a resposta decide, comparada ao `threshold` do ponto.
+
+**Pontos.** Hoje só `triage` está implementado. Antes de a run começar, ele pergunta se a issue tem objetivo concreto e critérios de aceite verificáveis. Em `on`, uma issue com resposta abaixo do `threshold` termina em `needs_info`, com a label `needs-info` e um comentário pedindo o escopo e os critérios. `checks` e `review_dedup` já aceitam configuração, mas ainda não perguntam nada.
+
+**Chave.** Use uma chave OpenRouter **dedicada**, com limite de gasto, na variável nomeada em `api_key_env`. A chave nunca vai no YAML e é apagada do ambiente dos agentes. Com `enabled: true` e a variável vazia, a run não inicia: `delamain run` e o daemon falham na partida, citando o nome da variável. No daemon, a variável precisa estar no ambiente do processo.
+
+**Overrides.** `DELAMAIN_DECISIONS_ENABLED` liga ou desliga a camada, e `DELAMAIN_DECISIONS_MODEL` troca o modelo.
+
+**Calibração.** Deixe o ponto em `shadow` e compare os logs `decision point=triage ...` com o desfecho das runs. Ajuste o `threshold` e só então mude o ponto para `on`.
+
+**Doctor.** `delamain doctor` mostra o check `decisions`: `disabled` quando a camada está desligada, falha quando a chave falta, e uma chamada mínima ao provedor quando ela está presente.
+
+**Teste de contrato.** O teste contra a API real é opt-in:
+
+```sh
+DELAMAIN_IT_DECISIONS_MODEL=typesafe/jev-1.14 DELAMAIN_DECISIONS_API_KEY=... go test ./internal/decide/ -run Integration -v
+```
