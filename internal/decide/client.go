@@ -61,7 +61,7 @@ type question struct {
 type answer struct {
 	Type          string             `json:"type"`
 	Noul          *float64           `json:"noul"`
-	Choice        string             `json:"choice"`
+	Choice        *string            `json:"choice"`
 	Confidence    float64            `json:"confidence"`
 	Probabilities map[string]float64 `json:"probabilities"`
 }
@@ -188,9 +188,11 @@ func (c *Client) choice(name string, ch Choice, answers map[string]answer) (Answ
 		return Answer{}, c.invalid(name, "no answer")
 	case a.Type != "choice":
 		return Answer{}, c.invalid(name, fmt.Sprintf("answered as %q, want choice", a.Type))
+	case a.Choice == nil:
+		return Answer{}, c.invalid(name, "choice has no value")
 	}
-	if _, ok := ch.Options[a.Choice]; !ok {
-		return Answer{}, c.invalid(name, fmt.Sprintf("choice %q is not among the options", a.Choice))
+	if _, ok := ch.Options[*a.Choice]; !ok {
+		return Answer{}, c.invalid(name, fmt.Sprintf("choice %q is not among the options", *a.Choice))
 	}
 	if a.Confidence < 0 || a.Confidence > 1 {
 		return Answer{}, c.invalid(name, fmt.Sprintf("confidence %v is outside [0,1]", a.Confidence))
@@ -203,7 +205,7 @@ func (c *Client) choice(name string, ch Choice, answers map[string]answer) (Answ
 			return Answer{}, c.invalid(name, fmt.Sprintf("probability %v of %q is outside [0,1]", p, opt))
 		}
 	}
-	return Answer{Choice: a.Choice, Confidence: a.Confidence, Probabilities: a.Probabilities}, nil
+	return Answer{Choice: *a.Choice, Confidence: a.Confidence, Probabilities: a.Probabilities}, nil
 }
 
 // invalid is the error of an answer that breaks the request it answers.

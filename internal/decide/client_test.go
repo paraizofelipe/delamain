@@ -393,9 +393,11 @@ func TestDecideShouldRejectChoiceNotAmongOptions(t *testing.T) {
 
 func TestDecideShouldRejectMissingAnswer(t *testing.T) {
 	cases := map[string]struct{ old, new, question string }{
-		"noul not answered":   {`"is_bug": { "type": "noul", "noul": 0.96 },`, ``, "is_bug"},
-		"choice not answered": {`"team": { "type": "choice"`, `"other": { "type": "choice"`, "team"},
-		"noul without value":  {`"type": "noul", "noul": 0.96`, `"type": "noul"`, "is_bug"},
+		"noul not answered":    {`"is_bug": { "type": "noul", "noul": 0.96 },`, ``, "is_bug"},
+		"choice not answered":  {`"team": { "type": "choice"`, `"other": { "type": "choice"`, "team"},
+		"noul without value":   {`"type": "noul", "noul": 0.96`, `"type": "noul"`, "is_bug"},
+		"choice without value": {`"choice": "payments", `, ``, "team"},
+		"choice null":          {`"choice": "payments"`, `"choice": null`, "team"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
