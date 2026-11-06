@@ -15,6 +15,7 @@ import (
 
 	"github.com/paraizo/delamain/internal/agent"
 	"github.com/paraizo/delamain/internal/budget"
+	"github.com/paraizo/delamain/internal/decide"
 	"github.com/paraizo/delamain/internal/forge"
 	"github.com/paraizo/delamain/internal/gitx"
 	"github.com/paraizo/delamain/internal/herdr"
@@ -681,4 +682,26 @@ func (n *fakeNotifier) of(e notify.Event) ([]notify.Message, []int) {
 		}
 	}
 	return out, seen
+}
+
+// fakeDecider records every decision request and answers with res or err.
+type fakeDecider struct {
+	mu       sync.Mutex
+	requests []decide.Request
+	res      decide.Result
+	err      error
+}
+
+func (d *fakeDecider) Decide(_ context.Context, req decide.Request) (decide.Result, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.requests = append(d.requests, req)
+	return d.res, d.err
+}
+
+// calls returns how many requests the decider got.
+func (d *fakeDecider) calls() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return len(d.requests)
 }

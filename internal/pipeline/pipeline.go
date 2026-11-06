@@ -22,6 +22,7 @@ import (
 	"github.com/paraizo/delamain/internal/budget"
 	"github.com/paraizo/delamain/internal/complexity"
 	"github.com/paraizo/delamain/internal/config"
+	"github.com/paraizo/delamain/internal/decide"
 	"github.com/paraizo/delamain/internal/forge"
 	"github.com/paraizo/delamain/internal/gates"
 	"github.com/paraizo/delamain/internal/gitx"
@@ -158,6 +159,8 @@ type Runner struct {
 	// Created is called once an issue run is recorded, before any of its work: the queue lets the
 	// issue go only then, so a run that never got recorded leaves it queued. nil does nothing.
 	Created func(ctx context.Context, rec store.Run)
+	// Decider answers the decision points; nil behaves as decide.Off.
+	Decider decide.Decider
 }
 
 // halt is a guardrail stop: the run is recorded with this reason instead of failing the process.
@@ -215,6 +218,11 @@ func (r *Runner) Run(ctx context.Context, t Task) (Result, error) {
 	problems := t.Preflight()
 	if len(problems) == 0 {
 		problems = r.blockers(ctx, t)
+	}
+	if len(problems) == 0 {
+		if p := r.triage(ctx, t); p != "" {
+			problems = []string{p}
+		}
 	}
 	if len(problems) > 0 {
 		res.Outcome, res.Reason = OutcomeNeedsInfo, strings.Join(problems, "; ")
