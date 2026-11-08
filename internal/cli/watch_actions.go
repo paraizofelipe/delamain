@@ -9,12 +9,10 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/aymanbagabas/go-osc52/v2"
@@ -24,7 +22,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/paraizo/delamain/internal/config"
-	"github.com/paraizo/delamain/internal/pipeline"
+	"github.com/paraizo/delamain/internal/control"
 	"github.com/paraizo/delamain/internal/store"
 )
 
@@ -45,10 +43,10 @@ type watchActions interface {
 	// Copy puts text in the clipboard of the terminal.
 	Copy(text string) error
 	// StartIssue is `delamain run --issue issue --repo repo`, detached from the TUI: it waits for
-	// the run to end, and an exit code other than 0 comes back as a startIssueExit.
+	// the run to end, and an exit code other than 0 comes back as a control.StartExit.
 	StartIssue(repo string, issue int) error
 	// StartReview is `delamain review --pr pr --repo repo`, detached from the TUI: it waits for
-	// the review to end, and an exit code other than 0 comes back as a startReviewExit.
+	// the review to end, and an exit code other than 0 comes back as a control.StartExit.
 	StartReview(repo string, pr int) error
 }
 
@@ -575,8 +573,8 @@ type storeWatchActions struct {
 	opener string    // the command that opens a URL in the browser
 	out    io.Writer // the terminal, for OSC 52
 	tmux   bool      // OSC 52 goes through tmux
-	// executable is the binary StartIssue runs: os.Executable, the delamain of this watch.
-	executable func() (string, error)
+	// launcher starts the runs and reviews of StartIssue and StartReview: this watch's delamain.
+	launcher control.Launcher
 }
 
 func newStoreWatchActions(ctx context.Context, cfg config.Config, st *store.Store, out io.Writer) *storeWatchActions {
@@ -584,13 +582,13 @@ func newStoreWatchActions(ctx context.Context, cfg config.Config, st *store.Stor
 	// The TUI owns the terminal: the logs of a recover would be drawn over the screen it holds.
 	quiet := slog.New(slog.DiscardHandler)
 	return &storeWatchActions{
-		ctx:        ctx,
-		cancel:     cancel,
-		stop:       newStopper(cfg, st, true, 0, quiet),
-		opener:     browserOpener(),
-		out:        out,
-		tmux:       os.Getenv("TMUX") != "",
-		executable: os.Executable,
+		ctx:      ctx,
+		cancel:   cancel,
+		stop:     newStopper(cfg, st, true, 0, quiet),
+		opener:   browserOpener(),
+		out:      out,
+		tmux:     os.Getenv("TMUX") != "",
+		launcher: control.Launcher{StateDir: cfg.Paths.StateDir},
 	}
 }
 
@@ -666,51 +664,15 @@ func (a *storeWatchActions) Copy(text string) error {
 // It takes neither the mutex nor the context of the actions: close would wait for a run that
 // takes hours, or kill it. Quitting the watch leaves the run going, as the daemon's runs do.
 func (a *storeWatchActions) StartIssue(repo string, issue int) error {
-	path, err := a.launch(fmt.Sprintf("issue-%d", issue), func(exe string, log *os.File) *exec.Cmd {
-		return launchCmd(exe, repo, issue, log)
-	})
-	if ee, ok := errors.AsType[*exec.ExitError](err); ok {
-		return startIssueExit{issue: issue, code: ee.ExitCode(), log: path}
-	}
+	_, err := a.launcher.StartIssue(repo, issue)
 	return err
 }
 
 // StartReview runs `delamain review --pr pr --repo repo` as StartIssue runs an issue, writing to
 // <state_dir>/launch/<unix time>-review-<pr>.log, and waits for it to end.
 func (a *storeWatchActions) StartReview(repo string, pr int) error {
-	path, err := a.launch(fmt.Sprintf("review-%d", pr), func(exe string, log *os.File) *exec.Cmd {
-		return reviewCmd(exe, repo, pr, log)
-	})
-	if ee, ok := errors.AsType[*exec.ExitError](err); ok {
-		return startReviewExit{pr: pr, code: ee.ExitCode(), log: path}
-	}
+	_, err := a.launcher.StartReview(repo, pr)
 	return err
-}
-
-// launch starts the command build makes of the binary of this watch and a new log,
-// <state_dir>/launch/<unix time>-<name>.log, and waits for it to end: the path of the log, and
-// the *exec.ExitError of an exit code other than 0.
-func (a *storeWatchActions) launch(name string, build func(exe string, log *os.File) *exec.Cmd) (string, error) {
-	exe, err := a.executable()
-	if err != nil {
-		return "", err
-	}
-	dir := filepath.Join(a.stop.cfg.Paths.StateDir, "launch")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", err
-	}
-	path := filepath.Join(dir, fmt.Sprintf("%d-%s.log", time.Now().Unix(), name))
-	log, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600) //nolint:gosec // inside the state dir
-	if err != nil {
-		return "", err
-	}
-	cmd := build(exe, log)
-	err = cmd.Start()
-	_ = log.Close() // the run holds its own descriptor
-	if err != nil {
-		return path, err
-	}
-	return path, cmd.Wait()
 }
 
 // close releases what the stops opened: the notifier of the recover. Cancelling first ends an
@@ -720,54 +682,4 @@ func (a *storeWatchActions) close() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.stop.close()
-}
-
-// startIssueExit is a run started by StartIssue that exited with code: log is what it wrote.
-type startIssueExit struct {
-	issue, code int
-	log         string
-}
-
-// Error says what the code means to `delamain run`, and where its log is.
-func (e startIssueExit) Error() string {
-	switch e.code {
-	case exitNoSlot:
-		return fmt.Sprintf("issue #%d not started: %v; see %s", e.issue, errNoSlot, e.log)
-	case outcomeExit[pipeline.OutcomeNeedsInfo]:
-		return fmt.Sprintf("issue #%d needs more information (exit %d); see %s", e.issue, e.code, e.log)
-	}
-	return fmt.Sprintf("issue #%d failed: exit %d; see %s", e.issue, e.code, e.log)
-}
-
-// launchCmd is `exe run --issue issue --repo repo`, with no shell: the repo is one argument
-// whatever it holds.
-func launchCmd(exe, repo string, issue int, log *os.File) *exec.Cmd {
-	return detachedCmd(exe, log, "run", "--issue", strconv.Itoa(issue), "--repo", repo)
-}
-
-// reviewCmd is `exe review --pr pr --repo repo`, with no shell, as launchCmd.
-func reviewCmd(exe, repo string, pr int, log *os.File) *exec.Cmd {
-	return detachedCmd(exe, log, "review", "--pr", strconv.Itoa(pr), "--repo", repo)
-}
-
-// detachedCmd is exe with args, an argument list with no shell. It reads nothing, writes to log
-// alone and starts a session of its own, so the hangup of the terminal of the watch does not
-// reach it.
-func detachedCmd(exe string, log *os.File, args ...string) *exec.Cmd {
-	cmd := exec.Command(exe, args...) //nolint:gosec // an argument list, no shell
-	cmd.Stdout, cmd.Stderr = log, log
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	return cmd
-}
-
-// startReviewExit is a review started by StartReview that exited with code: log is what it wrote.
-type startReviewExit struct {
-	pr, code int
-	log      string
-}
-
-// Error says the review failed, and where its log is: `delamain review` has no exit code with a
-// meaning of its own.
-func (e startReviewExit) Error() string {
-	return fmt.Sprintf("review of PR #%d failed: exit %d; see %s", e.pr, e.code, e.log)
 }

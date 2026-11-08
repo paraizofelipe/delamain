@@ -19,6 +19,14 @@ var (
 	ErrOutsideState  = errors.New("run directory is outside the state dir")
 	// ErrNoRunner means the host gave no NewRunner, so an orphan cannot be recovered here.
 	ErrNoRunner = errors.New("no runner to recover an orphaned run")
+	// ErrRunActive refuses a start while a run of the same issue or PR is active.
+	ErrRunActive = errors.New("a run is already active")
+	// ErrRepoNotAllowed refuses a repository outside daemon.repos and api.repos.
+	ErrRepoNotAllowed = errors.New("repository not allowed")
+	// ErrReviewDisabled refuses a review while review.enabled is off.
+	ErrReviewDisabled = errors.New("reviews are disabled (review.enabled)")
+	// ErrInvalid is an argument that makes no sense, such as issue 0.
+	ErrInvalid = errors.New("invalid argument")
 )
 
 // RunError is an action refused on one run: Err says why, the other fields what the message
@@ -29,6 +37,7 @@ type RunError struct {
 	OwnerPID int            // the alive owner, for ErrOwnerAlive
 	Worktree string         // the worktree at issue, for ErrDirtyWorktree and ErrWorktreeInUse
 	UsedBy   int64          // the run using the worktree, for ErrWorktreeInUse
+	Ref      string         // the issue or PR, for ErrRunActive
 	Err      error
 }
 
@@ -48,6 +57,8 @@ func (e *RunError) Error() string {
 		return fmt.Sprintf("worktree %s %v", e.Worktree, e.Err)
 	case errors.Is(e.Err, ErrWorktreeInUse):
 		return fmt.Sprintf("worktree %s is in use by run %d (%s)", e.Worktree, e.UsedBy, e.State)
+	case errors.Is(e.Err, ErrRunActive):
+		return fmt.Sprintf("%s already has an active run: %d (%s)", e.Ref, e.ID, e.State)
 	}
 	return fmt.Sprintf("run %d: %v", e.ID, e.Err)
 }

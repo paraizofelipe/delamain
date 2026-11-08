@@ -6,6 +6,7 @@ package control
 import (
 	"context"
 	"sync"
+	"time"
 
 	"github.com/paraizo/delamain/internal/config"
 	"github.com/paraizo/delamain/internal/forge"
@@ -27,6 +28,14 @@ type Deps struct {
 	Alive func(pid int) bool
 	// Git runs git; the zero value runs the git on PATH.
 	Git gitx.Git
+	// Launcher starts runs and reviews; nil means one on Cfg's state dir running this binary.
+	Launcher *Launcher
+	// Operations is where the asynchronous actions report; nil means a new registry.
+	Operations *Operations
+	// Context bounds the asynchronous actions; nil means context.Background().
+	Context context.Context //nolint:containedctx // the lifetime of the host, not of a call
+	// RunIDPoll and RunIDWait pace the discovery of the run a launch created; zero means the defaults.
+	RunIDPoll, RunIDWait time.Duration
 }
 
 // Actions performs the shared actions on the store of Deps.
@@ -43,6 +52,21 @@ func New(d Deps) *Actions {
 	}
 	if d.Git.Binary == "" {
 		d.Git = gitx.New()
+	}
+	if d.Launcher == nil {
+		d.Launcher = &Launcher{StateDir: d.Cfg.Paths.StateDir}
+	}
+	if d.Operations == nil {
+		d.Operations = NewOperations()
+	}
+	if d.Context == nil {
+		d.Context = context.Background()
+	}
+	if d.RunIDPoll <= 0 {
+		d.RunIDPoll = runIDPoll
+	}
+	if d.RunIDWait <= 0 {
+		d.RunIDWait = runIDWait
 	}
 	return &Actions{d: d}
 }
