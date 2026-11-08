@@ -164,6 +164,9 @@ func (s *Server) routes(mux *http.ServeMux) {
 	s.readRoutes(mux)
 	s.logRoutes(mux)
 	s.eventRoutes(mux)
+	if s.acts != nil { // a server built to read only has no action routes
+		s.actionRoutes(mux)
+	}
 }
 
 // serveMux serves mux, answering what matches nothing with a problem instead of plain text.

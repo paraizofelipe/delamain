@@ -61,7 +61,7 @@ func TestEventsShouldOpenWithTheFullStateThenPushOnlyWhatChanged(t *testing.T) {
 	if st.res.StatusCode != http.StatusOK || st.res.Header.Get("Content-Type") != "text/event-stream" {
 		t.Fatalf("stream: %d %v", st.res.StatusCode, st.res.Header)
 	}
-	first := st.next(t, 4, 5*time.Second)
+	first := st.next(t, 4)
 	if names(first) != "hello,runs,queue,status" {
 		t.Fatalf("the opening burst: %s", names(first))
 	}
@@ -85,32 +85,32 @@ func TestEventsShouldOpenWithTheFullStateThenPushOnlyWhatChanged(t *testing.T) {
 	}
 
 	src.setRun(2, func(r *board.Run) { r.State, r.Iteration = "verify", 2 })
-	ev := st.next(t, 1, 5*time.Second)[0]
+	ev := st.next(t, 1)[0]
 	if ev.Name != "run" || !strings.Contains(ev.Data, `"id":2`) || !strings.Contains(ev.Data, `"state":"verify"`) || !strings.Contains(ev.Data, `"column":"verify"`) {
 		t.Fatalf("a changed run is pushed alone: %+v", ev)
 	}
 
 	src.removeRun(4)
-	ev = st.next(t, 1, 5*time.Second)[0]
+	ev = st.next(t, 1)[0]
 	if ev.Name != "run_removed" || ev.Data != `{"id":4}` {
 		t.Fatalf("a run that left the window: %+v", ev)
 	}
 
 	src.setQueue(nil)
-	ev = st.next(t, 1, 5*time.Second)[0]
+	ev = st.next(t, 1)[0]
 	if ev.Name != "queue" || ev.Data != `{"items":[]}` {
 		t.Fatalf("the whole queue when it changes: %+v", ev)
 	}
 
 	src.setStatus(board.Status{Daemon: false, SlotsMax: 3, TodayLevel: "ok"})
-	ev = st.next(t, 1, 5*time.Second)[0]
+	ev = st.next(t, 1)[0]
 	if ev.Name != "status" || !strings.Contains(ev.Data, `"daemon":false`) {
 		t.Fatalf("the status when it changes: %+v", ev)
 	}
 
 	// A second stream gets the current state, not the diffs the first one saw.
 	second := ts.openStream(t, "/api/v1/events")
-	burst := second.next(t, 4, 5*time.Second)
+	burst := second.next(t, 4)
 	if names(burst) != "hello,runs,queue,status" || !strings.Contains(burst[1].Data, `"state":"verify"`) || strings.Contains(burst[1].Data, `"id":4`) {
 		t.Fatalf("second stream: %s %s", names(burst), burst[1].Data)
 	}
@@ -120,11 +120,11 @@ func TestEventsShouldReportAReloadThatFails(t *testing.T) {
 	src := &fakeSource{runs: sampleRuns(t.TempDir())}
 	ts := newTestServer(t, src)
 	st := ts.openStream(t, "/api/v1/events")
-	st.next(t, 4, 5*time.Second)
+	st.next(t, 4)
 	src.mu.Lock()
 	src.err = http.ErrAbortHandler
 	src.mu.Unlock()
-	ev := st.next(t, 1, 5*time.Second)[0]
+	ev := st.next(t, 1)[0]
 	if ev.Name != "problem" || !strings.Contains(ev.Data, codeInternal) {
 		t.Fatalf("a failing reload is a problem event: %+v", ev)
 	}
@@ -141,9 +141,9 @@ func TestEventsShouldDropASlowSubscriberWithoutBlockingTheOthers(t *testing.T) {
 	src := &fakeSource{runs: sampleRuns(t.TempDir())}
 	ts := newTestServer(t, src)
 	slow := ts.openStream(t, "/api/v1/events")
-	slow.next(t, 4, 5*time.Second)
+	slow.next(t, 4)
 	fast := ts.openStream(t, "/api/v1/events")
-	fast.next(t, 4, 5*time.Second)
+	fast.next(t, 4)
 
 	// The slow stream's goroutine keeps reading into its channel, so fill it by stopping the read:
 	// close its body and make changes until the hub notices it fell behind.
@@ -152,7 +152,7 @@ func TestEventsShouldDropASlowSubscriberWithoutBlockingTheOthers(t *testing.T) {
 		src.setRun(2, func(r *board.Run) { r.Iteration = i + 10 })
 		time.Sleep(25 * time.Millisecond)
 	}
-	got := fast.next(t, 1, 5*time.Second)
+	got := fast.next(t, 1)
 	if got[0].Name != "run" {
 		t.Fatalf("the fast stream keeps getting events: %+v", got)
 	}
@@ -184,7 +184,7 @@ func TestHubShouldForgetTheStateWhenNoStreamIsOpen(t *testing.T) {
 	src := &fakeSource{runs: sampleRuns(t.TempDir())}
 	ts := newTestServer(t, src)
 	st := ts.openStream(t, "/api/v1/events")
-	st.next(t, 4, 5*time.Second)
+	st.next(t, 4)
 	_ = st.res.Body.Close()
 	deadline := time.Now().Add(5 * time.Second)
 	for {

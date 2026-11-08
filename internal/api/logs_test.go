@@ -157,11 +157,11 @@ func (ts *testServer) openStream(t *testing.T, path string) *sseStream {
 	return st
 }
 
-// next waits for want more events.
-func (st *sseStream) next(t *testing.T, want int, timeout time.Duration) []sseEvent {
+// next waits up to five seconds for want more events.
+func (st *sseStream) next(t *testing.T, want int) []sseEvent {
 	t.Helper()
 	var out []sseEvent
-	deadline := time.After(timeout)
+	deadline := time.After(5 * time.Second)
 	for len(out) < want {
 		select {
 		case ev := <-st.events:
@@ -197,18 +197,18 @@ func TestLogStreamShouldPushLinesThenEndWhenTheRunFinishes(t *testing.T) {
 	if res.StatusCode != http.StatusOK || res.Header.Get("Content-Type") != "text/event-stream" || res.Header.Get("X-Accel-Buffering") != "no" || res.Header.Get("Cache-Control") != "no-store" {
 		t.Fatalf("stream headers: %d %v", res.StatusCode, res.Header)
 	}
-	first := st.next(t, 1, 5*time.Second)
+	first := st.next(t, 1)
 	if first[0].Name != "log" || !strings.Contains(first[0].Data, "state=plan") || !strings.Contains(first[0].Data, `"cursor":"`) {
 		t.Fatalf("the existing lines come first: %+v", first)
 	}
 	appendLog(t, dir, "checks", "10:00:01 ▶ test: go test\nok\n")
-	next := st.next(t, 1, 5*time.Second)
+	next := st.next(t, 1)
 	if next[0].Name != "log" || !strings.Contains(next[0].Data, `"source":"checks"`) || strings.Count(next[0].Data, `"text"`) != 2 {
 		t.Fatalf("appended lines are pushed: %+v", next)
 	}
 	appendLog(t, dir, "delamain", "10:00:02 delivered")
 	src.finish(2)
-	last := st.next(t, 2, 5*time.Second)
+	last := st.next(t, 2)
 	if last[0].Name != "log" || !strings.Contains(last[0].Data, "delivered") || last[1].Name != "end" || !strings.Contains(last[1].Data, `"cursor":"`) {
 		t.Fatalf("the last line is flushed and end closes the stream: %+v", last)
 	}
