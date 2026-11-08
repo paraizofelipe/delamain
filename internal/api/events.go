@@ -214,7 +214,7 @@ func mustJSON(v any) json.RawMessage {
 	return b
 }
 
-func (s *Server) eventRoutes(mux *http.ServeMux) {
+func (s *Server) eventRoutes(mux *router) {
 	mux.HandleFunc("GET /api/v1/events", s.handleEvents)
 }
 

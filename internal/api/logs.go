@@ -33,7 +33,7 @@ type logChunk struct {
 	Cursor string    `json:"cursor"`
 }
 
-func (s *Server) logRoutes(mux *http.ServeMux) {
+func (s *Server) logRoutes(mux *router) {
 	mux.HandleFunc("GET /api/v1/runs/{id}/logs", s.handleLogs)
 	mux.HandleFunc("GET /api/v1/runs/{id}/logs/stream", s.handleLogStream)
 }

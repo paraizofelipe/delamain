@@ -15,7 +15,7 @@ const (
 )
 
 // readRoutes are the routes that only read.
-func (s *Server) readRoutes(mux *http.ServeMux) {
+func (s *Server) readRoutes(mux *router) {
 	mux.HandleFunc("GET /api/v1/status", s.handleStatus)
 	mux.HandleFunc("GET /api/v1/repos", s.handleRepos)
 	mux.HandleFunc("GET /api/v1/runs", s.handleRuns)

@@ -143,29 +143,51 @@ func (s *Server) Run(ctx context.Context) {
 	s.hub.run(ctx)
 }
 
+// router registers routes on a mux and remembers their patterns, so the OpenAPI document can
+// be checked against what is served.
+type router struct {
+	mux      *http.ServeMux
+	patterns []string
+}
+
+func newRouter() *router { return &router{mux: http.NewServeMux()} }
+
+func (r *router) HandleFunc(pattern string, h http.HandlerFunc) {
+	r.patterns = append(r.patterns, pattern)
+	r.mux.HandleFunc(pattern, h)
+}
+
 // Handler is the API: the routes under /api/v1 behind the token, and /healthz in front of it.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	})
-	api := http.NewServeMux()
+	api := newRouter()
 	for pattern, h := range s.testRoutes {
 		api.HandleFunc(pattern, h)
 	}
 	s.routes(api)
-	mux.Handle("/api/v1/", s.authenticate(s.serveMux(api)))
+	mux.Handle("/api/v1/", s.authenticate(s.serveMux(api.mux)))
 	// audited wraps throttle so a refused burst gets its audit line too.
 	return s.recoverPanics(s.headers(s.audited(s.throttle(s.serveMux(mux)))))
 }
 
-// routes registers the API routes on mux.
-func (s *Server) routes(mux *http.ServeMux) {
-	s.readRoutes(mux)
-	s.logRoutes(mux)
-	s.eventRoutes(mux)
+// Routes are the patterns the API serves behind the token, as the mux takes them.
+func (s *Server) Routes() []string {
+	r := newRouter()
+	s.routes(r)
+	return append([]string{"GET /healthz"}, r.patterns...)
+}
+
+// routes registers the API routes on r.
+func (s *Server) routes(r *router) {
+	s.readRoutes(r)
+	s.logRoutes(r)
+	s.eventRoutes(r)
+	s.docRoutes(r)
 	if s.acts != nil { // a server built to read only has no action routes
-		s.actionRoutes(mux)
+		s.actionRoutes(r)
 	}
 }
 

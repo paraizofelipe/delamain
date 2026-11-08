@@ -10,7 +10,7 @@ import (
 )
 
 // actionRoutes are the routes that change something; every one is audited.
-func (s *Server) actionRoutes(mux *http.ServeMux) {
+func (s *Server) actionRoutes(mux *router) {
 	mux.HandleFunc("POST /api/v1/runs", s.handleStartRun)
 	mux.HandleFunc("POST /api/v1/reviews", s.handleStartReview)
 	mux.HandleFunc("POST /api/v1/runs/{id}/stop", s.handleStop)
