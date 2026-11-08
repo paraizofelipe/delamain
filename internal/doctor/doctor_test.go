@@ -805,3 +805,42 @@ func TestRunShouldReportNtfyBesideTheDesktopBackend(t *testing.T) {
 		t.Fatal("no ntfy line when it is not configured")
 	}
 }
+
+func TestRunShouldReportTheRemoteAPI(t *testing.T) {
+	cfg, d := healthy(t)
+	if c := byName(Run(context.Background(), cfg, d))["api"]; c.Status != OK || !strings.Contains(c.Detail, "off") {
+		t.Fatalf("off by default: %+v", c)
+	}
+
+	cfg.API.Enabled = true
+	d.Getenv = func(k string) string { return map[string]string{"DELAMAIN_API_TOKEN": "tiny"}[k] }
+	c := byName(Run(context.Background(), cfg, d))["api"]
+	if c.Status != Fail || !strings.Contains(c.Detail, "DELAMAIN_API_TOKEN") || !strings.Contains(c.Detail, "serve token") || strings.Contains(c.Detail, "tiny") {
+		t.Fatalf("a short token fails, naming the variable and never the value: %+v", c)
+	}
+
+	d.Getenv = func(k string) string { return map[string]string{"DELAMAIN_API_TOKEN": strings.Repeat("x", 43)}[k] }
+	cfg.API.Addr = "0.0.0.0:7778"
+	if c := byName(Run(context.Background(), cfg, d))["api"]; c.Status != Fail || !strings.Contains(c.Detail, "api.addr") {
+		t.Fatalf("a non-loopback address fails: %+v", c)
+	}
+
+	cfg.API.Addr = "127.0.0.1:7778"
+	if c := byName(Run(context.Background(), cfg, d))["api"]; c.Status != OK || c.Detail != "configured at 127.0.0.1:7778; probe skipped" {
+		t.Fatalf("without a probe: %+v", c)
+	}
+	d.APIProbe = func(_ context.Context, addr string) error {
+		return errors.New("dial tcp " + addr + ": connection refused")
+	}
+	checks := Run(context.Background(), cfg, d)
+	if c := byName(checks)["api"]; c.Status != Warn || !strings.Contains(c.Detail, "not running at 127.0.0.1:7778") || !strings.Contains(c.Detail, "delamain serve") {
+		t.Fatalf("nothing answering is a warning: %+v", c)
+	}
+	if Failed(checks) {
+		t.Fatal("an API that is not running never fails doctor")
+	}
+	d.APIProbe = func(context.Context, string) error { return nil }
+	if c := byName(Run(context.Background(), cfg, d))["api"]; c.Status != OK || c.Detail != "serving at 127.0.0.1:7778" {
+		t.Fatalf("serving: %+v", c)
+	}
+}

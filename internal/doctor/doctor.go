@@ -74,6 +74,9 @@ type Deps struct {
 	// only runs when the decisions layer is enabled and its key is set. Getenv also backs the
 	// decisions check, and a nil Getenv falls back to os.Getenv there.
 	DecisionsProbe func(ctx context.Context) error
+	// APIProbe asks whether the remote API answers at addr; nil skips the probe. It only runs
+	// when the api block is enabled and configured.
+	APIProbe func(ctx context.Context, addr string) error
 }
 
 // Run executes every check; it never stops at the first failure so the report is complete.
@@ -172,6 +175,7 @@ func Run(ctx context.Context, cfg config.Config, d Deps) []Check {
 	}
 
 	checks = append(checks, decisions(ctx, cfg.Decisions, d))
+	checks = append(checks, apiCheck(ctx, cfg, d))
 
 	if err := writable(cfg.Paths.StateDir); err != nil {
 		add("state dir", Fail, "%s: %v", cfg.Paths.StateDir, err)
@@ -228,6 +232,40 @@ func decisions(ctx context.Context, dc config.Decisions, d Deps) Check {
 		return Check{"decisions", Fail, fmt.Sprintf("%s at %s: %s", p.Model, p.BaseURL, strings.ReplaceAll(err.Error(), key, "***"))}
 	}
 	return Check{"decisions", OK, fmt.Sprintf("%s at %s %s", p.Model, p.BaseURL, modes)}
+}
+
+// apiMinTokenBytes is the shortest bearer token `delamain serve` accepts.
+const apiMinTokenBytes = 32
+
+// apiCheck reports whether the remote API can serve: its token is set, its address is loopback,
+// its audit log is writable, and whether something answers there now. Only the token's length
+// is looked at: its value never reaches a Detail.
+func apiCheck(ctx context.Context, cfg config.Config, d Deps) Check {
+	a := cfg.API
+	if !a.Enabled {
+		return Check{"api", OK, "off (enable with api.enabled, run with delamain serve)"}
+	}
+	getenv := d.Getenv
+	if getenv == nil {
+		getenv = os.Getenv
+	}
+	if len(getenv(a.TokenEnv)) < apiMinTokenBytes {
+		return Check{"api", Fail, fmt.Sprintf("%s is not set or shorter than %d bytes; make a token with delamain serve token", a.TokenEnv, apiMinTokenBytes)}
+	}
+	if err := config.LoopbackAddr(a.Addr); err != nil {
+		return Check{"api", Fail, fmt.Sprintf("api.addr: %v; the API only listens on this machine, a tunnel forwards to it", err)}
+	}
+	audit := a.AuditPath(cfg.Paths.StateDir)
+	if err := writable(filepath.Dir(audit)); err != nil {
+		return Check{"api", Warn, fmt.Sprintf("audit log %s: %v", audit, err)}
+	}
+	if d.APIProbe == nil {
+		return Check{"api", OK, fmt.Sprintf("configured at %s; probe skipped", a.Addr)}
+	}
+	if err := d.APIProbe(ctx, a.Addr); err != nil {
+		return Check{"api", Warn, fmt.Sprintf("not running at %s (start with delamain serve): %v", a.Addr, err)}
+	}
+	return Check{"api", OK, fmt.Sprintf("serving at %s", a.Addr)}
 }
 
 // hindsight checks what the agents' memory needs to run and reports only the first problem.

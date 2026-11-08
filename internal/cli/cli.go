@@ -82,6 +82,7 @@ func NewRoot() *cobra.Command {
 					Notify:    func(ctx context.Context) notify.Probe { return notify.Diagnose(ctx, cfg.Notify) },
 					Stat:      os.Stat, ReadFile: os.ReadFile, Getenv: os.Getenv,
 					DecisionsProbe: decisionsProbe(cfg.Decisions, os.Getenv),
+					APIProbe:       apiProbe,
 				})
 				if err := printChecks(cmd.OutOrStdout(), checks); err != nil {
 					return err
@@ -103,6 +104,7 @@ func NewRoot() *cobra.Command {
 		newStatusCmd(load),
 		newWatchCmd(load),
 		newBoardCmd(load),
+		newServeCmd(load),
 		newStopCmd(load),
 		newRmCmd(load),
 		newLogsCmd(load),
