@@ -9,7 +9,7 @@ import (
 
 // Why an action refused a run. Each comes wrapped in a RunError that names the run.
 var (
-	ErrNotFound       = errors.New("run not found")
+	ErrNotFound       = errors.New("not found")
 	ErrRunFinished    = errors.New("run already finished")
 	ErrRunNotFinished = errors.New("run has not finished")
 	ErrOwnerAlive     = errors.New("the owner of the run is alive")
@@ -58,7 +58,7 @@ func (e *RunError) Error() string {
 	case errors.Is(e.Err, ErrWorktreeInUse):
 		return fmt.Sprintf("worktree %s is in use by run %d (%s)", e.Worktree, e.UsedBy, e.State)
 	case errors.Is(e.Err, ErrRunActive):
-		return fmt.Sprintf("%s already has an active run: %d (%s)", e.Ref, e.ID, e.State)
+		return fmt.Sprintf("%s already has active run %d (%s)", e.Ref, e.ID, e.State)
 	}
 	return fmt.Sprintf("run %d: %v", e.ID, e.Err)
 }

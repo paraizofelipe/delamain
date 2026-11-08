@@ -41,7 +41,7 @@ func (a *Actions) AllowedRepos() []string {
 // checkRepo returns repo cleaned, or ErrRepoNotAllowed when it is not one of AllowedRepos.
 func (a *Actions) checkRepo(repo string) (string, error) {
 	repo = filepath.Clean(repo)
-	if !slices.Contains(a.AllowedRepos(), repo) {
+	if !a.d.AnyRepo && !slices.Contains(a.AllowedRepos(), repo) {
 		return "", fmt.Errorf("%w: %s (add it to daemon.repos or api.repos)", ErrRepoNotAllowed, repo)
 	}
 	return repo, nil

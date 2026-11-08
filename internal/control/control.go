@@ -36,6 +36,9 @@ type Deps struct {
 	Context context.Context //nolint:containedctx // the lifetime of the host, not of a call
 	// RunIDPoll and RunIDWait pace the discovery of the run a launch created; zero means the defaults.
 	RunIDPoll, RunIDWait time.Duration
+	// AnyRepo trusts whatever repository an action names, as the CLI does with --repo; the remote
+	// API leaves it false and only acts on AllowedRepos.
+	AnyRepo bool
 }
 
 // Actions performs the shared actions on the store of Deps.

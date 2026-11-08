@@ -188,7 +188,7 @@ func TestStartIssueShouldRefuseAnUnknownRepoAnActiveRunAndABadNumber(t *testing.
 	rec := f.run(t, "#7", "", store.StateImplement, store.KindIssue)
 	_, err := acts.StartIssue(ctx, f.repo, 7)
 	var re *RunError
-	if !errors.Is(err, ErrRunActive) || !errors.As(err, &re) || re.ID != rec.ID || err.Error() != "#7 already has an active run: 1 (implement)" {
+	if !errors.Is(err, ErrRunActive) || !errors.As(err, &re) || re.ID != rec.ID || err.Error() != "#7 already has active run 1 (implement)" {
 		t.Fatalf("an active run of the issue refuses the start: %v", err)
 	}
 	if len(acts.Operations().List(0)) != 0 {
