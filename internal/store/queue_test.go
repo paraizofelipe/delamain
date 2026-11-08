@@ -277,3 +277,81 @@ func TestDequeueIssueShouldRemoveOnlyThatIssue(t *testing.T) {
 		t.Fatalf("queue: %v", got)
 	}
 }
+
+func TestMoveQueueShouldPutTheItemAtThePositionAndKeepTheRanksDense(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	enqueue(t, s, 1, 2, 3, 4)
+	items, _ := s.Queue(ctx)
+	id := func(issue int) int64 {
+		for _, it := range items {
+			if it.Issue == issue {
+				return it.ID
+			}
+		}
+		t.Fatalf("issue %d not queued", issue)
+		return 0
+	}
+	for _, tc := range []struct {
+		issue, position int
+		want            []int
+	}{
+		{4, 1, []int{4, 1, 2, 3}},  // to the front
+		{4, 4, []int{1, 2, 3, 4}},  // back to the end
+		{1, 99, []int{2, 3, 4, 1}}, // past the end means last
+		{1, 0, []int{1, 2, 3, 4}},  // before the start means first
+		{2, 2, []int{1, 2, 3, 4}},  // same place
+		{3, 2, []int{1, 3, 2, 4}},  // one up
+	} {
+		if err := s.MoveQueue(ctx, id(tc.issue), tc.position); err != nil {
+			t.Fatalf("move %d to %d: %v", tc.issue, tc.position, err)
+		}
+		if got := queued(t, s); !equalInts(got, tc.want) {
+			t.Fatalf("move %d to %d: queue = %v, want %v", tc.issue, tc.position, got, tc.want)
+		}
+	}
+	if err := s.MoveQueue(ctx, 999, 1); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("an unknown item is ErrNotFound: %v", err)
+	}
+
+	// A remove in between leaves a gap that the next move closes: ranks stay 1..n.
+	if _, err := s.Dequeue(ctx, id(2)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.MoveQueue(ctx, id(4), 1); err != nil {
+		t.Fatal(err)
+	}
+	if got := queued(t, s); !equalInts(got, []int{4, 1, 3}) {
+		t.Fatalf("queue = %v", got)
+	}
+	var positions []int
+	rows, err := s.db.QueryContext(ctx, `SELECT pos FROM queue ORDER BY pos`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var p int
+		if err := rows.Scan(&p); err != nil {
+			t.Fatal(err)
+		}
+		positions = append(positions, p)
+	}
+	if !equalInts(positions, []int{1, 2, 3}) {
+		t.Fatalf("stored ranks are renumbered 1..n: %v", positions)
+	}
+}
+
+func TestQueueItemByIDShouldReturnTheItemWithItsPosition(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	enqueue(t, s, 7, 8)
+	items, _ := s.Queue(ctx)
+	it, err := s.QueueItemByID(ctx, items[1].ID)
+	if err != nil || it.Issue != 8 || it.Position != 2 || it.Repo != "repo" {
+		t.Fatalf("item = %+v %v", it, err)
+	}
+	if _, err := s.QueueItemByID(ctx, 999); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("an unknown id is ErrNotFound: %v", err)
+	}
+}

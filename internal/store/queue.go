@@ -156,3 +156,62 @@ func (s *Store) SetQueueWaiting(ctx context.Context, id int64, reason string) er
 	_, err := s.db.ExecContext(ctx, `UPDATE queue SET waiting = ? WHERE id = ?`, reason, id)
 	return err
 }
+
+// QueueItemByID returns the item id with its position, or ErrNotFound.
+func (s *Store) QueueItemByID(ctx context.Context, id int64) (QueueItem, error) {
+	items, err := s.Queue(ctx)
+	if err != nil {
+		return QueueItem{}, err
+	}
+	for _, it := range items {
+		if it.ID == id {
+			return it, nil
+		}
+	}
+	return QueueItem{}, fmt.Errorf("queue item %d: %w", id, ErrNotFound)
+}
+
+// MoveQueue puts item id at position (from 1; past the end means last) and renumbers the queue
+// 1..n in one transaction, so a remove in between never leaves two items at the same rank.
+func (s *Store) MoveQueue(ctx context.Context, id int64, position int) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	rows, err := tx.QueryContext(ctx, `SELECT id FROM queue ORDER BY pos, id`)
+	if err != nil {
+		return err
+	}
+	var ids []int64
+	for rows.Next() {
+		var n int64
+		if err := rows.Scan(&n); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		ids = append(ids, n)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	_ = rows.Close()
+	from := -1
+	for i, n := range ids {
+		if n == id {
+			from = i
+		}
+	}
+	if from < 0 {
+		return fmt.Errorf("queue item %d: %w", id, ErrNotFound)
+	}
+	to := max(0, min(position-1, len(ids)-1))
+	ids = append(ids[:from], ids[from+1:]...)
+	ids = append(ids[:to], append([]int64{id}, ids[to:]...)...)
+	for i, n := range ids {
+		if _, err := tx.ExecContext(ctx, `UPDATE queue SET pos = ? WHERE id = ?`, i+1, n); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
