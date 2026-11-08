@@ -72,6 +72,7 @@ type Server struct {
 	auth    *authGuard
 	limiter *rateLimiter
 	streams *streamGate
+	hub     *hub
 	log     *slog.Logger
 	// logPoll and logStateCheck pace the log streams; tests shorten them.
 	logPoll, logStateCheck time.Duration
@@ -102,13 +103,15 @@ func New(src Source, acts *control.Actions, audit *Audit, opts Options) *Server 
 	if opts.Limit <= 0 {
 		opts.Limit = 20
 	}
-	return &Server{
+	s := &Server{
 		opts: opts, src: src, acts: acts, audit: audit, log: opts.Log, board: board.NewBuilder(src, opts.Limit),
 		auth:    newAuthGuard(opts.Token, opts.AuthFailures, opts.Now),
 		limiter: newRateLimiter(float64(opts.RequestsPerSecond), 2*opts.RequestsPerSecond, opts.Now),
 		streams: &streamGate{max: opts.MaxStreams},
 		logPoll: logPoll, logStateCheck: logStateCheck,
 	}
+	s.hub = newHub(s)
+	return s
 }
 
 // Serve runs an http.Server on ln until ctx ends, with the timeouts a public tunnel calls for;
@@ -134,9 +137,10 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	return nil
 }
 
-// Run drives what the API does between requests, until ctx ends: the event hub, once it exists.
+// Run drives the event hub until ctx ends: it reloads the state while a stream is open and
+// pushes what changed.
 func (s *Server) Run(ctx context.Context) {
-	<-ctx.Done()
+	s.hub.run(ctx)
 }
 
 // Handler is the API: the routes under /api/v1 behind the token, and /healthz in front of it.
@@ -159,6 +163,7 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) routes(mux *http.ServeMux) {
 	s.readRoutes(mux)
 	s.logRoutes(mux)
+	s.eventRoutes(mux)
 }
 
 // serveMux serves mux, answering what matches nothing with a problem instead of plain text.

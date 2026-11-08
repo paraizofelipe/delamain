@@ -31,14 +31,20 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, s.statusOf(st))
+	writeJSON(w, http.StatusOK, s.statusOf(st, true))
 }
 
-func (s *Server) statusOf(st board.Status) Status {
-	return Status{
+// statusOf converts the board status; dated says whether to stamp the server time, which the
+// event stream leaves out so an unchanged status stays unchanged.
+func (s *Server) statusOf(st board.Status, dated bool) Status {
+	out := Status{
 		Daemon: st.Daemon, SlotsInUse: st.SlotsInUse, SlotsMax: st.SlotsMax, QueueRunning: st.QueueRunning,
-		Today: st.TodaySpend, TodayLevel: st.TodayLevel, Version: s.opts.Version, ServerTime: s.opts.Now(),
+		Today: st.TodaySpend, TodayLevel: st.TodayLevel, Version: s.opts.Version,
 	}
+	if dated {
+		out.ServerTime = s.opts.Now()
+	}
+	return out
 }
 
 func (s *Server) handleRepos(w http.ResponseWriter, r *http.Request) {

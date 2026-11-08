@@ -39,6 +39,11 @@ func (s *sseWriter) event(name string, v any) error {
 	if err != nil {
 		return err
 	}
+	return s.raw(name, data)
+}
+
+// raw writes one named event with data already encoded.
+func (s *sseWriter) raw(name string, data []byte) error {
 	if _, err := fmt.Fprintf(s.w, "event: %s\ndata: %s\n\n", name, data); err != nil {
 		return err
 	}

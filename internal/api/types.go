@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/paraizo/delamain/internal/board"
+	"github.com/paraizo/delamain/internal/control"
 )
 
 // Repo is a repository the API may start or queue.
@@ -30,7 +31,7 @@ type Status struct {
 	Today        board.Spend `json:"today"`
 	TodayLevel   string      `json:"today_level"` // ok | soft | hard
 	Version      string      `json:"version"`
-	ServerTime   time.Time   `json:"server_time"`
+	ServerTime   time.Time   `json:"server_time,omitzero"`
 }
 
 // Owner is the process driving a run.
@@ -131,6 +132,14 @@ type StopResult struct {
 type list[T any] struct {
 	Items      []T    `json:"items"`
 	NextBefore *int64 `json:"next_before,omitempty"`
+}
+
+func operationOf(op control.Operation) Operation {
+	return Operation{
+		ID: op.ID, Kind: string(op.Kind), Status: string(op.Status), Repo: op.Repo, Issue: op.Issue, PR: op.PR,
+		RunID: op.RunID, ExitCode: op.ExitCode, Error: op.Error, Result: op.Result, LogPath: op.LogPath,
+		LogTail: op.LogTail, StartedAt: op.StartedAt, EndedAt: op.EndedAt,
+	}
 }
 
 // summaryOf converts a board run, with its rounds from b.

@@ -120,7 +120,7 @@ type sseStream struct {
 }
 
 // openStream opens an SSE stream; the response is closed with the test.
-func (ts *testServer) openStream(t *testing.T, path string) *sseStream { //nolint:unparam // the events tests open another path
+func (ts *testServer) openStream(t *testing.T, path string) *sseStream {
 	t.Helper()
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, ts.URL+path, nil)
 	if err != nil {
