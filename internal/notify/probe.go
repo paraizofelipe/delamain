@@ -14,11 +14,20 @@ type Probe struct {
 	Actions          bool   // the server supports actions (clicks)
 	TerminalNotifier string // its path on macOS; "" means osascript
 	Err              error  // why there is no backend
+	// Ntfy describes the ntfy push when notify.ntfy is enabled; nil otherwise.
+	Ntfy *NtfyProbe
 }
 
-// Diagnose resolves the configured backend, as New does, and describes it.
+// Diagnose resolves the configured backend, as New does, and describes it; with ntfy on, it
+// also asks the ntfy server whether it is healthy.
 func Diagnose(ctx context.Context, cfg config.Notify) Probe {
-	return diagnose(ctx, cfg.Backend, realSys())
+	return diagnoseAll(ctx, cfg, realSys())
+}
+
+func diagnoseAll(ctx context.Context, cfg config.Notify, s sys) Probe {
+	p := diagnose(ctx, cfg.Backend, s)
+	p.Ntfy = diagnoseNtfy(ctx, cfg.Ntfy, s)
+	return p
 }
 
 func diagnose(ctx context.Context, backend string, s sys) Probe {

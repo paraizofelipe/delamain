@@ -770,3 +770,38 @@ func TestDoctorShouldNeverPrintDecisionsAPIKey(t *testing.T) {
 		t.Fatalf("a probe error echoing the key must be masked: %+v", c)
 	}
 }
+
+func TestRunShouldReportNtfyBesideTheDesktopBackend(t *testing.T) {
+	cfg, d := healthy(t)
+	d.Notify = func(context.Context) notify.Probe {
+		return notify.Probe{Backend: "dbus", Server: "mako", Version: "1.9.0", Actions: true,
+			Ntfy: &notify.NtfyProbe{URL: "https://ntfy.sh", Topic: "dlm…", Auth: true}}
+	}
+	checks := byName(Run(context.Background(), cfg, d))
+	if c := checks["notify"]; c.Status != OK {
+		t.Fatalf("the desktop check is unchanged: %+v", c)
+	}
+	if c := checks["ntfy"]; c.Status != OK || c.Detail != "https://ntfy.sh topic dlm… (with token)" {
+		t.Fatalf("ntfy check = %+v", c)
+	}
+
+	d.Notify = func(context.Context) notify.Probe {
+		return notify.Probe{Backend: "none", Ntfy: &notify.NtfyProbe{URL: "https://ntfy.example.com", Topic: "abc…", Err: errors.New("connection refused")}}
+	}
+	checks = byName(Run(context.Background(), cfg, d))
+	if c := checks["ntfy"]; c.Status != Fail || !strings.Contains(c.Detail, "connection refused") || !strings.Contains(c.Detail, "https://ntfy.example.com") {
+		t.Fatalf("an unreachable ntfy fails, since pushes were asked for: %+v", c)
+	}
+
+	d.Notify = func(context.Context) notify.Probe {
+		return notify.Probe{Backend: "none", Ntfy: &notify.NtfyProbe{URL: "https://ntfy.sh", Topic: "abc…"}}
+	}
+	if c := byName(Run(context.Background(), cfg, d))["ntfy"]; c.Status != OK || c.Detail != "https://ntfy.sh topic abc… (no token)" {
+		t.Fatalf("ntfy check = %+v", c)
+	}
+
+	d.Notify = func(context.Context) notify.Probe { return notify.Probe{Backend: "none"} }
+	if _, ok := byName(Run(context.Background(), cfg, d))["ntfy"]; ok {
+		t.Fatal("no ntfy line when it is not configured")
+	}
+}

@@ -1,11 +1,14 @@
 // Package notify shows native desktop notifications: D-Bus on Linux, Notification Center on
-// macOS. A notification never fails a run: errors and timeouts become warnings in the log.
+// macOS; with notify.ntfy on, it also pushes them to an ntfy topic for a phone. A notification
+// never fails a run: errors and timeouts become warnings in the log.
 package notify
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/exec"
 	"runtime"
@@ -83,7 +86,7 @@ func New(cfg config.Notify, opts Options) Notifier {
 func realSys() sys {
 	return sys{
 		goos: runtime.GOOS, getenv: os.Getenv, dial: dialBus, lookPath: exec.LookPath, run: runCommand,
-		open: xdgOpen, now: time.Now,
+		open: xdgOpen, now: time.Now, http: &http.Client{},
 	}
 }
 
@@ -107,6 +110,8 @@ type sys struct {
 	// open shows a clicked target (xdg-open); now dates the actions it may still open.
 	open func(ctx context.Context, target string) error
 	now  func() time.Time
+	// http publishes to ntfy; each call is bounded by its context.
+	http *http.Client
 }
 
 // backend delivers a toast on one platform.
@@ -115,25 +120,27 @@ type backend interface {
 	close() error
 }
 
-// noBackend drops every toast.
-type noBackend struct{}
-
-func (noBackend) send(context.Context, Message) error { return nil }
-func (noBackend) close() error                        { return nil }
+// NtfyKind names the ntfy push in Backends(), beside the desktop kinds of config.
+const NtfyKind = "ntfy"
 
 // Client is the Notifier New returns.
 type Client struct {
-	log     *slog.Logger
-	backend backend
-	events  map[Event]bool // nil when notifications are off
-	kind    string
+	log      *slog.Logger
+	backends []namedBackend // the desktop one first, when there is one, then ntfy
+	events   map[Event]bool // nil when notifications are off
+	kind     string         // the desktop backend: dbus, macos or none
 
 	iconOnce sync.Once
 	iconPath string
 }
 
+type namedBackend struct {
+	kind string
+	backend
+}
+
 func newWith(cfg config.Notify, opts Options, s sys) *Client {
-	c := &Client{log: opts.Log, backend: noBackend{}, kind: config.NotifyNone}
+	c := &Client{log: opts.Log, kind: config.NotifyNone}
 	if !cfg.Enabled {
 		return c
 	}
@@ -145,13 +152,20 @@ func newWith(cfg config.Notify, opts Options, s sys) *Client {
 	kind, b, err := resolve(cfg.Backend, s)
 	switch kind {
 	case config.NotifyMacOS:
-		c.backend = newMacOS(s, icon, opts)
+		c.backends = append(c.backends, namedBackend{kind, newMacOS(s, icon, opts)})
 	case config.NotifyDBus:
-		c.backend = newDBus(b, icon, s, opts)
+		c.backends = append(c.backends, namedBackend{kind, newDBus(b, icon, s, opts)})
 	}
 	c.kind = kind
 	if err != nil {
 		c.log.Warn("no desktop notification server; notifications disabled", "err", err)
+	}
+	if cfg.Ntfy.Enabled {
+		token := ""
+		if cfg.Ntfy.TokenEnv != "" {
+			token = s.getenv(cfg.Ntfy.TokenEnv)
+		}
+		c.backends = append(c.backends, namedBackend{NtfyKind, newNtfy(cfg.Ntfy, token, s.http)})
 	}
 	return c
 }
@@ -167,17 +181,56 @@ func (c *Client) Notify(ctx context.Context, m Message) error {
 	return nil
 }
 
-// Send delivers a toast whatever the configured events, and returns why it failed.
+// Send delivers a toast to every backend whatever the configured events; one that fails never
+// holds back the others, and the error names each one that did.
 func (c *Client) Send(ctx context.Context, m Message) error {
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	return c.backend.send(ctx, m)
+	var errs []error
+	for _, b := range c.backends {
+		if err := c.sendOne(ctx, b, m); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
 
-// Backend is the resolved backend: dbus, macos or none.
+// SendTo delivers a toast to the backend named kind alone, as Send does.
+func (c *Client) SendTo(ctx context.Context, kind string, m Message) error {
+	for _, b := range c.backends {
+		if b.kind == kind {
+			return c.sendOne(ctx, b, m)
+		}
+	}
+	return fmt.Errorf("no %s notification backend", kind)
+}
+
+func (c *Client) sendOne(ctx context.Context, b namedBackend, m Message) error {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	if err := b.send(ctx, m); err != nil {
+		return fmt.Errorf("%s: %w", b.kind, err)
+	}
+	return nil
+}
+
+// Backend is the resolved desktop backend: dbus, macos or none.
 func (c *Client) Backend() string { return c.kind }
 
-func (c *Client) Close() error { return c.backend.close() }
+// Backends names every backend a toast reaches, the desktop one first: e.g. dbus, ntfy.
+func (c *Client) Backends() []string {
+	kinds := make([]string, 0, len(c.backends))
+	for _, b := range c.backends {
+		kinds = append(kinds, b.kind)
+	}
+	return kinds
+}
+
+func (c *Client) Close() error {
+	var errs []error
+	for _, b := range c.backends {
+		errs = append(errs, b.close())
+	}
+	return errors.Join(errs...)
+}
 
 // icon writes the logo on the first toast; without it the toast still goes out.
 func (c *Client) icon(stateDir string) string {

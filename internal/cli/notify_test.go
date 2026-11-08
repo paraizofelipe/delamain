@@ -142,12 +142,32 @@ func TestDaemonShouldCreateInteractiveNotifier(t *testing.T) {
 // testableNotifier is a fake with a resolved backend that can send the sample toast.
 type testableNotifier struct {
 	fakeNotifier
-	backend string
+	backend  string
+	backends []string // nil means just backend
+	via      []string // one entry per Send ("") or SendTo (the kind)
 }
 
 func (n *testableNotifier) Backend() string { return n.backend }
 
-func (n *testableNotifier) Send(ctx context.Context, m notify.Message) error { return n.Notify(ctx, m) }
+func (n *testableNotifier) Backends() []string {
+	if n.backends != nil {
+		return n.backends
+	}
+	if n.backend == "none" {
+		return nil
+	}
+	return []string{n.backend}
+}
+
+func (n *testableNotifier) Send(ctx context.Context, m notify.Message) error {
+	n.via = append(n.via, "")
+	return n.Notify(ctx, m)
+}
+
+func (n *testableNotifier) SendTo(ctx context.Context, kind string, m notify.Message) error {
+	n.via = append(n.via, kind)
+	return n.Notify(ctx, m)
+}
 
 func TestNotifyTestShouldFailWhenBackendIsNone(t *testing.T) {
 	cfgFile, _ := isolatedConfig(t, "notify:\n  backend: none\n")
@@ -196,5 +216,48 @@ func TestNotifyTestShouldSendTheIterationSample(t *testing.T) {
 	}
 	if len(n.sent) != 1 || n.sent[0].Event != notify.EventIteration || n.sent[0].Title != "🔁 Iteration 2/12 · delamain #12" || len(n.sent[0].Actions) != 0 {
 		t.Fatalf("the iteration sample goes out without actions, even off by default: %+v", n.sent)
+	}
+}
+
+// useTestableNotifier makes every command create n, keeping its Backends and SendTo.
+func useTestableNotifier(t *testing.T, n *testableNotifier) {
+	t.Helper()
+	prev := newNotifier
+	newNotifier = func(cfg config.Notify, opts notify.Options) notify.Notifier { n.cfg, n.opts = cfg, opts; return n }
+	t.Cleanup(func() { newNotifier = prev })
+}
+
+func TestNotifyTestShouldSendViaOneBackendOrAll(t *testing.T) {
+	n := &testableNotifier{backend: "dbus", backends: []string{"dbus", "ntfy"}}
+	useTestableNotifier(t, n)
+	cfgFile, _ := isolatedConfig(t, "")
+	out, err := execute(t, "--config", cfgFile, "notify", "--test")
+	if err != nil || !strings.Contains(out, "sent via dbus, ntfy") {
+		t.Fatalf("all backends by default: %v\n%s", err, out)
+	}
+	if !slices.Equal(n.via, []string{""}) {
+		t.Fatalf("--via all uses Send, got SendTo %v", n.via)
+	}
+	out, err = execute(t, "--config", cfgFile, "notify", "--test", "--via", "ntfy")
+	if err != nil || !strings.Contains(out, "sent via ntfy") {
+		t.Fatalf("one backend: %v\n%s", err, out)
+	}
+	if !slices.Equal(n.via, []string{"", "ntfy"}) {
+		t.Fatalf("--via ntfy uses SendTo, got %v", n.via)
+	}
+	if _, err := execute(t, "--config", cfgFile, "notify", "--test", "--via", "sms"); err == nil || !strings.Contains(err.Error(), "--via") {
+		t.Fatalf("an unknown --via is rejected, got %v", err)
+	}
+
+	n = &testableNotifier{backend: "dbus", backends: []string{"dbus"}}
+	useTestableNotifier(t, n)
+	if _, err := execute(t, "--config", cfgFile, "notify", "--test", "--via", "ntfy"); err == nil || !strings.Contains(err.Error(), "ntfy") {
+		t.Fatalf("--via ntfy without ntfy enabled fails naming it, got %v", err)
+	}
+
+	n = &testableNotifier{backend: "none", backends: []string{"ntfy"}}
+	useTestableNotifier(t, n)
+	if out, err := execute(t, "--config", cfgFile, "notify", "--test"); err != nil || !strings.Contains(out, "sent via ntfy") {
+		t.Fatalf("ntfy alone is a backend: %v\n%s", err, out)
 	}
 }

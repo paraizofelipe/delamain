@@ -160,7 +160,11 @@ func Run(ctx context.Context, cfg config.Config, d Deps) []Check {
 	}
 
 	if d.Notify != nil {
-		checks = append(checks, notifyCheck(d.Notify(ctx)))
+		p := d.Notify(ctx)
+		checks = append(checks, notifyCheck(p))
+		if p.Ntfy != nil {
+			checks = append(checks, ntfyCheck(*p.Ntfy))
+		}
 	}
 
 	if d.Prompts != nil {
@@ -271,6 +275,18 @@ func notifyCheck(p notify.Probe) Check {
 		return Check{"notify", OK, "macos: osascript (terminal-notifier not found: no logo, no click); allow notifications for Script Editor in System Settings > Notifications"}
 	}
 	return Check{"notify", Warn, "no desktop notification server; notifications disabled"}
+}
+
+// ntfyCheck reports the ntfy push; a server that does not answer fails, since pushes were asked for.
+func ntfyCheck(p notify.NtfyProbe) Check {
+	auth := "no token"
+	if p.Auth {
+		auth = "with token"
+	}
+	if p.Err != nil {
+		return Check{"ntfy", Fail, fmt.Sprintf("%s topic %s (%s): %v", p.URL, p.Topic, auth, p.Err)}
+	}
+	return Check{"ntfy", OK, fmt.Sprintf("%s topic %s (%s)", p.URL, p.Topic, auth)}
 }
 
 func promptChecks(set *prompts.Set, t prompts.Target) []Check {
