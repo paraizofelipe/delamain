@@ -21,6 +21,13 @@ func TestCLISourcesShouldNotContainPortugueseStrings(t *testing.T) {
 		t.Fatal(err)
 	}
 	files = append(files, filepath.Join("..", "upgrade", "upgrade.go"))
+	for _, pkg := range []string{"control", "api"} { // shared with the remote API: its errors reach a phone in English
+		more, err := filepath.Glob(filepath.Join("..", pkg, "*.go"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		files = append(files, more...)
+	}
 	fset := token.NewFileSet()
 	var found []string
 	for _, path := range files {

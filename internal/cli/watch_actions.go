@@ -586,7 +586,7 @@ func newStoreWatchActions(ctx context.Context, cfg config.Config, st *store.Stor
 	return &storeWatchActions{
 		ctx:        ctx,
 		cancel:     cancel,
-		stop:       &stopper{cfg: cfg, st: st, noWait: true, log: quiet},
+		stop:       newStopper(cfg, st, true, 0, quiet),
 		opener:     browserOpener(),
 		out:        out,
 		tmux:       os.Getenv("TMUX") != "",
@@ -608,7 +608,7 @@ func (a *storeWatchActions) Remove(id int64, force bool) (string, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	var out strings.Builder
-	err := removeRun(a.ctx, &out, a.stop.cfg, a.stop.st, id, force)
+	err := a.stop.removeOne(a.ctx, &out, id, force)
 	return out.String(), err
 }
 

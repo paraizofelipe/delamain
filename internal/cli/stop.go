@@ -2,17 +2,16 @@ package cli
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
-	"os"
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 
 	"github.com/paraizo/delamain/internal/config"
+	"github.com/paraizo/delamain/internal/control"
 	"github.com/paraizo/delamain/internal/forge"
 	"github.com/paraizo/delamain/internal/notify"
 	"github.com/paraizo/delamain/internal/pipeline"
@@ -53,7 +52,7 @@ Exit codes: 0 every run stopped or already finished · 1 a run failed or timed o
 				return err
 			}
 			defer func() { _ = st.Close() }()
-			s := &stopper{cfg: cfg, st: st, noWait: noWait, timeout: timeout}
+			s := newStopper(cfg, st, noWait, timeout, nil)
 			defer s.close()
 			failed := 0
 			for _, arg := range args {
@@ -73,23 +72,30 @@ Exit codes: 0 every run stopped or already finished · 1 a run failed or timed o
 	return cmd
 }
 
-// stopper stops runs one by one; the runner that recovers orphans is only built for one.
+// stopper stops runs one by one through the shared actions and prints how each went; the
+// runner that recovers orphans is only built for one.
 type stopper struct {
 	cfg     config.Config
 	st      *store.Store
 	noWait  bool
 	timeout time.Duration
-	runner  *pipeline.Runner
+	acts    *control.Actions
 	// log is where the recover of an orphan writes; nil leaves it on stderr, as the commands
 	// want it. `watch` holds the terminal and passes a logger that drops the lines.
 	log *slog.Logger
 }
 
-func (s *stopper) close() {
-	if s.runner != nil && s.runner.Notify != nil {
-		_ = s.runner.Notify.Close()
-	}
+func newStopper(cfg config.Config, st *store.Store, noWait bool, timeout time.Duration, log *slog.Logger) *stopper {
+	s := &stopper{cfg: cfg, st: st, noWait: noWait, timeout: timeout, log: log}
+	s.acts = control.New(control.Deps{
+		Cfg: cfg, Store: st,
+		NewRunner: func() (*pipeline.Runner, error) { return newRunner(cfg, st, notify.Options{Log: log}) },
+		ForgeFor:  func(ctx context.Context, repo string) (forge.Forge, error) { return forgeFor(ctx, cfg, repo) },
+	})
+	return s
 }
+
+func (s *stopper) close() { _ = s.acts.Close() }
 
 func (s *stopper) stop(c *cobra.Command, arg string) error {
 	id, err := runID(arg)
@@ -101,28 +107,23 @@ func (s *stopper) stop(c *cobra.Command, arg string) error {
 
 // stopOne stops run id and writes to w how it went.
 func (s *stopper) stopOne(ctx context.Context, w io.Writer, id int64) error {
-	rec, err := s.st.GetRun(ctx, id)
-	if errors.Is(err, store.ErrNotFound) {
-		return fmt.Errorf("run %d not found", id)
-	}
+	res, err := s.acts.Stop(ctx, id)
 	if err != nil {
 		return err
 	}
-	if rec.State.Terminal() {
-		fmt.Fprintf(w, "run %d already finished (%s)\n", id, rec.State)
+	switch res.Status {
+	case control.StopAlreadyFinished:
+		fmt.Fprintf(w, "run %d already finished (%s)\n", id, res.State)
 		return nil
-	}
-	if rec.OwnerPID != os.Getpid() && !pipeline.ProcessAlive(rec.OwnerPID) {
-		return s.recoverOne(ctx, w, id)
-	}
-	if err := s.st.RequestStop(ctx, id); err != nil {
-		return fmt.Errorf("run %d: %w", id, err)
+	case control.StopRecovered:
+		printRecovered(w, *res.Recovered)
+		return nil
 	}
 	if s.noWait {
-		fmt.Fprintf(w, "stop requested for run %d (owner pid %d)\n", id, rec.OwnerPID)
+		fmt.Fprintf(w, "stop requested for run %d (owner pid %d)\n", id, res.OwnerPID)
 		return nil
 	}
-	rec, err = waitStopped(ctx, s.st, id, s.timeout)
+	rec, err := waitStopped(ctx, s.st, id, s.timeout)
 	if err != nil {
 		return err
 	}
@@ -131,19 +132,27 @@ func (s *stopper) stopOne(ctx context.Context, w io.Writer, id int64) error {
 
 // recoverOne finalizes a run whose owner died, as `delamain recover` does, but only that one.
 func (s *stopper) recoverOne(ctx context.Context, w io.Writer, id int64) error {
-	if s.runner == nil {
-		r, err := newRunner(s.cfg, s.st, notify.Options{Log: s.log})
-		if err != nil {
-			return err
-		}
-		s.runner = r
-	}
-	res, err := s.runner.RecoverRun(ctx, id, func(repo string) (forge.Forge, error) { return forgeFor(ctx, s.cfg, repo) })
+	res, err := s.acts.Recover(ctx, id)
 	if err != nil {
 		return err
 	}
-	reportRecovered(ctx, w, s.runner, []pipeline.Result{res})
+	printRecovered(w, res)
 	return nil
+}
+
+// removeOne deletes finished run id, as `delamain rm` does, and writes to w that it did.
+func (s *stopper) removeOne(ctx context.Context, w io.Writer, id int64, force bool) error {
+	if err := s.acts.Remove(ctx, id, force); err != nil {
+		return err
+	}
+	fmt.Fprintf(w, "removed run %d\n", id)
+	return nil
+}
+
+// printRecovered prints one recovered run as `delamain recover` prints them.
+func printRecovered(w io.Writer, res pipeline.Result) {
+	fmt.Fprintf(w, "run %d recovered:\n", res.RunID)
+	printResult(w, res)
 }
 
 // waitStopped polls the run until it is terminal, checking at least once.

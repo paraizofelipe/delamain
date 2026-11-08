@@ -11,6 +11,7 @@ import (
 
 	"github.com/paraizo/delamain/internal/budget"
 	"github.com/paraizo/delamain/internal/config"
+	"github.com/paraizo/delamain/internal/control"
 	"github.com/paraizo/delamain/internal/notify"
 	"github.com/paraizo/delamain/internal/pipeline"
 	"github.com/paraizo/delamain/internal/store"
@@ -120,7 +121,7 @@ func TestRecoveredResultShouldFollowTheOutcomeMapping(t *testing.T) {
 		{pipeline.Result{Outcome: pipeline.OutcomeNeedsInfo}, "needs info"},
 		{pipeline.Result{Outcome: pipeline.OutcomeHalted}, "halted"},
 	} {
-		if got := recoveredResult(tc.res); got != tc.want {
+		if got := control.RecoveredResult(tc.res); got != tc.want {
 			t.Errorf("%s pr=%q draft=%v: got %q, want %q", tc.res.Outcome, tc.res.PRURL, tc.res.Draft, got, tc.want)
 		}
 	}
