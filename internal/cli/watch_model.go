@@ -9,6 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/paraizo/delamain/internal/budget"
+	"github.com/paraizo/delamain/internal/control"
 	"github.com/paraizo/delamain/internal/store"
 )
 
@@ -50,10 +51,10 @@ type watchData struct {
 	daemon       bool
 	queue        []store.QueueItem
 	slots        SlotsView
-	logs         []logLine    // new lines of logsOf, read by follower
-	skipped      int          // lines of logsOf left unread before logs
-	logsOf       int64        // the run selected when the reload started
-	follower     *logFollower // the follower the lines come from
+	logs         []logLine          // new lines of logsOf, read by follower
+	skipped      int                // lines of logsOf left unread before logs
+	logsOf       int64              // the run selected when the reload started
+	follower     *control.LogReader // the reader the lines come from
 }
 
 type watchDataMsg watchData
@@ -422,13 +423,15 @@ func (m watchModel) reload() tea.Cmd {
 		// Read last: the lines read are lost if the reload fails after them.
 		d.logsOf, d.follower = logsOf, fl
 		if fl != nil {
-			if d.skipped, err = skipBacklog(fl); err != nil {
+			if d.skipped, err = fl.SkipBacklog(maxLogReadBytes); err != nil {
 				return watchErrMsg{err}
 			}
-			if d.logs, err = fl.read(flush); err != nil {
+			read, err := fl.Read(flush)
+			if err != nil {
 				return watchErrMsg{err}
 			}
-			capPartial(fl)
+			d.logs = toLogLines(read)
+			fl.CapPartial(maxLogLineBytes)
 		}
 		return watchDataMsg(d)
 	}

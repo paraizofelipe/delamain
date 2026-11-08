@@ -1,19 +1,16 @@
 package cli
 
 import (
-	"bytes"
-	"errors"
 	"fmt"
-	"io"
 	"math"
-	"os"
-	"path/filepath"
 	"strings"
 	"unicode/utf8"
 
 	"github.com/charmbracelet/bubbles/viewport"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+
+	"github.com/paraizo/delamain/internal/control"
 )
 
 // logSources are the chips of the logs panel, picked with the keys 1 to 6; the first shows them all.
@@ -46,13 +43,13 @@ const (
 // logPane is the logs panel of `watch`: the lines read so far of the selected run and the
 // viewport over them. Update only swaps fl; its fields are touched by the reload command alone.
 type logPane struct {
-	fl     *logFollower // nil without a selected run
-	run    int64        // the run fl reads
-	lines  []logLine    // control characters already dropped
-	omit   int          // lines dropped to keep maxLogLines
-	source int          // index in logSources; it outlives reset
-	shown  []logLine    // the lines of source
-	paused bool         // the user scrolled away: new lines do not move the view
+	fl     *control.LogReader // nil without a selected run
+	run    int64              // the run fl reads
+	lines  []logLine          // control characters already dropped
+	omit   int                // lines dropped to keep maxLogLines
+	source int                // index in logSources; it outlives reset
+	shown  []logLine          // the lines of source
+	paused bool               // the user scrolled away: new lines do not move the view
 	vp     viewport.Model
 }
 
@@ -60,7 +57,7 @@ type logPane struct {
 func (p *logPane) reset(run int64, dir string) {
 	p.fl, p.run, p.lines, p.omit, p.paused = nil, run, nil, 0, false
 	if dir != "" {
-		p.fl = &logFollower{dir: dir, offsets: map[string]int64{}, partial: map[string][]byte{}, lastTS: map[string]string{}}
+		p.fl = control.NewLogReader(dir, nil)
 	}
 	p.vp = viewport.New(0, p.vp.Height)
 	p.refresh()
@@ -180,71 +177,6 @@ func cutBytes(s string) string {
 	return s[:n]
 }
 
-// skipBacklog moves fl past what exceeds maxLogReadBytes in each file, so its next read stays
-// bounded, and returns how many lines it skipped; the line it lands in is read from there on.
-func skipBacklog(fl *logFollower) (int, error) {
-	paths, err := filepath.Glob(filepath.Join(fl.dir, "*.log"))
-	if err != nil {
-		return 0, err
-	}
-	skipped := 0
-	for _, path := range paths {
-		source := strings.TrimSuffix(filepath.Base(path), ".log")
-		info, err := os.Stat(path)
-		if errors.Is(err, os.ErrNotExist) {
-			continue
-		}
-		if err != nil {
-			return 0, err
-		}
-		from := fl.offsets[source]
-		if info.Size() < from { // truncated: read starts over
-			from = 0
-		}
-		to := info.Size() - maxLogReadBytes
-		if to <= from {
-			continue
-		}
-		n, err := countLines(path, from, to)
-		if err != nil {
-			return 0, err
-		}
-		skipped += n
-		fl.offsets[source], fl.partial[source] = to, nil
-	}
-	return skipped, nil
-}
-
-// countLines counts the line breaks between the offsets from and to of path.
-func countLines(path string, from, to int64) (int, error) {
-	f, err := os.Open(path) //nolint:gosec // a log of the run dir
-	if err != nil {
-		return 0, err
-	}
-	defer f.Close()
-	n, buf := 0, make([]byte, 32<<10)
-	r := io.NewSectionReader(f, from, to-from)
-	for {
-		k, err := r.Read(buf)
-		n += bytes.Count(buf[:k], []byte{'\n'})
-		if errors.Is(err, io.EOF) {
-			return n, nil
-		}
-		if err != nil {
-			return 0, err
-		}
-	}
-}
-
-// capPartial keeps the start of each unterminated line of fl, as append keeps of a line.
-func capPartial(fl *logFollower) {
-	for source, b := range fl.partial {
-		if len(b) > maxLogLineBytes {
-			fl.partial[source] = bytes.Clone(b[:maxLogLineBytes])
-		}
-	}
-}
-
 // state is the title of the logs of run: ended, paused or following.
 func (p logPane) state(st styles, run RunView) string {
 	switch {
@@ -293,7 +225,7 @@ func (p logPane) view(st styles, run RunView, inner, height int, look logLook) [
 func (p logPane) cutRows(st styles, inner, rows int) []string {
 	body := []string{}
 	if len(p.lines) == 0 && rows > 0 {
-		body = append(body, paint(st.muted, ansi.Truncate("no logs yet in "+clean(p.fl.dir), inner, "…")))
+		body = append(body, paint(st.muted, ansi.Truncate("no logs yet in "+clean(p.fl.Dir()), inner, "…")))
 	}
 	top := p.vp.YOffset
 	if p.omit > 0 {
@@ -317,7 +249,7 @@ func (p logPane) wrappedRows(st styles, inner, rows int, look logLook) []string 
 		return nil
 	}
 	if len(p.lines) == 0 {
-		return wrapStyled(paint(st.muted, "no logs yet in "+clean(p.fl.dir)), inner)
+		return wrapStyled(paint(st.muted, "no logs yet in "+clean(p.fl.Dir())), inner)
 	}
 	omitted := func() []string {
 		return wrapStyled(paint(st.muted, fmt.Sprintf("… %d earlier lines omitted", p.omit)), inner)
