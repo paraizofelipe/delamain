@@ -73,6 +73,8 @@ type Server struct {
 	limiter *rateLimiter
 	streams *streamGate
 	log     *slog.Logger
+	// logPoll and logStateCheck pace the log streams; tests shorten them.
+	logPoll, logStateCheck time.Duration
 	// testRoutes are extra handlers tests register, such as one that panics.
 	testRoutes map[string]http.HandlerFunc
 }
@@ -105,6 +107,7 @@ func New(src Source, acts *control.Actions, audit *Audit, opts Options) *Server 
 		auth:    newAuthGuard(opts.Token, opts.AuthFailures, opts.Now),
 		limiter: newRateLimiter(float64(opts.RequestsPerSecond), 2*opts.RequestsPerSecond, opts.Now),
 		streams: &streamGate{max: opts.MaxStreams},
+		logPoll: logPoll, logStateCheck: logStateCheck,
 	}
 }
 
@@ -155,6 +158,7 @@ func (s *Server) Handler() http.Handler {
 // routes registers the API routes on mux.
 func (s *Server) routes(mux *http.ServeMux) {
 	s.readRoutes(mux)
+	s.logRoutes(mux)
 }
 
 // serveMux serves mux, answering what matches nothing with a problem instead of plain text.
