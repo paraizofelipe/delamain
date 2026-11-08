@@ -33,8 +33,8 @@ func TestColumnOf(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := columnOf(c.run); got != c.want {
-				t.Fatalf("columnOf(%+v) = %s, want %s", c.run, got, c.want)
+			if got := ColumnOf(c.run); got != c.want {
+				t.Fatalf("ColumnOf(%+v) = %s, want %s", c.run, got, c.want)
 			}
 		})
 	}

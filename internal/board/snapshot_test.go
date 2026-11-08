@@ -125,7 +125,7 @@ func TestRoundsOfAnIssueRun(t *testing.T) {
 	}, "\n")+"\n"))
 	write(t, filepath.Join(dir, "iter-1", "review.json"), review(map[string]int{"security": 2}))
 	write(t, filepath.Join(dir, "iter-3", "review.json"), []byte(`{"axes": [`))
-	b := &builder{files: newFiles()}
+	b := NewBuilder(nil, 0)
 
 	r := Run{ID: 1, State: "review", Iteration: 4, Dir: dir}
 	got := b.rounds(r)
@@ -176,7 +176,7 @@ func TestAxisNotExecuted(t *testing.T) {
 
 func TestRoundsOfPRRuns(t *testing.T) {
 	dir := t.TempDir()
-	b := &builder{files: newFiles()}
+	b := NewBuilder(nil, 0)
 	pr := Run{ID: 2, Kind: "review", State: "review", Dir: dir}
 	if s := chipsOf(b.rounds(pr)[0]); s != "PR spec=wait std=wait sec=wait" {
 		t.Fatalf("PR review in progress = %q", s)
@@ -213,8 +213,8 @@ func TestSnapshotPlacesEveryCard(t *testing.T) {
 		},
 		status: Status{Daemon: true, SlotsMax: 2},
 	}
-	b := &builder{src: src, files: newFiles(), limit: 20}
-	snap, err := b.snapshot(context.Background())
+	b := NewBuilder(src, 20)
+	snap, err := b.Snapshot(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -264,9 +264,9 @@ func TestDetail(t *testing.T) {
 	started := time.Now()
 	src := &fakeSource{runs: []Run{{ID: 5, State: "recorded", Reason: "approved", Iteration: 2, Dir: dir,
 		Agents: []Agent{{Role: "planner", State: "done", StartedAt: started}}}}}
-	b := &builder{src: src, files: newFiles()}
+	b := NewBuilder(src, 0)
 
-	d, err := b.detail(context.Background(), 5)
+	d, err := b.Detail(context.Background(), 5)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -283,7 +283,7 @@ func TestDetail(t *testing.T) {
 	if d.Iterations[1].Verdict != artifacts.VerdictApprove {
 		t.Fatalf("iteration 2 = %+v", d.Iterations[1])
 	}
-	if _, err := b.detail(context.Background(), 99); !errors.Is(err, ErrNotFound) {
+	if _, err := b.Detail(context.Background(), 99); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("detail of a missing run: %v", err)
 	}
 }

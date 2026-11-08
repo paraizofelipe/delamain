@@ -44,12 +44,24 @@ type Run struct {
 	Branch        string
 	PR            string
 	// Orphaned is an active run whose owner died: it waits for `delamain recover`.
-	Orphaned  bool
-	Spend     string // the run's spend, as `status` shows it
-	Dir       string // the run directory, where the artifacts are
-	Agents    []Agent
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	Orphaned bool
+	// OwnerPID is the process driving the run; StopRequestedAt is when a stop was asked, if ever.
+	OwnerPID        int
+	StopRequestedAt *time.Time
+	Spend           string // the run's spend, as `status` shows it
+	Usage           Spend  // the same spend, in numbers
+	Dir             string // the run directory, where the artifacts are
+	Agents          []Agent
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+}
+
+// Spend is a spend in numbers: Value and Limit in Mode's unit (tokens or usd), CostUSD always.
+type Spend struct {
+	Mode    string  `json:"mode"` // tokens | usd
+	Value   float64 `json:"value"`
+	Limit   float64 `json:"limit,omitempty"` // 0 without one
+	CostUSD float64 `json:"cost_usd"`
 }
 
 // Agent is one role session of a run.
@@ -64,6 +76,7 @@ type Agent struct {
 
 // QueueItem is one issue waiting in the queue.
 type QueueItem struct {
+	ID       int64     `json:"id"`
 	Position int       `json:"position"`
 	Repo     string    `json:"repo"`
 	Issue    int       `json:"issue"`
@@ -81,6 +94,8 @@ type Status struct {
 	Today        string `json:"today"`       // the day's spend
 	TodayLimit   string `json:"today_limit"` // the daily budget; empty without one
 	TodayLevel   string `json:"today_level"` // ok | soft | hard
+	// TodaySpend is the day's spend in numbers, for the API; the board shows the strings.
+	TodaySpend Spend `json:"-"`
 }
 
 // Column keys, in the order of the board.
@@ -127,8 +142,8 @@ func Outcome(reason string) string {
 	return strings.TrimSpace(o)
 }
 
-// detail is the reason of a recorded run without its outcome.
-func detail(reason string) string {
+// ReasonText is the reason of a recorded run without its outcome.
+func ReasonText(reason string) string {
 	_, d, found := strings.Cut(reason, ":")
 	if !found {
 		return ""
@@ -140,8 +155,8 @@ func terminal(state string) bool {
 	return state == "recorded" || state == "needs_info" || state == "halted"
 }
 
-// columnOf places a run on the board.
-func columnOf(r Run) string {
+// ColumnOf places a run on the board.
+func ColumnOf(r Run) string {
 	if terminal(r.State) {
 		if r.State == "recorded" && settled[Outcome(r.Reason)] {
 			return ColDone

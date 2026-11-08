@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -92,6 +94,59 @@ func (s *fakeSource) Repos(context.Context) ([]Repo, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]Repo(nil), s.repos...), nil
+}
+
+// RunsBefore pages s.runs by id, newest first, as the store does.
+func (s *fakeSource) RunsBefore(_ context.Context, before int64, limit int, filter string) ([]board.Run, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.err != nil {
+		return nil, s.err
+	}
+	sorted := append([]board.Run(nil), s.runs...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].ID > sorted[j].ID })
+	var out []board.Run
+	for _, r := range sorted {
+		terminal := r.State == "recorded" || r.State == "needs_info"
+		if (before > 0 && r.ID >= before) || (filter == "active" && terminal) || (filter == "finished" && !terminal) {
+			continue
+		}
+		if len(out) == limit {
+			break
+		}
+		out = append(out, r)
+	}
+	return out, nil
+}
+
+// newTestServer is a Server over src and acts, auditing to a temp file, with a hand-moved clock.
+func newTestServer(t *testing.T, src *fakeSource, setup ...serverOption) *testServer {
+	t.Helper()
+	if src == nil {
+		src = &fakeSource{}
+	}
+	clk := newClock()
+	auditPath := filepath.Join(t.TempDir(), "state", "api-audit.log")
+	audit, err := OpenAudit(auditPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = audit.Close() })
+	opts := Options{Token: []byte(testToken), Now: clk.now, Interval: 20 * time.Millisecond, Version: "vtest"}
+	for _, f := range setup {
+		f(&opts)
+	}
+	srv := New(src, nil, audit, opts)
+	ctx, cancel := context.WithCancel(context.Background())
+	ts := httptest.NewUnstartedServer(srv.Handler())
+	ts.Config.BaseContext = func(net.Listener) context.Context { return ctx }
+	go srv.Run(ctx)
+	ts.Start()
+	t.Cleanup(func() {
+		cancel()
+		ts.Close()
+	})
+	return &testServer{Server: ts, srv: srv, clock: clk, audit: auditPath}
 }
 
 // testServer is a Server under test, with its audit file and clock.

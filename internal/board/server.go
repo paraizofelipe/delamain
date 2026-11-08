@@ -33,7 +33,7 @@ const keepAlive = 15 * time.Second
 
 // Server serves the board and pushes a snapshot to every open page when the board changes.
 type Server struct {
-	b    *builder
+	b    *Builder
 	opts Options
 	kick chan struct{} // a page subscribed: reload now instead of on the next tick
 
@@ -49,7 +49,7 @@ type event struct {
 
 func New(src Source, opts Options) *Server {
 	return &Server{
-		b:    &builder{src: src, files: newFiles(), limit: opts.Limit},
+		b:    NewBuilder(src, opts.Limit),
 		opts: opts,
 		kick: make(chan struct{}, 1),
 		subs: map[chan event]struct{}{},
@@ -86,7 +86,7 @@ func (s *Server) watched() bool {
 // refresh builds the board and sends it to the pages when it differs from the last one.
 func (s *Server) refresh(ctx context.Context) {
 	ev := event{name: "snapshot"}
-	snap, err := s.b.snapshot(ctx)
+	snap, err := s.b.Snapshot(ctx)
 	if err == nil {
 		ev.data, err = json.Marshal(snap)
 	}
@@ -190,7 +190,7 @@ func loopbackHost(hostport string) bool {
 }
 
 func (s *Server) handleSnapshot(w http.ResponseWriter, r *http.Request) {
-	snap, err := s.b.snapshot(r.Context())
+	snap, err := s.b.Snapshot(r.Context())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -204,7 +204,7 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "id de run inválido", http.StatusBadRequest)
 		return
 	}
-	d, err := s.b.detail(r.Context(), id)
+	d, err := s.b.Detail(r.Context(), id)
 	if errors.Is(err, ErrNotFound) {
 		http.Error(w, fmt.Sprintf("run %d não existe", id), http.StatusNotFound)
 		return

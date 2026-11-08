@@ -19,11 +19,15 @@ import (
 	"github.com/paraizo/delamain/internal/control"
 )
 
-// Source is everything the API reads: what the board reads, plus the repositories it may act on.
+// Source is everything the API reads: what the board reads, plus the repositories it may act on
+// and the runs page by page.
 type Source interface {
 	board.Source
 	// Repos lists the repositories the API may start or queue, with their forge when known.
 	Repos(ctx context.Context) ([]Repo, error)
+	// RunsBefore pages the runs newest first: up to limit with an id below before (0 means from
+	// the newest), filtered by "active", "finished" or "all".
+	RunsBefore(ctx context.Context, before int64, limit int, filter string) ([]board.Run, error)
 }
 
 // Options tune a Server.
@@ -64,6 +68,7 @@ type Server struct {
 	src     Source
 	acts    *control.Actions
 	audit   *Audit
+	board   *board.Builder
 	auth    *authGuard
 	limiter *rateLimiter
 	streams *streamGate
@@ -96,7 +101,7 @@ func New(src Source, acts *control.Actions, audit *Audit, opts Options) *Server 
 		opts.Limit = 20
 	}
 	return &Server{
-		opts: opts, src: src, acts: acts, audit: audit, log: opts.Log,
+		opts: opts, src: src, acts: acts, audit: audit, log: opts.Log, board: board.NewBuilder(src, opts.Limit),
 		auth:    newAuthGuard(opts.Token, opts.AuthFailures, opts.Now),
 		limiter: newRateLimiter(float64(opts.RequestsPerSecond), 2*opts.RequestsPerSecond, opts.Now),
 		streams: &streamGate{max: opts.MaxStreams},
@@ -147,9 +152,9 @@ func (s *Server) Handler() http.Handler {
 	return s.recoverPanics(s.headers(s.audited(s.throttle(s.serveMux(mux)))))
 }
 
-// routes registers the API routes on mux; each task adds its own.
+// routes registers the API routes on mux.
 func (s *Server) routes(mux *http.ServeMux) {
-	_ = mux
+	s.readRoutes(mux)
 }
 
 // serveMux serves mux, answering what matches nothing with a problem instead of plain text.
