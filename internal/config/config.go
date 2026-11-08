@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -40,6 +42,8 @@ type Config struct {
 	Daemon   Daemon   `yaml:"daemon"`
 	Paths    Paths    `yaml:"paths"`
 	Notify   Notify   `yaml:"notify"`
+	// API configures `delamain serve`, the remote-control API a tunnel forwards to; off by default.
+	API API `yaml:"api"`
 	// Decisions configures the optional fast decisions between pipeline stages; off by default.
 	Decisions Decisions `yaml:"decisions"`
 	// Complexity holds optional per-level limits applied once the plan is classified.
@@ -327,13 +331,102 @@ const (
 // NotifyEvents are the events that can raise a toast; "started" and "iteration" are off by default.
 var NotifyEvents = []string{"started", "iteration", "pr_opened", "needs_human", "halted", "needs_info", "budget", "recover"}
 
-// Notify configures desktop notifications (D-Bus on Linux, Notification Center on macOS).
+// Notify configures desktop notifications (D-Bus on Linux, Notification Center on macOS) and the
+// optional ntfy push beside them.
 type Notify struct {
 	Enabled bool `yaml:"enabled"`
 	// Backend is auto | dbus | macos | none.
 	Backend string `yaml:"backend"`
 	// Events lists the events that raise a toast.
 	Events []string `yaml:"events"`
+	// Ntfy publishes the same events to an ntfy topic, for a phone; off by default.
+	Ntfy Ntfy `yaml:"ntfy"`
+}
+
+// DefaultNtfyTokenEnv names the variable holding the ntfy access token, when the topic needs one.
+const DefaultNtfyTokenEnv = "DELAMAIN_NTFY_TOKEN" //nolint:gosec // a variable name, not a secret
+
+// Ntfy configures the ntfy push backend: ntfy.sh or a self-hosted server.
+type Ntfy struct {
+	Enabled bool `yaml:"enabled"`
+	// URL is the server; https unless it is on this machine.
+	URL string `yaml:"url"`
+	// Topic is the only secret on a public server: pick a random name.
+	Topic string `yaml:"topic"`
+	// TokenEnv is the name of the variable holding the access token, not the token itself; an
+	// empty name publishes without auth.
+	TokenEnv string `yaml:"token_env"`
+	// Priority maps the notification urgencies to ntfy priorities (1..5).
+	Priority NtfyPriority `yaml:"priority"`
+}
+
+// NtfyPriority is the ntfy priority of each urgency.
+type NtfyPriority struct {
+	Low      int `yaml:"low"`
+	Normal   int `yaml:"normal"`
+	Critical int `yaml:"critical"`
+}
+
+// ntfyTopic is what ntfy accepts as a topic name.
+var ntfyTopic = regexp.MustCompile(`^[-_A-Za-z0-9]{1,64}$`)
+
+// DefaultAPITokenEnv names the variable holding the bearer token of the remote API.
+const DefaultAPITokenEnv = "DELAMAIN_API_TOKEN" //nolint:gosec // a variable name, not a secret
+
+// API configures `delamain serve`. It only ever listens on loopback: a tunnel (Cloudflare Tunnel,
+// ngrok) terminates TLS and forwards to it, and a bearer token guards every route.
+type API struct {
+	Enabled bool `yaml:"enabled"`
+	// Addr is the loopback address to listen on.
+	Addr string `yaml:"addr"`
+	// TokenEnv is the name of the variable holding the bearer token, not the token itself.
+	TokenEnv string `yaml:"token_env"`
+	// Repos are repositories the API may start or queue besides daemon.repos.
+	Repos []string `yaml:"repos"`
+	// MaxStreams bounds the open event and log streams.
+	MaxStreams int `yaml:"max_streams"`
+	// TrustProxy takes the client address from CF-Connecting-IP or X-Forwarded-For when the peer
+	// is loopback, so the lockout counts per phone instead of per tunnel.
+	TrustProxy bool         `yaml:"trust_proxy"`
+	RateLimit  APIRateLimit `yaml:"rate_limit"`
+	// AuditLog is the JSON-lines file of every mutation; empty means <state_dir>/api-audit.log.
+	AuditLog string `yaml:"audit_log"`
+}
+
+// APIRateLimit throttles the API: failed logins per client, requests overall.
+type APIRateLimit struct {
+	// AuthFailures per client in ten minutes before it is locked out for fifteen.
+	AuthFailures int `yaml:"auth_failures"`
+	// RequestsPerSecond overall, with a burst of twice that.
+	RequestsPerSecond int `yaml:"requests_per_second"`
+}
+
+// AuditPath is the audit log file: AuditLog, or api-audit.log under stateDir.
+func (a API) AuditPath(stateDir string) string {
+	if a.AuditLog != "" {
+		return a.AuditLog
+	}
+	return filepath.Join(stateDir, "api-audit.log")
+}
+
+// LoopbackAddr reports whether addr is host:port on this machine: localhost or a loopback IP.
+func LoopbackAddr(addr string) error {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("%q is not host:port", addr)
+	}
+	if !loopbackHost(host) {
+		return fmt.Errorf("%q is not a loopback address", addr)
+	}
+	return nil
+}
+
+func loopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // DecisionMode selects whether a decision point is skipped, only logged or acted upon.
@@ -435,6 +528,17 @@ func defaults() Config {
 		Notify: Notify{
 			Enabled: true, Backend: NotifyAuto,
 			Events: []string{"pr_opened", "needs_human", "halted", "needs_info", "budget", "recover"},
+			Ntfy: Ntfy{
+				URL:      "https://ntfy.sh",
+				TokenEnv: DefaultNtfyTokenEnv,
+				Priority: NtfyPriority{Low: 2, Normal: 3, Critical: 4},
+			},
+		},
+		API: API{
+			Addr:       "127.0.0.1:7778",
+			TokenEnv:   DefaultAPITokenEnv,
+			MaxStreams: 8,
+			RateLimit:  APIRateLimit{AuthFailures: 10, RequestsPerSecond: 20},
 		},
 		Decisions: Decisions{
 			Provider: DecisionsProvider{
@@ -487,6 +591,10 @@ func Load(path string, getenv func(string) string) (Config, error) {
 	for i, r := range cfg.Daemon.Repos {
 		cfg.Daemon.Repos[i] = expandHome(r)
 	}
+	for i, r := range cfg.API.Repos {
+		cfg.API.Repos[i] = expandHome(r)
+	}
+	cfg.API.AuditLog = expandHome(cfg.API.AuditLog)
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
 	}
@@ -505,6 +613,10 @@ func applyEnv(cfg *Config, getenv func(string) string) error {
 		"DELAMAIN_LABEL_PREFIX":    &cfg.Forge.Labels.Prefix,
 		"DELAMAIN_NOTIFY_BACKEND":  &cfg.Notify.Backend,
 		"DELAMAIN_DECISIONS_MODEL": &cfg.Decisions.Provider.Model,
+		"DELAMAIN_API_ADDR":        &cfg.API.Addr,
+		"DELAMAIN_API_TOKEN_ENV":   &cfg.API.TokenEnv,
+		"DELAMAIN_NTFY_URL":        &cfg.Notify.Ntfy.URL,
+		"DELAMAIN_NTFY_TOPIC":      &cfg.Notify.Ntfy.Topic,
 	}
 	for key, dst := range strs {
 		if v := getenv(key); v != "" {
@@ -516,6 +628,8 @@ func applyEnv(cfg *Config, getenv func(string) string) error {
 		"DELAMAIN_REVIEW_ENABLED":    &cfg.Review.Enabled,
 		"DELAMAIN_REVIEW_FIX":        &cfg.Review.Fix,
 		"DELAMAIN_DECISIONS_ENABLED": &cfg.Decisions.Enabled,
+		"DELAMAIN_API_ENABLED":       &cfg.API.Enabled,
+		"DELAMAIN_NTFY_ENABLED":      &cfg.Notify.Ntfy.Enabled,
 	}
 	for key, dst := range bools {
 		v := getenv(key)
@@ -654,7 +768,38 @@ func (c Config) Validate() error {
 	}
 	errs = append(errs, c.Notify.validate()...)
 	errs = append(errs, c.Decisions.validate()...)
+	errs = append(errs, c.API.validate()...)
 	return errors.Join(errs...)
+}
+
+// validate checks the api block only when it is enabled, so a disabled block never blocks a run.
+func (a API) validate() []error {
+	if !a.Enabled {
+		return nil
+	}
+	var errs []error
+	if err := LoopbackAddr(a.Addr); err != nil {
+		errs = append(errs, fmt.Errorf("api.addr: %w; the API only listens on this machine, a tunnel forwards to it", err))
+	}
+	// The rejected value is left out: it may be a token pasted where the variable name belongs.
+	if !envName.MatchString(a.TokenEnv) {
+		errs = append(errs, fmt.Errorf("api.token_env must be a variable name matching %s", envName))
+	}
+	for i, r := range a.Repos {
+		if strings.TrimSpace(r) == "" || !filepath.IsAbs(r) {
+			errs = append(errs, fmt.Errorf("api.repos[%d] %q must be an absolute path", i, r))
+		}
+	}
+	if a.MaxStreams < 1 {
+		errs = append(errs, errors.New("api.max_streams must be >= 1"))
+	}
+	if a.RateLimit.AuthFailures < 1 {
+		errs = append(errs, errors.New("api.rate_limit.auth_failures must be >= 1"))
+	}
+	if a.RateLimit.RequestsPerSecond < 1 {
+		errs = append(errs, errors.New("api.rate_limit.requests_per_second must be >= 1"))
+	}
+	return errs
 }
 
 // envName is a portable environment variable name, which a pasted key (sk-...) never matches.
@@ -707,6 +852,37 @@ func (n Notify) validate() []error {
 	for _, e := range n.Events {
 		if !slices.Contains(NotifyEvents, e) {
 			errs = append(errs, fmt.Errorf("notify.events: %q is not one of %s", e, strings.Join(NotifyEvents, "|")))
+		}
+	}
+	return append(errs, n.Ntfy.validate()...)
+}
+
+// validate checks the ntfy block only when it is enabled.
+func (n Ntfy) validate() []error {
+	if !n.Enabled {
+		return nil
+	}
+	var errs []error
+	u, err := url.Parse(n.URL)
+	switch {
+	case err != nil || u.Host == "" || (u.Scheme != "https" && u.Scheme != "http"):
+		errs = append(errs, fmt.Errorf("notify.ntfy.url %q must be an http(s) URL", n.URL))
+	case u.Scheme == "http" && !loopbackHost(u.Hostname()):
+		errs = append(errs, fmt.Errorf("notify.ntfy.url %q must use https off this machine", n.URL))
+	}
+	if !ntfyTopic.MatchString(n.Topic) {
+		errs = append(errs, fmt.Errorf("notify.ntfy.topic must match %s", ntfyTopic))
+	}
+	// The rejected value is left out: it may be a token pasted where the variable name belongs.
+	if n.TokenEnv != "" && !envName.MatchString(n.TokenEnv) {
+		errs = append(errs, fmt.Errorf("notify.ntfy.token_env must be a variable name matching %s", envName))
+	}
+	for _, lp := range []struct {
+		name string
+		p    int
+	}{{"low", n.Priority.Low}, {"normal", n.Priority.Normal}, {"critical", n.Priority.Critical}} {
+		if lp.p < 1 || lp.p > 5 {
+			errs = append(errs, fmt.Errorf("notify.ntfy.priority.%s must be in [1, 5], got %d", lp.name, lp.p))
 		}
 	}
 	return errs
