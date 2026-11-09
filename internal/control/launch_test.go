@@ -239,9 +239,12 @@ func TestStartReviewShouldFindARunThatEndedBeforeTheFirstPoll(t *testing.T) {
 	f.cfg.Daemon.Repos = []string{f.repo}
 	f.cfg.Review.Enabled = true
 	dir := t.TempDir()
+	release := filepath.Join(dir, "release")
+	// The child exits only once the test has seeded the run it would have created.
+	exe := launchScript(t, dir, "while [ ! -e '"+release+"' ]; do sleep 0.02; done\n")
 	acts := New(Deps{
 		Cfg: f.cfg, Store: f.st, RunIDPoll: time.Hour, // never polls: the id comes from the lookup at the end
-		Launcher: &Launcher{StateDir: f.cfg.Paths.StateDir, Executable: launchScript(t, dir, "exit 0\n")},
+		Launcher: &Launcher{StateDir: f.cfg.Paths.StateDir, Executable: exe},
 	})
 	ch, unsub := acts.Operations().Subscribe()
 	defer unsub()
@@ -250,6 +253,9 @@ func TestStartReviewShouldFindARunThatEndedBeforeTheFirstPoll(t *testing.T) {
 		t.Fatal(err)
 	}
 	rec := f.run(t, "pr:12", "", store.StateRecorded, store.KindReview) // finished before anyone looked
+	if err := os.WriteFile(release, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	done := waitOp(t, acts.Operations(), ch, op.ID)
 	if done.Kind != OpStartReview || done.PR != 12 || done.Status != OpSucceeded || done.RunID != rec.ID {
 		t.Fatalf("the finished run is found by repo and ref: %+v", done)
