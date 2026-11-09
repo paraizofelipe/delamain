@@ -92,6 +92,9 @@ func serve(ctx context.Context, out io.Writer, cfg config.Config, opts serveOpti
 	if err != nil {
 		return err
 	}
+	// Held in memory from here on: the recover serve runs in-process pushes and calls the forge,
+	// and a git hook or forge CLI must not find the token in the environment.
+	_ = os.Unsetenv(cfg.API.TokenEnv)
 	st, err := openStore(ctx, cfg)
 	if err != nil {
 		return err

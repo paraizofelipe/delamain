@@ -41,7 +41,17 @@ func NewRoot() *cobra.Command {
 		SilenceErrors: true,
 	}
 	root.PersistentFlags().StringVar(&cfgPath, "config", config.DefaultPath(), "config file")
-	load := func() (config.Config, error) { return config.Load(cfgPath, os.Getenv) }
+	loadWithToken := func() (config.Config, error) { return config.Load(cfgPath, os.Getenv) }
+	// load is how every command but serve and doctor reads the config: it also drops the API
+	// token from this process's environment. Only serve uses it, and the git, gates and agents a
+	// run starts inherit this environment, hooks and tests an agent wrote included.
+	load := func() (config.Config, error) {
+		cfg, err := loadWithToken()
+		if err == nil && cfg.API.TokenEnv != "" {
+			_ = os.Unsetenv(cfg.API.TokenEnv)
+		}
+		return cfg, err
+	}
 
 	root.AddCommand(
 		&cobra.Command{
@@ -64,7 +74,7 @@ func NewRoot() *cobra.Command {
 			Use:   "doctor",
 			Short: "Check omp (RPC mode), git, prompts, tools, forge auth and, when enabled, herdr",
 			RunE: func(cmd *cobra.Command, _ []string) error {
-				cfg, err := load()
+				cfg, err := loadWithToken() // the api check reads the token
 				if err != nil {
 					return err
 				}
@@ -104,7 +114,7 @@ func NewRoot() *cobra.Command {
 		newStatusCmd(load),
 		newWatchCmd(load),
 		newBoardCmd(load),
-		newServeCmd(load),
+		newServeCmd(loadWithToken), // serve drops the token itself once read
 		newStopCmd(load),
 		newRmCmd(load),
 		newLogsCmd(load),

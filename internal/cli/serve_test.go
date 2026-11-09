@@ -70,6 +70,34 @@ func TestServeShouldRefuseANonLoopbackAddress(t *testing.T) {
 	}
 }
 
+// Only serve uses the API token: any other command drops it, so the git, gates and agents a run
+// starts, hooks and tests an agent wrote included, never inherit it.
+func TestCommandsOtherThanServeShouldDropTheAPITokenFromTheEnvironment(t *testing.T) {
+	cfgFile, _ := isolatedConfig(t, "api:\n  token_env: MY_API_TOKEN\n")
+	t.Setenv("MY_API_TOKEN", serveTestToken)
+	t.Setenv("DELAMAIN_API_TOKEN", "not-the-configured-variable")
+	if _, err := execute(t, "--config", cfgFile, "config"); err != nil {
+		t.Fatal(err)
+	}
+	if _, set := os.LookupEnv("MY_API_TOKEN"); set {
+		t.Fatal("the variable api.token_env names is dropped once the config is loaded")
+	}
+	if os.Getenv("DELAMAIN_API_TOKEN") != "not-the-configured-variable" {
+		t.Fatal("only the configured variable is dropped")
+	}
+}
+
+func TestCommandsShouldKeepTheEnvironmentWhenTheConfigFailsToLoad(t *testing.T) {
+	cfgFile, _ := isolatedConfig(t, "api: [not, a, mapping]\n")
+	t.Setenv("DELAMAIN_API_TOKEN", serveTestToken)
+	if _, err := execute(t, "--config", cfgFile, "config"); err == nil {
+		t.Fatal("a broken config must fail to load")
+	}
+	if os.Getenv("DELAMAIN_API_TOKEN") != serveTestToken {
+		t.Fatal("nothing is dropped from a config that did not load: the command fails before starting anything")
+	}
+}
+
 func TestServeShouldAnswerHealthzOpenlyAndTheAPIBehindTheToken(t *testing.T) {
 	cfgFile, state := isolatedConfig(t, "")
 	t.Setenv("DELAMAIN_API_TOKEN", serveTestToken)
@@ -94,6 +122,9 @@ func TestServeShouldAnswerHealthzOpenlyAndTheAPIBehindTheToken(t *testing.T) {
 	}, "serve to say where it listens")
 	if !strings.Contains(out.String(), filepath.Join(state, "api-audit.log")) {
 		t.Fatalf("serve names its audit log:\n%s", out)
+	}
+	if _, set := os.LookupEnv("DELAMAIN_API_TOKEN"); set {
+		t.Fatal("serve must drop the token from its environment once read: the git and forge calls of a recover would inherit it")
 	}
 
 	get := func(path, token string) (int, string) {

@@ -79,7 +79,7 @@ func TestReadmeShouldDocumentTheRemoteAPI(t *testing.T) {
 		"delamain serve", "openapi.yaml", // the command and the contract
 		"api.addr", "loopback", "cloudflared tunnel", "ngrok http", // the tunnel setup
 		"Authorization: Bearer", "/healthz", "auth_failures", "15 minutos", "64 KiB", // the security model
-		"delamain serve token", "token_env", "EnvironmentFile", "ambiente das runs", // the token
+		"delamain serve token", "token_env", "EnvironmentFile", "nunca o herdam", // the token
 		"trust_proxy", "CF-Connecting-IP", "X-Forwarded-For", // the proxy trade-off
 		"api-audit.log", "Nunca o token nem o body", // the audit
 		"mesma máquina",                              // the environment
