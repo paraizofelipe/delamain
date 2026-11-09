@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -207,5 +208,72 @@ func TestHubShouldForgetTheStateWhenNoStreamIsOpen(t *testing.T) {
 	defer src.mu.Unlock()
 	if src.calls != calls {
 		t.Fatalf("the hub reloads only while a stream is open: %d → %d", calls, src.calls)
+	}
+}
+
+// drained is every event waiting on sub, without waiting for more.
+func drained(sub *subscriber) []sseMsg {
+	var out []sseMsg
+	for {
+		select {
+		case m := <-sub.ch:
+			out = append(out, m)
+		default:
+			return out
+		}
+	}
+}
+
+// The app opens a new stream each time it comes back to the foreground: that must not swallow a
+// change the streams already open have not been sent yet.
+func TestHubShouldStillPushAPendingChangeToOpenStreamsWhenAnotherStreamOpens(t *testing.T) {
+	src := &fakeSource{runs: sampleRuns(t.TempDir())}
+	h := New(src, nil, nil, Options{Token: []byte(testToken)}).hub // no Run: reloads happen when the test says
+	ctx := context.Background()
+	open, _, err := h.subscribe(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src.setRun(2, func(r *board.Run) { r.State, r.Iteration = "verify", 2 })
+	late, burst, err := h.subscribe(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(burst[1].data), `"state":"verify"`) {
+		t.Fatalf("the new stream opens with the state as it stands: %s", burst[1].data)
+	}
+	h.reload(ctx)
+	var pushed bool
+	for _, m := range drained(open) {
+		pushed = pushed || m.name == "run" && strings.Contains(string(m.data), `"id":2`) && strings.Contains(string(m.data), `"state":"verify"`)
+	}
+	if !pushed {
+		t.Fatal("the stream open before the change must still learn that run 2 moved to verify")
+	}
+	for _, m := range drained(late) { // a repeat of what its opening burst said is harmless
+		if m.name == "run_removed" || m.name == "run" && !strings.Contains(string(m.data), `"id":2`) {
+			t.Fatalf("the new stream only gets the change it already holds, if anything: %s %s", m.name, m.data)
+		}
+	}
+
+	// Once every stream got it, the change is not pushed again.
+	h.reload(ctx)
+	if evs := drained(open); len(evs) != 0 {
+		t.Fatalf("an unchanged state pushes nothing: %+v", evs)
+	}
+}
+
+// With no stream open the next one sets the baseline: its reload pushes nothing it already holds.
+func TestHubShouldBaseTheFirstStreamOnItsOwnOpeningState(t *testing.T) {
+	src := &fakeSource{runs: sampleRuns(t.TempDir())}
+	h := New(src, nil, nil, Options{Token: []byte(testToken)}).hub
+	ctx := context.Background()
+	sub, _, err := h.subscribe(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.reload(ctx)
+	if evs := drained(sub); len(evs) != 0 {
+		t.Fatalf("nothing changed since the stream opened: %+v", evs)
 	}
 }

@@ -32,6 +32,10 @@ type subscriber struct {
 type hub struct {
 	s    *Server
 	kick chan struct{}
+	// reloadMu serializes reading the state with diffing it, in reload and subscribe alike: a
+	// stream opening between a reload's read and its diff would otherwise move the last state
+	// under it.
+	reloadMu sync.Mutex
 
 	mu     sync.Mutex
 	subs   map[*subscriber]struct{}
@@ -119,6 +123,8 @@ func (h *hub) current(ctx context.Context) (runs map[int64]json.RawMessage, orde
 
 // reload reads the state and pushes what differs from the last reload.
 func (h *hub) reload(ctx context.Context) {
+	h.reloadMu.Lock()
+	defer h.reloadMu.Unlock()
 	runs, _, queue, status, err := h.current(ctx)
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -175,16 +181,22 @@ func (h *hub) send(name string, data json.RawMessage) {
 	}
 }
 
-// subscribe opens a stream: it reads the state once, records it as the last one and returns
-// it with the subscriber, so the loop's next reload diffs against what the stream got.
+// subscribe opens a stream: it reads the state once and returns it with the subscriber. The
+// first stream records it as the last state; a later one leaves the last state alone, so a
+// change the open streams have not been sent yet still reaches them, and the new stream at
+// worst gets again what it opened with.
 func (h *hub) subscribe(ctx context.Context) (*subscriber, []sseMsg, error) {
+	h.reloadMu.Lock()
+	defer h.reloadMu.Unlock()
 	runs, ordered, queue, status, err := h.current(ctx)
 	if err != nil {
 		return nil, nil, err
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.runs, h.queue, h.status = runs, queue, status
+	if h.runs == nil {
+		h.runs, h.queue, h.status = runs, queue, status
+	}
 	sub := &subscriber{ch: make(chan sseMsg, eventBuffer)}
 	h.subs[sub] = struct{}{}
 	select {
