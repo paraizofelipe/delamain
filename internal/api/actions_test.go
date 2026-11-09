@@ -349,6 +349,7 @@ func TestStartRunAndReviewShouldAnswerOperationsAndTheirRefusals(t *testing.T) {
 	res := ts.post(t, "/api/v1/runs", `{"repo":"`+f.repo+`","issue":12}`)
 	var op Operation
 	res.json(t, &op)
+	runOp := op.ID // op is reused for the review below
 	if res.Status != http.StatusAccepted || op.Kind != "start_run" || op.Issue != 12 || op.Repo != f.repo || op.Status != "running" {
 		t.Fatalf("start: %d %+v", res.Status, op)
 	}
@@ -398,7 +399,7 @@ func TestStartRunAndReviewShouldAnswerOperationsAndTheirRefusals(t *testing.T) {
 		t.Fatalf("reviews off: %d %v", res.Status, p)
 	}
 	lines := ts.auditLines(t)
-	if lines[0]["repo"] != f.repo || lines[0]["issue"] != float64(12) || lines[0]["operation_id"] != op.ID && lines[0]["status"] != float64(202) {
+	if lines[0]["repo"] != f.repo || lines[0]["issue"] != float64(12) || lines[0]["operation_id"] != runOp || lines[0]["status"] != float64(202) {
 		t.Fatalf("starts are audited with repo, issue and operation: %v", lines[0])
 	}
 }
