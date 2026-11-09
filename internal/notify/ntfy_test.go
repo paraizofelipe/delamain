@@ -177,6 +177,50 @@ func TestNtfyShouldReportTheStatusOfARefusedPublishWithoutTheToken(t *testing.T)
 	}
 }
 
+func TestNtfyShouldKeepTheResponseBodyOutOfAPublishError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = io.WriteString(w, `{"error":"bad credentials: `+r.Header.Get("Authorization")+`"}`)
+	}))
+	t.Cleanup(srv.Close)
+	b := newNtfy(ntfyConfig(srv.URL), "tk-secret", srv.Client())
+	err := b.send(context.Background(), Message{Event: EventHalted, Title: "t"})
+	if err == nil || !strings.Contains(err.Error(), "401") {
+		t.Fatalf("a refused publish is an error naming the status, got %v", err)
+	}
+	if strings.Contains(err.Error(), "tk-secret") || strings.Contains(err.Error(), "bad credentials") {
+		t.Fatalf("a body echoing the request never reaches the error: %v", err)
+	}
+}
+
+func TestNtfyShouldClickTheDefaultActionEvenWhenAnEarlierButtonOpensTheSamePage(t *testing.T) {
+	srv := newNtfyServer(t, http.StatusOK)
+	b := newNtfy(ntfyConfig(srv.URL), "", srv.Client())
+	acts := []Action{
+		{Key: "open-pr", Label: "PR", Target: "https://x.test/pr/1"},
+		{Key: "open-issue", Label: "Issue", Target: "https://x.test/issue/2"},
+		{Key: "default", Label: "Open", Target: "https://x.test/pr/1"},
+	}
+	if err := b.send(context.Background(), Message{Event: EventPROpened, Title: "t", Actions: acts}); err != nil {
+		t.Fatal(err)
+	}
+	body := srv.requests()[0].Body
+	if body.Click != "https://x.test/pr/1" {
+		t.Fatalf("tapping the notification opens the default target, got click %q", body.Click)
+	}
+	if len(body.Actions) != 1 || body.Actions[0].URL != "https://x.test/issue/2" {
+		t.Fatalf("the page the click opens is not repeated as a button: %+v", body.Actions)
+	}
+}
+
+func TestMaskTopicShouldHideAShortTopicWhole(t *testing.T) {
+	for topic, want := range map[string]string{"": "…", "ab": "…", "abc": "…", "abcd": "abc…", "dlm-secret": "dlm…"} {
+		if got := maskTopic(topic); got != want {
+			t.Fatalf("maskTopic(%q) = %q, want %q", topic, got, want)
+		}
+	}
+}
+
 func TestClientShouldFanOutToDesktopAndNtfyAndKeepGoingWhenOneFails(t *testing.T) {
 	srv := newNtfyServer(t, http.StatusOK)
 	bus := &fakeBus{err: errors.New("bus down")}

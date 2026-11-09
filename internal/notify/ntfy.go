@@ -76,8 +76,8 @@ func (n *ntfyBackend) send(ctx context.Context, m Message) error {
 	if res.StatusCode/100 == 2 {
 		return nil
 	}
-	reason, _ := io.ReadAll(io.LimitReader(res.Body, 200))
-	return fmt.Errorf("ntfy: %s: %s", res.Status, strings.TrimSpace(string(reason)))
+	// The status alone: a server or proxy may echo the request, token included, in its body.
+	return fmt.Errorf("ntfy: %s", res.Status)
 }
 
 func (n *ntfyBackend) close() error { return nil }
@@ -90,15 +90,18 @@ func (n *ntfyBackend) publish(m Message) ntfyPublish {
 		Tags: []string{"delamain", string(m.Event)},
 	}
 	seen := map[string]bool{}
+	// The default action is the click even when a button before it opens the same page.
+	for _, a := range m.Actions {
+		if a.Key == "default" && httpsURL(a.Target) {
+			p.Click, seen[a.Target] = a.Target, true
+			break
+		}
+	}
 	for _, a := range m.Actions {
 		if !httpsURL(a.Target) || seen[a.Target] {
 			continue
 		}
 		seen[a.Target] = true
-		if a.Key == "default" && p.Click == "" {
-			p.Click = a.Target
-			continue
-		}
 		if len(p.Actions) < ntfyMaxActions {
 			p.Actions = append(p.Actions, ntfyAction{Action: "view", Label: a.Label, URL: a.Target})
 		}
@@ -171,11 +174,12 @@ func diagnoseNtfy(ctx context.Context, cfg config.Ntfy, s sys) *NtfyProbe {
 	return p
 }
 
-// maskTopic keeps the first three characters of a topic, which is the secret of a public server.
+// maskTopic keeps the first three characters of a topic, which is the secret of a public server;
+// a topic that short is hidden whole.
 func maskTopic(topic string) string {
 	r := []rune(topic)
 	if len(r) <= 3 {
-		return topic
+		return "…"
 	}
 	return string(r[:3]) + "…"
 }
