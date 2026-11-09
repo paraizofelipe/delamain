@@ -47,19 +47,38 @@ func (a *Actions) checkRepo(repo string) (string, error) {
 	return repo, nil
 }
 
+// mainRepo checks repo against AllowedRepos and returns its main worktree, which is what a run
+// records as its repo: a linked worktree or a subdirectory of an allowed repository would
+// otherwise miss the active run of the same issue.
+func (a *Actions) mainRepo(ctx context.Context, repo string) (string, error) {
+	repo, err := a.checkRepo(repo)
+	if err != nil {
+		return "", err
+	}
+	top, err := a.d.Git.MainWorktree(ctx, repo)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", repo, err)
+	}
+	return top, nil
+}
+
 // StartIssue starts `delamain run --issue issue --repo repo` as a process of its own and returns
-// at once with the Operation that follows it. An issue with an active run is refused with
-// ErrRunActive; a repository outside AllowedRepos with ErrRepoNotAllowed.
-func (a *Actions) StartIssue(ctx context.Context, repo string, issue int) (Operation, error) {
+// at once with the Operation that follows it; kind (feature or bug) overrides the run's own
+// inference, "" keeps it. An issue with an active run is refused with ErrRunActive; a repository
+// outside AllowedRepos with ErrRepoNotAllowed.
+func (a *Actions) StartIssue(ctx context.Context, repo string, issue int, kind string) (Operation, error) {
 	if issue <= 0 {
 		return Operation{}, fmt.Errorf("%w: issue must be a positive number", ErrInvalid)
 	}
-	repo, err := a.checkRepo(repo)
+	if kind != "" && kind != "feature" && kind != "bug" {
+		return Operation{}, fmt.Errorf("%w: kind must be feature or bug", ErrInvalid)
+	}
+	repo, err := a.mainRepo(ctx, repo)
 	if err != nil {
 		return Operation{}, err
 	}
 	return a.start(ctx, Operation{Kind: OpStartRun, Repo: repo, Issue: issue}, "#"+strconv.Itoa(issue),
-		func() (string, error) { return a.d.Launcher.StartIssue(repo, issue) })
+		func() (string, error) { return a.d.Launcher.StartIssue(repo, issue, kind) })
 }
 
 // StartReview starts `delamain review --pr pr --repo repo` as StartIssue starts a run. Reviews
@@ -71,7 +90,7 @@ func (a *Actions) StartReview(ctx context.Context, repo string, pr int) (Operati
 	if !a.d.Cfg.Review.Enabled {
 		return Operation{}, ErrReviewDisabled
 	}
-	repo, err := a.checkRepo(repo)
+	repo, err := a.mainRepo(ctx, repo)
 	if err != nil {
 		return Operation{}, err
 	}

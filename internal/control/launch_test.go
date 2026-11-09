@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/paraizo/delamain/internal/gitx"
 	"github.com/paraizo/delamain/internal/store"
 )
 
@@ -63,7 +64,7 @@ func TestLauncherShouldRunTheBinaryDetachedAndLogItsOutput(t *testing.T) {
 	t.Setenv("DELAMAIN_API_TOKEN", "secret")
 	exe := launchScript(t, dir, "printf '%s\\n' \"$@\" > '"+args+"'\necho to stdout\necho \"token=[$DELAMAIN_API_TOKEN]\" >&2\nread line || echo stdin is empty\n")
 	l := Launcher{StateDir: state, Executable: exe, StripEnv: []string{"DELAMAIN_API_TOKEN"}}
-	path, err := l.StartIssue(repo, 42)
+	path, err := l.StartIssue(repo, 42, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +106,7 @@ func TestLauncherShouldReportTheExitCodeAndTheLog(t *testing.T) {
 		dir := t.TempDir()
 		state := filepath.Join(dir, "state")
 		l := Launcher{StateDir: state, Executable: launchScript(t, dir, "exit "+strconv.Itoa(c.code)+"\n")}
-		path, err := l.StartIssue(dir, 7)
+		path, err := l.StartIssue(dir, 7, "")
 		exit, ok := errors.AsType[StartExit](err)
 		if !ok || exit.Kind != OpStartRun || exit.Issue != 7 || exit.Code != c.code || exit.Log != path {
 			t.Fatalf("exit %d is a StartExit with its code and the log: %+v %v", c.code, exit, err)
@@ -121,7 +122,7 @@ func TestLauncherShouldReportTheExitCodeAndTheLog(t *testing.T) {
 		t.Fatalf("a review's exit: %+v %v", exit, err)
 	}
 	missing := Launcher{StateDir: filepath.Join(dir, "state"), Executable: func() (string, error) { return filepath.Join(dir, "missing"), nil }}
-	if _, err := missing.StartIssue(dir, 7); err == nil || errors.As(err, new(StartExit)) {
+	if _, err := missing.StartIssue(dir, 7, ""); err == nil || errors.As(err, new(StartExit)) {
 		t.Fatalf("a run that cannot start is an error of its own: %v", err)
 	}
 }
@@ -152,7 +153,7 @@ func TestStartIssueShouldFollowTheLaunchAsAnOperation(t *testing.T) {
 	ch, unsub := acts.Operations().Subscribe()
 	defer unsub()
 
-	op, err := acts.StartIssue(context.Background(), f.repo+"/", 7)
+	op, err := acts.StartIssue(context.Background(), f.repo+"/", 7, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,14 +180,14 @@ func TestStartIssueShouldRefuseAnUnknownRepoAnActiveRunAndABadNumber(t *testing.
 	f.cfg.Daemon.Repos = []string{f.repo}
 	acts := New(Deps{Cfg: f.cfg, Store: f.st})
 	ctx := context.Background()
-	if _, err := acts.StartIssue(ctx, "/elsewhere", 7); !errors.Is(err, ErrRepoNotAllowed) || !strings.Contains(err.Error(), "/elsewhere") {
+	if _, err := acts.StartIssue(ctx, "/elsewhere", 7, ""); !errors.Is(err, ErrRepoNotAllowed) || !strings.Contains(err.Error(), "/elsewhere") {
 		t.Fatalf("a repo outside the allowlist is refused naming it: %v", err)
 	}
-	if _, err := acts.StartIssue(ctx, f.repo, 0); !errors.Is(err, ErrInvalid) {
+	if _, err := acts.StartIssue(ctx, f.repo, 0, ""); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("issue 0 is invalid: %v", err)
 	}
 	rec := f.run(t, "#7", "", store.StateImplement, store.KindIssue)
-	_, err := acts.StartIssue(ctx, f.repo, 7)
+	_, err := acts.StartIssue(ctx, f.repo, 7, "")
 	var re *RunError
 	if !errors.Is(err, ErrRunActive) || !errors.As(err, &re) || re.ID != rec.ID || err.Error() != "#7 already has active run 1 (implement)" {
 		t.Fatalf("an active run of the issue refuses the start: %v", err)
@@ -211,7 +212,7 @@ func TestStartIssueShouldFindTheRunTheLaunchCreated(t *testing.T) {
 	})
 	ch, unsub := acts.Operations().Subscribe()
 	defer unsub()
-	op, err := acts.StartIssue(context.Background(), f.repo, 7)
+	op, err := acts.StartIssue(context.Background(), f.repo, 7, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -353,11 +354,11 @@ func TestStartIssueShouldRefuseASecondStartOfTheIssueWhileTheFirstIsLaunching(t 
 	ch, unsub := acts.Operations().Subscribe()
 	defer unsub()
 	ctx := context.Background()
-	first, err := acts.StartIssue(ctx, f.repo, 7)
+	first, err := acts.StartIssue(ctx, f.repo, 7, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = acts.StartIssue(ctx, f.repo+"/", 7)
+	_, err = acts.StartIssue(ctx, f.repo+"/", 7, "")
 	var re *RunError
 	if !errors.Is(err, ErrRunActive) || !errors.As(err, &re) || re.ID != 0 || re.Operation != first.ID {
 		t.Fatalf("the second start is refused naming the pending one: %v", err)
@@ -365,7 +366,7 @@ func TestStartIssueShouldRefuseASecondStartOfTheIssueWhileTheFirstIsLaunching(t 
 	if err.Error() != "#7 is already being started by operation "+first.ID {
 		t.Fatalf("the message says the issue is being started: %q", err)
 	}
-	other, err := acts.StartIssue(ctx, f.repo, 8)
+	other, err := acts.StartIssue(ctx, f.repo, 8, "")
 	if err != nil {
 		t.Fatalf("another issue starts meanwhile: %v", err)
 	}
@@ -375,7 +376,7 @@ func TestStartIssueShouldRefuseASecondStartOfTheIssueWhileTheFirstIsLaunching(t 
 	waitOp(t, acts.Operations(), ch, first.ID) // the other one may end first: its event is gone
 	deadline := time.After(10 * time.Second)
 	for {
-		op, err := acts.StartIssue(ctx, f.repo, 7)
+		op, err := acts.StartIssue(ctx, f.repo, 7, "")
 		if err == nil {
 			waitOp(t, acts.Operations(), ch, op.ID)
 			if got, _ := acts.Operations().Get(other.ID); got.Status != OpSucceeded {
@@ -398,7 +399,7 @@ func TestStartIssueShouldLeaveTheExitCodeOutWhenTheProcessNeverStarted(t *testin
 	acts := New(Deps{Cfg: f.cfg, Store: f.st, Launcher: &Launcher{StateDir: f.cfg.Paths.StateDir, Executable: missing}})
 	ch, unsub := acts.Operations().Subscribe()
 	defer unsub()
-	op, err := acts.StartIssue(context.Background(), f.repo, 7)
+	op, err := acts.StartIssue(context.Background(), f.repo, 7, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -411,8 +412,8 @@ func TestStartIssueShouldLeaveTheExitCodeOutWhenTheProcessNeverStarted(t *testin
 func TestLaunchShouldGiveEveryLaunchALogOfItsOwnEvenInTheSameSecond(t *testing.T) {
 	state := t.TempDir()
 	l := Launcher{StateDir: state, Executable: launchScript(t, t.TempDir(), "echo \"$@\"\n")}
-	a, errA := l.StartIssue("/repo/a", 42)
-	b, errB := l.StartIssue("/repo/b", 42)
+	a, errA := l.StartIssue("/repo/a", 42, "")
+	b, errB := l.StartIssue("/repo/b", 42, "")
 	if errA != nil || errB != nil {
 		t.Fatal(errA, errB)
 	}
@@ -424,5 +425,51 @@ func TestLaunchShouldGiveEveryLaunchALogOfItsOwnEvenInTheSameSecond(t *testing.T
 		if err != nil || strings.TrimSpace(string(got)) != "run --issue 42 --repo "+repo {
 			t.Fatalf("%s holds only its own launch: %q %v", path, got, err)
 		}
+	}
+}
+
+func TestStartIssueShouldHandTheKindAndTheConfigFileToTheRun(t *testing.T) {
+	f := newFixture(t)
+	f.cfg.Daemon.Repos = []string{f.repo}
+	l := &Launcher{StateDir: f.cfg.Paths.StateDir, Executable: launchScript(t, t.TempDir(), "echo \"$@\"\n"), Config: "/etc/delamain/alt.yaml"}
+	acts := New(Deps{Cfg: f.cfg, Store: f.st, Launcher: l})
+	ch, unsub := acts.Operations().Subscribe()
+	defer unsub()
+	for kind, want := range map[string]string{
+		"bug": "run --issue 7 --repo " + f.repo + " --kind bug --config /etc/delamain/alt.yaml",
+		"":    "run --issue 8 --repo " + f.repo + " --config /etc/delamain/alt.yaml",
+	} {
+		issue := 7
+		if kind == "" {
+			issue = 8
+		}
+		op, err := acts.StartIssue(context.Background(), f.repo, issue, kind)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if done := waitOp(t, acts.Operations(), ch, op.ID); strings.TrimSpace(done.LogTail) != want {
+			t.Fatalf("kind %q: the run gets %q, want %q", kind, done.LogTail, want)
+		}
+	}
+	if _, err := acts.StartIssue(context.Background(), f.repo, 9, "chore"); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("a kind the run does not know is refused: %v", err)
+	}
+}
+
+// A run records its repository's main worktree: a start through a linked worktree of an allowed
+// repository is the same issue as one through the repository itself.
+func TestStartIssueShouldSeeTheActiveRunOfTheIssueThroughALinkedWorktree(t *testing.T) {
+	f := newFixture(t)
+	linked := filepath.Join(t.TempDir(), "linked")
+	if err := gitx.New().AddWorktree(context.Background(), f.repo, linked, "side", "main"); err != nil {
+		t.Fatal(err)
+	}
+	f.cfg.Daemon.Repos = []string{linked}
+	acts := New(Deps{Cfg: f.cfg, Store: f.st})
+	rec := f.run(t, "#7", "", store.StateImplement, store.KindIssue)
+	_, err := acts.StartIssue(context.Background(), linked, 7, "")
+	var re *RunError
+	if !errors.Is(err, ErrRunActive) || !errors.As(err, &re) || re.ID != rec.ID {
+		t.Fatalf("the run of the main worktree refuses the start: %v", err)
 	}
 }

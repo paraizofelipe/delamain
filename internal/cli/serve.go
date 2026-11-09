@@ -33,9 +33,11 @@ type serveOptions struct {
 	addr     string
 	interval time.Duration
 	limit    int
+	// config is the config file serve loaded, handed on to the runs and reviews it launches.
+	config string
 }
 
-func newServeCmd(load func() (config.Config, error)) *cobra.Command {
+func newServeCmd(load func() (config.Config, error), configPath func() string) *cobra.Command {
 	opts := serveOptions{}
 	cmd := &cobra.Command{
 		Use:   "serve",
@@ -56,6 +58,9 @@ reaches the runs it starts.`,
 			}
 			cfg, err := load()
 			if err != nil {
+				return err
+			}
+			if opts.config, err = filepath.Abs(configPath()); err != nil {
 				return err
 			}
 			return serve(c.Context(), c.OutOrStdout(), cfg, opts, os.Getenv)
@@ -105,7 +110,7 @@ func serve(ctx context.Context, out io.Writer, cfg config.Config, opts serveOpti
 		Cfg: cfg, Store: st, Context: ctx,
 		NewRunner: func() (*pipeline.Runner, error) { return newRunner(cfg, st, notify.Options{}) },
 		ForgeFor:  func(ctx context.Context, repo string) (forge.Forge, error) { return forgeFor(ctx, cfg, repo) },
-		Launcher:  &control.Launcher{StateDir: cfg.Paths.StateDir, StripEnv: []string{cfg.API.TokenEnv}},
+		Launcher:  serveLauncher(cfg, opts),
 	})
 	defer func() { _ = acts.Close() }()
 	audit, err := api.OpenAudit(cfg.API.AuditPath(cfg.Paths.StateDir))
@@ -126,6 +131,12 @@ func serve(ctx context.Context, out io.Writer, cfg config.Config, opts serveOpti
 	fmt.Fprintf(out, "api at http://%s/ (ctrl+c stops it); audit log %s\n", ln.Addr(), cfg.API.AuditPath(cfg.Paths.StateDir))
 	go srv.Run(ctx)
 	return srv.Serve(ctx, ln)
+}
+
+// serveLauncher starts the runs and reviews the API asks for: with serve's own config file, so
+// they share its settings and state dir, and without the API token in their environment.
+func serveLauncher(cfg config.Config, opts serveOptions) *control.Launcher {
+	return &control.Launcher{StateDir: cfg.Paths.StateDir, StripEnv: []string{cfg.API.TokenEnv}, Config: opts.config}
 }
 
 // apiToken reads the bearer token from the variable the config names; it is never printed.

@@ -7,9 +7,12 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/paraizo/delamain/internal/config"
 )
 
 const serveTestToken = "dlm_0123456789abcdefghijklmnopqrstuvwxyzABCDEF"
@@ -204,5 +207,17 @@ func TestServeShouldAnswerHealthzOpenlyAndTheAPIBehindTheToken(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("serve must end with its context")
+	}
+}
+
+// The runs and reviews the API launches load serve's config file: another one could have other
+// models, limits or a state dir where the API never finds the run.
+func TestServeLauncherShouldHandServesConfigFileAndDropTheToken(t *testing.T) {
+	cfg := config.Default()
+	cfg.Paths.StateDir = "/var/lib/delamain"
+	cfg.API.TokenEnv = "MY_API_TOKEN"
+	l := serveLauncher(cfg, serveOptions{config: "/etc/delamain/alt.yaml"})
+	if l.Config != "/etc/delamain/alt.yaml" || l.StateDir != "/var/lib/delamain" || !slices.Equal(l.StripEnv, []string{"MY_API_TOKEN"}) {
+		t.Fatalf("the launcher carries serve's config, state dir and the token to strip: %+v", l)
 	}
 }

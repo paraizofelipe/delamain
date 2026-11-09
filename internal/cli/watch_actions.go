@@ -664,7 +664,7 @@ func (a *storeWatchActions) Copy(text string) error {
 // It takes neither the mutex nor the context of the actions: close would wait for a run that
 // takes hours, or kill it. Quitting the watch leaves the run going, as the daemon's runs do.
 func (a *storeWatchActions) StartIssue(repo string, issue int) error {
-	_, err := a.launcher.StartIssue(repo, issue)
+	_, err := a.launcher.StartIssue(repo, issue, "")
 	return err
 }
 

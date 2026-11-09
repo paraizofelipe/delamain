@@ -125,7 +125,7 @@ func NewRoot() *cobra.Command {
 		newStatusCmd(load),
 		newWatchCmd(load),
 		newBoardCmd(load),
-		newServeCmd(loadWithToken), // serve drops the token itself once read
+		newServeCmd(loadWithToken, func() string { return cfgPath }), // serve drops the token itself once read
 		newStopCmd(load),
 		newRmCmd(load),
 		newLogsCmd(load),

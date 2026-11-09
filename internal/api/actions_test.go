@@ -516,3 +516,22 @@ func TestMapErrShouldNameThePendingOperationWhenTheIssueHasNoRunYet(t *testing.T
 		t.Fatalf("an active run is still named by its id: %+v", active.extra)
 	}
 }
+
+func TestStartRunShouldHandTheRequestedKindToTheRun(t *testing.T) {
+	f := newFixture(t)
+	ts := actionServer(t, f)
+	for body, want := range map[string]string{
+		`{"repo":"` + f.repo + `","issue":12,"kind":"bug"}`: "launched run --issue 12 --repo " + f.repo + " --kind bug",
+		`{"repo":"` + f.repo + `","issue":21}`:              "launched run --issue 21 --repo " + f.repo,
+	} {
+		res := ts.post(t, "/api/v1/runs", body)
+		var op Operation
+		res.json(t, &op)
+		if res.Status != http.StatusAccepted {
+			t.Fatalf("%s: %d", body, res.Status)
+		}
+		if done := ts.waitOperation(t, op.ID); strings.TrimSpace(done.LogTail) != want {
+			t.Fatalf("%s: the run got %q, want %q", body, done.LogTail, want)
+		}
+	}
+}

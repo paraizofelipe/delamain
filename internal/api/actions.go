@@ -61,7 +61,7 @@ func (s *Server) handleStartRun(w http.ResponseWriter, r *http.Request) {
 	}
 	noteAudit(r, "repo", body.Repo)
 	noteAudit(r, "issue", body.Issue)
-	op, err := s.acts.StartIssue(r.Context(), body.Repo, body.Issue)
+	op, err := s.acts.StartIssue(r.Context(), body.Repo, body.Issue, body.Kind)
 	if err != nil {
 		fail(w, r, err)
 		return

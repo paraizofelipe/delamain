@@ -34,12 +34,20 @@ type Launcher struct {
 	// StripEnv names variables the child must not see, such as the token of the remote API: the
 	// agents a run starts would read them.
 	StripEnv []string
+	// Config is the config file the child loads, as --config; "" leaves it to the default path.
+	// The host passes its own, so the child works with the same settings and state dir.
+	Config string
 }
 
-// StartIssue runs `delamain run --issue issue --repo repo` and waits for it to end. It returns
-// the path of its log and, for an exit code other than 0, a StartExit.
-func (l Launcher) StartIssue(repo string, issue int) (string, error) {
-	path, err := l.launch(fmt.Sprintf("issue-%d", issue), "run", "--issue", strconv.Itoa(issue), "--repo", repo)
+// StartIssue runs `delamain run --issue issue --repo repo [--kind kind]` and waits for it to end;
+// kind "" leaves the kind to the run's inference. It returns the path of its log and, for an exit
+// code other than 0, a StartExit.
+func (l Launcher) StartIssue(repo string, issue int, kind string) (string, error) {
+	args := []string{"run", "--issue", strconv.Itoa(issue), "--repo", repo}
+	if kind != "" {
+		args = append(args, "--kind", kind)
+	}
+	path, err := l.launch(fmt.Sprintf("issue-%d", issue), args...)
 	if ee, ok := errors.AsType[*exec.ExitError](err); ok {
 		return path, StartExit{Kind: OpStartRun, Issue: issue, Code: ee.ExitCode(), Log: path}
 	}
@@ -65,6 +73,9 @@ func (l Launcher) launch(name string, args ...string) (string, error) {
 	exe, err := executable()
 	if err != nil {
 		return "", err
+	}
+	if l.Config != "" {
+		args = append(args, "--config", l.Config)
 	}
 	dir := filepath.Join(l.StateDir, "launch")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
