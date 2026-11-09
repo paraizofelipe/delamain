@@ -844,3 +844,36 @@ func TestRunShouldReportTheRemoteAPI(t *testing.T) {
 		t.Fatalf("serving: %+v", c)
 	}
 }
+
+// serve opens the audit log itself: a directory in its place, or a log it cannot append to, makes
+// serve fail to start, and the doctor must say why instead of reporting the API ready.
+func TestRunShouldWarnWhenTheAuditLogCannotBeOpenedForAppending(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root opens a read-only file anyway")
+	}
+	cfg, d := healthy(t)
+	cfg.API.Enabled = true
+	d.Getenv = func(k string) string { return map[string]string{"DELAMAIN_API_TOKEN": strings.Repeat("x", 43)}[k] }
+	dir := t.TempDir()
+
+	cfg.API.AuditLog = filepath.Join(dir, "as-dir.log")
+	if err := os.Mkdir(cfg.API.AuditLog, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if c := byName(Run(context.Background(), cfg, d))["api"]; c.Status != Warn || !strings.Contains(c.Detail, "not a regular file") {
+		t.Fatalf("a directory in place of the audit log is a warning: %+v", c)
+	}
+
+	cfg.API.AuditLog = filepath.Join(dir, "read-only.log")
+	if err := os.WriteFile(cfg.API.AuditLog, nil, 0o400); err != nil {
+		t.Fatal(err)
+	}
+	if c := byName(Run(context.Background(), cfg, d))["api"]; c.Status != Warn || !strings.Contains(c.Detail, "permission denied") {
+		t.Fatalf("an audit log serve cannot append to is a warning: %+v", c)
+	}
+
+	cfg.API.AuditLog = filepath.Join(dir, "fresh.log")
+	if c := byName(Run(context.Background(), cfg, d))["api"]; c.Status != OK {
+		t.Fatalf("a log serve will create is fine: %+v", c)
+	}
+}

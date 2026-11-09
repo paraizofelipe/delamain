@@ -30,9 +30,23 @@ func TestServeTokenShouldPrintARandomBase64URLToken(t *testing.T) {
 	if strings.TrimSpace(again) == token {
 		t.Fatal("every token is new")
 	}
-	out, err = execute(t, "serve", "token")
+	cfgFile, _ := isolatedConfig(t, "")
+	out, err = execute(t, "--config", cfgFile, "serve", "token")
 	if err != nil || !strings.Contains(out, "export DELAMAIN_API_TOKEN=") || !strings.Contains(out, "EnvironmentFile") {
 		t.Fatalf("without --quiet the token comes with how to set it: %v\n%s", err, out)
+	}
+}
+
+// Following the printed instructions must start serve: they name the variable api.token_env
+// names, not the default one.
+func TestServeTokenShouldNameTheConfiguredVariable(t *testing.T) {
+	cfgFile, _ := isolatedConfig(t, "api:\n  token_env: MY_API_TOKEN\n")
+	out, err := execute(t, "--config", cfgFile, "serve", "token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "export MY_API_TOKEN=") || !strings.Contains(out, "put MY_API_TOKEN=") || strings.Contains(out, "DELAMAIN_API_TOKEN") {
+		t.Fatalf("both instructions name MY_API_TOKEN:\n%s", out)
 	}
 }
 

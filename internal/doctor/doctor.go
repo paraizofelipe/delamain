@@ -256,7 +256,7 @@ func apiCheck(ctx context.Context, cfg config.Config, d Deps) Check {
 		return Check{"api", Fail, fmt.Sprintf("api.addr: %v; the API only listens on this machine, a tunnel forwards to it", err)}
 	}
 	audit := a.AuditPath(cfg.Paths.StateDir)
-	if err := writable(filepath.Dir(audit)); err != nil {
+	if err := auditWritable(audit); err != nil {
 		return Check{"api", Warn, fmt.Sprintf("audit log %s: %v", audit, err)}
 	}
 	if d.APIProbe == nil {
@@ -351,6 +351,29 @@ func Failed(checks []Check) bool {
 		}
 	}
 	return false
+}
+
+// auditWritable reports whether serve can open the audit log as it does: its directory takes a
+// new file, and the log, when it is there already, is a regular file open for appending.
+func auditWritable(path string) error {
+	if err := writable(filepath.Dir(path)); err != nil {
+		return err
+	}
+	fi, err := os.Stat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !fi.Mode().IsRegular() {
+		return errors.New("is not a regular file")
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0) //nolint:gosec // the configured audit log
+	if err != nil {
+		return err
+	}
+	return f.Close()
 }
 
 func writable(dir string) error {

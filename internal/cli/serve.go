@@ -69,7 +69,7 @@ reaches the runs it starts.`,
 	cmd.Flags().StringVar(&opts.addr, "addr", "", "loopback address to listen on (default api.addr)")
 	cmd.Flags().DurationVar(&opts.interval, "interval", time.Second, "time between reloads while a stream is open")
 	cmd.Flags().IntVar(&opts.limit, "limit", 20, "finished runs in the stream and the board projection")
-	cmd.AddCommand(newServeTokenCmd())
+	cmd.AddCommand(newServeTokenCmd(load))
 	return cmd
 }
 
@@ -157,14 +157,14 @@ func apiToken(a config.API, getenv func(string) string) ([]byte, error) {
 	return []byte(token), nil
 }
 
-func newServeTokenCmd() *cobra.Command {
+func newServeTokenCmd(load func() (config.Config, error)) *cobra.Command {
 	var quiet bool
 	cmd := &cobra.Command{
 		Use:   "token",
 		Short: "Print a new random bearer token for the API",
 		Long: `Prints a new token of 32 random bytes, as the API wants it. delamain never stores it: put it
 in the variable api.token_env names (DELAMAIN_API_TOKEN by default) in the environment of
-delamain serve, and in the app.`,
+delamain serve, and in the app; without --quiet it prints how to set that variable.`,
 		Args: cobra.NoArgs,
 		RunE: func(c *cobra.Command, _ []string) error {
 			token, err := newToken()
@@ -175,8 +175,13 @@ delamain serve, and in the app.`,
 				fmt.Fprintln(c.OutOrStdout(), token)
 				return nil
 			}
-			fmt.Fprintf(c.OutOrStdout(), "export %s=%s\n", config.DefaultAPITokenEnv, token)
-			fmt.Fprintf(c.OutOrStdout(), "# under systemd: put %s=%s in the EnvironmentFile of delamain serve\n", config.DefaultAPITokenEnv, token)
+			cfg, err := load() // the variable to set is the one api.token_env names
+			if err != nil {
+				return err
+			}
+			name := cfg.API.TokenEnv
+			fmt.Fprintf(c.OutOrStdout(), "export %s=%s\n", name, token)
+			fmt.Fprintf(c.OutOrStdout(), "# under systemd: put %s=%s in the EnvironmentFile of delamain serve\n", name, token)
 			return nil
 		},
 	}
