@@ -385,8 +385,8 @@ type API struct {
 	Repos []string `yaml:"repos"`
 	// MaxStreams bounds the open event and log streams.
 	MaxStreams int `yaml:"max_streams"`
-	// TrustProxy takes the client address from CF-Connecting-IP or X-Forwarded-For when the peer
-	// is loopback, so the lockout counts per phone instead of per tunnel.
+	// TrustProxy takes the client address from the last X-Forwarded-For entry, the one the tunnel
+	// appends, when the peer is loopback, so the lockout counts per phone instead of per tunnel.
 	TrustProxy bool         `yaml:"trust_proxy"`
 	RateLimit  APIRateLimit `yaml:"rate_limit"`
 	// AuditLog is the JSON-lines file of every mutation; empty means <state_dir>/api-audit.log.

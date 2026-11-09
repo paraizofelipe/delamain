@@ -80,7 +80,7 @@ func TestReadmeShouldDocumentTheRemoteAPI(t *testing.T) {
 		"api.addr", "loopback", "cloudflared tunnel", "ngrok http", // the tunnel setup
 		"Authorization: Bearer", "/healthz", "auth_failures", "15 minutos", "64 KiB", // the security model
 		"delamain serve token", "token_env", "EnvironmentFile", "nunca o herdam", // the token
-		"trust_proxy", "CF-Connecting-IP", "X-Forwarded-For", // the proxy trade-off
+		"trust_proxy", "última** entrada do `X-Forwarded-For`", // the proxy trade-off
 		"api-audit.log", "Nunca o token nem o body", // the audit
 		"mesma máquina",                              // the environment
 		"problem+json", "repo_not_allowed", "por id", // the routes

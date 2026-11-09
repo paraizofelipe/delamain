@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -408,15 +409,15 @@ func TestFailuresOlderThanTheWindowAreForgotten(t *testing.T) {
 func TestTrustProxyKeysTheLockoutByTheForwardedClient(t *testing.T) {
 	ts := newPingServer(t, func(o *Options) { o.AuthFailures = 2; o.TrustProxy = true })
 	for range 2 {
-		ts.do(t, http.MethodGet, "/api/v1/ping", "wrong", nil, "CF-Connecting-IP", "203.0.113.5")
+		ts.do(t, http.MethodGet, "/api/v1/ping", "wrong", nil, "X-Forwarded-For", "203.0.113.5")
 	}
-	if res := ts.do(t, http.MethodGet, "/api/v1/ping", "wrong", nil, "CF-Connecting-IP", "203.0.113.5"); res.Status != http.StatusTooManyRequests {
+	if res := ts.do(t, http.MethodGet, "/api/v1/ping", "wrong", nil, "X-Forwarded-For", "203.0.113.5"); res.Status != http.StatusTooManyRequests {
 		t.Fatalf("the failing phone is locked out: %d", res.Status)
 	}
-	if res := ts.do(t, http.MethodGet, "/api/v1/ping", "wrong", nil, "X-Forwarded-For", "198.51.100.7, 10.0.0.1"); res.Status != http.StatusUnauthorized {
-		t.Fatalf("another client, by the first X-Forwarded-For, is not: %d", res.Status)
+	if res := ts.do(t, http.MethodGet, "/api/v1/ping", "wrong", nil, "X-Forwarded-For", "10.0.0.1, 198.51.100.7"); res.Status != http.StatusUnauthorized {
+		t.Fatalf("another client, by the last X-Forwarded-For, is not: %d", res.Status)
 	}
-	if res := ts.do(t, http.MethodGet, "/api/v1/ping", testToken, nil, "CF-Connecting-IP", "198.51.100.9"); res.Status != http.StatusOK {
+	if res := ts.do(t, http.MethodGet, "/api/v1/ping", testToken, nil, "X-Forwarded-For", "198.51.100.9"); res.Status != http.StatusOK {
 		t.Fatalf("a third client logs in: %d", res.Status)
 	}
 	lines := ts.auditLines(t)
@@ -425,9 +426,9 @@ func TestTrustProxyKeysTheLockoutByTheForwardedClient(t *testing.T) {
 	}
 
 	shared := newPingServer(t, func(o *Options) { o.AuthFailures = 2 })
-	shared.do(t, http.MethodGet, "/api/v1/ping", "wrong", nil, "CF-Connecting-IP", "203.0.113.5")
-	shared.do(t, http.MethodGet, "/api/v1/ping", "wrong", nil, "CF-Connecting-IP", "203.0.113.6")
-	if res := shared.do(t, http.MethodGet, "/api/v1/ping", "wrong", nil, "CF-Connecting-IP", "203.0.113.7"); res.Status != http.StatusTooManyRequests {
+	shared.do(t, http.MethodGet, "/api/v1/ping", "wrong", nil, "X-Forwarded-For", "203.0.113.5")
+	shared.do(t, http.MethodGet, "/api/v1/ping", "wrong", nil, "X-Forwarded-For", "203.0.113.6")
+	if res := shared.do(t, http.MethodGet, "/api/v1/ping", "wrong", nil, "X-Forwarded-For", "203.0.113.7"); res.Status != http.StatusTooManyRequests {
 		t.Fatalf("without trust_proxy the headers are ignored and every request is one client: %d", res.Status)
 	}
 	if shared.auditLines(t)[0]["client_ip"] != "127.0.0.1" {
@@ -435,10 +436,24 @@ func TestTrustProxyKeysTheLockoutByTheForwardedClient(t *testing.T) {
 	}
 }
 
+// The tunnel appends the address it saw: a client that varies what it sends before it, or sends
+// CF-Connecting-IP through a tunnel that passes it on, is still one client.
+func TestTrustProxyShouldNotLetAClientPickTheAddressItIsLockedOutBy(t *testing.T) {
+	ts := newPingServer(t, func(o *Options) { o.AuthFailures = 2; o.TrustProxy = true })
+	for i := range 2 {
+		spoof := fmt.Sprintf("192.0.2.%d", i)
+		ts.do(t, http.MethodGet, "/api/v1/ping", "wrong", nil, "X-Forwarded-For", spoof+", 203.0.113.5", "CF-Connecting-IP", spoof)
+	}
+	res := ts.do(t, http.MethodGet, "/api/v1/ping", testToken, nil, "X-Forwarded-For", "192.0.2.99, 203.0.113.5", "CF-Connecting-IP", "192.0.2.99")
+	if res.Status != http.StatusTooManyRequests {
+		t.Fatalf("the client the tunnel saw is locked out whatever it claims: %d", res.Status)
+	}
+}
+
 func TestClientIPShouldIgnoreTheHeadersOfANonLoopbackPeer(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
 	r.RemoteAddr = "198.51.100.1:4242"
-	r.Header.Set("CF-Connecting-IP", "203.0.113.5")
+	r.Header.Set("X-Forwarded-For", "203.0.113.5")
 	if got := clientIP(r, true); got != "198.51.100.1" {
 		t.Fatalf("a direct peer cannot pick its own address: %q", got)
 	}
@@ -448,6 +463,36 @@ func TestClientIPShouldIgnoreTheHeadersOfANonLoopbackPeer(t *testing.T) {
 	}
 	if got := clientIP(r, false); got != "::1" {
 		t.Fatalf("not trusting the proxy: %q", got)
+	}
+	for _, xff := range [][]string{{"not-an-address"}, {"203.0.113.5", ""}, {"203.0.113.5, junk"}} {
+		r.Header.Del("X-Forwarded-For")
+		for _, v := range xff {
+			r.Header.Add("X-Forwarded-For", v)
+		}
+		if got := clientIP(r, true); got != "::1" {
+			t.Fatalf("X-Forwarded-For %q: a last entry that is no address falls back to the peer, got %q", xff, got)
+		}
+	}
+	r.Header.Del("X-Forwarded-For")
+	r.Header.Add("X-Forwarded-For", "192.0.2.1")
+	r.Header.Add("X-Forwarded-For", "10.0.0.1, 198.51.100.7")
+	if got := clientIP(r, true); got != "198.51.100.7" {
+		t.Fatalf("over several header lines the last entry wins: %q", got)
+	}
+}
+
+// A client that failed once, long ago, holds nothing against it: the guard must forget it, or
+// every address that ever knocked would stay in memory.
+func TestAuthGuardShouldForgetClientsWhoseFailuresLeftTheWindow(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	g := newAuthGuard([]byte(testToken), 5, func() time.Time { return now })
+	for i := range 2000 {
+		g.check(fmt.Sprintf("198.51.100.%d/%d", i%250, i), "Bearer wrong")
+	}
+	now = now.Add(authWindow + time.Minute)
+	g.check("203.0.113.5", "Bearer wrong")
+	if n := len(g.clients); n > 1 {
+		t.Fatalf("%d clients kept; only the one failing now has anything held against it", n)
 	}
 }
 

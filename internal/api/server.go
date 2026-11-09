@@ -37,8 +37,8 @@ type Options struct {
 	Token []byte
 	// MaxStreams bounds the open event and log streams.
 	MaxStreams int
-	// TrustProxy takes the client address from CF-Connecting-IP or X-Forwarded-For when the peer
-	// is loopback: through a tunnel every request comes from 127.0.0.1.
+	// TrustProxy takes the client address from the last X-Forwarded-For entry when the peer is
+	// loopback: through a tunnel every request comes from 127.0.0.1.
 	TrustProxy bool
 	// AuthFailures per client in authWindow before it is locked out for authLockout.
 	AuthFailures int
@@ -288,11 +288,16 @@ func clientIP(r *http.Request, trustProxy bool) string {
 	if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() {
 		return host
 	}
-	if v := strings.TrimSpace(r.Header.Get("CF-Connecting-IP")); v != "" {
-		return v
+	// Only the last entry: the tunnel appends the address it saw to whatever the client sent, so
+	// every entry before it, and any other header such as CF-Connecting-IP that a tunnel may pass
+	// through untouched, is the client's to pick. An entry that is no address is ignored.
+	xff := r.Header.Values("X-Forwarded-For")
+	if len(xff) == 0 {
+		return host
 	}
-	if v, _, _ := strings.Cut(r.Header.Get("X-Forwarded-For"), ","); strings.TrimSpace(v) != "" {
-		return strings.TrimSpace(v)
+	entries := strings.Split(xff[len(xff)-1], ",")
+	if ip := net.ParseIP(strings.TrimSpace(entries[len(entries)-1])); ip != nil {
+		return ip.String()
 	}
 	return host
 }

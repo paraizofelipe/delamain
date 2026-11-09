@@ -78,13 +78,14 @@ func (g *authGuard) matches(authorization string) bool {
 }
 
 // prune forgets clients with nothing held against them, so the map does not grow with every
-// address that ever knocked.
+// address that ever knocked: no lockout, and no failure still inside the window.
 func (g *authGuard) prune(now time.Time) {
 	if len(g.clients) < 1024 {
 		return
 	}
 	for k, c := range g.clients {
-		if len(c.fails) == 0 && !now.Before(c.lockedUntil) {
+		stale := len(c.fails) == 0 || now.Sub(c.fails[len(c.fails)-1]) > authWindow
+		if stale && !now.Before(c.lockedUntil) {
 			delete(g.clients, k)
 		}
 	}
