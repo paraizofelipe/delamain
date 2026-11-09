@@ -20,6 +20,7 @@ import (
 	"github.com/muesli/termenv"
 
 	"github.com/paraizo/delamain/internal/config"
+	"github.com/paraizo/delamain/internal/control"
 	"github.com/paraizo/delamain/internal/notify"
 	"github.com/paraizo/delamain/internal/store"
 )
@@ -390,7 +391,7 @@ func (f *fixture) actions(t *testing.T, ctx context.Context, out *bytes.Buffer) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	acts := newStoreWatchActions(ctx, cfg, f.st, out)
+	acts := newStoreWatchActions(ctx, cfg, f.st, out, "")
 	t.Cleanup(acts.close)
 	return acts
 }
@@ -927,7 +928,7 @@ func TestWatchActionsShouldCopyThroughOSC52AndWrapItForTmux(t *testing.T) {
 	} {
 		t.Setenv("TMUX", c.tmux)
 		var out bytes.Buffer
-		acts := newStoreWatchActions(context.Background(), config.Config{}, nil, &out)
+		acts := newStoreWatchActions(context.Background(), config.Config{}, nil, &out, "")
 		if err := acts.Copy("14"); err != nil {
 			t.Fatal(err)
 		}
@@ -998,7 +999,7 @@ func TestWatchHelpShouldListRecoverKey(t *testing.T) {
 	if i, j := strings.Index(text, "s · d "), strings.Index(text, want); i < 0 || j < i {
 		t.Fatalf("c comes after s · d:\n%s", text)
 	}
-	if long := newWatchCmd(nil).Long; !strings.Contains(words(long), "c recovers it as delamain recover does when its owner died") {
+	if long := newWatchCmd(nil, nil).Long; !strings.Contains(words(long), "c recovers it as delamain recover does when its owner died") {
 		t.Fatalf("the help of watch tells c:\n%s", long)
 	}
 }
@@ -1189,7 +1190,7 @@ func TestWatchDialogsShouldStripControlCharactersFromRunData(t *testing.T) {
 }
 
 func TestWatchLongShouldEndWithTheTmuxPopupAndOSC52(t *testing.T) {
-	long := newWatchCmd(nil).Long
+	long := newWatchCmd(nil, nil).Long
 	want := "In tmux, open it in a floating popup:\n\n" +
 		"  bind D display-popup -E -w 50% -h 60% \"delamain watch\"\n\n" +
 		"y copies the run ID through OSC 52; tmux needs `set -g set-clipboard on`."
@@ -1477,8 +1478,8 @@ func launchScript(t *testing.T, dir, body string) func() (string, error) {
 func launchActions(state string, exe func() (string, error)) *storeWatchActions {
 	cfg := config.Config{}
 	cfg.Paths.StateDir = state
-	acts := newStoreWatchActions(context.Background(), cfg, nil, &bytes.Buffer{})
-	acts.executable = exe
+	acts := newStoreWatchActions(context.Background(), cfg, nil, &bytes.Buffer{}, "")
+	acts.launcher.Executable = exe
 	return acts
 }
 
@@ -1490,45 +1491,6 @@ func launchLogs(t *testing.T, state string) []string {
 		t.Fatal(err)
 	}
 	return logs
-}
-
-func TestStartIssueShouldLaunchDetachedRunWithArgsList(t *testing.T) {
-	cmd := launchCmd("/bin/delamain", "/src/a b; rm -rf ~", 42, os.Stderr)
-	if cmd.Path != "/bin/delamain" || !slices.Equal(cmd.Args, []string{"/bin/delamain", "run", "--issue", "42", "--repo", "/src/a b; rm -rf ~"}) {
-		t.Fatalf("the run is the binary with a list of arguments, no shell: %q %q", cmd.Path, cmd.Args)
-	}
-	if cmd.SysProcAttr == nil || !cmd.SysProcAttr.Setsid {
-		t.Fatal("the run starts a session of its own: the terminal of the watch does not end it")
-	}
-	if cmd.Stdin != nil || cmd.Stdout != os.Stderr || cmd.Stderr != os.Stderr {
-		t.Fatalf("the run reads nothing and writes to the log alone: %v %v %v", cmd.Stdin, cmd.Stdout, cmd.Stderr)
-	}
-
-	dir := t.TempDir()
-	state, args := filepath.Join(dir, "state"), filepath.Join(dir, "args")
-	repo := filepath.Join(dir, "a b; touch pwned")
-	exe := launchScript(t, dir, "printf '%s\\n' \"$@\" > '"+args+"'\necho to stdout\necho to stderr >&2\nread line || echo stdin is empty\n")
-	if err := launchActions(state, exe).StartIssue(repo, 42); err != nil {
-		t.Fatal(err)
-	}
-	if b, err := os.ReadFile(args); err != nil || string(b) != "run\n--issue\n42\n--repo\n"+repo+"\n" { //nolint:gosec // inside the test's temp dir
-		t.Fatalf("the run gets the issue and the repo as arguments: %q %v", b, err)
-	}
-	if _, err := os.Stat(filepath.Join(dir, "pwned")); err == nil {
-		t.Fatal("the repo never goes through a shell")
-	}
-	logs := launchLogs(t, state)
-	if len(logs) != 1 || !strings.HasSuffix(logs[0], "-issue-42.log") {
-		t.Fatalf("the run writes one log in launch/, named after the issue: %v", logs)
-	}
-	if b, err := os.ReadFile(logs[0]); err != nil || string(b) != "to stdout\nto stderr\nstdin is empty\n" {
-		t.Fatalf("stdout and stderr go to the log, stdin is empty: %q %v", b, err)
-	}
-	for path, want := range map[string]os.FileMode{filepath.Join(state, "launch"): 0o700, logs[0]: 0o600} {
-		if fi, err := os.Stat(path); err != nil || fi.Mode().Perm() != want {
-			t.Fatalf("%s is %v, want %v: %v", path, fi.Mode().Perm(), want, err)
-		}
-	}
 }
 
 func TestStartIssueShouldKeepTheRunAliveWhenTheWatchCloses(t *testing.T) {
@@ -1572,104 +1534,6 @@ func TestStartIssueShouldKeepTheRunAliveWhenTheWatchCloses(t *testing.T) {
 	}
 	if _, err := os.Stat(done); err != nil {
 		t.Fatalf("the run was not killed with the watch: %v", err)
-	}
-}
-
-func TestStartIssueShouldReportTheExitCodeAndTheLogOfAFailedRun(t *testing.T) {
-	for _, c := range []struct {
-		code int
-		want string
-	}{
-		{5, "issue #7 not started: maximum parallelism reached; see "},
-		{4, "issue #7 needs more information (exit 4); see "},
-		{2, "issue #7 failed: exit 2; see "},
-	} {
-		dir := t.TempDir()
-		state := filepath.Join(dir, "state")
-		err := launchActions(state, launchScript(t, dir, "exit "+strconv.Itoa(c.code)+"\n")).StartIssue(dir, 7)
-		exit, ok := errors.AsType[startIssueExit](err)
-		if !ok {
-			t.Fatalf("exit %d is a startIssueExit: %v", c.code, err)
-		}
-		logs := launchLogs(t, state)
-		if exit.code != c.code || len(logs) != 1 || exit.log != logs[0] {
-			t.Fatalf("exit %d carries its code and the log: %+v %v", c.code, exit, logs)
-		}
-		if got := err.Error(); got != c.want+logs[0] {
-			t.Errorf("exit %d says %q, want %q", c.code, got, c.want+logs[0])
-		}
-	}
-
-	dir := t.TempDir()
-	missing := func() (string, error) { return filepath.Join(dir, "missing"), nil }
-	err := launchActions(filepath.Join(dir, "state"), missing).StartIssue(dir, 7)
-	if _, ok := errors.AsType[startIssueExit](err); err == nil || ok {
-		t.Fatalf("a run that cannot start is an error of its own: %v", err)
-	}
-}
-
-func TestStartReviewShouldLaunchDetachedReviewWithArgsList(t *testing.T) {
-	cmd := reviewCmd("/bin/delamain", "/src/a b; rm -rf ~", 12, os.Stderr)
-	if cmd.Path != "/bin/delamain" || !slices.Equal(cmd.Args, []string{"/bin/delamain", "review", "--pr", "12", "--repo", "/src/a b; rm -rf ~"}) {
-		t.Fatalf("the review is the binary with a list of arguments, no shell: %q %q", cmd.Path, cmd.Args)
-	}
-	if cmd.SysProcAttr == nil || !cmd.SysProcAttr.Setsid {
-		t.Fatal("the review starts a session of its own: the terminal of the watch does not end it")
-	}
-	if cmd.Stdin != nil || cmd.Stdout != os.Stderr || cmd.Stderr != os.Stderr {
-		t.Fatalf("the review reads nothing and writes to the log alone: %v %v %v", cmd.Stdin, cmd.Stdout, cmd.Stderr)
-	}
-
-	dir := t.TempDir()
-	state, args := filepath.Join(dir, "state"), filepath.Join(dir, "args")
-	repo := filepath.Join(dir, "a b; touch pwned")
-	exe := launchScript(t, dir, "printf '%s\\n' \"$@\" > '"+args+"'\necho to stdout\necho to stderr >&2\nread line || echo stdin is empty\n")
-	if err := launchActions(state, exe).StartReview(repo, 12); err != nil {
-		t.Fatal(err)
-	}
-	if b, err := os.ReadFile(args); err != nil || string(b) != "review\n--pr\n12\n--repo\n"+repo+"\n" { //nolint:gosec // inside the test's temp dir
-		t.Fatalf("the review gets the PR and the repo as arguments: %q %v", b, err)
-	}
-	if _, err := os.Stat(filepath.Join(dir, "pwned")); err == nil {
-		t.Fatal("the repo never goes through a shell")
-	}
-	logs := launchLogs(t, state)
-	if len(logs) != 1 || !strings.HasSuffix(logs[0], "-review-12.log") {
-		t.Fatalf("the review writes one log in launch/, named after the PR: %v", logs)
-	}
-	if b, err := os.ReadFile(logs[0]); err != nil || string(b) != "to stdout\nto stderr\nstdin is empty\n" {
-		t.Fatalf("stdout and stderr go to the log, stdin is empty: %q %v", b, err)
-	}
-	for path, want := range map[string]os.FileMode{filepath.Join(state, "launch"): 0o700, logs[0]: 0o600} {
-		if fi, err := os.Stat(path); err != nil || fi.Mode().Perm() != want {
-			t.Fatalf("%s is %v, want %v: %v", path, fi.Mode().Perm(), want, err)
-		}
-	}
-}
-
-func TestStartReviewShouldReportTheExitCodeAndLog(t *testing.T) {
-	for _, code := range []int{1, 2} {
-		dir := t.TempDir()
-		state := filepath.Join(dir, "state")
-		err := launchActions(state, launchScript(t, dir, "exit "+strconv.Itoa(code)+"\n")).StartReview(dir, 12)
-		exit, ok := errors.AsType[startReviewExit](err)
-		if !ok {
-			t.Fatalf("exit %d is a startReviewExit: %v", code, err)
-		}
-		logs := launchLogs(t, state)
-		if exit.code != code || len(logs) != 1 || exit.log != logs[0] {
-			t.Fatalf("exit %d carries its code and the log: %+v %v", code, exit, logs)
-		}
-		if got, want := err.Error(), fmt.Sprintf("review of PR #12 failed: exit %d; see %s", code, logs[0]); got != want {
-			t.Errorf("exit %d says %q, want %q", code, got, want)
-		}
-	}
-
-	dir := t.TempDir()
-	missing := func() (string, error) { return filepath.Join(dir, "missing"), nil }
-	err := launchActions(filepath.Join(dir, "state"), missing).StartReview(dir, 12)
-	if _, ok := errors.AsType[startReviewExit](err); err == nil || ok {
-		t.Fatalf("a review that cannot start is an error of its own: %v", err)
 	}
 }
 
@@ -1769,12 +1633,12 @@ func TestWatchStartIssueShouldToastExitCodeMeaning(t *testing.T) {
 		err  error
 		want string
 	}{
-		{startIssueExit{issue: 12, code: 5, log: log}, "issue #12 not started: maximum parallelism reached; see " + log},
-		{startIssueExit{issue: 12, code: 4, log: log}, "issue #12 needs more information (exit 4); see " + log},
-		{startIssueExit{issue: 12, code: 1, log: log}, "issue #12 failed: exit 1; see " + log},
+		{control.StartExit{Kind: control.OpStartRun, Issue: 12, Code: 5, Log: log}, "issue #12 not started: maximum parallelism reached; see " + log},
+		{control.StartExit{Kind: control.OpStartRun, Issue: 12, Code: 4, Log: log}, "issue #12 needs more information (exit 4); see " + log},
+		{control.StartExit{Kind: control.OpStartRun, Issue: 12, Code: 1, Log: log}, "issue #12 failed: exit 1; see " + log},
 		{errors.New("fork/exec /opt/delamain: no such file or directory"), "fork/exec /opt/delamain: no such file or directory"},
 		// The log is under the state dir, which could hold anything: it reaches no terminal raw.
-		{startIssueExit{issue: 12, code: 1, log: "/s/\x1b]52;c;ZXZpbA==\x07x.log"}, "issue #12 failed: exit 1; see /s/]52;c;ZXZpbA==x.log"},
+		{control.StartExit{Kind: control.OpStartRun, Issue: 12, Code: 1, Log: "/s/\x1b]52;c;ZXZpbA==\x07x.log"}, "issue #12 failed: exit 1; see /s/]52;c;ZXZpbA==x.log"},
 	} {
 		now := watchNow
 		acts := &fakeWatchActions{startErr: c.err}
@@ -1809,7 +1673,7 @@ func TestWatchHelpShouldListStartIssueKey(t *testing.T) {
 	if i, j := strings.Index(text, "c recover a run"), strings.Index(text, want); i < 0 || j < i {
 		t.Fatalf("i comes after c:\n%s", text)
 	}
-	if long := words(newWatchCmd(nil).Long); !strings.Contains(long, "i starts delamain run --issue in a repository of daemon.repos or any other") {
+	if long := words(newWatchCmd(nil, nil).Long); !strings.Contains(long, "i starts delamain run --issue in a repository of daemon.repos or any other") {
 		t.Fatalf("the help of watch tells i:\n%s", long)
 	}
 }
@@ -1826,7 +1690,40 @@ func TestWatchHelpShouldListStartReviewKey(t *testing.T) {
 	if i, j := strings.Index(text, "i start an issue run"), strings.Index(text, want); i < 0 || j < i {
 		t.Fatalf("r comes after i:\n%s", text)
 	}
-	if long := words(newWatchCmd(nil).Long); !strings.Contains(long, "r lists the open PRs/MRs of such a repository and starts delamain review --pr on the one picked") {
+	if long := words(newWatchCmd(nil, nil).Long); !strings.Contains(long, "r lists the open PRs/MRs of such a repository and starts delamain review --pr on the one picked") {
 		t.Fatalf("the help of watch tells r:\n%s", long)
+	}
+}
+
+// A run or review started from the watch loads the watch's config file: another one could have
+// other models, limits or a state dir where the watch never shows the run.
+func TestStartIssueAndReviewShouldHandTheWatchConfigFileToTheRun(t *testing.T) {
+	dir := t.TempDir()
+	state := filepath.Join(dir, "state")
+	cfg := config.Config{}
+	cfg.Paths.StateDir = state
+	acts := newStoreWatchActions(context.Background(), cfg, nil, &bytes.Buffer{}, "/etc/delamain/alt.yaml")
+	acts.launcher.Executable = launchScript(t, dir, "echo \"$@\"\n")
+	if err := acts.StartIssue(dir, 7); err != nil {
+		t.Fatal(err)
+	}
+	if err := acts.StartReview(dir, 12); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, log := range launchLogs(t, state) {
+		b, err := os.ReadFile(log) //nolint:gosec // inside the test's temp dir
+		if err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, strings.TrimSpace(string(b)))
+	}
+	slices.Sort(got)
+	want := []string{
+		"review --pr 12 --repo " + dir + " --config /etc/delamain/alt.yaml",
+		"run --issue 7 --repo " + dir + " --config /etc/delamain/alt.yaml",
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("the launches get the watch's config file:\n got %q\nwant %q", got, want)
 	}
 }

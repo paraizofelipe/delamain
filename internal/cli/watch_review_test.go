@@ -11,6 +11,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/paraizo/delamain/internal/control"
 	"github.com/paraizo/delamain/internal/forge"
 )
 
@@ -330,10 +331,10 @@ func TestWatchStartReviewShouldToastTheExitOfTheReview(t *testing.T) {
 		err  error
 		want string
 	}{
-		{startReviewExit{pr: 12, code: 1, log: "/s/launch/1767225600-review-12.log"}, "review of PR #12 failed: exit 1; see /s/launch/1767225600-review-12.log"},
+		{control.StartExit{Kind: control.OpStartReview, PR: 12, Code: 1, Log: "/s/launch/1767225600-review-12.log"}, "review of PR #12 failed: exit 1; see /s/launch/1767225600-review-12.log"},
 		{errors.New("fork/exec /opt/delamain: no such file or directory"), "fork/exec /opt/delamain: no such file or directory"},
 		// The log is under the state dir, which could hold anything: it reaches no terminal raw.
-		{startReviewExit{pr: 12, code: 1, log: "/s/\x1b]52;c;ZXZpbA==\x07x.log"}, "review of PR #12 failed: exit 1; see /s/]52;c;ZXZpbA==x.log"},
+		{control.StartExit{Kind: control.OpStartReview, PR: 12, Code: 1, Log: "/s/\x1b]52;c;ZXZpbA==\x07x.log"}, "review of PR #12 failed: exit 1; see /s/]52;c;ZXZpbA==x.log"},
 	} {
 		now := watchNow
 		acts := &fakeWatchActions{reviewErr: c.err}

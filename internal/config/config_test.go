@@ -985,3 +985,214 @@ func TestValidateShouldRejectDecisionThresholdOutsideZeroToOne(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadShouldDefaultAPIToDisabledOnLoopback(t *testing.T) {
+	cfg, err := Load(filepath.Join(t.TempDir(), "absent.yaml"), noEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := API{
+		Enabled:    false,
+		Addr:       "127.0.0.1:7778",
+		TokenEnv:   "DELAMAIN_API_TOKEN",
+		MaxStreams: 8,
+		RateLimit:  APIRateLimit{AuthFailures: 10, RequestsPerSecond: 20},
+	}
+	got := cfg.API
+	if len(got.Repos) != 0 {
+		t.Fatalf("no repos are allowed by default besides daemon.repos: %v", got.Repos)
+	}
+	got.Repos = nil
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("no block means the documented defaults, disabled: got %+v, want %+v", cfg.API, want)
+	}
+	if cfg.API.AuditPath("/state") != filepath.Join("/state", "api-audit.log") {
+		t.Fatalf("an empty audit_log lives under the state dir, got %q", cfg.API.AuditPath("/state"))
+	}
+}
+
+func TestLoadShouldReadAPIBlockFromFileAndEnv(t *testing.T) {
+	p := writeFile(t, "api:\n  enabled: true\n  addr: 'localhost:9000'\n  repos: ['~/projects/a']\n  trust_proxy: true\n"+
+		"  rate_limit:\n    auth_failures: 3\n  audit_log: /var/log/api.log\n")
+	cfg, err := Load(p, noEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := cfg.API
+	if !a.Enabled || a.Addr != "localhost:9000" || !a.TrustProxy || a.AuditLog != "/var/log/api.log" {
+		t.Fatalf("file values not applied: %+v", a)
+	}
+	if a.RateLimit != (APIRateLimit{AuthFailures: 3, RequestsPerSecond: 20}) || a.MaxStreams != 8 || a.TokenEnv != "DELAMAIN_API_TOKEN" {
+		t.Fatalf("unset fields lost their defaults: %+v", a)
+	}
+	if len(a.Repos) != 1 || strings.HasPrefix(a.Repos[0], "~") || !filepath.IsAbs(a.Repos[0]) {
+		t.Fatalf("api.repos must have ~ expanded: %v", a.Repos)
+	}
+	if a.AuditPath("/state") != "/var/log/api.log" {
+		t.Fatalf("a set audit_log wins over the state dir: %q", a.AuditPath("/state"))
+	}
+
+	cfg, err = Load(p, envOf(map[string]string{
+		"DELAMAIN_API_ENABLED":   "false",
+		"DELAMAIN_API_ADDR":      "[::1]:7000",
+		"DELAMAIN_API_TOKEN_ENV": "MY_TOKEN",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.API.Enabled || cfg.API.Addr != "[::1]:7000" || cfg.API.TokenEnv != "MY_TOKEN" {
+		t.Fatalf("env must override the file: %+v", cfg.API)
+	}
+	if _, err := Load(p, envOf(map[string]string{"DELAMAIN_API_ENABLED": "maybe"})); err == nil || !strings.Contains(err.Error(), "DELAMAIN_API_ENABLED") {
+		t.Fatalf("a non-boolean DELAMAIN_API_ENABLED must be rejected, got %v", err)
+	}
+}
+
+func TestValidateShouldOnlyBindTheAPIToLoopback(t *testing.T) {
+	for _, addr := range []string{"127.0.0.1:7778", "localhost:1", "[::1]:7778", "127.5.5.5:80"} {
+		cfg := Default()
+		cfg.API.Enabled, cfg.API.Addr = true, addr
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("%s is loopback and must be accepted: %v", addr, err)
+		}
+	}
+	for _, addr := range []string{"0.0.0.0:7778", ":7778", "192.168.0.10:7778", "[::]:7778", "example.com:443", "7778", ""} {
+		cfg := Default()
+		cfg.API.Enabled, cfg.API.Addr = true, addr
+		err := cfg.Validate()
+		if err == nil || !strings.Contains(err.Error(), "api.addr") {
+			t.Errorf("%q is not loopback and must be rejected naming api.addr, got %v", addr, err)
+		}
+	}
+	cfg := Default()
+	cfg.API.Addr = "0.0.0.0:7778"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("a disabled api block never blocks a run: %v", err)
+	}
+}
+
+func TestValidateShouldRejectAnAPITokenEnvThatIsNotAVariableName(t *testing.T) {
+	for _, v := range []string{"", "dlm_" + strings.Repeat("a", 43), "lower_case", "1TOKEN", "A-B"} {
+		cfg := Default()
+		cfg.API.Enabled, cfg.API.TokenEnv = true, v
+		err := cfg.Validate()
+		if err == nil || !strings.Contains(err.Error(), "api.token_env") {
+			t.Errorf("%q must be rejected naming api.token_env, got %v", v, err)
+		}
+		if err != nil && v != "" && strings.Contains(err.Error(), v) {
+			t.Errorf("the rejected value may be a pasted token and must not be echoed: %v", err)
+		}
+	}
+}
+
+func TestValidateShouldRejectMeaninglessAPILimitsAndRelativeRepos(t *testing.T) {
+	cases := map[string]func(*Config){
+		"zero streams":       func(c *Config) { c.API.MaxStreams = 0 },
+		"zero auth failures": func(c *Config) { c.API.RateLimit.AuthFailures = 0 },
+		"zero rps":           func(c *Config) { c.API.RateLimit.RequestsPerSecond = 0 },
+		"relative repo":      func(c *Config) { c.API.Repos = []string{"projects/a"} },
+		"blank repo":         func(c *Config) { c.API.Repos = []string{" "} },
+	}
+	for name, mutate := range cases {
+		t.Run(name, func(t *testing.T) {
+			cfg := Default()
+			cfg.API.Enabled = true
+			mutate(&cfg)
+			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "api.") {
+				t.Fatalf("%s must be rejected naming the api key, got %v", name, err)
+			}
+			cfg.API.Enabled = false
+			if err := cfg.Validate(); err != nil {
+				t.Fatalf("disabled, the block is not checked: %v", err)
+			}
+		})
+	}
+}
+
+func TestLoadShouldDefaultNtfyToDisabledOnNtfySh(t *testing.T) {
+	cfg, err := Load(filepath.Join(t.TempDir(), "absent.yaml"), noEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Ntfy{
+		Enabled:  false,
+		URL:      "https://ntfy.sh",
+		TokenEnv: "DELAMAIN_NTFY_TOKEN",
+		Priority: NtfyPriority{Low: 2, Normal: 3, Critical: 4},
+	}
+	if cfg.Notify.Ntfy != want {
+		t.Fatalf("no block means the documented defaults, disabled: got %+v, want %+v", cfg.Notify.Ntfy, want)
+	}
+	if Default().Notify.Ntfy != want {
+		t.Fatalf("Default() must carry the same ntfy defaults: %+v", Default().Notify.Ntfy)
+	}
+}
+
+func TestLoadShouldReadNtfyBlockFromFileAndEnv(t *testing.T) {
+	p := writeFile(t, "notify:\n  backend: none\n  ntfy:\n    enabled: true\n    topic: dlm-abc_123\n    priority:\n      critical: 5\n")
+	cfg, err := Load(p, noEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := cfg.Notify.Ntfy
+	if !n.Enabled || n.Topic != "dlm-abc_123" || n.Priority != (NtfyPriority{Low: 2, Normal: 3, Critical: 5}) {
+		t.Fatalf("file values not applied, unset ones kept: %+v", n)
+	}
+	if n.URL != "https://ntfy.sh" || n.TokenEnv != "DELAMAIN_NTFY_TOKEN" || cfg.Notify.Backend != "none" {
+		t.Fatalf("the ntfy block must not disturb the rest of notify: %+v", cfg.Notify)
+	}
+	cfg, err = Load(p, envOf(map[string]string{
+		"DELAMAIN_NTFY_ENABLED": "false",
+		"DELAMAIN_NTFY_TOPIC":   "other",
+		"DELAMAIN_NTFY_URL":     "https://ntfy.example.com",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Notify.Ntfy.Enabled || cfg.Notify.Ntfy.Topic != "other" || cfg.Notify.Ntfy.URL != "https://ntfy.example.com" {
+		t.Fatalf("env must override the file: %+v", cfg.Notify.Ntfy)
+	}
+	if _, err := Load(p, envOf(map[string]string{"DELAMAIN_NTFY_ENABLED": "yes please"})); err == nil || !strings.Contains(err.Error(), "DELAMAIN_NTFY_ENABLED") {
+		t.Fatalf("a non-boolean DELAMAIN_NTFY_ENABLED must be rejected, got %v", err)
+	}
+}
+
+func TestValidateShouldCheckNtfyOnlyWhenEnabled(t *testing.T) {
+	cases := map[string]struct {
+		mutate func(*Ntfy)
+		want   string
+	}{
+		"empty topic":           {func(n *Ntfy) { n.Topic = "" }, "notify.ntfy.topic"},
+		"topic with slash":      {func(n *Ntfy) { n.Topic = "a/b" }, "notify.ntfy.topic"},
+		"topic too long":        {func(n *Ntfy) { n.Topic = strings.Repeat("a", 65) }, "notify.ntfy.topic"},
+		"plain http on the net": {func(n *Ntfy) { n.URL = "http://ntfy.example.com" }, "notify.ntfy.url"},
+		"not a url":             {func(n *Ntfy) { n.URL = "ntfy.sh" }, "notify.ntfy.url"},
+		"pasted token":          {func(n *Ntfy) { n.TokenEnv = "tk_abc" }, "notify.ntfy.token_env"},
+		"priority zero":         {func(n *Ntfy) { n.Priority.Low = 0 }, "notify.ntfy.priority"},
+		"priority six":          {func(n *Ntfy) { n.Priority.Critical = 6 }, "notify.ntfy.priority"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			cfg := Default()
+			cfg.Notify.Ntfy.Enabled, cfg.Notify.Ntfy.Topic = true, "dlm-topic"
+			tc.mutate(&cfg.Notify.Ntfy)
+			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("want an error about %s, got %v", tc.want, err)
+			}
+			if name == "pasted token" && strings.Contains(cfg.Validate().Error(), "tk_abc") {
+				t.Fatalf("the rejected value may be a token and must not be echoed")
+			}
+			cfg.Notify.Ntfy.Enabled = false
+			if err := cfg.Validate(); err != nil {
+				t.Fatalf("disabled, the block is not checked: %v", err)
+			}
+		})
+	}
+	for _, u := range []string{"https://ntfy.sh", "http://localhost:2586", "http://127.0.0.1:2586", "http://[::1]:2586"} {
+		cfg := Default()
+		cfg.Notify.Ntfy = Ntfy{Enabled: true, URL: u, Topic: "t", TokenEnv: "", Priority: NtfyPriority{1, 3, 5}}
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("%s is https or loopback and must be accepted (an empty token_env means no auth): %v", u, err)
+		}
+	}
+}

@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
 
+	"github.com/paraizo/delamain/internal/control"
 	"github.com/paraizo/delamain/internal/pipeline"
 	"github.com/paraizo/delamain/internal/store"
 )
@@ -179,16 +180,16 @@ func TestLogsFollowShouldStreamNewLinesAndStopWhenTheRunEnds(t *testing.T) {
 
 func TestLogFollowerShouldStartOverWhenAFileIsTruncated(t *testing.T) {
 	dir := t.TempDir()
-	fl := &logFollower{dir: dir, offsets: map[string]int64{}, partial: map[string][]byte{}, lastTS: map[string]string{}}
+	fl := control.NewLogReader(dir, nil)
 	appendLog(t, dir, "checks", "10:00:00 a long first line\n")
-	if lines, _ := fl.read(false); len(lines) != 1 {
+	if lines, _ := fl.Read(false); len(lines) != 1 {
 		t.Fatalf("lines = %v", lines)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "checks.log"), []byte("10:01:00 new\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	lines, _ := fl.read(false)
-	if len(lines) != 1 || lines[0].text != "10:01:00 new" {
+	lines, _ := fl.Read(false)
+	if len(lines) != 1 || lines[0].Text != "10:01:00 new" {
 		t.Fatalf("a rewritten file is read from the start: %+v", lines)
 	}
 }

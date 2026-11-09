@@ -86,13 +86,20 @@ type IterationDetail struct {
 // reportLimit bounds the report.md the drawer shows.
 const reportLimit = 256 << 10
 
-type builder struct {
+// Builder assembles the board from a Source, caching the artifacts it parses.
+type Builder struct {
 	src   Source
 	files *files
 	limit int // finished runs on the board
 }
 
-func (b *builder) snapshot(ctx context.Context) (Snapshot, error) {
+// NewBuilder builds boards from src with up to limit finished runs.
+func NewBuilder(src Source, limit int) *Builder {
+	return &Builder{src: src, files: newFiles(), limit: limit}
+}
+
+// Snapshot is the whole board as it stands.
+func (b *Builder) Snapshot(ctx context.Context) (Snapshot, error) {
 	status, err := b.src.Status(ctx)
 	if err != nil {
 		return Snapshot{}, err
@@ -120,13 +127,13 @@ func (b *builder) snapshot(ctx context.Context) (Snapshot, error) {
 		})
 	}
 	for _, r := range runs {
-		c := &cols[at[columnOf(r)]]
+		c := &cols[at[ColumnOf(r)]]
 		c.Cards = append(c.Cards, b.card(r))
 	}
 	return Snapshot{Status: status, Columns: cols}, nil
 }
 
-func (b *builder) card(r Run) Card {
+func (b *Builder) card(r Run) Card {
 	c := Card{
 		Key: fmt.Sprintf("run-%d", r.ID), ID: r.ID, Kind: r.Kind, Repo: filepath.Base(r.Repo), Issue: r.Issue,
 		Title: r.Title, State: r.State, Iteration: r.Iteration, MaxIterations: r.MaxIterations,
@@ -138,11 +145,11 @@ func (b *builder) card(r Run) Card {
 	}
 	switch {
 	case terminal(r.State):
-		c.Outcome, c.Reason = Outcome(r.Reason), detail(r.Reason)
+		c.Outcome, c.Reason = Outcome(r.Reason), ReasonText(r.Reason)
 		if c.Outcome == "" {
 			c.Outcome = r.State
 		}
-		if columnOf(r) == ColHuman {
+		if ColumnOf(r) == ColHuman {
 			c.Hint = fmt.Sprintf("delamain logs %d", r.ID)
 		}
 	case r.Orphaned:
@@ -155,7 +162,10 @@ func (b *builder) card(r Run) Card {
 // Short names of the review axes, the way the chips show them.
 var axisLabel = map[string]string{"spec": "spec", "standards": "std", "security": "sec"}
 
-func (b *builder) rounds(r Run) []Round {
+// Rounds are the review rounds of r, one per iteration, as the chips of its card show them.
+func (b *Builder) Rounds(r Run) []Round { return b.rounds(r) }
+
+func (b *Builder) rounds(r Run) []Round {
 	switch r.Kind {
 	case "review":
 		return b.prRound(r)
@@ -188,7 +198,7 @@ func (b *builder) rounds(r Run) []Round {
 	return out
 }
 
-func (b *builder) prRound(r Run) []Round {
+func (b *Builder) prRound(r Run) []Round {
 	round := Round{Label: "PR"}
 	rv, ok, err := readJSON[artifacts.PRReview](b.files, filepath.Join(r.Dir, "review.json"))
 	switch {
@@ -205,7 +215,7 @@ func (b *builder) prRound(r Run) []Round {
 	return []Round{round}
 }
 
-func (b *builder) responsesRound(r Run) []Round {
+func (b *Builder) responsesRound(r Run) []Round {
 	rs, ok, err := readJSON[artifacts.Responses](b.files, filepath.Join(r.Dir, "responses.json"))
 	if err != nil {
 		return []Round{{Label: "PR", Chips: []Chip{{Label: "respostas?", Tone: "bad", Title: err.Error()}}}}
@@ -295,12 +305,13 @@ func missingAxes(why string) []Chip {
 	return chips
 }
 
-func (b *builder) detail(ctx context.Context, id int64) (Detail, error) {
+// Detail is one run with its artifacts, or an error wrapping ErrNotFound.
+func (b *Builder) Detail(ctx context.Context, id int64) (Detail, error) {
 	r, err := b.src.Run(ctx, id)
 	if err != nil {
 		return Detail{}, err
 	}
-	d := Detail{Card: b.card(r), Column: columnOf(r), RunDir: r.Dir, Agents: r.Agents, Iterations: []IterationDetail{}}
+	d := Detail{Card: b.card(r), Column: ColumnOf(r), RunDir: r.Dir, Agents: r.Agents, Iterations: []IterationDetail{}}
 	if d.Agents == nil {
 		d.Agents = []Agent{}
 	}
@@ -329,7 +340,7 @@ func (b *builder) detail(ctx context.Context, id int64) (Detail, error) {
 	return d, nil
 }
 
-func (b *builder) iteration(dir string, n int, gates []Gate) IterationDetail {
+func (b *Builder) iteration(dir string, n int, gates []Gate) IterationDetail {
 	iterDir := filepath.Join(dir, fmt.Sprintf("iter-%d", n))
 	it := IterationDetail{N: n, Gates: []Gate{}}
 	impl, _, err := readJSON[artifacts.Impl](b.files, filepath.Join(iterDir, "impl.json"))

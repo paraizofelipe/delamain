@@ -1,23 +1,18 @@
 package cli
 
 import (
-	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
-	"path/filepath"
 
 	"github.com/spf13/cobra"
 
 	"github.com/paraizo/delamain/internal/config"
-	"github.com/paraizo/delamain/internal/gitx"
-	"github.com/paraizo/delamain/internal/pipeline"
-	"github.com/paraizo/delamain/internal/store"
+	"github.com/paraizo/delamain/internal/control"
 )
 
-// errDirtyWorktree refuses a worktree with uncommitted changes, unless forced.
-var errDirtyWorktree = errors.New("has uncommitted changes; use --force to discard them")
+// errDirtyWorktree is control.ErrDirtyWorktree: a worktree with uncommitted changes, unless forced.
+var errDirtyWorktree = control.ErrDirtyWorktree
 
 func newRmCmd(load func() (config.Config, error)) *cobra.Command {
 	var force bool
@@ -48,11 +43,13 @@ Exit codes: 0 every run deleted · 1 a run could not be deleted.`,
 				return err
 			}
 			defer func() { _ = st.Close() }()
+			s := newStopper(cfg, st, true, 0, nil)
+			defer s.close()
 			failed := 0
 			for _, arg := range args {
 				id, err := runID(arg)
 				if err == nil {
-					err = removeRun(c.Context(), c.OutOrStdout(), cfg, st, id, force)
+					err = s.removeOne(c.Context(), c.OutOrStdout(), id, force)
 				}
 				if err != nil {
 					fmt.Fprintln(c.ErrOrStderr(), err)
@@ -67,66 +64,6 @@ Exit codes: 0 every run deleted · 1 a run could not be deleted.`,
 	}
 	cmd.Flags().BoolVar(&force, "force", false, "remove a worktree even if it has uncommitted changes")
 	return cmd
-}
-
-// removeRun deletes finished run id, its directory and its worktree, and writes to w that it did.
-func removeRun(ctx context.Context, w io.Writer, cfg config.Config, st *store.Store, id int64, force bool) error {
-	rec, err := st.GetRun(ctx, id)
-	if errors.Is(err, store.ErrNotFound) {
-		return fmt.Errorf("run %d not found", id)
-	}
-	if err != nil {
-		return err
-	}
-	if !rec.State.Terminal() {
-		return fmt.Errorf("run %d is still %s: stop it first with 'delamain stop %d'", id, rec.State, id)
-	}
-	runs := filepath.Join(cfg.Paths.StateDir, "runs")
-	dir := pipeline.RunDir(cfg.Paths.StateDir, rec.Repo, rec.ID)
-	if !within(runs, dir) {
-		return fmt.Errorf("run %d: its directory %s is outside %s", id, dir, runs)
-	}
-	if rec.Worktree != "" && exists(rec.Worktree) {
-		if err := worktreeInUse(ctx, st, rec.Worktree); err != nil {
-			return err
-		}
-		git := gitx.New()
-		if !force {
-			status, err := git.Status(ctx, rec.Worktree)
-			if err != nil {
-				return fmt.Errorf("run %d: %w", id, err)
-			}
-			if status != "" {
-				return fmt.Errorf("worktree %s %w", rec.Worktree, errDirtyWorktree)
-			}
-		}
-		if err := git.RemoveWorktree(ctx, rec.Repo, rec.Worktree); err != nil {
-			return fmt.Errorf("run %d: %w", id, err)
-		}
-	}
-	if err := os.RemoveAll(dir); err != nil {
-		return fmt.Errorf("run %d: %w", id, err)
-	}
-	if err := st.DeleteRun(ctx, id); err != nil {
-		return fmt.Errorf("run %d: %w", id, err)
-	}
-	fmt.Fprintf(w, "removed run %d\n", id)
-	return nil
-}
-
-// worktreeInUse refuses a worktree an unfinished run works in: fixing a PR's review threads
-// reuses the worktree of the issue run that opened it.
-func worktreeInUse(ctx context.Context, st *store.Store, worktree string) error {
-	active, err := st.UnfinishedRuns(ctx)
-	if err != nil {
-		return err
-	}
-	for _, a := range active {
-		if samePath(worktree, a.Worktree) {
-			return fmt.Errorf("worktree %s is in use by run %d (%s)", worktree, a.ID, a.State)
-		}
-	}
-	return nil
 }
 
 // exists reports whether path is there; an error other than not-exist counts as there.

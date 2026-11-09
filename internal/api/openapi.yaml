@@ -1,0 +1,639 @@
+openapi: 3.1.0
+info:
+  title: delamain remote API
+  version: "1"
+  description: |
+    The API `delamain serve` hosts, for an app to watch and control the runs. It listens on
+    loopback; an HTTPS tunnel forwards to it and terminates TLS. Every route under /api/v1 demands
+    the bearer token; /healthz alone answers without it. Errors are RFC 9457 problems with a
+    stable `code` the app can switch on.
+servers:
+  - url: http://127.0.0.1:7778
+security:
+  - bearer: []
+tags:
+  - name: state
+  - name: runs
+  - name: queue
+  - name: operations
+  - name: streams
+paths:
+  /healthz:
+    get:
+      summary: Liveness, without a token
+      security: []
+      responses:
+        "200":
+          description: The server is up.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, const: true }
+  /api/v1/status:
+    get:
+      tags: [state]
+      summary: The daemon, the slots and the day's spend
+      responses:
+        "200":
+          description: Current status.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Status" }
+        default: { $ref: "#/components/responses/Problem" }
+  /api/v1/repos:
+    get:
+      tags: [state]
+      summary: The repositories the API may start or queue
+      responses:
+        "200":
+          description: daemon.repos and api.repos.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Repo" }
+        default: { $ref: "#/components/responses/Problem" }
+  /api/v1/board:
+    get:
+      tags: [state]
+      summary: The kanban projection the local board shows
+      description: UI-shaped, with labels in Portuguese; an app that wants the kanban as is.
+      responses:
+        "200":
+          description: The board snapshot.
+          content:
+            application/json:
+              schema: { type: object }
+        default: { $ref: "#/components/responses/Problem" }
+  /api/v1/report:
+    get:
+      tags: [state]
+      summary: The report of a period
+      parameters:
+        - { name: period, in: query, schema: { type: string, enum: [7d, 30d, 90d, all], default: 7d } }
+        - { name: repo, in: query, schema: { type: string } }
+        - { name: kind, in: query, schema: { type: string, enum: [issue, review, address] } }
+        - { name: offset, in: query, schema: { type: integer, minimum: 0 }, description: History page, 20 runs each. }
+      responses:
+        "200":
+          description: KPIs, daily spend, top runs, top roles, top sessions and history.
+          content:
+            application/json:
+              schema: { type: object }
+        default: { $ref: "#/components/responses/Problem" }
+  /api/v1/runs:
+    get:
+      tags: [runs]
+      summary: The runs, newest first, page by page
+      parameters:
+        - { name: state, in: query, schema: { type: string, enum: [active, finished, all], default: all } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+        - { name: before, in: query, schema: { type: integer, minimum: 1 }, description: Only runs with an id below this one; take next_before from the previous page. }
+      responses:
+        "200":
+          description: A page of runs.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/RunSummary" }
+                  next_before: { type: integer, description: Pass as `before` for the next page; absent on the last one. }
+        default: { $ref: "#/components/responses/Problem" }
+    post:
+      tags: [runs]
+      summary: Start a run of an issue now
+      description: Starts `delamain run --issue` as a process of its own, taking a slot. Follow the Operation.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [repo, issue]
+              additionalProperties: false
+              properties:
+                repo: { type: string, description: One of /api/v1/repos. }
+                issue: { type: integer, minimum: 1 }
+                kind: { type: string, enum: [feature, bug] }
+      responses:
+        "202":
+          description: The operation following the run.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Operation" }
+        "403": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
+        default: { $ref: "#/components/responses/Problem" }
+  /api/v1/reviews:
+    post:
+      tags: [runs]
+      summary: Review a pull request now
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [repo, pr]
+              additionalProperties: false
+              properties:
+                repo: { type: string }
+                pr: { type: integer, minimum: 1 }
+      responses:
+        "202":
+          description: The operation following the review.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Operation" }
+        default: { $ref: "#/components/responses/Problem" }
+  /api/v1/runs/{id}:
+    parameters:
+      - { $ref: "#/components/parameters/RunID" }
+    get:
+      tags: [runs]
+      summary: One run with its artifacts
+      responses:
+        "200":
+          description: The run, its plan, iterations, review, report and agents.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RunDetail" }
+        "404": { $ref: "#/components/responses/Problem" }
+        default: { $ref: "#/components/responses/Problem" }
+    delete:
+      tags: [runs]
+      summary: Delete a finished run, its directory and its worktree
+      description: Branches and PRs are never touched; the token ledger keeps the run's spend.
+      parameters:
+        - { name: force, in: query, schema: { type: boolean, default: false }, description: Discard uncommitted changes in the worktree. }
+      responses:
+        "204": { description: Deleted. }
+        "404": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
+        default: { $ref: "#/components/responses/Problem" }
+  /api/v1/runs/{id}/stop:
+    parameters:
+      - { $ref: "#/components/parameters/RunID" }
+    post:
+      tags: [runs]
+      summary: Ask the owner of a run to stop it
+      description: Nothing is killed; the owner cancels the run when it sees the request. An orphan is recovered right away.
+      responses:
+        "200":
+          description: What was done.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StopResult" }
+        "404": { $ref: "#/components/responses/Problem" }
+        default: { $ref: "#/components/responses/Problem" }
+  /api/v1/runs/{id}/recover:
+    parameters:
+      - { $ref: "#/components/parameters/RunID" }
+    post:
+      tags: [runs]
+      summary: Finalize a run whose owner died
+      responses:
+        "202":
+          description: The operation following the recovery.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Operation" }
+        "404": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
+        default: { $ref: "#/components/responses/Problem" }
+  /api/v1/runs/{id}/logs:
+    parameters:
+      - { $ref: "#/components/parameters/RunID" }
+    get:
+      tags: [runs]
+      summary: The lines of a run's logs after a cursor
+      description: |
+        One page: at most 1 MiB of each log file. Go on with the cursor until `finished`, which
+        means the run ended and every line has been answered.
+      parameters:
+        - { name: cursor, in: query, schema: { type: string }, description: Opaque; take it from the previous answer. Empty means the start. }
+        - { name: tail, in: query, schema: { type: integer, minimum: 0, maximum: 5000 }, description: "Only the last N lines; without a cursor, of the end of the logs." }
+        - { name: roles, in: query, schema: { type: string }, description: Comma-separated sources, e.g. delamain,checks,implementer. }
+      responses:
+        "200":
+          description: The lines and the cursor to go on with.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [lines, cursor, finished]
+                properties:
+                  lines:
+                    type: array
+                    items: { $ref: "#/components/schemas/LogLine" }
+                  cursor: { type: string }
+                  finished: { type: boolean, description: The run ended and nothing is left to read. }
+        default: { $ref: "#/components/responses/Problem" }
+  /api/v1/runs/{id}/logs/stream:
+    parameters:
+      - { $ref: "#/components/parameters/RunID" }
+    get:
+      tags: [streams]
+      summary: Server-Sent Events of a run's logs
+      description: |
+        Events: `log` with `{lines, cursor}` as lines are appended, at most 1 MiB of each log file
+        per event, `end` with `{cursor}` once the run finished and its last lines are out. A
+        `: ping` comment every 15 seconds.
+      parameters:
+        - { name: cursor, in: query, schema: { type: string } }
+        - { name: roles, in: query, schema: { type: string } }
+      responses:
+        "200":
+          description: The stream.
+          content:
+            text/event-stream:
+              schema: { type: string }
+        "429": { $ref: "#/components/responses/Problem" }
+        default: { $ref: "#/components/responses/Problem" }
+  /api/v1/queue:
+    get:
+      tags: [queue]
+      summary: The queue in execution order
+      responses:
+        "200":
+          description: The items.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/QueueList" }
+        default: { $ref: "#/components/responses/Problem" }
+    post:
+      tags: [queue]
+      summary: Queue an issue
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [repo, issue]
+              additionalProperties: false
+              properties:
+                repo: { type: string }
+                issue: { type: integer, minimum: 1 }
+      responses:
+        "201":
+          description: Queued.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/QueueItem" }
+        "200":
+          description: Already queued; the item as it is.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/QueueItem" }
+        default: { $ref: "#/components/responses/Problem" }
+  /api/v1/queue/{id}:
+    parameters:
+      - { $ref: "#/components/parameters/QueueID" }
+    delete:
+      tags: [queue]
+      summary: Take an item out of the queue
+      responses:
+        "204": { description: Removed. }
+        "404": { $ref: "#/components/responses/Problem" }
+        default: { $ref: "#/components/responses/Problem" }
+  /api/v1/queue/{id}/position:
+    parameters:
+      - { $ref: "#/components/parameters/QueueID" }
+    put:
+      tags: [queue]
+      summary: Move an item to a position
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [position]
+              additionalProperties: false
+              properties:
+                position: { type: integer, minimum: 1, description: From 1; past the end means last. }
+      responses:
+        "200":
+          description: The whole queue after the move.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/QueueList" }
+        "404": { $ref: "#/components/responses/Problem" }
+        default: { $ref: "#/components/responses/Problem" }
+  /api/v1/operations:
+    get:
+      tags: [operations]
+      summary: Recent operations, newest first
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+      responses:
+        "200":
+          description: The operations.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Operation" }
+        default: { $ref: "#/components/responses/Problem" }
+  /api/v1/operations/{id}:
+    get:
+      tags: [operations]
+      summary: One operation
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: The operation.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Operation" }
+        "404": { $ref: "#/components/responses/Problem" }
+        default: { $ref: "#/components/responses/Problem" }
+  /api/v1/events:
+    get:
+      tags: [streams]
+      summary: Server-Sent Events of everything that changes
+      description: |
+        Opens with `hello` `{server_time, version, interval_ms}`, `runs` `{items}`, `queue` `{items}`
+        and `status`; then pushes `run` (one RunSummary) when a run changed, `run_removed` `{id}`
+        when one left the window, `queue` and `status` whole when they changed, `operation` as the
+        operations move, and `problem` `{code, detail}` when a reload failed. A `: ping` comment
+        every 15 seconds. On reconnect the opening burst comes again.
+      responses:
+        "200":
+          description: The stream.
+          content:
+            text/event-stream:
+              schema: { type: string }
+        "429": { $ref: "#/components/responses/Problem" }
+        default: { $ref: "#/components/responses/Problem" }
+  /api/v1/openapi.yaml:
+    get:
+      tags: [state]
+      summary: This document
+      responses:
+        "200":
+          description: OpenAPI 3.1, YAML.
+          content:
+            application/yaml:
+              schema: { type: string }
+components:
+  securitySchemes:
+    bearer:
+      type: http
+      scheme: bearer
+      description: The token the variable api.token_env names; made by `delamain serve token`.
+  parameters:
+    RunID:
+      name: id
+      in: path
+      required: true
+      schema: { type: integer, minimum: 1 }
+    QueueID:
+      name: id
+      in: path
+      required: true
+      schema: { type: integer, minimum: 1 }
+  responses:
+    Problem:
+      description: An error, as RFC 9457 shapes it, with a stable code.
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+  schemas:
+    Problem:
+      type: object
+      required: [type, title, status, code]
+      properties:
+        type: { type: string }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        instance: { type: string }
+        code:
+          type: string
+          enum:
+            - unauthorized
+            - rate_limited
+            - not_found
+            - method_not_allowed
+            - invalid_param
+            - invalid_body
+            - invalid_cursor
+            - payload_too_large
+            - too_many_streams
+            - repo_not_allowed
+            - run_active
+            - run_finished
+            - run_not_finished
+            - owner_alive
+            - worktree_dirty
+            - worktree_in_use
+            - review_disabled
+            - issue_closed
+            - issue_not_found
+            - no_forge
+            - forge_error
+            - internal
+        run_id: { type: integer, description: With run_active, run_finished, run_not_finished, owner_alive, worktree_dirty, worktree_in_use. }
+        operation_id: { type: string, description: With run_active when the issue or PR is still being started and has no run yet. }
+        state: { type: string }
+        owner_pid: { type: integer }
+        worktree: { type: string }
+        issue: { type: integer }
+        forge_status: { type: integer }
+    Spend:
+      type: object
+      required: [mode, value, cost_usd]
+      properties:
+        mode: { type: string, enum: [tokens, usd] }
+        value: { type: number }
+        limit: { type: number, description: 0 or absent without one. }
+        cost_usd: { type: number }
+    Status:
+      type: object
+      required: [daemon, slots_in_use, slots_max, queue_running, today, today_level, version]
+      properties:
+        daemon: { type: boolean }
+        slots_in_use: { type: integer }
+        slots_max: { type: integer }
+        queue_running: { type: boolean }
+        today: { $ref: "#/components/schemas/Spend" }
+        today_level: { type: string, enum: [ok, soft, hard] }
+        version: { type: string }
+        server_time: { type: string, format: date-time, description: Absent on the event stream. }
+    Repo:
+      type: object
+      required: [path, name]
+      properties:
+        path: { type: string }
+        name: { type: string }
+        forge:
+          type: object
+          required: [kind, host, path]
+          properties:
+            kind: { type: string, enum: [github, gitlab] }
+            host: { type: string }
+            path: { type: string }
+    Owner:
+      type: object
+      required: [pid, alive]
+      properties:
+        pid: { type: integer }
+        alive: { type: boolean }
+    Round:
+      type: object
+      required: [label, chips]
+      properties:
+        label: { type: string }
+        verdict: { type: string }
+        chips:
+          type: array
+          items:
+            type: object
+            properties:
+              label: { type: string }
+              tone: { type: string, enum: [pass, changes, fail, wait, bad, idle] }
+              title: { type: string }
+    RunSummary:
+      type: object
+      required: [id, kind, repo, repo_name, ref, title, state, column, iteration, max_iterations, live, orphaned, owner, spend, rounds, created_at, updated_at]
+      properties:
+        id: { type: integer }
+        kind: { type: string, enum: [issue, review, address] }
+        repo: { type: string, description: The full path. }
+        repo_name: { type: string }
+        ref: { type: string, description: "\"#12\", \"pr:7\" or \"task:<slug>\"." }
+        title: { type: string }
+        state: { type: string, enum: [claimed, preflight, needs_info, setup, plan, implement, verify, review, deliver, deliver_draft, halted, recorded] }
+        column: { type: string, enum: [queue, setup, plan, implement, verify, review, deliver, done, human] }
+        outcome: { type: string, description: approved, exhausted, halted, needs_info, reviewed, skipped, answered or orphaned. }
+        reason: { type: string }
+        iteration: { type: integer }
+        max_iterations: { type: integer }
+        complexity: { type: string }
+        branch: { type: string }
+        pr: { type: string, format: uri }
+        live: { type: boolean }
+        orphaned: { type: boolean }
+        owner: { $ref: "#/components/schemas/Owner" }
+        stop_requested_at: { type: string, format: date-time }
+        spend: { $ref: "#/components/schemas/Spend" }
+        rounds:
+          type: array
+          items: { $ref: "#/components/schemas/Round" }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    Agent:
+      type: object
+      required: [role, state, started_at, tokens, cost_usd]
+      properties:
+        role: { type: string }
+        state: { type: string, enum: [running, done, failed] }
+        started_at: { type: string, format: date-time }
+        ended_at: { type: string, format: date-time }
+        tokens: { type: integer }
+        cost_usd: { type: number }
+    RunDetail:
+      allOf:
+        - { $ref: "#/components/schemas/RunSummary" }
+        - type: object
+          required: [run_dir, iterations, agents]
+          properties:
+            run_dir: { type: string }
+            plan: { type: object }
+            plan_error: { type: string }
+            iterations:
+              type: array
+              items:
+                type: object
+                properties:
+                  n: { type: integer }
+                  impl: { type: object }
+                  impl_error: { type: string }
+                  gates:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name: { type: string }
+                        exit: { type: integer }
+                        tail: { type: string }
+                  review: { type: object }
+                  review_error: { type: string }
+                  verdict: { type: string }
+            pr_review: { type: object }
+            responses: { type: object }
+            artifact_error: { type: string }
+            report: { type: string, description: report.md, up to 256 KiB. }
+            agents:
+              type: array
+              items: { $ref: "#/components/schemas/Agent" }
+    QueueItem:
+      type: object
+      required: [id, position, repo, repo_name, issue, title, added_at]
+      properties:
+        id: { type: integer }
+        position: { type: integer }
+        repo: { type: string }
+        repo_name: { type: string }
+        issue: { type: integer }
+        title: { type: string }
+        added_at: { type: string, format: date-time }
+        waiting: { type: string, description: What the item waits for before it can start. }
+    QueueList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/QueueItem" }
+    LogLine:
+      type: object
+      required: [ts, source, text]
+      properties:
+        ts: { type: string, description: HH:MM:SS of the line, or of the stamped line before it. }
+        source: { type: string }
+        text: { type: string }
+    Operation:
+      type: object
+      required: [id, kind, status, started_at]
+      properties:
+        id: { type: string }
+        kind: { type: string, enum: [start_run, start_review, recover] }
+        status: { type: string, enum: [running, succeeded, failed] }
+        repo: { type: string }
+        issue: { type: integer }
+        pr: { type: integer }
+        run_id: { type: integer, description: The run started or recovered, once known. }
+        exit_code: { type: integer, description: "Of the process: 0 ok, 1 halted, 3 exhausted, 4 needs_info, 5 no slot. Absent while running and when the process never started." }
+        error: { type: string }
+        result: { type: string, description: How a recover ended, e.g. draft PR or halted. }
+        log_path: { type: string }
+        log_tail: { type: string }
+        started_at: { type: string, format: date-time }
+        ended_at: { type: string, format: date-time }
+    StopResult:
+      type: object
+      required: [run_id, status, state]
+      properties:
+        run_id: { type: integer }
+        status: { type: string, enum: [requested, recovered, already_finished] }
+        state: { type: string }
+        owner_pid: { type: integer }
+        recovered: { type: string, description: How the orphan ended, for recovered. }

@@ -770,3 +770,110 @@ func TestDoctorShouldNeverPrintDecisionsAPIKey(t *testing.T) {
 		t.Fatalf("a probe error echoing the key must be masked: %+v", c)
 	}
 }
+
+func TestRunShouldReportNtfyBesideTheDesktopBackend(t *testing.T) {
+	cfg, d := healthy(t)
+	d.Notify = func(context.Context) notify.Probe {
+		return notify.Probe{Backend: "dbus", Server: "mako", Version: "1.9.0", Actions: true,
+			Ntfy: &notify.NtfyProbe{URL: "https://ntfy.sh", Topic: "dlm…", Auth: true}}
+	}
+	checks := byName(Run(context.Background(), cfg, d))
+	if c := checks["notify"]; c.Status != OK {
+		t.Fatalf("the desktop check is unchanged: %+v", c)
+	}
+	if c := checks["ntfy"]; c.Status != OK || c.Detail != "https://ntfy.sh topic dlm… (with token)" {
+		t.Fatalf("ntfy check = %+v", c)
+	}
+
+	d.Notify = func(context.Context) notify.Probe {
+		return notify.Probe{Backend: "none", Ntfy: &notify.NtfyProbe{URL: "https://ntfy.example.com", Topic: "abc…", Err: errors.New("connection refused")}}
+	}
+	checks = byName(Run(context.Background(), cfg, d))
+	if c := checks["ntfy"]; c.Status != Fail || !strings.Contains(c.Detail, "connection refused") || !strings.Contains(c.Detail, "https://ntfy.example.com") {
+		t.Fatalf("an unreachable ntfy fails, since pushes were asked for: %+v", c)
+	}
+
+	d.Notify = func(context.Context) notify.Probe {
+		return notify.Probe{Backend: "none", Ntfy: &notify.NtfyProbe{URL: "https://ntfy.sh", Topic: "abc…"}}
+	}
+	if c := byName(Run(context.Background(), cfg, d))["ntfy"]; c.Status != OK || c.Detail != "https://ntfy.sh topic abc… (no token)" {
+		t.Fatalf("ntfy check = %+v", c)
+	}
+
+	d.Notify = func(context.Context) notify.Probe { return notify.Probe{Backend: "none"} }
+	if _, ok := byName(Run(context.Background(), cfg, d))["ntfy"]; ok {
+		t.Fatal("no ntfy line when it is not configured")
+	}
+}
+
+func TestRunShouldReportTheRemoteAPI(t *testing.T) {
+	cfg, d := healthy(t)
+	if c := byName(Run(context.Background(), cfg, d))["api"]; c.Status != OK || !strings.Contains(c.Detail, "off") {
+		t.Fatalf("off by default: %+v", c)
+	}
+
+	cfg.API.Enabled = true
+	d.Getenv = func(k string) string { return map[string]string{"DELAMAIN_API_TOKEN": "tiny"}[k] }
+	c := byName(Run(context.Background(), cfg, d))["api"]
+	if c.Status != Fail || !strings.Contains(c.Detail, "DELAMAIN_API_TOKEN") || !strings.Contains(c.Detail, "serve token") || strings.Contains(c.Detail, "tiny") {
+		t.Fatalf("a short token fails, naming the variable and never the value: %+v", c)
+	}
+
+	d.Getenv = func(k string) string { return map[string]string{"DELAMAIN_API_TOKEN": strings.Repeat("x", 43)}[k] }
+	cfg.API.Addr = "0.0.0.0:7778"
+	if c := byName(Run(context.Background(), cfg, d))["api"]; c.Status != Fail || !strings.Contains(c.Detail, "api.addr") {
+		t.Fatalf("a non-loopback address fails: %+v", c)
+	}
+
+	cfg.API.Addr = "127.0.0.1:7778"
+	if c := byName(Run(context.Background(), cfg, d))["api"]; c.Status != OK || c.Detail != "configured at 127.0.0.1:7778; probe skipped" {
+		t.Fatalf("without a probe: %+v", c)
+	}
+	d.APIProbe = func(_ context.Context, addr string) error {
+		return errors.New("dial tcp " + addr + ": connection refused")
+	}
+	checks := Run(context.Background(), cfg, d)
+	if c := byName(checks)["api"]; c.Status != Warn || !strings.Contains(c.Detail, "not running at 127.0.0.1:7778") || !strings.Contains(c.Detail, "delamain serve") {
+		t.Fatalf("nothing answering is a warning: %+v", c)
+	}
+	if Failed(checks) {
+		t.Fatal("an API that is not running never fails doctor")
+	}
+	d.APIProbe = func(context.Context, string) error { return nil }
+	if c := byName(Run(context.Background(), cfg, d))["api"]; c.Status != OK || c.Detail != "serving at 127.0.0.1:7778" {
+		t.Fatalf("serving: %+v", c)
+	}
+}
+
+// serve opens the audit log itself: a directory in its place, or a log it cannot append to, makes
+// serve fail to start, and the doctor must say why instead of reporting the API ready.
+func TestRunShouldWarnWhenTheAuditLogCannotBeOpenedForAppending(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root opens a read-only file anyway")
+	}
+	cfg, d := healthy(t)
+	cfg.API.Enabled = true
+	d.Getenv = func(k string) string { return map[string]string{"DELAMAIN_API_TOKEN": strings.Repeat("x", 43)}[k] }
+	dir := t.TempDir()
+
+	cfg.API.AuditLog = filepath.Join(dir, "as-dir.log")
+	if err := os.Mkdir(cfg.API.AuditLog, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if c := byName(Run(context.Background(), cfg, d))["api"]; c.Status != Warn || !strings.Contains(c.Detail, "not a regular file") {
+		t.Fatalf("a directory in place of the audit log is a warning: %+v", c)
+	}
+
+	cfg.API.AuditLog = filepath.Join(dir, "read-only.log")
+	if err := os.WriteFile(cfg.API.AuditLog, nil, 0o400); err != nil {
+		t.Fatal(err)
+	}
+	if c := byName(Run(context.Background(), cfg, d))["api"]; c.Status != Warn || !strings.Contains(c.Detail, "permission denied") {
+		t.Fatalf("an audit log serve cannot append to is a warning: %+v", c)
+	}
+
+	cfg.API.AuditLog = filepath.Join(dir, "fresh.log")
+	if c := byName(Run(context.Background(), cfg, d))["api"]; c.Status != OK {
+		t.Fatalf("a log serve will create is fine: %+v", c)
+	}
+}

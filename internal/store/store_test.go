@@ -693,3 +693,74 @@ func TestMigrationShouldAddAgentSessionsToAnExistingDatabase(t *testing.T) {
 		t.Fatalf("the new session bills the old ledger: %+v %v", got, err)
 	}
 }
+
+func TestRunsBeforeShouldPageNewestFirstByStateFilter(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	var ids []int64
+	for i, st := range []RunState{StateRecorded, StateImplement, StateNeedsInfo, StatePlan, StateRecorded} {
+		r, err := s.CreateRun(ctx, "repo", "#"+string(rune('1'+i)), "t", "omp", 3, 0, KindIssue)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.State = st
+		if err := s.UpdateRun(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, r.ID)
+	}
+	got := func(before int64, limit int, filter string) []int64 {
+		t.Helper()
+		runs, err := s.RunsBefore(ctx, before, limit, filter)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []int64
+		for _, r := range runs {
+			out = append(out, r.ID)
+		}
+		return out
+	}
+	if page := got(0, 2, "all"); len(page) != 2 || page[0] != ids[4] || page[1] != ids[3] {
+		t.Fatalf("the first page is the newest two: %v", page)
+	}
+	if page := got(ids[3], 10, "all"); len(page) != 3 || page[0] != ids[2] || page[2] != ids[0] {
+		t.Fatalf("before pages on: %v", page)
+	}
+	if page := got(0, 10, "active"); len(page) != 2 || page[0] != ids[3] || page[1] != ids[1] {
+		t.Fatalf("active are the non-terminal ones: %v", page)
+	}
+	if page := got(0, 10, "finished"); len(page) != 3 || page[0] != ids[4] || page[1] != ids[2] || page[2] != ids[0] {
+		t.Fatalf("finished are recorded and needs_info: %v", page)
+	}
+	if page := got(ids[0], 10, "all"); len(page) != 0 {
+		t.Fatalf("nothing before the oldest: %v", page)
+	}
+	if _, err := s.RunsBefore(ctx, 0, 10, "weird"); err == nil {
+		t.Fatal("an unknown filter is an error")
+	}
+}
+
+// halted is the step a run takes on its way to recorded: it has ended, and a page of active runs
+// must not show it as running.
+func TestRunsBeforeShouldCountAHaltedRunAsFinished(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	r, err := s.CreateRun(ctx, "repo", "#1", "t", "omp", 3, 0, KindIssue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.State = StateHalted
+	if err := s.UpdateRun(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+	for filter, want := range map[string]int{"active": 0, "finished": 1, "all": 1} {
+		runs, err := s.RunsBefore(ctx, 0, 10, filter)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(runs) != want {
+			t.Fatalf("state=%s: %d runs, want %d", filter, len(runs), want)
+		}
+	}
+}

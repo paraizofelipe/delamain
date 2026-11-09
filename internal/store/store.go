@@ -364,6 +364,24 @@ func (s *Store) RecentRuns(ctx context.Context, limit int) ([]Run, error) {
 	return s.queryRuns(ctx, `SELECT `+runCols+` FROM runs ORDER BY id DESC LIMIT ?`, limit)
 }
 
+// RunsBefore pages the runs newest first: up to limit runs with an id below before (0 means
+// from the newest), of the given state filter: "active" (not terminal), "finished" (terminal) or
+// "all".
+func (s *Store) RunsBefore(ctx context.Context, before int64, limit int, filter string) ([]Run, error) {
+	where := `WHERE (? <= 0 OR id < ?)`
+	switch filter {
+	// halted is the last step before recorded: the run has ended, as the board and the API show.
+	case "active":
+		where += ` AND state NOT IN ('` + string(StateRecorded) + `', '` + string(StateNeedsInfo) + `', '` + string(StateHalted) + `')`
+	case "finished":
+		where += ` AND state IN ('` + string(StateRecorded) + `', '` + string(StateNeedsInfo) + `', '` + string(StateHalted) + `')`
+	case "all", "":
+	default:
+		return nil, fmt.Errorf("runs filter %q is not one of active|finished|all", filter)
+	}
+	return s.queryRuns(ctx, `SELECT `+runCols+` FROM runs `+where+` ORDER BY id DESC LIMIT ?`, before, before, limit)
+}
+
 // ClaimRun moves ownership of a run from one process to another atomically; false means someone
 // else got there first (two recoverers never finalize the same run).
 func (s *Store) ClaimRun(ctx context.Context, id int64, from, to int) (bool, error) {

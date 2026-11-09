@@ -47,7 +47,7 @@ type watchOptions struct {
 	prForge func(ctx context.Context, repo string) (forge.Forge, error)
 }
 
-func newWatchCmd(load func() (config.Config, error)) *cobra.Command {
+func newWatchCmd(load func() (config.Config, error), configPath func() string) *cobra.Command {
 	opts := watchOptions{}
 	cmd := &cobra.Command{
 		Use:   "watch",
@@ -81,7 +81,12 @@ y copies the run ID through OSC 52; tmux needs ` + "`set -g set-clipboard on`.",
 				return err
 			}
 			defer done()
-			acts := newStoreWatchActions(ctx, in.cfg, in.st, out)
+			// The runs and reviews it starts load the same config file as this watch.
+			configFile, err := filepath.Abs(configPath())
+			if err != nil {
+				return err
+			}
+			acts := newStoreWatchActions(ctx, in.cfg, in.st, out, configFile)
 			defer acts.close()
 			o := opts
 			o.actions, o.repos = acts, in.cfg.Daemon.Repos

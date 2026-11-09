@@ -17,6 +17,7 @@ import (
 
 	"github.com/paraizo/delamain/internal/budget"
 	"github.com/paraizo/delamain/internal/config"
+	"github.com/paraizo/delamain/internal/control"
 	"github.com/paraizo/delamain/internal/daemon"
 	"github.com/paraizo/delamain/internal/forge"
 	"github.com/paraizo/delamain/internal/notify"
@@ -213,26 +214,11 @@ func reportRecovered(ctx context.Context, w io.Writer, base *pipeline.Runner, re
 			base.Log.Warn("recover toast: run not found", "run", res.RunID, "err", err)
 			continue
 		}
-		recovered = append(recovered, notify.Recovered{Repo: rec.Repo, Ref: rec.IssueRef, Result: recoveredResult(res)})
+		recovered = append(recovered, notify.Recovered{Repo: rec.Repo, Ref: rec.IssueRef, Result: control.RecoveredResult(res)})
 	}
 	if base.Notify != nil && len(recovered) > 0 {
 		_ = base.Notify.Notify(ctx, notify.FormatRecover(recovered))
 	}
-}
-
-// recoveredResult says how a recovered run ended, in the recover toast's words.
-func recoveredResult(res pipeline.Result) string {
-	switch {
-	case res.PRURL != "" && !res.Draft:
-		return "PR opened"
-	case res.PRURL != "":
-		return "draft PR"
-	case res.Outcome == pipeline.OutcomeNeedsInfo:
-		return "needs info"
-	case res.Outcome == pipeline.OutcomeHalted:
-		return "halted"
-	}
-	return "needs review" // exhausted, or approved without a PR, as the needs_human toast
 }
 
 // lockDaemon allows one daemon per state dir: two schedulers would race for the same issues.

@@ -17,6 +17,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/paraizo/delamain/internal/config"
+	"github.com/paraizo/delamain/internal/control"
 	"github.com/paraizo/delamain/internal/daemon"
 	"github.com/paraizo/delamain/internal/forge"
 	"github.com/paraizo/delamain/internal/gitx"
@@ -154,19 +155,20 @@ func queueAdd(c *cobra.Command, cfg config.Config, st *store.Store, repo string,
 			return err
 		}
 	}
-	top, err := gitx.New().MainWorktree(ctx, repo)
-	if err != nil {
-		return fmt.Errorf("repository: %w", err)
-	}
-	fg, err := queueForge(ctx, cfg, top)
-	if err != nil {
-		return err
-	}
+	acts := control.New(control.Deps{
+		Cfg: cfg, Store: st, AnyRepo: true,
+		ForgeFor: func(ctx context.Context, dir string) (forge.Forge, error) { return queueForge(ctx, cfg, dir) },
+	})
 	failed := 0
 	for _, n := range ns {
-		it, err := enqueueIssue(ctx, st, fg, top, n)
+		it, added, err := acts.Enqueue(ctx, repo, n)
 		if err != nil {
 			fmt.Fprintln(c.ErrOrStderr(), err)
+			failed++
+			continue
+		}
+		if !added {
+			fmt.Fprintf(c.ErrOrStderr(), "issue #%d: %v\n", n, store.ErrQueued)
 			failed++
 			continue
 		}
@@ -179,19 +181,6 @@ func queueAdd(c *cobra.Command, cfg config.Config, st *store.Store, repo string,
 		return ExitError{Code: 1}
 	}
 	return nil
-}
-
-func enqueueIssue(ctx context.Context, st *store.Store, fg forge.Forge, repo string, n int) (store.QueueItem, error) {
-	task, err := issueTask(ctx, fg, n, repo)
-	if err != nil {
-		return store.QueueItem{}, err
-	}
-	if r, err := st.ActiveRun(ctx, repo, task.Ref); err == nil {
-		return store.QueueItem{}, fmt.Errorf("issue #%d already has active run %d", n, r.ID)
-	} else if !errors.Is(err, store.ErrNotFound) {
-		return store.QueueItem{}, err
-	}
-	return st.Enqueue(ctx, repo, n, task.Title)
 }
 
 func renderQueue(w io.Writer, items []store.QueueItem, st styles) error {

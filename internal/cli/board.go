@@ -175,10 +175,11 @@ func (s boardSource) run(v RunView) board.Run {
 		Iteration: v.Iteration, MaxIterations: v.iterations, Complexity: v.Complexity, Branch: v.Branch, PR: v.PR,
 		// An active run whose owner died waits for `delamain recover`.
 		Orphaned: !v.terminal && v.Owner.PID != 0 && !v.Owner.Alive,
-		Dir:      v.RunDir, CreatedAt: v.CreatedAt, UpdatedAt: v.UpdatedAt, Agents: []board.Agent{},
+		OwnerPID: v.Owner.PID, StopRequestedAt: v.StopRequestedAt,
+		Dir: v.RunDir, CreatedAt: v.CreatedAt, UpdatedAt: v.UpdatedAt, Agents: []board.Agent{},
 	}
 	var usage budget.Status
-	usage.Mode = s.in.cfg.Budget.Mode
+	usage.Mode, usage.PerIssue = s.in.cfg.Budget.Mode, v.PerIssue
 	for _, a := range v.Agents {
 		r.Agents = append(r.Agents, board.Agent{
 			Role: a.Role, State: a.State, StartedAt: a.StartedAt, EndedAt: a.EndedAt, Tokens: a.Tokens, CostUSD: a.CostUSD,
@@ -192,6 +193,7 @@ func (s boardSource) run(v RunView) board.Run {
 	if usage.Run > 0 || usage.Usage.CostUSD > 0 {
 		r.Spend = usage.Summary()
 	}
+	r.Usage = board.Spend{Mode: string(usage.Mode), Value: usage.Run, Limit: usage.PerIssue, CostUSD: usage.Usage.CostUSD}
 	return r
 }
 
@@ -202,7 +204,7 @@ func (s boardSource) Queue(ctx context.Context) ([]board.QueueItem, error) {
 	}
 	out := make([]board.QueueItem, 0, len(items))
 	for _, it := range items {
-		out = append(out, board.QueueItem{Position: it.Position, Repo: it.Repo, Issue: it.Issue, Title: it.Title, AddedAt: it.AddedAt, Waiting: it.Waiting})
+		out = append(out, board.QueueItem{ID: it.ID, Position: it.Position, Repo: it.Repo, Issue: it.Issue, Title: it.Title, AddedAt: it.AddedAt, Waiting: it.Waiting})
 	}
 	return out, nil
 }
@@ -220,6 +222,7 @@ func (s boardSource) Status(ctx context.Context) (board.Status, error) {
 	st := board.Status{
 		Daemon: src.DaemonRunning(), SlotsInUse: slots.InUse, SlotsMax: slots.Max, QueueRunning: slots.Queue,
 		Today: budget.Format(today.Day, today.Mode), TodayLevel: today.Level.String(),
+		TodaySpend: board.Spend{Mode: string(today.Mode), Value: today.Day, Limit: today.Daily, CostUSD: today.DayUsage.CostUSD},
 	}
 	if today.Daily > 0 {
 		st.TodayLimit = budget.Format(today.Daily, today.Mode)

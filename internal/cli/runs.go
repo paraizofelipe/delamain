@@ -50,29 +50,33 @@ func printAs(w io.Writer, format string, v any, table func(io.Writer) error) err
 
 // RunView is a run as `ls` and `status` show it.
 type RunView struct {
-	ID            int64       `json:"id" yaml:"id"`
-	Kind          string      `json:"kind" yaml:"kind"`
-	Repo          string      `json:"repo" yaml:"repo"`
-	Issue         string      `json:"issue" yaml:"issue"`
-	Title         string      `json:"title" yaml:"title"`
-	State         string      `json:"state" yaml:"state"`
-	Iteration     int         `json:"iteration" yaml:"iteration"`
-	Harness       string      `json:"harness" yaml:"harness"`
-	MaxIterations int         `json:"max_iterations" yaml:"max_iterations"` // as recorded: 0 for runs from before it was
-	Complexity    string      `json:"complexity,omitempty" yaml:"complexity,omitempty"`
-	Branch        string      `json:"branch,omitempty" yaml:"branch,omitempty"`
-	Base          string      `json:"base,omitempty" yaml:"base,omitempty"`
-	Worktree      string      `json:"worktree,omitempty" yaml:"worktree,omitempty"`
-	Workspace     string      `json:"herdr_workspace,omitempty" yaml:"herdr_workspace,omitempty"`
-	PR            string      `json:"pr,omitempty" yaml:"pr,omitempty"`
-	Result        string      `json:"result,omitempty" yaml:"result,omitempty"`
-	Owner         Process     `json:"owner" yaml:"owner"`
-	Agents        []AgentView `json:"agents" yaml:"agents"`
-	RunDir        string      `json:"run_dir" yaml:"run_dir"`
-	CreatedAt     time.Time   `json:"created_at" yaml:"created_at"`
-	UpdatedAt     time.Time   `json:"updated_at" yaml:"updated_at"`
-	terminal      bool
-	iterations    int // effective maximum: the recorded one, or the config's for older runs
+	ID            int64  `json:"id" yaml:"id"`
+	Kind          string `json:"kind" yaml:"kind"`
+	Repo          string `json:"repo" yaml:"repo"`
+	Issue         string `json:"issue" yaml:"issue"`
+	Title         string `json:"title" yaml:"title"`
+	State         string `json:"state" yaml:"state"`
+	Iteration     int    `json:"iteration" yaml:"iteration"`
+	Harness       string `json:"harness" yaml:"harness"`
+	MaxIterations int    `json:"max_iterations" yaml:"max_iterations"` // as recorded: 0 for runs from before it was
+	Complexity    string `json:"complexity,omitempty" yaml:"complexity,omitempty"`
+	Branch        string `json:"branch,omitempty" yaml:"branch,omitempty"`
+	Base          string `json:"base,omitempty" yaml:"base,omitempty"`
+	Worktree      string `json:"worktree,omitempty" yaml:"worktree,omitempty"`
+	Workspace     string `json:"herdr_workspace,omitempty" yaml:"herdr_workspace,omitempty"`
+	PR            string `json:"pr,omitempty" yaml:"pr,omitempty"`
+	Result        string `json:"result,omitempty" yaml:"result,omitempty"`
+	// PerIssue is the run's token or dollar budget; 0 without one.
+	PerIssue float64 `json:"per_issue,omitempty" yaml:"per_issue,omitempty"`
+	// StopRequestedAt is when `delamain stop` asked for the run to stop, if ever.
+	StopRequestedAt *time.Time  `json:"stop_requested_at,omitempty" yaml:"stop_requested_at,omitempty"`
+	Owner           Process     `json:"owner" yaml:"owner"`
+	Agents          []AgentView `json:"agents" yaml:"agents"`
+	RunDir          string      `json:"run_dir" yaml:"run_dir"`
+	CreatedAt       time.Time   `json:"created_at" yaml:"created_at"`
+	UpdatedAt       time.Time   `json:"updated_at" yaml:"updated_at"`
+	terminal        bool
+	iterations      int // effective maximum: the recorded one, or the config's for older runs
 }
 
 type Process struct {
@@ -147,7 +151,8 @@ func (in *inspector) view(ctx context.Context, rec store.Run) (RunView, error) {
 		CreatedAt: rec.CreatedAt, UpdatedAt: rec.UpdatedAt, terminal: rec.State.Terminal(),
 		Harness: rec.Harness, MaxIterations: rec.MaxIterations, Complexity: rec.Complexity, Agents: []AgentView{},
 	}
-	v.iterations, _ = rec.Limits(in.cfg.Pipeline.MaxIterations, in.cfg.Budget.PerIssue)
+	v.iterations, v.PerIssue = rec.Limits(in.cfg.Pipeline.MaxIterations, in.cfg.Budget.PerIssue)
+	v.StopRequestedAt = rec.StopRequestedAt
 	if v.terminal {
 		v.Result = rec.Reason
 	}

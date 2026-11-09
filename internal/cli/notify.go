@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -15,18 +17,27 @@ import (
 type testNotifier interface {
 	notify.Notifier
 	Backend() string
+	Backends() []string
 	Send(ctx context.Context, m notify.Message) error
+	SendTo(ctx context.Context, kind string, m notify.Message) error
 }
+
+// viaAll, viaDesktop and viaNtfy are the values of --via.
+const (
+	viaAll     = "all"
+	viaDesktop = "desktop"
+	viaNtfy    = notify.NtfyKind
+)
 
 func newNotifyCmd(load func() (config.Config, error)) *cobra.Command {
 	var test bool
-	var event string
+	var event, via string
 	cmd := &cobra.Command{
-		Use:   "notify --test [--event <event>]",
-		Short: "Send a sample desktop notification",
-		Long: `Sends the sample toast of an event (default pr_opened) through the configured backend,
-whatever notify.enabled and notify.events say, without actions. Fails when no backend is
-available (backend none).`,
+		Use:   "notify --test [--event <event>] [--via all|desktop|ntfy]",
+		Short: "Send a sample notification",
+		Long: `Sends the sample toast of an event (default pr_opened) through the configured backends (the
+desktop one and, when notify.ntfy is enabled, the ntfy topic), whatever notify.enabled and
+notify.events say, without actions. --via picks one of them. Fails when no backend is available.`,
 		RunE: func(c *cobra.Command, _ []string) error {
 			if !test {
 				return errors.New("use --test to send a sample notification")
@@ -46,17 +57,36 @@ available (backend none).`,
 				return errors.New("this notifier cannot send a test toast")
 			}
 			defer func() { _ = n.Close() }()
-			if n.Backend() == config.NotifyNone {
-				return fmt.Errorf("no desktop notification backend (notify.backend %s resolved to none)", cfg.Notify.Backend)
+			kinds := n.Backends()
+			if len(kinds) == 0 {
+				return fmt.Errorf("no notification backend (notify.backend %s resolved to none, notify.ntfy off)", cfg.Notify.Backend)
 			}
-			if err := n.Send(c.Context(), m); err != nil {
-				return fmt.Errorf("%s toast via %s: %w", event, n.Backend(), err)
+			switch via {
+			case viaAll:
+				if err := n.Send(c.Context(), m); err != nil {
+					return fmt.Errorf("%s toast: %w", event, err)
+				}
+			case viaDesktop, viaNtfy:
+				kind := via
+				if via == viaDesktop {
+					kind = n.Backend()
+				}
+				if !slices.Contains(kinds, kind) {
+					return fmt.Errorf("no %s notification backend (configured: %s)", via, strings.Join(kinds, ", "))
+				}
+				kinds = []string{kind}
+				if err := n.SendTo(c.Context(), kind, m); err != nil {
+					return fmt.Errorf("%s toast via %s: %w", event, kind, err)
+				}
+			default:
+				return fmt.Errorf("--via %q is not one of all|desktop|ntfy", via)
 			}
-			fmt.Fprintf(c.OutOrStdout(), "%s toast sent via %s\n", event, n.Backend())
+			fmt.Fprintf(c.OutOrStdout(), "%s toast sent via %s\n", event, strings.Join(kinds, ", "))
 			return nil
 		},
 	}
 	cmd.Flags().BoolVar(&test, "test", false, "send the sample toast")
 	cmd.Flags().StringVar(&event, "event", string(notify.EventPROpened), "event whose sample toast is sent")
+	cmd.Flags().StringVar(&via, "via", viaAll, "backend to send through: all, desktop or ntfy")
 	return cmd
 }
