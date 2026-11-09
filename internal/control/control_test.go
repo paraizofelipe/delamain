@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/paraizo/delamain/internal/config"
+	"github.com/paraizo/delamain/internal/forge"
 	"github.com/paraizo/delamain/internal/gitx"
 	"github.com/paraizo/delamain/internal/notify"
 	"github.com/paraizo/delamain/internal/pipeline"
@@ -359,5 +360,36 @@ func TestRecoveredResultShouldNameHowTheRunEnded(t *testing.T) {
 		if got := RecoveredResult(tc.res); got != tc.want {
 			t.Errorf("%+v → %q, want %q", tc.res, got, tc.want)
 		}
+	}
+}
+
+// A stop of an orphan whose client hangs up half way fails; the run must then be orphaned again,
+// not left owned by this live process, where no stop or recover would finalize it any more.
+func TestStopShouldGiveAnOrphanBackWhenItsRecoveryIsCutShort(t *testing.T) {
+	f := newFixture(t)
+	rec := f.run(t, "#7", "", store.StateImplement, store.KindIssue)
+	f.orphan(t, rec)
+	ctx, hangUp := context.WithCancel(context.Background())
+	defer hangUp()
+	acts := New(Deps{
+		Cfg: f.cfg, Store: f.st,
+		// The forge is asked for right after the claim: the client hangs up there.
+		ForgeFor: func(context.Context, string) (forge.Forge, error) { hangUp(); return nil, errors.New("no forge") },
+		NewRunner: func() (*pipeline.Runner, error) {
+			return &pipeline.Runner{
+				Cfg: f.cfg, Store: f.st, Git: gitx.New(), Agents: pipeline.RPCAgents{},
+				Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+			}, nil
+		},
+	})
+	if _, err := acts.Stop(ctx, rec.ID); err == nil {
+		t.Fatal("a recovery cut short is an error")
+	}
+	if got := f.get(t, rec.ID); got.State.Terminal() || got.OwnerPID != deadPID {
+		t.Fatalf("the unfinished run goes back to its dead owner: %+v", got)
+	}
+	res, err := acts.Stop(context.Background(), rec.ID)
+	if err != nil || res.Status != StopRecovered {
+		t.Fatalf("a later stop recovers it: %+v %v", res, err)
 	}
 }

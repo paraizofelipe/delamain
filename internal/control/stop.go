@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/paraizo/delamain/internal/forge"
 	"github.com/paraizo/delamain/internal/notify"
@@ -91,12 +92,26 @@ func (a *Actions) recover(ctx context.Context, rec store.Run) (pipeline.Result, 
 	}
 	res, err := r.RecoverRun(ctx, rec.ID, forgeFor)
 	if err != nil {
+		a.release(ctx, rec)
 		return res, err
 	}
 	if r.Notify != nil {
 		_ = r.Notify.Notify(ctx, notify.FormatRecover([]notify.Recovered{{Repo: rec.Repo, Ref: rec.IssueRef, Result: RecoveredResult(res)}}))
 	}
 	return res, nil
+}
+
+// release gives an unfinished run that this process claimed back to its dead owner, after a
+// recovery that failed half way, such as when the client of a stop hung up: left with this live
+// process as its owner, no stop or recover could finalize it again until this process ended.
+func (a *Actions) release(ctx context.Context, rec store.Run) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	cur, err := a.d.Store.GetRun(ctx, rec.ID)
+	if err != nil || cur.State.Terminal() || cur.OwnerPID != os.Getpid() {
+		return
+	}
+	_, _ = a.d.Store.ClaimRun(ctx, rec.ID, os.Getpid(), rec.OwnerPID)
 }
 
 // RecoveredResult says how a recovered run ended, in the recover toast's words.
