@@ -18,6 +18,9 @@ const (
 	logPoll       = 250 * time.Millisecond
 	logStateCheck = time.Second
 	maxLogTail    = 5000
+	// maxLogRead is what one answer or event takes of each log file: a long log comes in pages,
+	// never whole into memory.
+	maxLogRead = 1 << 20
 )
 
 // logsResponse is a page of a run's logs: the lines and where to ask for the next ones.
@@ -71,6 +74,7 @@ func (s *Server) logReader(w http.ResponseWriter, r *http.Request) (board.Run, *
 	}
 	reader := control.NewLogReader(filepath.Join(run.Dir, "logs"), roles)
 	reader.Seek(cursor)
+	reader.LimitRead(maxLogRead)
 	return run, reader, true
 }
 
@@ -79,7 +83,9 @@ func finished(state string) bool {
 	return state == "recorded" || state == "needs_info" || state == "halted"
 }
 
-// handleLogs answers the lines after ?cursor (or the last ?tail of them), and the cursor to go on.
+// handleLogs answers the lines after ?cursor, at most maxLogRead of each file, and the cursor to
+// go on; finished once the run ended and nothing is left to read. With ?tail and no cursor it
+// answers the last lines of the logs instead of the first page.
 func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	run, reader, ok := s.logReader(w, r)
 	if !ok {
@@ -90,6 +96,12 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, r, http.StatusBadRequest, codeInvalidParam, fmt.Sprintf("tail must be a number from 0 to %d", maxLogTail), nil)
 		return
 	}
+	if tail > 0 && r.URL.Query().Get("cursor") == "" {
+		if _, err := reader.SkipBacklog(maxLogRead); err != nil {
+			fail(w, r, err)
+			return
+		}
+	}
 	done := finished(run.State)
 	lines, err := reader.Read(done)
 	if err != nil {
@@ -99,7 +111,7 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	if tail > 0 && len(lines) > tail {
 		lines = lines[len(lines)-tail:]
 	}
-	writeJSON(w, http.StatusOK, logsResponse{Lines: logLinesOf(lines), Cursor: reader.Cursor().Encode(), Finished: done})
+	writeJSON(w, http.StatusOK, logsResponse{Lines: logLinesOf(lines), Cursor: reader.Cursor().Encode(), Finished: done && !reader.Behind()})
 }
 
 // handleLogStream pushes `log` events as lines are appended, then `end` once the run finished
@@ -134,6 +146,12 @@ func (s *Server) handleLogStream(w http.ResponseWriter, r *http.Request) {
 			if err := sse.event("log", logChunk{Lines: logLinesOf(lines), Cursor: reader.Cursor().Encode()}); err != nil {
 				return
 			}
+		}
+		if reader.Behind() { // the next page is already there: read it without waiting
+			if r.Context().Err() != nil {
+				return
+			}
+			continue
 		}
 		if done {
 			_ = sse.event("end", map[string]string{"cursor": reader.Cursor().Encode()})

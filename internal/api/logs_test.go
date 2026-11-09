@@ -3,6 +3,7 @@ package api
 import (
 	"bufio"
 	"context"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -245,5 +246,106 @@ func TestLogStreamsCountAgainstMaxStreams(t *testing.T) {
 			t.Fatalf("a closed stream frees its slot: %d", third.res.StatusCode)
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// bigLog writes n stamped lines of about a hundred bytes to the implementer log under dir: well
+// past what one answer takes of a file.
+func bigLog(t *testing.T, dir string, n int) {
+	t.Helper()
+	var b strings.Builder
+	for i := range n {
+		fmt.Fprintf(&b, "10:00:00 line %06d %s\n", i, strings.Repeat("x", 80))
+	}
+	if b.Len() < 2*maxLogRead {
+		t.Fatalf("the log must span several pages: %d bytes", b.Len())
+	}
+	appendLog(t, dir, "implementer", b.String())
+}
+
+// An agent's log runs to hundreds of MB: an answer takes a bounded page of it, and the run
+// reads as finished only once the client has every line.
+func TestLogsShouldPageALongLogAndFinishOnlyOnceItIsAllRead(t *testing.T) {
+	dir := t.TempDir()
+	const n = 30000
+	bigLog(t, dir, n)
+	src := &fakeSource{runs: []board.Run{{ID: 2, State: "recorded", Dir: dir}}}
+	ts := newTestServer(t, src)
+
+	var page logsResponse
+	ts.get(t, "/api/v1/runs/2/logs").json(t, &page)
+	if len(page.Lines) == 0 || len(page.Lines) >= n || page.Finished {
+		t.Fatalf("the first answer is one bounded page, not finished: %d lines, finished=%v", len(page.Lines), page.Finished)
+	}
+	if len(page.Lines)*100 > 2*maxLogRead {
+		t.Fatalf("a page stays near maxLogRead: %d lines", len(page.Lines))
+	}
+	total, pages := len(page.Lines), 1
+	for !page.Finished {
+		if pages++; pages > 20 {
+			t.Fatal("paging must reach the end of the log")
+		}
+		cursor := page.Cursor
+		page = logsResponse{}
+		ts.get(t, "/api/v1/runs/2/logs?cursor="+cursor).json(t, &page)
+		total += len(page.Lines)
+		if page.Finished && page.Lines[len(page.Lines)-1].Text[:20] != fmt.Sprintf("10:00:00 line %06d", n-1) {
+			t.Fatalf("the last page ends with the last line: %q", page.Lines[len(page.Lines)-1].Text)
+		}
+	}
+	if total != n {
+		t.Fatalf("every line comes once across the pages: %d of %d", total, n)
+	}
+}
+
+func TestLogsTailWithoutACursorShouldAnswerTheEndOfALongLog(t *testing.T) {
+	dir := t.TempDir()
+	const n = 30000
+	bigLog(t, dir, n)
+	src := &fakeSource{runs: []board.Run{{ID: 2, State: "implement", OwnerPID: 1, Dir: dir}}}
+	ts := newTestServer(t, src)
+	var page logsResponse
+	ts.get(t, "/api/v1/runs/2/logs?tail=2").json(t, &page)
+	if len(page.Lines) != 2 || !strings.HasPrefix(page.Lines[0].Text, fmt.Sprintf("10:00:00 line %06d", n-2)) ||
+		!strings.HasPrefix(page.Lines[1].Text, fmt.Sprintf("10:00:00 line %06d", n-1)) {
+		t.Fatalf("tail is the last lines of the whole log, not of its first page: %+v", page.Lines)
+	}
+	ts.get(t, "/api/v1/runs/2/logs?cursor="+page.Cursor).json(t, &page)
+	if len(page.Lines) != 0 {
+		t.Fatalf("the cursor of a tail goes on from the end: %d lines", len(page.Lines))
+	}
+}
+
+func TestLogStreamShouldSendEveryPageOfALongLogBeforeEnd(t *testing.T) {
+	dir := t.TempDir()
+	const n = 30000
+	bigLog(t, dir, n)
+	src := &fakeSource{runs: []board.Run{{ID: 2, State: "recorded", Dir: dir}}}
+	ts := newTestServer(t, src)
+	st := ts.openStream(t, "/api/v1/runs/2/logs/stream")
+	if st.res.StatusCode != http.StatusOK {
+		t.Fatalf("stream: %d", st.res.StatusCode)
+	}
+	lines, logs := 0, 0
+	for {
+		// Not st.next: the whole stream is out at once, and its EOF must not beat the events
+		// still buffered; end always comes before it.
+		var ev sseEvent
+		select {
+		case ev = <-st.events:
+		case <-time.After(10 * time.Second):
+			t.Fatalf("no end after %d lines in %d events", lines, logs)
+		}
+		if ev.Name == "end" {
+			break
+		}
+		if ev.Name != "log" {
+			t.Fatalf("only log events before end: %+v", ev)
+		}
+		logs++
+		lines += strings.Count(ev.Data, `"text"`)
+	}
+	if lines != n || logs < 2 {
+		t.Fatalf("end comes after every line, in bounded events: %d lines in %d events", lines, logs)
 	}
 }

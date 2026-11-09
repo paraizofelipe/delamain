@@ -91,6 +91,8 @@ type LogReader struct {
 	offsets map[string]int64  // source -> bytes already read
 	partial map[string][]byte // source -> trailing line not yet terminated
 	lastTS  map[string]string // source -> time of its last stamped line
+	maxRead int64             // bytes one Read takes of each file; 0 means all
+	behind  bool              // the last Read left bytes unread in some file
 }
 
 var stampRe = regexp.MustCompile(`^\d\d:\d\d:\d\d `)
@@ -99,6 +101,13 @@ var stampRe = regexp.MustCompile(`^\d\d:\d\d:\d\d `)
 func NewLogReader(dir string, roles []string) *LogReader {
 	return &LogReader{dir: dir, roles: roles, offsets: map[string]int64{}, partial: map[string][]byte{}, lastTS: map[string]string{}}
 }
+
+// LimitRead bounds what each Read takes of each file to maxBytes, so a Read of a long log stays
+// bounded: the rest comes with the next calls, and Behind reports that it is there.
+func (r *LogReader) LimitRead(maxBytes int64) { r.maxRead = maxBytes }
+
+// Behind reports whether the last Read left bytes unread in some file because of LimitRead.
+func (r *LogReader) Behind() bool { return r.behind }
 
 // Dir is the logs directory the reader reads.
 func (r *LogReader) Dir() string { return r.dir }
@@ -135,25 +144,28 @@ func (r *LogReader) Seek(c Cursor) {
 }
 
 // Read returns the lines appended since the last call, ordered by their time stamp. flush also
-// returns unterminated last lines (the run has ended, nothing more will complete them).
+// returns unterminated last lines (the run has ended, nothing more will complete them) of the
+// files read to their end.
 func (r *LogReader) Read(flush bool) ([]LogLine, error) {
 	paths, err := filepath.Glob(filepath.Join(r.dir, "*.log"))
 	if err != nil {
 		return nil, err
 	}
+	r.behind = false
 	var out []LogLine
 	for _, p := range paths {
 		source := strings.TrimSuffix(filepath.Base(p), ".log")
 		if len(r.roles) > 0 && !slices.Contains(r.roles, source) {
 			continue
 		}
-		chunk, err := r.readFrom(p, source)
+		chunk, atEnd, err := r.readFrom(p, source)
 		if err != nil {
 			return nil, err
 		}
+		r.behind = r.behind || !atEnd
 		data := append(r.partial[source], chunk...)
 		cut := bytes.LastIndexByte(data, '\n') + 1
-		if flush {
+		if flush && atEnd {
 			cut = len(data)
 		}
 		r.partial[source] = slices.Clone(data[cut:])
@@ -172,28 +184,34 @@ func (r *LogReader) Read(flush bool) ([]LogLine, error) {
 	return out, nil
 }
 
-func (r *LogReader) readFrom(path, source string) ([]byte, error) {
+// readFrom is what source's file holds past its offset, up to maxRead, and whether that reached
+// the end the file had when it was opened.
+func (r *LogReader) readFrom(path, source string) ([]byte, bool, error) {
 	f, err := os.Open(path) //nolint:gosec // a log of the run dir
 	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
+		return nil, true, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	defer func() { _ = f.Close() }()
 	info, err := f.Stat()
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if info.Size() < r.offsets[source] { // truncated or recreated: start over
 		r.offsets[source], r.partial[source] = 0, nil
 	}
 	if _, err := f.Seek(r.offsets[source], io.SeekStart); err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	data, err := io.ReadAll(f)
+	var src io.Reader = f
+	if r.maxRead > 0 {
+		src = io.LimitReader(f, r.maxRead)
+	}
+	data, err := io.ReadAll(src)
 	r.offsets[source] += int64(len(data))
-	return data, err
+	return data, r.offsets[source] >= info.Size(), err
 }
 
 // SkipBacklog moves the reader past what exceeds maxBytes in each file, so its next Read stays

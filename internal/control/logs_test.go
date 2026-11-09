@@ -164,3 +164,59 @@ func TestLogReaderShouldSkipTheBacklogAndCapPartialLines(t *testing.T) {
 		t.Fatalf("the partial line is capped: %d bytes", len(got))
 	}
 }
+
+func TestLogReaderShouldReadALongLogInBoundedPages(t *testing.T) {
+	dir := t.TempDir()
+	appendLog(t, dir, "delamain", "10:00:00 one\n10:00:01 two\n10:00:02 three\n") // 13 bytes a line
+	r := NewLogReader(dir, nil)
+	r.LimitRead(20)
+	var got []string
+	for range 10 {
+		lines, err := r.Read(false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, l := range lines {
+			got = append(got, l.Text)
+		}
+		if !r.Behind() {
+			break
+		}
+	}
+	if strings.Join(got, "|") != "10:00:00 one|10:00:01 two|10:00:02 three" || r.Behind() {
+		t.Fatalf("every line comes, once and in order, across the pages: %q behind=%v", got, r.Behind())
+	}
+	if lines, err := r.Read(false); err != nil || len(lines) != 0 || r.Behind() {
+		t.Fatalf("a reader caught up reads nothing more: %+v %v", lines, err)
+	}
+}
+
+func TestLogReaderShouldNotFlushALineCutByTheLimit(t *testing.T) {
+	dir := t.TempDir()
+	appendLog(t, dir, "delamain", "10:00:00 a line longer than the limit\n")
+	r := NewLogReader(dir, nil)
+	r.LimitRead(10)
+	lines, err := r.Read(true) // the run ended, but the file is not read to its end yet
+	if err != nil || len(lines) != 0 || !r.Behind() {
+		t.Fatalf("the part read is held, not flushed as a line: %+v behind=%v %v", lines, r.Behind(), err)
+	}
+	for r.Behind() {
+		if lines, err = r.Read(true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(lines) != 1 || lines[0].Text != "10:00:00 a line longer than the limit" {
+		t.Fatalf("the whole line comes once the file is read: %+v", lines)
+	}
+}
+
+func TestLogReaderShouldFlushAPartialLineOfAFileReadToItsEnd(t *testing.T) {
+	dir := t.TempDir()
+	appendLog(t, dir, "delamain", "10:00:00 done\n10:00:01 no newline")
+	r := NewLogReader(dir, nil)
+	r.LimitRead(1 << 20)
+	lines, err := r.Read(true)
+	if err != nil || len(lines) != 2 || lines[1].Text != "10:00:01 no newline" || r.Behind() {
+		t.Fatalf("a limit the file fits in changes nothing: %+v behind=%v %v", lines, r.Behind(), err)
+	}
+}

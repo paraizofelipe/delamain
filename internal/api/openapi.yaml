@@ -217,9 +217,12 @@ paths:
     get:
       tags: [runs]
       summary: The lines of a run's logs after a cursor
+      description: |
+        One page: at most 1 MiB of each log file. Go on with the cursor until `finished`, which
+        means the run ended and every line has been answered.
       parameters:
         - { name: cursor, in: query, schema: { type: string }, description: Opaque; take it from the previous answer. Empty means the start. }
-        - { name: tail, in: query, schema: { type: integer, minimum: 0, maximum: 5000 }, description: Only the last N lines. }
+        - { name: tail, in: query, schema: { type: integer, minimum: 0, maximum: 5000 }, description: "Only the last N lines; without a cursor, of the end of the logs." }
         - { name: roles, in: query, schema: { type: string }, description: Comma-separated sources, e.g. delamain,checks,implementer. }
       responses:
         "200":
@@ -234,7 +237,7 @@ paths:
                     type: array
                     items: { $ref: "#/components/schemas/LogLine" }
                   cursor: { type: string }
-                  finished: { type: boolean }
+                  finished: { type: boolean, description: The run ended and nothing is left to read. }
         default: { $ref: "#/components/responses/Problem" }
   /api/v1/runs/{id}/logs/stream:
     parameters:
@@ -243,8 +246,9 @@ paths:
       tags: [streams]
       summary: Server-Sent Events of a run's logs
       description: |
-        Events: `log` with `{lines, cursor}` as lines are appended, `end` with `{cursor}` once the
-        run finished and its last lines are out. A `: ping` comment every 15 seconds.
+        Events: `log` with `{lines, cursor}` as lines are appended, at most 1 MiB of each log file
+        per event, `end` with `{cursor}` once the run finished and its last lines are out. A
+        `: ping` comment every 15 seconds.
       parameters:
         - { name: cursor, in: query, schema: { type: string } }
         - { name: roles, in: query, schema: { type: string } }
