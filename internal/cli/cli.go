@@ -123,7 +123,7 @@ func NewRoot() *cobra.Command {
 		newNotifyCmd(load),
 		newListCmd(load),
 		newStatusCmd(load),
-		newWatchCmd(load),
+		newWatchCmd(load, func() string { return cfgPath }),
 		newBoardCmd(load),
 		newServeCmd(loadWithToken, func() string { return cfgPath }), // serve drops the token itself once read
 		newStopCmd(load),

@@ -391,7 +391,7 @@ func (f *fixture) actions(t *testing.T, ctx context.Context, out *bytes.Buffer) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	acts := newStoreWatchActions(ctx, cfg, f.st, out)
+	acts := newStoreWatchActions(ctx, cfg, f.st, out, "")
 	t.Cleanup(acts.close)
 	return acts
 }
@@ -928,7 +928,7 @@ func TestWatchActionsShouldCopyThroughOSC52AndWrapItForTmux(t *testing.T) {
 	} {
 		t.Setenv("TMUX", c.tmux)
 		var out bytes.Buffer
-		acts := newStoreWatchActions(context.Background(), config.Config{}, nil, &out)
+		acts := newStoreWatchActions(context.Background(), config.Config{}, nil, &out, "")
 		if err := acts.Copy("14"); err != nil {
 			t.Fatal(err)
 		}
@@ -999,7 +999,7 @@ func TestWatchHelpShouldListRecoverKey(t *testing.T) {
 	if i, j := strings.Index(text, "s · d "), strings.Index(text, want); i < 0 || j < i {
 		t.Fatalf("c comes after s · d:\n%s", text)
 	}
-	if long := newWatchCmd(nil).Long; !strings.Contains(words(long), "c recovers it as delamain recover does when its owner died") {
+	if long := newWatchCmd(nil, nil).Long; !strings.Contains(words(long), "c recovers it as delamain recover does when its owner died") {
 		t.Fatalf("the help of watch tells c:\n%s", long)
 	}
 }
@@ -1190,7 +1190,7 @@ func TestWatchDialogsShouldStripControlCharactersFromRunData(t *testing.T) {
 }
 
 func TestWatchLongShouldEndWithTheTmuxPopupAndOSC52(t *testing.T) {
-	long := newWatchCmd(nil).Long
+	long := newWatchCmd(nil, nil).Long
 	want := "In tmux, open it in a floating popup:\n\n" +
 		"  bind D display-popup -E -w 50% -h 60% \"delamain watch\"\n\n" +
 		"y copies the run ID through OSC 52; tmux needs `set -g set-clipboard on`."
@@ -1478,7 +1478,7 @@ func launchScript(t *testing.T, dir, body string) func() (string, error) {
 func launchActions(state string, exe func() (string, error)) *storeWatchActions {
 	cfg := config.Config{}
 	cfg.Paths.StateDir = state
-	acts := newStoreWatchActions(context.Background(), cfg, nil, &bytes.Buffer{})
+	acts := newStoreWatchActions(context.Background(), cfg, nil, &bytes.Buffer{}, "")
 	acts.launcher.Executable = exe
 	return acts
 }
@@ -1673,7 +1673,7 @@ func TestWatchHelpShouldListStartIssueKey(t *testing.T) {
 	if i, j := strings.Index(text, "c recover a run"), strings.Index(text, want); i < 0 || j < i {
 		t.Fatalf("i comes after c:\n%s", text)
 	}
-	if long := words(newWatchCmd(nil).Long); !strings.Contains(long, "i starts delamain run --issue in a repository of daemon.repos or any other") {
+	if long := words(newWatchCmd(nil, nil).Long); !strings.Contains(long, "i starts delamain run --issue in a repository of daemon.repos or any other") {
 		t.Fatalf("the help of watch tells i:\n%s", long)
 	}
 }
@@ -1690,7 +1690,40 @@ func TestWatchHelpShouldListStartReviewKey(t *testing.T) {
 	if i, j := strings.Index(text, "i start an issue run"), strings.Index(text, want); i < 0 || j < i {
 		t.Fatalf("r comes after i:\n%s", text)
 	}
-	if long := words(newWatchCmd(nil).Long); !strings.Contains(long, "r lists the open PRs/MRs of such a repository and starts delamain review --pr on the one picked") {
+	if long := words(newWatchCmd(nil, nil).Long); !strings.Contains(long, "r lists the open PRs/MRs of such a repository and starts delamain review --pr on the one picked") {
 		t.Fatalf("the help of watch tells r:\n%s", long)
+	}
+}
+
+// A run or review started from the watch loads the watch's config file: another one could have
+// other models, limits or a state dir where the watch never shows the run.
+func TestStartIssueAndReviewShouldHandTheWatchConfigFileToTheRun(t *testing.T) {
+	dir := t.TempDir()
+	state := filepath.Join(dir, "state")
+	cfg := config.Config{}
+	cfg.Paths.StateDir = state
+	acts := newStoreWatchActions(context.Background(), cfg, nil, &bytes.Buffer{}, "/etc/delamain/alt.yaml")
+	acts.launcher.Executable = launchScript(t, dir, "echo \"$@\"\n")
+	if err := acts.StartIssue(dir, 7); err != nil {
+		t.Fatal(err)
+	}
+	if err := acts.StartReview(dir, 12); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, log := range launchLogs(t, state) {
+		b, err := os.ReadFile(log) //nolint:gosec // inside the test's temp dir
+		if err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, strings.TrimSpace(string(b)))
+	}
+	slices.Sort(got)
+	want := []string{
+		"review --pr 12 --repo " + dir + " --config /etc/delamain/alt.yaml",
+		"run --issue 7 --repo " + dir + " --config /etc/delamain/alt.yaml",
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("the launches get the watch's config file:\n got %q\nwant %q", got, want)
 	}
 }

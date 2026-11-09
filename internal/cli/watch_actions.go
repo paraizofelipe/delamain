@@ -577,7 +577,7 @@ type storeWatchActions struct {
 	launcher control.Launcher
 }
 
-func newStoreWatchActions(ctx context.Context, cfg config.Config, st *store.Store, out io.Writer) *storeWatchActions {
+func newStoreWatchActions(ctx context.Context, cfg config.Config, st *store.Store, out io.Writer, configFile string) *storeWatchActions {
 	ctx, cancel := context.WithCancel(ctx)
 	// The TUI owns the terminal: the logs of a recover would be drawn over the screen it holds.
 	quiet := slog.New(slog.DiscardHandler)
@@ -588,7 +588,7 @@ func newStoreWatchActions(ctx context.Context, cfg config.Config, st *store.Stor
 		opener:   browserOpener(),
 		out:      out,
 		tmux:     os.Getenv("TMUX") != "",
-		launcher: control.Launcher{StateDir: cfg.Paths.StateDir},
+		launcher: control.Launcher{StateDir: cfg.Paths.StateDir, Config: configFile},
 	}
 }
 
@@ -658,8 +658,9 @@ func (a *storeWatchActions) Copy(text string) error {
 	return err
 }
 
-// StartIssue runs `delamain run --issue issue --repo repo` in a session of its own, writing to
-// <state_dir>/launch/<unix time>-issue-<issue>.log, and waits for it to end.
+// StartIssue runs `delamain run --issue issue --repo repo --config <the watch's>` in a session of
+// its own, writing to <state_dir>/launch/<unix time>-<random>-issue-<issue>.log, and waits for it
+// to end.
 //
 // It takes neither the mutex nor the context of the actions: close would wait for a run that
 // takes hours, or kill it. Quitting the watch leaves the run going, as the daemon's runs do.
@@ -669,7 +670,7 @@ func (a *storeWatchActions) StartIssue(repo string, issue int) error {
 }
 
 // StartReview runs `delamain review --pr pr --repo repo` as StartIssue runs an issue, writing to
-// <state_dir>/launch/<unix time>-review-<pr>.log, and waits for it to end.
+// <state_dir>/launch/<unix time>-<random>-review-<pr>.log, and waits for it to end.
 func (a *storeWatchActions) StartReview(repo string, pr int) error {
 	_, err := a.launcher.StartReview(repo, pr)
 	return err
