@@ -38,7 +38,9 @@ type RunError struct {
 	Worktree string         // the worktree at issue, for ErrDirtyWorktree and ErrWorktreeInUse
 	UsedBy   int64          // the run using the worktree, for ErrWorktreeInUse
 	Ref      string         // the issue or PR, for ErrRunActive
-	Err      error
+	// Operation is the start of Ref still launching, for ErrRunActive before the run exists.
+	Operation string
+	Err       error
 }
 
 func (e *RunError) Unwrap() error { return e.Err }
@@ -57,6 +59,8 @@ func (e *RunError) Error() string {
 		return fmt.Sprintf("worktree %s %v", e.Worktree, e.Err)
 	case errors.Is(e.Err, ErrWorktreeInUse):
 		return fmt.Sprintf("worktree %s is in use by run %d (%s)", e.Worktree, e.UsedBy, e.State)
+	case errors.Is(e.Err, ErrRunActive) && e.ID == 0:
+		return fmt.Sprintf("%s is already being started by operation %s", e.Ref, e.Operation)
 	case errors.Is(e.Err, ErrRunActive):
 		return fmt.Sprintf("%s already has active run %d (%s)", e.Ref, e.ID, e.State)
 	}

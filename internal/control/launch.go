@@ -22,9 +22,9 @@ const (
 )
 
 // Launcher starts `delamain run` and `delamain review` as processes of their own, each writing to
-// <StateDir>/launch/<unix time>-<name>.log. They start a session of their own, so the end of the
-// terminal or the process that launched them does not reach them: a run goes on as the daemon's
-// runs do.
+// <StateDir>/launch/<unix time>-<random>-<name>.log. They start a session of their own, so the
+// end of the terminal or the process that launched them does not reach them: a run goes on as
+// the daemon's runs do.
 type Launcher struct {
 	StateDir string
 	// Executable is the delamain binary to run; nil means os.Executable, the binary of this process.
@@ -70,11 +70,13 @@ func (l Launcher) launch(name string, args ...string) (string, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
-	path := filepath.Join(dir, fmt.Sprintf("%d-%s.log", time.Now().Unix(), name))
-	log, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600) //nolint:gosec // inside the state dir
+	// Created exclusively, under a name of its own: two launches of the same issue number in
+	// one second, from two repositories, never share a log.
+	log, err := os.CreateTemp(dir, fmt.Sprintf("%d-*-%s.log", time.Now().Unix(), name))
 	if err != nil {
 		return "", err
 	}
+	path := log.Name()
 	cmd := l.Command(exe, log, args...)
 	err = cmd.Start()
 	_ = log.Close() // the run holds its own descriptor

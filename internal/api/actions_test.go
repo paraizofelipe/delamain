@@ -502,3 +502,17 @@ func TestGETOnAnActionPathIs405(t *testing.T) {
 }
 
 func itoa(n int64) string { return strconv.FormatInt(n, 10) }
+
+func TestMapErrShouldNameThePendingOperationWhenTheIssueHasNoRunYet(t *testing.T) {
+	pending := mapErr(&control.RunError{Ref: "#7", Operation: "op-1-1", Err: control.ErrRunActive})
+	if pending.status != http.StatusConflict || pending.code != codeRunActive || pending.extra["operation_id"] != "op-1-1" {
+		t.Fatalf("a start still launching is run_active with its operation: %+v", pending)
+	}
+	if _, ok := pending.extra["run_id"]; ok {
+		t.Fatalf("there is no run to name yet: %+v", pending.extra)
+	}
+	active := mapErr(&control.RunError{ID: 3, State: "implement", Ref: "#7", Err: control.ErrRunActive})
+	if active.extra["run_id"] != int64(3) || active.extra["state"] != "implement" {
+		t.Fatalf("an active run is still named by its id: %+v", active.extra)
+	}
+}

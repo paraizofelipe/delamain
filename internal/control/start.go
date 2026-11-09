@@ -58,13 +58,8 @@ func (a *Actions) StartIssue(ctx context.Context, repo string, issue int) (Opera
 	if err != nil {
 		return Operation{}, err
 	}
-	ref := "#" + strconv.Itoa(issue)
-	if err := a.noActiveRun(ctx, repo, ref); err != nil {
-		return Operation{}, err
-	}
-	op := a.d.Operations.add(Operation{Kind: OpStartRun, Repo: repo, Issue: issue})
-	go a.follow(op, ref, func() (string, error) { return a.d.Launcher.StartIssue(repo, issue) })
-	return op, nil
+	return a.start(ctx, Operation{Kind: OpStartRun, Repo: repo, Issue: issue}, "#"+strconv.Itoa(issue),
+		func() (string, error) { return a.d.Launcher.StartIssue(repo, issue) })
 }
 
 // StartReview starts `delamain review --pr pr --repo repo` as StartIssue starts a run. Reviews
@@ -80,12 +75,31 @@ func (a *Actions) StartReview(ctx context.Context, repo string, pr int) (Operati
 	if err != nil {
 		return Operation{}, err
 	}
-	ref := "pr:" + strconv.Itoa(pr)
-	if err := a.noActiveRun(ctx, repo, ref); err != nil {
+	return a.start(ctx, Operation{Kind: OpStartReview, Repo: repo, PR: pr}, "pr:"+strconv.Itoa(pr),
+		func() (string, error) { return a.d.Launcher.StartReview(repo, pr) })
+}
+
+// start refuses op's ref while a run of it is active or another start of it is still launching,
+// then launches it in the background. The ref stays reserved until the launched process ends:
+// two requests in a row never start the same issue twice, even before its run exists.
+func (a *Actions) start(ctx context.Context, op Operation, ref string, launch func() (string, error)) (Operation, error) {
+	key := op.Repo + "\x00" + ref
+	a.startMu.Lock()
+	defer a.startMu.Unlock()
+	if id, ok := a.starting[key]; ok {
+		return Operation{}, &RunError{Ref: ref, Operation: id, Err: ErrRunActive}
+	}
+	if err := a.noActiveRun(ctx, op.Repo, ref); err != nil {
 		return Operation{}, err
 	}
-	op := a.d.Operations.add(Operation{Kind: OpStartReview, Repo: repo, PR: pr})
-	go a.follow(op, ref, func() (string, error) { return a.d.Launcher.StartReview(repo, pr) })
+	op = a.d.Operations.add(op)
+	a.starting[key] = op.ID
+	go func() {
+		a.follow(op, ref, launch)
+		a.startMu.Lock()
+		delete(a.starting, key)
+		a.startMu.Unlock()
+	}()
 	return op, nil
 }
 
@@ -141,18 +155,27 @@ func (a *Actions) follow(op Operation, ref string, start func() (string, error))
 	go a.findRunID(ctx, op, ref)
 	path, err := start()
 	cancel()
+	// The store and the log are read before finish takes the operations' lock: the API and the
+	// event stream read operations under it.
+	tail := tailOf(path)
+	var late int64
+	if cur, ok := a.d.Operations.Get(op.ID); ok && cur.RunID == 0 {
+		late = a.runIDSince(a.d.Context, op.Repo, ref, op.StartedAt)
+	}
 	a.d.Operations.finish(op.ID, statusOf(err), func(op *Operation) {
-		op.LogPath, op.LogTail = path, tailOf(path)
-		code := 0
-		if exit, ok := errors.AsType[StartExit](err); ok {
-			code = exit.Code
+		op.LogPath, op.LogTail = path, tail
+		// Only a process that ran has an exit code: a launch that failed before has none.
+		switch exit, ok := errors.AsType[StartExit](err); {
+		case err == nil:
+			op.ExitCode = new(0)
+		case ok:
+			op.ExitCode = new(exit.Code)
 		}
 		if err != nil {
 			op.Error = err.Error()
 		}
-		op.ExitCode = &code
 		if op.RunID == 0 {
-			op.RunID = a.runIDSince(a.d.Context, op.Repo, ref, op.StartedAt)
+			op.RunID = late
 		}
 	})
 }

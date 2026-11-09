@@ -125,6 +125,8 @@ func mapErr(err error) *problemError {
 			extra["issue"] = ie.Issue
 		}
 		return &problemError{http.StatusConflict, codeIssueClosed, err.Error(), extra}
+	case errors.Is(err, control.ErrRunActive) && errors.As(err, &re) && re.ID == 0:
+		return &problemError{http.StatusConflict, codeRunActive, err.Error(), map[string]any{"operation_id": re.Operation}}
 	case errors.Is(err, control.ErrRunActive) && errors.As(err, &re):
 		return &problemError{http.StatusConflict, codeRunActive, err.Error(), map[string]any{"run_id": re.ID, "state": string(re.State)}}
 	case errors.Is(err, control.ErrRunFinished) && errors.As(err, &re):

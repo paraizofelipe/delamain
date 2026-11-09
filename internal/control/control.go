@@ -47,6 +47,11 @@ type Actions struct {
 
 	mu     sync.Mutex
 	runner *pipeline.Runner
+
+	// startMu guards starting: the issue or PR of each launch whose process has not ended, by
+	// repo and ref, with the id of its operation.
+	startMu  sync.Mutex
+	starting map[string]string
 }
 
 func New(d Deps) *Actions {
@@ -71,7 +76,7 @@ func New(d Deps) *Actions {
 	if d.RunIDWait <= 0 {
 		d.RunIDWait = runIDWait
 	}
-	return &Actions{d: d}
+	return &Actions{d: d, starting: map[string]string{}}
 }
 
 // Config is the configuration the actions run under.

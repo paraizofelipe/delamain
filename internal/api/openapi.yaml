@@ -451,6 +451,7 @@ components:
             - forge_error
             - internal
         run_id: { type: integer, description: With run_active, run_finished, run_not_finished, owner_alive, worktree_dirty, worktree_in_use. }
+        operation_id: { type: string, description: With run_active when the issue or PR is still being started and has no run yet. }
         state: { type: string }
         owner_pid: { type: integer }
         worktree: { type: string }
@@ -620,7 +621,7 @@ components:
         issue: { type: integer }
         pr: { type: integer }
         run_id: { type: integer, description: The run started or recovered, once known. }
-        exit_code: { type: integer, description: "Of the process: 0 ok, 1 halted, 3 exhausted, 4 needs_info, 5 no slot." }
+        exit_code: { type: integer, description: "Of the process: 0 ok, 1 halted, 3 exhausted, 4 needs_info, 5 no slot. Absent while running and when the process never started." }
         error: { type: string }
         result: { type: string, description: How a recover ended, e.g. draft PR or halted. }
         log_path: { type: string }

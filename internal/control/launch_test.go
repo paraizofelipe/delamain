@@ -340,3 +340,89 @@ func TestAllowedReposShouldJoinDaemonAndAPIReposCleaned(t *testing.T) {
 		t.Fatalf("AllowedRepos = %v", got)
 	}
 }
+
+// Two requests in a row for the same issue reach the store before the first child creates its
+// run: the reservation, not the store, must refuse the second.
+func TestStartIssueShouldRefuseASecondStartOfTheIssueWhileTheFirstIsLaunching(t *testing.T) {
+	f := newFixture(t)
+	f.cfg.Daemon.Repos = []string{f.repo}
+	dir := t.TempDir()
+	release := filepath.Join(dir, "release")
+	exe := launchScript(t, dir, "while [ ! -e '"+release+"' ]; do sleep 0.02; done\n")
+	acts := New(Deps{Cfg: f.cfg, Store: f.st, RunIDPoll: time.Hour, Launcher: &Launcher{StateDir: f.cfg.Paths.StateDir, Executable: exe}})
+	ch, unsub := acts.Operations().Subscribe()
+	defer unsub()
+	ctx := context.Background()
+	first, err := acts.StartIssue(ctx, f.repo, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = acts.StartIssue(ctx, f.repo+"/", 7)
+	var re *RunError
+	if !errors.Is(err, ErrRunActive) || !errors.As(err, &re) || re.ID != 0 || re.Operation != first.ID {
+		t.Fatalf("the second start is refused naming the pending one: %v", err)
+	}
+	if err.Error() != "#7 is already being started by operation "+first.ID {
+		t.Fatalf("the message says the issue is being started: %q", err)
+	}
+	other, err := acts.StartIssue(ctx, f.repo, 8)
+	if err != nil {
+		t.Fatalf("another issue starts meanwhile: %v", err)
+	}
+	if err := os.WriteFile(release, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	waitOp(t, acts.Operations(), ch, first.ID) // the other one may end first: its event is gone
+	deadline := time.After(10 * time.Second)
+	for {
+		op, err := acts.StartIssue(ctx, f.repo, 7)
+		if err == nil {
+			waitOp(t, acts.Operations(), ch, op.ID)
+			if got, _ := acts.Operations().Get(other.ID); got.Status != OpSucceeded {
+				t.Fatalf("the other issue's launch ended too: %+v", got)
+			}
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("once the launch ended the issue can start again: %v", err)
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}
+
+func TestStartIssueShouldLeaveTheExitCodeOutWhenTheProcessNeverStarted(t *testing.T) {
+	f := newFixture(t)
+	f.cfg.Daemon.Repos = []string{f.repo}
+	missing := func() (string, error) { return "", errors.New("no delamain binary") }
+	acts := New(Deps{Cfg: f.cfg, Store: f.st, Launcher: &Launcher{StateDir: f.cfg.Paths.StateDir, Executable: missing}})
+	ch, unsub := acts.Operations().Subscribe()
+	defer unsub()
+	op, err := acts.StartIssue(context.Background(), f.repo, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := waitOp(t, acts.Operations(), ch, op.ID)
+	if done.Status != OpFailed || done.ExitCode != nil || !strings.Contains(done.Error, "no delamain binary") {
+		t.Fatalf("a launch that never ran fails without an exit code a client could read as 0: %+v", done)
+	}
+}
+
+func TestLaunchShouldGiveEveryLaunchALogOfItsOwnEvenInTheSameSecond(t *testing.T) {
+	state := t.TempDir()
+	l := Launcher{StateDir: state, Executable: launchScript(t, t.TempDir(), "echo \"$@\"\n")}
+	a, errA := l.StartIssue("/repo/a", 42)
+	b, errB := l.StartIssue("/repo/b", 42)
+	if errA != nil || errB != nil {
+		t.Fatal(errA, errB)
+	}
+	if a == b || !strings.HasSuffix(a, "-issue-42.log") || !strings.HasSuffix(b, "-issue-42.log") {
+		t.Fatalf("each launch has its own log, named after the issue: %q %q", a, b)
+	}
+	for path, repo := range map[string]string{a: "/repo/a", b: "/repo/b"} {
+		got, err := os.ReadFile(path) //nolint:gosec // a test log
+		if err != nil || strings.TrimSpace(string(got)) != "run --issue 42 --repo "+repo {
+			t.Fatalf("%s holds only its own launch: %q %v", path, got, err)
+		}
+	}
+}
