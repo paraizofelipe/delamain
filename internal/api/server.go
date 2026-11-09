@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/paraizo/delamain/internal/board"
@@ -322,31 +323,22 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, v any) error {
 
 // streamGate bounds the open streams.
 type streamGate struct {
-	mu   chan struct{}
+	mu   sync.Mutex
 	max  int
 	open int
 }
 
 // take reserves a stream, or reports that none is left; release gives it back.
 func (g *streamGate) take() (release func(), ok bool) {
-	g.lock()
-	defer g.unlock()
+	g.mu.Lock()
+	defer g.mu.Unlock()
 	if g.open >= g.max {
 		return nil, false
 	}
 	g.open++
 	return func() {
-		g.lock()
+		g.mu.Lock()
 		g.open--
-		g.unlock()
+		g.mu.Unlock()
 	}, true
 }
-
-func (g *streamGate) lock() {
-	if g.mu == nil {
-		g.mu = make(chan struct{}, 1)
-	}
-	g.mu <- struct{}{}
-}
-
-func (g *streamGate) unlock() { <-g.mu }

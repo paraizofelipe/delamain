@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -590,6 +591,45 @@ func contains(list []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// The first streams of a fresh server may open at once: the gate must neither let more through
+// than its bound nor lose a release and hang.
+func TestStreamGateShouldHoldItsBoundWhenTheFirstStreamsOpenAtOnce(t *testing.T) {
+	for range 50 {
+		g := &streamGate{max: 3}
+		var held, peak atomic.Int32
+		var wg sync.WaitGroup
+		start := make(chan struct{})
+		for range 16 {
+			wg.Go(func() {
+				<-start
+				release, ok := g.take()
+				if !ok {
+					return
+				}
+				n := held.Add(1)
+				for p := peak.Load(); n > p && !peak.CompareAndSwap(p, n); p = peak.Load() {
+				}
+				held.Add(-1)
+				release()
+			})
+		}
+		close(start)
+		done := make(chan struct{})
+		go func() { wg.Wait(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("a take or release hung")
+		}
+		if peak.Load() > 3 {
+			t.Fatalf("%d streams held at once, the bound is 3", peak.Load())
+		}
+		if _, ok := g.take(); !ok {
+			t.Fatal("every release gave its stream back")
+		}
+	}
 }
 
 func TestStreamGateShouldBoundTheOpenStreams(t *testing.T) {
