@@ -43,8 +43,9 @@ func NewRoot() *cobra.Command {
 	root.PersistentFlags().StringVar(&cfgPath, "config", config.DefaultPath(), "config file")
 	loadWithToken := func() (config.Config, error) { return config.Load(cfgPath, os.Getenv) }
 	// load is how every command but serve and doctor reads the config: it also drops the API
-	// token from this process's environment. Only serve uses it, and the git, gates and agents a
-	// run starts inherit this environment, hooks and tests an agent wrote included.
+	// token from this process's environment (serve and doctor drop it themselves once read).
+	// Only serve uses it, and the git, gates and agents a run starts inherit this environment,
+	// hooks and tests an agent wrote included.
 	load := func() (config.Config, error) {
 		cfg, err := loadWithToken()
 		if err == nil && cfg.API.TokenEnv != "" {
@@ -74,9 +75,19 @@ func NewRoot() *cobra.Command {
 			Use:   "doctor",
 			Short: "Check omp (RPC mode), git, prompts, tools, forge auth and, when enabled, herdr",
 			RunE: func(cmd *cobra.Command, _ []string) error {
-				cfg, err := loadWithToken() // the api check reads the token
+				cfg, err := loadWithToken()
 				if err != nil {
 					return err
+				}
+				// The api check reads the token from memory: the agents, git and forge CLI the
+				// doctor probes must not find it in the environment either.
+				token := os.Getenv(cfg.API.TokenEnv)
+				_ = os.Unsetenv(cfg.API.TokenEnv)
+				getenv := func(k string) string {
+					if k == cfg.API.TokenEnv {
+						return token
+					}
+					return os.Getenv(k)
 				}
 				ctx, cancel := context.WithTimeout(cmd.Context(), 30*time.Second)
 				defer cancel()
@@ -90,7 +101,7 @@ func NewRoot() *cobra.Command {
 					Prompts: set, PromptsTarget: promptsTarget(cfg),
 					ForgeAuth: func(ctx context.Context, dir string) (doctor.ForgeIdentity, error) { return forgeAuth(ctx, cfg, dir) },
 					Notify:    func(ctx context.Context) notify.Probe { return notify.Diagnose(ctx, cfg.Notify) },
-					Stat:      os.Stat, ReadFile: os.ReadFile, Getenv: os.Getenv,
+					Stat:      os.Stat, ReadFile: os.ReadFile, Getenv: getenv,
 					DecisionsProbe: decisionsProbe(cfg.Decisions, os.Getenv),
 					APIProbe:       apiProbe,
 				})

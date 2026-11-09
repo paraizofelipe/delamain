@@ -87,6 +87,36 @@ func TestCommandsOtherThanServeShouldDropTheAPITokenFromTheEnvironment(t *testin
 	}
 }
 
+// The doctor checks the token, but the agents, git and forge CLI it runs as probes must not
+// inherit it any more than a run's do.
+func TestDoctorShouldCheckTheAPITokenWithoutPassingItToTheBinariesItProbes(t *testing.T) {
+	cfgFile, _ := isolatedConfig(t, "api:\n  enabled: true\nforge:\n  kind: none\n")
+	onlyGit(t)
+	bin := os.Getenv("PATH")
+	dump := filepath.Join(t.TempDir(), "env")
+	script := "#!/bin/sh\nexport -p >> '" + dump + "'\necho 1.0.0\n" // a builtin: PATH holds only git
+	for _, name := range []string{"omp", "claude"} {
+		if err := os.WriteFile(filepath.Join(bin, name), []byte(script), 0o700); err != nil { //nolint:gosec // a test script
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("DELAMAIN_API_TOKEN", serveTestToken)
+	out, _ := execute(t, "--config", cfgFile, "doctor") // other checks fail in this sandbox
+	if !strings.Contains(out, "api") || strings.Contains(out, "DELAMAIN_API_TOKEN is not set") {
+		t.Fatalf("the api check still sees the token:\n%s", out)
+	}
+	env, err := os.ReadFile(dump)
+	if err != nil {
+		t.Fatalf("the doctor probes the agent binary: %v\n%s", err, out)
+	}
+	if strings.Contains(string(env), serveTestToken) {
+		t.Fatal("a binary the doctor probes inherited the API token")
+	}
+	if _, set := os.LookupEnv("DELAMAIN_API_TOKEN"); set {
+		t.Fatal("the doctor drops the token from its environment once read")
+	}
+}
+
 func TestCommandsShouldKeepTheEnvironmentWhenTheConfigFailsToLoad(t *testing.T) {
 	cfgFile, _ := isolatedConfig(t, "api: [not, a, mapping]\n")
 	t.Setenv("DELAMAIN_API_TOKEN", serveTestToken)
