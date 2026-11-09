@@ -370,10 +370,11 @@ func (s *Store) RecentRuns(ctx context.Context, limit int) ([]Run, error) {
 func (s *Store) RunsBefore(ctx context.Context, before int64, limit int, filter string) ([]Run, error) {
 	where := `WHERE (? <= 0 OR id < ?)`
 	switch filter {
+	// halted is the last step before recorded: the run has ended, as the board and the API show.
 	case "active":
-		where += ` AND state NOT IN ('` + string(StateRecorded) + `', '` + string(StateNeedsInfo) + `')`
+		where += ` AND state NOT IN ('` + string(StateRecorded) + `', '` + string(StateNeedsInfo) + `', '` + string(StateHalted) + `')`
 	case "finished":
-		where += ` AND state IN ('` + string(StateRecorded) + `', '` + string(StateNeedsInfo) + `')`
+		where += ` AND state IN ('` + string(StateRecorded) + `', '` + string(StateNeedsInfo) + `', '` + string(StateHalted) + `')`
 	case "all", "":
 	default:
 		return nil, fmt.Errorf("runs filter %q is not one of active|finished|all", filter)

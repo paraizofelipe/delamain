@@ -116,7 +116,7 @@ func TestRunsShouldPageNewestFirstWithFullRepoPathsAndNumericSpend(t *testing.T)
 	if len(page.Items) != 2 || page.Items[0].ID != 4 || page.Items[1].ID != 1 {
 		t.Fatalf("finished = %+v", page)
 	}
-	for _, q := range []string{"state=weird", "limit=0", "limit=201", "limit=x", "before=-1", "before=abc"} {
+	for _, q := range []string{"state=weird", "limit=0", "limit=201", "limit=x", "before=-1", "before=0", "before=abc"} {
 		res := ts.get(t, "/api/v1/runs?"+q)
 		if p := res.problem(t); res.Status != http.StatusBadRequest || p["code"] != codeInvalidParam {
 			t.Fatalf("%s: %d %v", q, res.Status, p)

@@ -740,3 +740,27 @@ func TestRunsBeforeShouldPageNewestFirstByStateFilter(t *testing.T) {
 		t.Fatal("an unknown filter is an error")
 	}
 }
+
+// halted is the step a run takes on its way to recorded: it has ended, and a page of active runs
+// must not show it as running.
+func TestRunsBeforeShouldCountAHaltedRunAsFinished(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	r, err := s.CreateRun(ctx, "repo", "#1", "t", "omp", 3, 0, KindIssue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.State = StateHalted
+	if err := s.UpdateRun(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+	for filter, want := range map[string]int{"active": 0, "finished": 1, "all": 1} {
+		runs, err := s.RunsBefore(ctx, 0, 10, filter)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(runs) != want {
+			t.Fatalf("state=%s: %d runs, want %d", filter, len(runs), want)
+		}
+	}
+}

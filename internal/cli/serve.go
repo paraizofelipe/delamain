@@ -121,7 +121,7 @@ func serve(ctx context.Context, out io.Writer, cfg config.Config, opts serveOpti
 	srv := api.New(apiSource{boardSource: boardSource{in: in}, acts: acts, cfg: cfg}, acts, audit, api.Options{
 		Token: token, MaxStreams: cfg.API.MaxStreams, TrustProxy: cfg.API.TrustProxy,
 		AuthFailures: cfg.API.RateLimit.AuthFailures, RequestsPerSecond: cfg.API.RateLimit.RequestsPerSecond,
-		Interval: opts.interval, Limit: opts.limit, Version: Version,
+		Interval: opts.interval, Limit: apiLimit(opts.limit), Version: Version,
 		Log: slog.New(slog.NewTextHandler(os.Stderr, nil)),
 	})
 	ln, err := net.Listen("tcp", cfg.API.Addr)
@@ -131,6 +131,15 @@ func serve(ctx context.Context, out io.Writer, cfg config.Config, opts serveOpti
 	fmt.Fprintf(out, "api at http://%s/ (ctrl+c stops it); audit log %s\n", ln.Addr(), cfg.API.AuditPath(cfg.Paths.StateDir))
 	go srv.Run(ctx)
 	return srv.Serve(ctx, ln)
+}
+
+// apiLimit is --limit as api.Options reads it: there 0 means the default, so --limit 0, no
+// finished runs, is passed as a negative limit.
+func apiLimit(limit int) int {
+	if limit == 0 {
+		return -1
+	}
+	return limit
 }
 
 // serveLauncher starts the runs and reviews the API asks for: with serve's own config file, so

@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"math"
 	"net/http"
 	"strconv"
 
@@ -76,7 +77,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, r, http.StatusBadRequest, codeInvalidParam, "limit must be a number from 1 to 200", nil)
 		return
 	}
-	before, err := intParam(q.Get("before"), 0, 0, 1<<62)
+	before, err := intParam(q.Get("before"), 0, 1, math.MaxInt)
 	if err != nil {
 		writeProblem(w, r, http.StatusBadRequest, codeInvalidParam, "before must be a run id", nil)
 		return

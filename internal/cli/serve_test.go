@@ -221,3 +221,13 @@ func TestServeLauncherShouldHandServesConfigFileAndDropTheToken(t *testing.T) {
 		t.Fatalf("the launcher carries serve's config, state dir and the token to strip: %+v", l)
 	}
 }
+
+// --limit 0 asks for no finished runs; api.Options reads 0 as "the default", so serve must not
+// pass it as is.
+func TestServeLimitZeroShouldReachTheAPIAsNoFinishedRuns(t *testing.T) {
+	for limit, want := range map[int]int{0: -1, 1: 1, 20: 20} {
+		if got := apiLimit(limit); got != want {
+			t.Fatalf("--limit %d reaches the API as %d, want %d", limit, got, want)
+		}
+	}
+}

@@ -646,3 +646,11 @@ func TestStreamGateShouldBoundTheOpenStreams(t *testing.T) {
 	}
 	r2()
 }
+
+func TestNewShouldDefaultAZeroLimitAndKeepANegativeOneAsNone(t *testing.T) {
+	for limit, want := range map[int]int{0: 20, -1: -1, 5: 5} {
+		if got := New(&fakeSource{}, nil, nil, Options{Token: []byte(testToken), Limit: limit}).opts.Limit; got != want {
+			t.Fatalf("Limit %d: the server keeps %d, want %d", limit, got, want)
+		}
+	}
+}

@@ -46,7 +46,8 @@ type Options struct {
 	RequestsPerSecond int
 	// Interval is how often the event hub reloads while a stream is open.
 	Interval time.Duration
-	// Limit is how many finished runs the event stream and the board projection carry.
+	// Limit is how many finished runs the event stream and the board projection carry: 0 means
+	// 20, a negative limit none.
 	Limit   int
 	Version string
 	Log     *slog.Logger
@@ -101,7 +102,7 @@ func New(src Source, acts *control.Actions, audit *Audit, opts Options) *Server 
 	if opts.Interval <= 0 {
 		opts.Interval = time.Second
 	}
-	if opts.Limit <= 0 {
+	if opts.Limit == 0 {
 		opts.Limit = 20
 	}
 	s := &Server{
