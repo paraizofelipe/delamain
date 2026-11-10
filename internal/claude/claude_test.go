@@ -83,6 +83,9 @@ func fakeClaude(scenario string) {
 		if servers, ok := mcpServers[scenario]; ok {
 			initEvent["mcp_servers"] = servers
 		}
+		if modes, ok := permissionModes[scenario]; ok {
+			initEvent["permissionMode"] = modes[min(turn, len(modes))-1]
+		}
 		emit(initEvent)
 		switch scenario {
 		case "ok", "garbage":
@@ -102,7 +105,7 @@ func fakeClaude(scenario string) {
 		case "die":
 			emit(assistantEvent("m1", 10, map[string]any{"type": "text", "text": "working"}))
 			os.Exit(3)
-		case "hang", "stubborn":
+		case "hang", "stubborn", "bypass-hang":
 			// One response, as an event per content block that repeat its id and usage.
 			emit(assistantEvent("m1", 10, map[string]any{"type": "text", "text": "thinking"}))
 			emit(assistantEvent("m1", 10, map[string]any{"type": "tool_use", "id": "tu1", "name": "Bash", "input": map[string]any{"command": "sleep 120"}}))
@@ -144,6 +147,12 @@ func (s *syncBuffer) String() string {
 
 func start(t *testing.T, scenario string, binaryArgs ...string) *session {
 	t.Helper()
+	return startRequiring(t, scenario, "", binaryArgs...)
+}
+
+// startRequiring starts a session that must run in permission mode want ("" requires none).
+func startRequiring(t *testing.T, scenario, want string, binaryArgs ...string) *session {
+	t.Helper()
 	self, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
@@ -156,6 +165,7 @@ func start(t *testing.T, scenario string, binaryArgs ...string) *session {
 		Env:        []string{"CLAUDE_FAKE=" + scenario, "CLAUDE_FAKE_TRACE=" + s.trace, "GH_TOKEN=delamain-push-blocked://", "GORACE=atexit_sleep_ms=0"},
 		Log:        s.log,
 		Transcript: &transcript, UsagePath: s.usage, CloseTimeout: 2 * time.Second,
+		RequirePermissionMode: want,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -479,6 +489,15 @@ var mcpServers = map[string][]map[string]any{
 	"hindsight-mcp-connected": {{"name": "hindsight", "status": "connected"}, {"name": "github", "status": "failed"}},
 }
 
+// permissionModes are the permissionMode each scenario's system/init reports, one per turn
+// (the last one repeats).
+var permissionModes = map[string][]string{
+	"bypass-hang":         {"bypassPermissions"},
+	"bypass-result":       {"bypassPermissions"},
+	"dontask":             {"dontAsk"},
+	"dontask-then-bypass": {"dontAsk", "bypassPermissions"},
+}
+
 // memoryMarker stands for memory content, which must never reach the log.
 const memoryMarker = "MEMORIA-SECRETA-7f3a"
 
@@ -656,4 +675,76 @@ func TestLogShouldStaySilentWhenTheHindsightMcpServerIsConnectedOrAbsent(t *test
 			t.Errorf("%s: only Hindsight's server down is worth a line:\n%s", scenario, log)
 		}
 	}
+}
+
+// wantModeError asserts err is the confinement violation naming both modes.
+func wantModeError(t *testing.T, err error, got string) {
+	t.Helper()
+	var pm *PermissionModeError
+	if !errors.As(err, &pm) || pm.Got != got || pm.Want != "dontAsk" {
+		t.Fatalf("want a PermissionModeError{%q, dontAsk}, got %v", got, err)
+	}
+	if !strings.Contains(err.Error(), `"dontAsk"`) || (got != "" && !strings.Contains(err.Error(), `"`+got+`"`)) {
+		t.Fatalf("the error must name both modes: %v", err)
+	}
+}
+
+func TestClientShouldAbortTheTurnWhenInitReportsAPermissionModeOtherThanTheRequiredOne(t *testing.T) {
+	// bypass-hang never ends its turn on its own: only killing the session ends it in time.
+	// bypass-result ends it with a success right after the forbidden init.
+	for _, scenario := range []string{"bypass-hang", "bypass-result"} {
+		t.Run(scenario, func(t *testing.T) {
+			s := startRequiring(t, scenario, "dontAsk")
+			turn, err := s.c.Prompt(context.Background(), "go", 20*time.Second)
+			if errors.Is(err, agent.ErrTimeout) {
+				t.Fatalf("the session must be killed on its init, not waited out: %v", err)
+			}
+			if turn.StopReason != "" {
+				t.Fatalf("an unconfined session's turn never counts: %+v", turn)
+			}
+			wantModeError(t, err, "bypassPermissions")
+			if _, err := s.c.Prompt(context.Background(), "again", 20*time.Second); err == nil {
+				t.Fatal("a killed session runs nothing else")
+			}
+		})
+	}
+}
+
+func TestClientShouldAbortWhenInitOmitsThePermissionModeAndOneIsRequired(t *testing.T) {
+	s := startRequiring(t, "ok", "dontAsk")
+	turn, err := s.c.Prompt(context.Background(), "go", 20*time.Second)
+	if turn.StopReason != "" {
+		t.Fatalf("a session that hides its mode is not trusted: %+v", turn)
+	}
+	wantModeError(t, err, "")
+}
+
+func TestClientShouldRunNormallyWhenInitReportsTheRequiredPermissionMode(t *testing.T) {
+	s := startRequiring(t, "dontask", "dontAsk")
+	for _, text := range []string{"go", "again"} {
+		if turn, err := s.c.Prompt(context.Background(), text, time.Minute); err != nil || turn.StopReason != "end_turn" {
+			t.Fatalf("%s: %+v %v", text, turn, err)
+		}
+	}
+}
+
+func TestClientShouldIgnoreThePermissionModeWhenNoneIsRequired(t *testing.T) {
+	for _, scenario := range []string{"bypass-result", "ok"} {
+		s := start(t, scenario)
+		if turn, err := s.c.Prompt(context.Background(), "go", time.Minute); err != nil || turn.StopReason != "end_turn" {
+			t.Errorf("%s: %+v %v", scenario, turn, err)
+		}
+	}
+}
+
+func TestClientShouldAbortALaterTurnWhenItsInitSwitchesThePermissionMode(t *testing.T) {
+	s := startRequiring(t, "dontask-then-bypass", "dontAsk")
+	if turn, err := s.c.Prompt(context.Background(), "go", time.Minute); err != nil || turn.StopReason != "end_turn" {
+		t.Fatalf("turn 1 runs in the required mode: %+v %v", turn, err)
+	}
+	turn, err := s.c.Prompt(context.Background(), "again", 20*time.Second)
+	if turn.StopReason != "" {
+		t.Fatalf("turn 2 switched to bypassPermissions: %+v", turn)
+	}
+	wantModeError(t, err, "bypassPermissions")
 }

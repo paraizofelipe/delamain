@@ -49,6 +49,21 @@ type Options struct {
 	// UsagePath receives the session's cumulative usage after every turn (see ReadUsage).
 	UsagePath    string
 	CloseTimeout time.Duration
+	// RequirePermissionMode, when set, is the only permissionMode a system/init may report: a
+	// session that starts in another one, or does not say, is killed (a launcher may rewrite
+	// --permission-mode, and a confined session must never run unconfined).
+	RequirePermissionMode string
+}
+
+// PermissionModeError ends a turn whose session reported a permission mode other than the
+// required one; Got is empty when its init reported none.
+type PermissionModeError struct{ Got, Want string }
+
+func (e *PermissionModeError) Error() string {
+	if e.Got == "" {
+		return fmt.Sprintf("sessão confinada iniciou sem informar o permissionMode, exigido %q: o launcher pode ter reescrito --permission-mode", e.Want)
+	}
+	return fmt.Sprintf("sessão confinada iniciou em %q, exigido %q: o launcher reescreveu --permission-mode", e.Got, e.Want)
 }
 
 // event is the subset of Claude Code's stream-json events this client reads.
@@ -66,6 +81,7 @@ type event struct {
 	Errors         []string              `json:"errors"`
 	ModelUsage     map[string]modelUsage `json:"modelUsage"`
 	// system/init
+	PermissionMode string `json:"permissionMode"`
 	MCPServers []struct {
 		Name   string `json:"name"`
 		Status string `json:"status"`
@@ -141,6 +157,10 @@ type Client struct {
 	model   string
 	aborted bool
 	turnN   int // counts prompts, so a late kill from Abort never hits a later turn
+	// wantMode is Options.RequirePermissionMode; modeErr is set, and claude killed, by the
+	// first init that breaks it, and from then on no event reaches a turn.
+	wantMode string
+	modeErr  *PermissionModeError
 
 	done    chan struct{} // closed when stdout ends (claude exited)
 	readErr error
@@ -175,7 +195,7 @@ func Start(_ context.Context, o Options) (*Client, error) {
 	}
 	c := &Client{
 		cmd: cmd, stdin: stdin, log: o.Log, transcript: o.Transcript, usagePath: o.UsagePath,
-		closeIn: o.CloseTimeout, stderr: stderr, done: make(chan struct{}), exited: make(chan struct{}),
+		closeIn: o.CloseTimeout, stderr: stderr, wantMode: o.RequirePermissionMode, done: make(chan struct{}), exited: make(chan struct{}),
 		inTurn: map[string]usage{}, tools: map[string]string{},
 	}
 	if c.log == nil {
@@ -219,9 +239,13 @@ func (c *Client) read(stdout io.Reader) {
 		c.logEvent(e)
 		c.smu.Lock()
 		c.account(e)
-		sink, stop := c.sink, c.stop
+		violated := c.checkMode(e)
+		sink, stop, unsafe := c.sink, c.stop, c.modeErr != nil
 		c.smu.Unlock()
-		if sink != nil {
+		if violated {
+			c.kill() // before the next line: an unconfined session must not run on
+		}
+		if sink != nil && !unsafe {
 			select {
 			case sink <- e:
 			case <-stop:
@@ -229,6 +253,25 @@ func (c *Client) read(stdout io.Reader) {
 		}
 	}
 	c.readErr = sc.Err()
+}
+
+// checkMode reports whether e is the first init to break the required permission mode;
+// called with smu held.
+func (c *Client) checkMode(e event) bool {
+	if c.wantMode == "" || c.modeErr != nil || e.Type != "system" || e.Subtype != "init" || e.PermissionMode == c.wantMode {
+		return false
+	}
+	c.modeErr = &PermissionModeError{Got: e.PermissionMode, Want: c.wantMode}
+	return true
+}
+
+func (c *Client) modeError() error {
+	c.smu.Lock()
+	defer c.smu.Unlock()
+	if c.modeErr == nil {
+		return nil
+	}
+	return c.modeErr
 }
 
 // account folds usage in; called with smu held.
@@ -331,6 +374,9 @@ func (c *Client) prompt(ctx context.Context, text string, timeout time.Duration)
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 	end := func(e event) (agent.Turn, error) {
+		if err := c.modeError(); err != nil {
+			return agent.Turn{}, err // whatever the session did unconfined never counts
+		}
 		turn := c.turn(e, before)
 		c.logf("■ fim do turno: %s · in %d out %d cacheW %d", turn.StopReason, turn.Usage.Input, turn.Usage.Output, turn.Usage.CacheWrite)
 		return turn, nil
@@ -342,6 +388,9 @@ func (c *Client) prompt(ctx context.Context, text string, timeout time.Duration)
 				return end(e)
 			}
 		case <-c.done:
+			if err := c.modeError(); err != nil {
+				return agent.Turn{}, err
+			}
 			// The reader may have queued the result just before claude exited.
 			for len(sink) > 0 {
 				if e := <-sink; e.Type == "result" {
