@@ -139,6 +139,31 @@ func TestRunShouldCheckClaudeInsteadOfOmpWhenItIsTheHarness(t *testing.T) {
 	}
 }
 
+func TestRunShouldWarnThatConfinedSessionsNeedTheLauncherToKeepThePermissionMode(t *testing.T) {
+	cfg, d := claudeHarness(t)
+	cfg.Claude.Binary, cfg.Claude.Args = "mia", []string{"launch", "claude"}
+	d.Version = func(context.Context, string, []string, ...string) (string, error) { return "2.1.303 (Claude Code)", nil }
+	results := Run(context.Background(), cfg, d)
+	c, ok := byName(results)["claude launcher"]
+	if !ok || c.Status != Warn || !strings.Contains(c.Detail, "mia launch claude") || !strings.Contains(c.Detail, "--permission-mode dontAsk") {
+		t.Fatalf("a launcher may rewrite the permission mode of a confined session: %+v", c)
+	}
+	if Failed(results) {
+		t.Fatalf("a launcher is a warning, not a failure: %+v", results)
+	}
+}
+
+func TestRunShouldNotWarnAboutALauncherWhenClaudeIsCalledDirectly(t *testing.T) {
+	for _, bin := range []string{"claude", "/usr/local/bin/claude"} {
+		cfg, d := claudeHarness(t)
+		cfg.Claude.Binary = bin
+		results := Run(context.Background(), cfg, d)
+		if c, ok := byName(results)["claude launcher"]; ok || Failed(results) {
+			t.Errorf("%s: claude itself keeps --permission-mode: %+v", bin, c)
+		}
+	}
+}
+
 func TestRunShouldFailWhenClaudeIsNotLoggedInAndWarnOnAnOldClaude(t *testing.T) {
 	cfg, d := claudeHarness(t)
 	d.ClaudeAuth = func(context.Context, string, []string, ...string) error { return errors.New("not logged in") }
