@@ -133,6 +133,12 @@ func Run(ctx context.Context, cfg config.Config, d Deps) []Check {
 		} else {
 			add("claude auth", OK, "logged in")
 		}
+		if launcher := cfg.Claude.Binary; filepath.Base(launcher) != "claude" {
+			// A launcher may rewrite the flags it passes on; a confined session that does not
+			// start in dontAsk is killed on its first event.
+			add("claude launcher", Warn, "%s: confined sessions (address) need it to keep --permission-mode dontAsk, or they are aborted",
+				strings.Join(append([]string{launcher}, cfg.Claude.Args...), " "))
+		}
 		if h := cfg.Claude.Hindsight; h != nil && h.Enabled {
 			checks = append(checks, hindsight(*h, cfg.Claude.Env, d))
 		}

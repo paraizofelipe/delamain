@@ -168,7 +168,14 @@ func (st *sseStream) next(t *testing.T, want int) []sseEvent {
 		case ev := <-st.events:
 			out = append(out, ev)
 		case err := <-st.errc:
-			t.Fatalf("stream ended after %d events: %v", len(out), err)
+			// The reader queues every event before the error: those read before it come first.
+			for len(out) < want && len(st.events) > 0 {
+				out = append(out, <-st.events)
+			}
+			st.errc <- err // still there for ended
+			if len(out) < want {
+				t.Fatalf("stream ended after %d events: %v", len(out), err)
+			}
 		case <-deadline:
 			t.Fatalf("got %d of %d events: %+v", len(out), want, out)
 		}

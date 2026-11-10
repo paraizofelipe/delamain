@@ -139,10 +139,8 @@ type ClaudeAgents struct {
 
 func (a ClaudeAgents) args(sessionID, rolePrompt string, o AgentOptions) []string {
 	c := o.Confine
-	mode := a.PermissionMode
-	if c != nil {
-		mode = "dontAsk" // anything not allowed by confined() is denied, never prompted
-	}
+	// A confined session denies anything confined() does not allow, never prompting.
+	mode := cmp.Or(requiredMode(o), a.PermissionMode)
 	args := []string{
 		"--model", cmp.Or(o.Model, a.Model), "--effort", cmp.Or(o.Reasoning, a.Effort), "--permission-mode", mode,
 		"--session-id", sessionID, "--no-session-persistence",
@@ -252,6 +250,15 @@ func (ClaudeAgents) Sessions(sessionsDir string) ([]budget.SessionUsage, error) 
 	return out, nil
 }
 
+// requiredMode is the permission mode a session must report: a confined one runs in dontAsk
+// (see args), and a launcher that rewrites --permission-mode must not set it free.
+func requiredMode(o AgentOptions) string {
+	if o.Confine != nil {
+		return "dontAsk"
+	}
+	return ""
+}
+
 func (a ClaudeAgents) Start(ctx context.Context, o AgentOptions) (Agent, error) {
 	role, err := os.ReadFile(o.SystemPrompt)
 	if err != nil {
@@ -280,7 +287,8 @@ func (a ClaudeAgents) Start(ctx context.Context, o AgentOptions) (Agent, error) 
 		// The configured env first: the role's own env (the push block) wins on a clash.
 		Env: append(append([]string{}, a.Env...), o.Env...),
 		Log: files[0], Stderr: files[1], Transcript: files[2],
-		UsagePath: filepath.Join(o.SessionDir, id+claude.UsageSuffix),
+		UsagePath:             filepath.Join(o.SessionDir, id+claude.UsageSuffix),
+		RequirePermissionMode: requiredMode(o),
 	})
 	if err != nil {
 		closeAll()
