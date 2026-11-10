@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/paraizo/delamain/internal/claude"
 	"github.com/paraizo/delamain/internal/config"
 	"github.com/paraizo/delamain/internal/forge"
 	"github.com/paraizo/delamain/internal/gitx"
@@ -230,6 +231,22 @@ func TestRunAddressShouldSkipClosedPRWithoutCreatingARun(t *testing.T) {
 	}
 	if len(rh.g.fetchedPR)+len(rh.f.replies)+len(rh.h.prompts) != 0 {
 		t.Fatal("nothing is fetched, prompted or replied for a closed PR")
+	}
+}
+
+func TestRunAddressShouldHaltWithoutReplyingWhenTheResponderStartsInAnotherPermissionMode(t *testing.T) {
+	// A launcher that rewrote --permission-mode: the session is killed on its init, its
+	// artifact (written unconfined) is never read.
+	rh := newAddressHarness(t, func(string, int, string) reply {
+		return reply{write: happyAnswers(), err: &claude.PermissionModeError{Got: "bypassPermissions", Want: "dontAsk"}}
+	})
+	res := rh.address(t)
+
+	if res.Outcome != OutcomeHalted || !strings.Contains(res.Reason, `"bypassPermissions"`) || !strings.Contains(res.Reason, `"dontAsk"`) {
+		t.Fatalf("want halted naming both modes, got %s (%s)", res.Outcome, res.Reason)
+	}
+	if len(rh.f.replies) != 0 {
+		t.Fatalf("an unconfined responder posts nothing: %+v", rh.f.replies)
 	}
 }
 

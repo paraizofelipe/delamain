@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/paraizo/delamain/internal/claude"
 	"github.com/paraizo/delamain/internal/config"
@@ -370,5 +372,52 @@ func TestClaudeArgsShouldAppendHindsightHooksToTheUsersOwnHooksWithoutMutatingTh
 	}
 	if after := fmt.Sprint(a.Settings); after != before {
 		t.Fatalf("claude.settings must not be mutated:\nbefore %s\nafter  %s", before, after)
+	}
+}
+
+// startBypassing starts a session on a claude that reports bypassPermissions on every turn, as
+// a launcher that rewrites --permission-mode does, and ends each turn with a success.
+func startBypassing(t *testing.T, confine *Confinement) Agent {
+	t.Helper()
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "launcher")
+	script := `#!/bin/sh
+while read -r line; do
+  echo '{"type":"system","subtype":"init","model":"m","permissionMode":"bypassPermissions"}'
+  echo '{"type":"result","subtype":"success","is_error":false,"stop_reason":"end_turn","result":"ok","modelUsage":{}}'
+done
+`
+	if err := os.WriteFile(bin, []byte(script), 0o700); err != nil { //nolint:gosec // the fake must be executable
+		t.Fatal(err)
+	}
+	role := filepath.Join(dir, "role.md")
+	if err := os.WriteFile(role, []byte("answer the threads"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	a := ClaudeAgents{Binary: bin, Model: "opus", Effort: "high", PermissionMode: "bypassPermissions"}
+	ag, err := a.Start(context.Background(), AgentOptions{
+		Dir: dir, SessionDir: dir, SystemPrompt: role, LogPath: filepath.Join(dir, "a.log"), ErrPath: filepath.Join(dir, "a.err"),
+		Confine: confine,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ag.Close() })
+	return ag
+}
+
+func TestConfinedSessionShouldRequireDontAsk(t *testing.T) {
+	ag := startBypassing(t, &Confinement{Checkout: "/wt/address-pr-5-1", Base: "b4se", Artifact: "/run/5/responses.json"})
+	turn, err := ag.Prompt(context.Background(), "answer", 20*time.Second)
+	var pm *claude.PermissionModeError
+	if !errors.As(err, &pm) || pm.Got != "bypassPermissions" || pm.Want != "dontAsk" {
+		t.Fatalf("a confined session that a launcher started unconfined must fail its turn naming both modes, got %+v %v", turn, err)
+	}
+}
+
+func TestUnconfinedSessionShouldRequireNoPermissionMode(t *testing.T) {
+	ag := startBypassing(t, nil)
+	if turn, err := ag.Prompt(context.Background(), "implement", 20*time.Second); err != nil || turn.StopReason != "end_turn" {
+		t.Fatalf("an unconfined session runs in its configured mode as before: %+v %v", turn, err)
 	}
 }
