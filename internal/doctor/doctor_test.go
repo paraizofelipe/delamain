@@ -142,7 +142,9 @@ func TestRunShouldCheckClaudeInsteadOfOmpWhenItIsTheHarness(t *testing.T) {
 func TestRunShouldWarnThatConfinedSessionsNeedTheLauncherToKeepThePermissionMode(t *testing.T) {
 	cfg, d := claudeHarness(t)
 	cfg.Claude.Binary, cfg.Claude.Args = "mia", []string{"launch", "claude"}
-	d.Version = func(context.Context, string, []string, ...string) (string, error) { return "2.1.303 (Claude Code)", nil }
+	d.Version = func(context.Context, string, []string, ...string) (string, error) {
+		return "2.1.303 (Claude Code)", nil
+	}
 	results := Run(context.Background(), cfg, d)
 	c, ok := byName(results)["claude launcher"]
 	if !ok || c.Status != Warn || !strings.Contains(c.Detail, "mia launch claude") || !strings.Contains(c.Detail, "--permission-mode dontAsk") {
