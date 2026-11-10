@@ -82,7 +82,7 @@ type event struct {
 	ModelUsage     map[string]modelUsage `json:"modelUsage"`
 	// system/init
 	PermissionMode string `json:"permissionMode"`
-	MCPServers []struct {
+	MCPServers     []struct {
 		Name   string `json:"name"`
 		Status string `json:"status"`
 	} `json:"mcp_servers"`
