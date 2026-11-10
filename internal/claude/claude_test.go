@@ -748,3 +748,28 @@ func TestClientShouldAbortALaterTurnWhenItsInitSwitchesThePermissionMode(t *test
 	}
 	wantModeError(t, err, "bypassPermissions")
 }
+
+func TestLogShouldWarnWhenInitReportsAPermissionModeOtherThanTheRequiredOne(t *testing.T) {
+	for scenario, want := range map[string]string{
+		"bypass-result": "⚠ permission mode: bypassPermissions (exigido dontAsk)",
+		"ok":            "⚠ permission mode: ausente (exigido dontAsk)",
+	} {
+		s := startRequiring(t, scenario, "dontAsk")
+		_, _ = s.c.Prompt(context.Background(), "go", 20*time.Second)
+		if log := s.log.String(); !slices.Contains(logLines(log), want) {
+			t.Errorf("%s: `delamain logs` must say why the session was killed, want %q:\n%s", scenario, want, log)
+		}
+	}
+}
+
+func TestLogShouldStaySilentAboutThePermissionModeWhenItMatchesOrNoneIsRequired(t *testing.T) {
+	for scenario, want := range map[string]string{"dontask": "dontAsk", "bypass-result": "", "ok": ""} {
+		s := startRequiring(t, scenario, want)
+		if _, err := s.c.Prompt(context.Background(), "go", time.Minute); err != nil {
+			t.Fatal(err)
+		}
+		if log := s.log.String(); strings.Contains(log, "permission mode") || !strings.Contains(log, "■ fim do turno") {
+			t.Errorf("%s: a session in its mode says nothing about it:\n%s", scenario, log)
+		}
+	}
+}

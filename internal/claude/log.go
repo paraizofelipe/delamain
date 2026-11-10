@@ -1,6 +1,7 @@
 package claude
 
 import (
+	"cmp"
 	"encoding/json"
 	"strings"
 	"unicode"
@@ -24,6 +25,9 @@ func (c *Client) logEvent(e event) {
 				if m.Name == "hindsight" && m.Status != "connected" {
 					c.logf("⚠ hindsight MCP: %s", oneLine(m.Status))
 				}
+			}
+			if c.wantMode != "" && e.PermissionMode != c.wantMode {
+				c.logf("⚠ permission mode: %s (exigido %s)", oneLine(cmp.Or(e.PermissionMode, "ausente")), c.wantMode)
 			}
 		case "hook_response":
 			c.logHook(sub, e)
