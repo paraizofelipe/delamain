@@ -86,7 +86,14 @@ func fakeClaude(scenario string) {
 		if modes, ok := permissionModes[scenario]; ok {
 			initEvent["permissionMode"] = modes[min(turn, len(modes))-1]
 		}
-		emit(initEvent)
+		switch scenario {
+		case "no-init": // a wrapper that swallows init
+		case "unreadable-init": // a field of another type makes the whole line unreadable as an event
+			initEvent["mcp_servers"] = "hindsight"
+			emit(initEvent)
+		default:
+			emit(initEvent)
+		}
 		switch scenario {
 		case "ok", "garbage":
 			if scenario == "garbage" {
@@ -105,7 +112,7 @@ func fakeClaude(scenario string) {
 		case "die":
 			emit(assistantEvent("m1", 10, map[string]any{"type": "text", "text": "working"}))
 			os.Exit(3)
-		case "hang", "stubborn", "bypass-hang":
+		case "hang", "stubborn", "bypass-hang", "unreadable-init":
 			// One response, as an event per content block that repeat its id and usage.
 			emit(assistantEvent("m1", 10, map[string]any{"type": "text", "text": "thinking"}))
 			emit(assistantEvent("m1", 10, map[string]any{"type": "tool_use", "id": "tu1", "name": "Bash", "input": map[string]any{"command": "sleep 120"}}))
@@ -496,6 +503,8 @@ var permissionModes = map[string][]string{
 	"bypass-result":       {"bypassPermissions"},
 	"dontask":             {"dontAsk"},
 	"dontask-then-bypass": {"dontAsk", "bypassPermissions"},
+	"no-init":             {"dontAsk"},
+	"unreadable-init":     {"dontAsk"},
 }
 
 // memoryMarker stands for memory content, which must never reach the log.
@@ -771,5 +780,34 @@ func TestLogShouldStaySilentAboutThePermissionModeWhenItMatchesOrNoneIsRequired(
 		if log := s.log.String(); strings.Contains(log, "permission mode") || !strings.Contains(log, "■ fim do turno") {
 			t.Errorf("%s: a session in its mode says nothing about it:\n%s", scenario, log)
 		}
+	}
+}
+
+func TestClientShouldRefuseATurnWithoutInitWhenAPermissionModeIsRequired(t *testing.T) {
+	s := startRequiring(t, "no-init", "dontAsk")
+	turn, err := s.c.Prompt(context.Background(), "go", 20*time.Second)
+	if turn.StopReason != "" {
+		t.Fatalf("a turn whose mode was never shown does not count: %+v", turn)
+	}
+	wantModeError(t, err, "")
+	if _, err := s.c.Prompt(context.Background(), "again", 20*time.Second); err == nil {
+		t.Fatal("a session whose mode was never shown runs nothing else")
+	}
+}
+
+func TestClientShouldAbortOnAnInitItCannotReadWhenAPermissionModeIsRequired(t *testing.T) {
+	// The session hangs after its init: only killing it on that init ends the turn in time.
+	s := startRequiring(t, "unreadable-init", "dontAsk")
+	_, err := s.c.Prompt(context.Background(), "go", 20*time.Second)
+	if errors.Is(err, agent.ErrTimeout) {
+		t.Fatalf("an init that cannot be read proves no mode: kill on it, got %v", err)
+	}
+	wantModeError(t, err, "")
+}
+
+func TestClientShouldAcceptATurnWithoutInitWhenNoPermissionModeIsRequired(t *testing.T) {
+	s := start(t, "no-init")
+	if turn, err := s.c.Prompt(context.Background(), "go", time.Minute); err != nil || turn.StopReason != "end_turn" {
+		t.Fatalf("%+v %v", turn, err)
 	}
 }

@@ -158,9 +158,11 @@ type Client struct {
 	aborted bool
 	turnN   int // counts prompts, so a late kill from Abort never hits a later turn
 	// wantMode is Options.RequirePermissionMode; modeErr is set, and claude killed, by the
-	// first init that breaks it, and from then on no event reaches a turn.
-	wantMode string
-	modeErr  *PermissionModeError
+	// first init that breaks it, and from then on no event reaches a turn. modeShown is whether
+	// the turn in flight got an init in wantMode: a turn without one does not count.
+	wantMode  string
+	modeErr   *PermissionModeError
+	modeShown bool
 
 	done    chan struct{} // closed when stdout ends (claude exited)
 	readErr error
@@ -234,7 +236,13 @@ func (c *Client) read(stdout io.Reader) {
 		c.record(sc.Bytes())
 		var e event
 		if err := json.Unmarshal(sc.Bytes(), &e); err != nil {
-			continue // stdout is protocol-only; a bad line is not worth killing the session
+			// stdout is protocol-only; a bad line is not worth killing the session, unless it
+			// is an init, whose mode then goes unchecked.
+			if c.unreadableInit(sc.Bytes()) {
+				c.logf("⚠ permission mode: init ilegível (exigido %s)", c.wantMode)
+				c.kill()
+			}
+			continue
 		}
 		c.logEvent(e)
 		c.smu.Lock()
@@ -258,10 +266,30 @@ func (c *Client) read(stdout io.Reader) {
 // checkMode reports whether e is the first init to break the required permission mode;
 // called with smu held.
 func (c *Client) checkMode(e event) bool {
-	if c.wantMode == "" || c.modeErr != nil || e.Type != "system" || e.Subtype != "init" || e.PermissionMode == c.wantMode {
+	if c.wantMode == "" || c.modeErr != nil || e.Type != "system" || e.Subtype != "init" {
+		return false
+	}
+	if e.PermissionMode == c.wantMode {
+		c.modeShown = true
 		return false
 	}
 	c.modeErr = &PermissionModeError{Got: e.PermissionMode, Want: c.wantMode}
+	return true
+}
+
+// unreadableInit reports whether line, which is not a readable event, is the first init to
+// break the required permission mode.
+func (c *Client) unreadableInit(line []byte) bool {
+	var head struct{ Type, Subtype string }
+	if c.wantMode == "" || json.Unmarshal(line, &head) != nil || head.Type != "system" || head.Subtype != "init" {
+		return false
+	}
+	c.smu.Lock()
+	defer c.smu.Unlock()
+	if c.modeErr != nil {
+		return false
+	}
+	c.modeErr = &PermissionModeError{Want: c.wantMode}
 	return true
 }
 
@@ -272,6 +300,20 @@ func (c *Client) modeError() error {
 		return nil
 	}
 	return c.modeErr
+}
+
+// unproven is the error that refuses the turn's result: the mode was broken, or the turn
+// never showed it. A session that never showed it is killed too.
+func (c *Client) unproven() error {
+	c.smu.Lock()
+	if c.modeErr == nil && c.wantMode != "" && !c.modeShown {
+		c.modeErr = &PermissionModeError{Want: c.wantMode}
+		c.smu.Unlock()
+		c.kill()
+		return c.modeError()
+	}
+	c.smu.Unlock()
+	return c.modeError()
 }
 
 // account folds usage in; called with smu held.
@@ -355,7 +397,7 @@ func (c *Client) prompt(ctx context.Context, text string, timeout time.Duration)
 	defer c.tmu.Unlock()
 	sink, stop := make(chan event, 256), make(chan struct{})
 	c.smu.Lock()
-	c.sink, c.stop, c.aborted = sink, stop, false
+	c.sink, c.stop, c.aborted, c.modeShown = sink, stop, false, false
 	c.turnN++
 	before := c.total
 	c.smu.Unlock()
@@ -374,7 +416,7 @@ func (c *Client) prompt(ctx context.Context, text string, timeout time.Duration)
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 	end := func(e event) (agent.Turn, error) {
-		if err := c.modeError(); err != nil {
+		if err := c.unproven(); err != nil {
 			return agent.Turn{}, err // whatever the session did unconfined never counts
 		}
 		turn := c.turn(e, before)
